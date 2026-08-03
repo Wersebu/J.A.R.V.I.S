@@ -2,7 +2,7 @@
 
 Jarvis is a long-term AI operating system backend foundation.
 
-Version `0.1` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Java 21, and Maven.
+Version `0.2` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, and provider-independent AI chat through Ollama.
 
 ## Modules
 
@@ -10,7 +10,7 @@ Version `0.1` provides a headless Spring Boot backend for Ubuntu Server 24.04 LT
 - `jarvis-api` - REST controllers and WebSocket endpoint configuration.
 - `jarvis-core` - Spring Boot application and orchestration services.
 - `jarvis-memory` - in-memory conversation history with replaceable interfaces.
-- `jarvis-ollama` - dedicated Ollama HTTP API client.
+- `jarvis-ollama` - Ollama implementation hidden behind the provider-independent AI contract.
 - `jarvis-planner` - planning contracts for future planning engines.
 - `jarvis-tools` - tool execution framework contracts.
 - `jarvis-plugin-sdk` - plugin extension contracts for future external JAR plugins.
@@ -33,23 +33,29 @@ Expected response:
 {"status":"online","version":"0.1"}
 ```
 
-## Chat
+## Chat v0.2
 
 ```bash
-curl -X POST http://localhost:8080/api/chat \
+curl -X POST http://localhost:8080/api/v1/chat \
   -H "Content-Type: application/json" \
   -d '{"conversationId":"default","message":"Hello"}'
 ```
 
-The chat flow is `ChatService -> OllamaService -> plain text response`.
+The chat flow is `ChatController -> ChatService -> ConversationService -> PromptBuilder -> AIProvider -> OllamaProvider -> Ollama HTTP API`.
 
 ## Configuration
 
-Ollama defaults to `http://localhost:11434` and model `llama3.1`.
+Ollama defaults to `http://localhost:11434` and model `qwen3:14b`.
 
 Override with:
 
-```properties
-jarvis.ollama.base-url=http://localhost:11434
-jarvis.ollama.model=llama3.1
+```yaml
+jarvis:
+  ai:
+    provider: ollama
+    model: qwen3:14b
+    base-url: http://localhost:11434
+    identity-file: file:config/jarvis.md
 ```
+
+The AI identity is loaded from `config/jarvis.md`.

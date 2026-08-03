@@ -3,10 +3,10 @@ package com.jarvis.memory;
 import com.jarvis.common.memory.ConversationMessage;
 import org.springframework.stereotype.Service;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * In-memory conversation history store for version 0.1.
@@ -24,7 +24,7 @@ public class InMemoryConversationMemoryService implements ConversationMemoryServ
      */
     @Override
     public void addMessage(String conversationId, ConversationMessage message) {
-        conversations.computeIfAbsent(conversationId, ignored -> new ArrayList<>()).add(message);
+        conversations.computeIfAbsent(conversationId, ignored -> new CopyOnWriteArrayList<>()).add(message);
     }
 
     /**

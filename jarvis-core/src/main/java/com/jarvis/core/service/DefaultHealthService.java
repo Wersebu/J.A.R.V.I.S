@@ -2,6 +2,7 @@ package com.jarvis.core.service;
 
 import com.jarvis.api.service.HealthService;
 import com.jarvis.common.dto.HealthResponse;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
@@ -14,9 +15,11 @@ public class DefaultHealthService implements HealthService {
 
     /**
      * Creates the default health service.
+     *
+     * @param version public Jarvis backend version
      */
-    public DefaultHealthService() {
-        this.version = "0.1";
+    public DefaultHealthService(@Value("${jarvis.version}") String version) {
+        this.version = version;
     }
 
     /**

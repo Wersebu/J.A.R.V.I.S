@@ -1,0 +1,14 @@
+spring:
+  application:
+    name: jarvis
+
+server:
+  port: 8080
+
+jarvis:
+  version: "0.2"
+  ai:
+    provider: ollama
+    model: qwen3:14b
+    base-url: http://localhost:11434
+    identity-file: file:config/jarvis.md

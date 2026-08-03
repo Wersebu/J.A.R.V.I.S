@@ -7,13 +7,17 @@
     <parent>
         <groupId>com.jarvis</groupId>
         <artifactId>jarvis-parent</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>0.2.0-SNAPSHOT</version>
     </parent>
 
     <artifactId>jarvis-ollama</artifactId>
     <name>Jarvis Ollama</name>
 
     <dependencies>
+        <dependency>
+            <groupId>com.jarvis</groupId>
+            <artifactId>jarvis-common</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
@@ -25,6 +29,10 @@
         <dependency>
             <groupId>org.springframework</groupId>
             <artifactId>spring-context</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
         </dependency>
     </dependencies>
 </project>

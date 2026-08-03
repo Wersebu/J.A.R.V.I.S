@@ -1,9 +1,11 @@
 package com.jarvis.ollama;
 
+import com.jarvis.common.ai.AIProviderException;
+
 /**
  * Runtime exception for Ollama communication failures.
  */
-public class OllamaException extends RuntimeException {
+public class OllamaException extends AIProviderException {
 
     /**
      * Creates an Ollama exception.

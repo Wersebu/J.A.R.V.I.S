@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
  * REST endpoint for plain text chat interactions.
  */
 @RestController
-@RequestMapping(path = "/api/chat", produces = MediaType.APPLICATION_JSON_VALUE)
+@RequestMapping(path = "/api/v1/chat", produces = MediaType.APPLICATION_JSON_VALUE)
 public class ChatController {
 
     private final ChatService chatService;
