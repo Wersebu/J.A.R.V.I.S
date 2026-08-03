@@ -13,7 +13,7 @@
 
     <groupId>com.jarvis</groupId>
     <artifactId>jarvis-parent</artifactId>
-    <version>0.4.0-SNAPSHOT</version>
+    <version>0.5.0-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>Jarvis</name>
@@ -23,6 +23,7 @@
         <module>jarvis-common</module>
         <module>jarvis-brain-router</module>
         <module>jarvis-api</module>
+        <module>jarvis-knowledge</module>
         <module>jarvis-core</module>
         <module>jarvis-memory</module>
         <module>jarvis-ollama</module>
@@ -36,7 +37,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.release>${java.version}</maven.compiler.release>
-        <jarvis.version>0.4</jarvis.version>
+        <jarvis.version>0.5</jarvis.version>
     </properties>
 
     <dependencyManagement>
@@ -54,6 +55,11 @@
             <dependency>
                 <groupId>com.jarvis</groupId>
                 <artifactId>jarvis-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.jarvis</groupId>
+                <artifactId>jarvis-knowledge</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

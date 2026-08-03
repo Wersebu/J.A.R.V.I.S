@@ -2,13 +2,14 @@
 
 Jarvis is a long-term AI operating system backend foundation.
 
-Version `0.4` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, and real-time SSE token streaming.
+Version `0.5` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE token streaming, and a metadata-only knowledge engine foundation.
 
 ## Modules
 
 - `jarvis-common` - shared DTOs, constants, and cross-module types.
 - `jarvis-brain-router` - logical brain catalog and deterministic brain routing.
 - `jarvis-api` - REST controllers and WebSocket endpoint configuration.
+- `jarvis-knowledge` - metadata-only knowledge document index and filesystem watcher.
 - `jarvis-core` - Spring Boot application and orchestration services.
 - `jarvis-memory` - in-memory conversation history with replaceable interfaces.
 - `jarvis-ollama` - Ollama implementation hidden behind the provider-independent AI contract.
@@ -52,6 +53,15 @@ curl -N "http://localhost:8080/api/v1/chat/stream?conversationId=default&message
 
 The streaming endpoint emits typed Server-Sent Events such as `REQUEST_RECEIVED`, `BRAIN_ROUTING`, `PROMPT_BUILDING`, `MODEL_LOADING`, `THINKING`, `GENERATING`, `TOKEN`, `FINISHED`, `IDLE`, and `ERROR`.
 
+## Knowledge v0.5
+
+```bash
+curl http://localhost:8080/api/v1/knowledge
+curl -X POST http://localhost:8080/api/v1/knowledge/reindex
+```
+
+The knowledge engine keeps metadata only. Source documents remain in the configured knowledge root and are not moved or modified.
+
 ## Configuration
 
 Ollama defaults to `http://localhost:11434`. Models are selected through configured logical brains.
@@ -77,3 +87,12 @@ brains:
 ```
 
 The AI identity is loaded from `config/jarvis.md`.
+
+Knowledge defaults:
+
+```yaml
+knowledge:
+  root: ./knowledge
+  watch: true
+  preview-length: 500
+```

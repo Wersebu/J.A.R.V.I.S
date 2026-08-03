@@ -2,6 +2,7 @@ package com.jarvis.api.error;
 
 import com.jarvis.common.ai.AIProviderException;
 import com.jarvis.common.dto.ErrorResponse;
+import com.jarvis.knowledge.KnowledgeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -35,5 +36,23 @@ public class ApiExceptionHandler {
                 Instant.now()
         );
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(response);
+    }
+
+    /**
+     * Handles knowledge engine failures.
+     *
+     * @param exception knowledge exception
+     * @return internal server error response
+     */
+    @ExceptionHandler(KnowledgeException.class)
+    public ResponseEntity<ErrorResponse> handleKnowledgeException(KnowledgeException exception) {
+        LOGGER.error("[JARVIS] Knowledge engine error: {}", exception.getMessage(), exception);
+        ErrorResponse response = new ErrorResponse(
+                HttpStatus.INTERNAL_SERVER_ERROR.value(),
+                "Internal Server Error",
+                "Knowledge engine error",
+                Instant.now()
+        );
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
     }
 }
