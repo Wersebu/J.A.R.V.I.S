@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.dto.ChatResponse;
+import com.jarvis.common.prompt.PromptBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -30,6 +31,7 @@ public class OllamaProvider implements AIProvider {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final OllamaProperties properties;
+    private final PromptBuilder promptBuilder;
 
     /**
      * Creates the Ollama HTTP service.
@@ -37,11 +39,18 @@ public class OllamaProvider implements AIProvider {
      * @param httpClient HTTP client
      * @param objectMapper JSON mapper
      * @param properties Ollama configuration
+     * @param promptBuilder provider-independent prompt builder
      */
-    public OllamaProvider(HttpClient httpClient, ObjectMapper objectMapper, OllamaProperties properties) {
+    public OllamaProvider(
+            HttpClient httpClient,
+            ObjectMapper objectMapper,
+            OllamaProperties properties,
+            PromptBuilder promptBuilder
+    ) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.promptBuilder = promptBuilder;
     }
 
     /**
@@ -56,7 +65,8 @@ public class OllamaProvider implements AIProvider {
         try {
             LOGGER.info("[JARVIS] Model: {}", properties.model());
 
-            OllamaGenerateRequest requestBody = new OllamaGenerateRequest(properties.model(), request.message(), false);
+            String prompt = promptBuilder.buildPrompt(request);
+            OllamaGenerateRequest requestBody = new OllamaGenerateRequest(properties.model(), prompt, false);
             HttpRequest httpRequest = HttpRequest.newBuilder()
                     .uri(URI.create(normalizeBaseUrl(properties.baseUrl()) + "/api/generate"))
                     .timeout(Duration.ofMinutes(5))

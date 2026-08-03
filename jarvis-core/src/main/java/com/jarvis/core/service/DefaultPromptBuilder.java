@@ -19,20 +19,20 @@ import java.time.format.DateTimeFormatter;
  * Builds prompts using Jarvis identity loaded from a markdown file.
  */
 @Service
-public class FilePromptBuilder implements PromptBuilder {
+public class DefaultPromptBuilder implements PromptBuilder {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(FilePromptBuilder.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(DefaultPromptBuilder.class);
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     private final Resource identityResource;
     private final Clock clock;
 
     /**
-     * Creates the file prompt builder.
+     * Creates the default prompt builder.
      *
      * @param identityResource identity markdown resource
      */
-    public FilePromptBuilder(@Value("${jarvis.ai.identity-file}") Resource identityResource) {
+    public DefaultPromptBuilder(@Value("${jarvis.ai.identity-file}") Resource identityResource) {
         this.identityResource = identityResource;
         this.clock = Clock.systemDefaultZone();
     }
