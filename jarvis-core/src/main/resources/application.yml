@@ -8,7 +8,19 @@ server:
 jarvis:
   version: "0.2"
   ai:
-    provider: ollama
-    model: qwen3:14b
     base-url: http://localhost:11434
     identity-file: file:config/jarvis.md
+
+brains:
+  FAST:
+    provider: ollama
+    model: qwen3:8b
+    description: Fast responses for greetings and simple questions.
+  REASONING:
+    provider: ollama
+    model: qwen3:14b
+    description: Deeper reasoning for programming, architecture, planning, and longer requests.
+  CLASSIFIER:
+    provider: ollama
+    model: qwen3:0.6b
+    description: Future classifier brain for routing decisions only.

@@ -7,6 +7,7 @@ Version `0.2` provides a headless Spring Boot backend for Ubuntu Server 24.04 LT
 ## Modules
 
 - `jarvis-common` - shared DTOs, constants, and cross-module types.
+- `jarvis-brain-router` - logical brain catalog and deterministic brain routing.
 - `jarvis-api` - REST controllers and WebSocket endpoint configuration.
 - `jarvis-core` - Spring Boot application and orchestration services.
 - `jarvis-memory` - in-memory conversation history with replaceable interfaces.
@@ -41,21 +42,30 @@ curl -X POST http://localhost:8080/api/v1/chat \
   -d '{"conversationId":"default","message":"Hello"}'
 ```
 
-The chat flow is `ChatController -> ChatService -> ConversationService -> PromptBuilder -> AIProvider -> OllamaProvider -> Ollama HTTP API`.
+The chat flow is `ChatController -> ChatService -> ConversationService -> PromptBuilder -> BrainRouter -> Brain -> AIProvider -> OllamaProvider -> Ollama HTTP API`.
 
 ## Configuration
 
-Ollama defaults to `http://localhost:11434` and model `qwen3:14b`.
+Ollama defaults to `http://localhost:11434`. Models are selected through configured logical brains.
 
 Override with:
 
 ```yaml
 jarvis:
   ai:
-    provider: ollama
-    model: qwen3:14b
     base-url: http://localhost:11434
     identity-file: file:config/jarvis.md
+
+brains:
+  FAST:
+    provider: ollama
+    model: qwen3:8b
+  REASONING:
+    provider: ollama
+    model: qwen3:14b
+  CLASSIFIER:
+    provider: ollama
+    model: qwen3:0.6b
 ```
 
 The AI identity is loaded from `config/jarvis.md`.

@@ -20,6 +20,10 @@
         </dependency>
         <dependency>
             <groupId>com.jarvis</groupId>
+            <artifactId>jarvis-brain-router</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.jarvis</groupId>
             <artifactId>jarvis-memory</artifactId>
         </dependency>
         <dependency>

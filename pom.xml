@@ -21,6 +21,7 @@
 
     <modules>
         <module>jarvis-common</module>
+        <module>jarvis-brain-router</module>
         <module>jarvis-api</module>
         <module>jarvis-core</module>
         <module>jarvis-memory</module>
@@ -43,6 +44,11 @@
             <dependency>
                 <groupId>com.jarvis</groupId>
                 <artifactId>jarvis-common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.jarvis</groupId>
+                <artifactId>jarvis-brain-router</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

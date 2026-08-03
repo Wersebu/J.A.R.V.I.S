@@ -1,6 +1,5 @@
 package com.jarvis.common.ai;
 
-import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.dto.ChatResponse;
 
 /**
@@ -9,10 +8,18 @@ import com.jarvis.common.dto.ChatResponse;
 public interface AIProvider {
 
     /**
-     * Sends a chat request to the configured AI provider.
+     * Returns the provider identifier handled by this implementation.
      *
-     * @param request provider chat request
+     * @return provider identifier
+     */
+    String provider();
+
+    /**
+     * Sends a prepared prompt to the selected AI brain.
+     *
+     * @param brain selected logical brain
+     * @param prompt prepared prompt
      * @return provider chat response
      */
-    ChatResponse chat(ChatRequest request);
+    ChatResponse chat(Brain brain, String prompt);
 }
