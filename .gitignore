@@ -1,0 +1,9 @@
+target/
+javac-output-test/
+.mvn-build/
+.idea/
+.vscode/
+*.iml
+*.log
+.env
+.DS_Store
