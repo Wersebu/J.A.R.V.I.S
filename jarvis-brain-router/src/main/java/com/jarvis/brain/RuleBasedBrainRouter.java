@@ -54,13 +54,15 @@ public class RuleBasedBrainRouter implements BrainRouter {
                 .map(rule -> new RoutingDecision(rule.brainType(), rule.reason()))
                 .orElse(new RoutingDecision(BrainType.FAST, "Default"));
 
-        Brain brain = brainCatalog.get(decision.brainType());
+        long latencyMs = Duration.between(startedAt, Instant.now()).toMillis();
+        Brain brain = brainCatalog.get(decision.brainType())
+                .withRoutingMetadata(decision.reason(), latencyMs);
         LOGGER.info(
                 "[JARVIS] Selected Brain: {}, Selected Model: {}, Selection reason: {}, Router latency: {} ms",
                 brain.type(),
                 brain.model(),
                 decision.reason(),
-                Duration.between(startedAt, Instant.now()).toMillis()
+                latencyMs
         );
         return brain;
     }

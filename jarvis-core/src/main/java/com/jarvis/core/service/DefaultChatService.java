@@ -3,6 +3,7 @@ package com.jarvis.core.service;
 import com.jarvis.api.service.ChatService;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.dto.ChatResponse;
+import com.jarvis.common.event.ChatEventSink;
 import com.jarvis.memory.ConversationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,5 +38,17 @@ public class DefaultChatService implements ChatService {
     public ChatResponse chat(ChatRequest request) {
         LOGGER.info("[JARVIS] Incoming request");
         return conversationService.chat(request);
+    }
+
+    /**
+     * Delegates a user request into the streaming conversation pipeline.
+     *
+     * @param request chat request
+     * @param eventSink event sink
+     */
+    @Override
+    public void stream(ChatRequest request, ChatEventSink eventSink) {
+        LOGGER.info("[JARVIS] Incoming streaming request");
+        conversationService.stream(request, eventSink);
     }
 }
