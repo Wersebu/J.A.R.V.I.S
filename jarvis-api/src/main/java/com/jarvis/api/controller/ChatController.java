@@ -19,6 +19,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * REST endpoint for plain text chat interactions.
@@ -64,33 +65,23 @@ public class ChatController {
             @RequestParam String conversationId,
             @RequestParam String message
     ) {
-        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+        SseStreamSession session = new SseStreamSession(new SseEmitter(SSE_TIMEOUT_MS));
         ChatRequest request = new ChatRequest(conversationId, message);
 
         CompletableFuture.runAsync(() -> {
             try {
-                chatService.stream(request, event -> send(emitter, event));
-                emitter.complete();
+                chatService.stream(request, session::send);
+                session.complete();
             } catch (SseDeliveryException exception) {
                 LOGGER.warn("[JARVIS] SSE client disconnected: {}", exception.getMessage());
-                emitter.complete();
+                session.complete();
             } catch (RuntimeException exception) {
                 LOGGER.error("[JARVIS] SSE stream failed", exception);
-                emitter.completeWithError(exception);
+                session.completeWithError(exception);
             }
         });
 
-        return emitter;
-    }
-
-    private void send(SseEmitter emitter, CognitiveEvent event) {
-        try {
-            emitter.send(SseEmitter.event()
-                    .name(event.event().name())
-                    .data(event));
-        } catch (IOException exception) {
-            throw new SseDeliveryException("Failed to send SSE event", exception);
-        }
+        return session.emitter();
     }
 
     /**
@@ -106,6 +97,54 @@ public class ChatController {
          */
         private SseDeliveryException(String reason, Throwable cause) {
             super(HttpStatus.INTERNAL_SERVER_ERROR, reason, cause);
+        }
+    }
+
+    /**
+     * State-aware wrapper around one SSE response.
+     */
+    private static final class SseStreamSession {
+
+        private final SseEmitter emitter;
+        private final AtomicBoolean open = new AtomicBoolean(true);
+
+        private SseStreamSession(SseEmitter emitter) {
+            this.emitter = emitter;
+            this.emitter.onCompletion(() -> open.set(false));
+            this.emitter.onTimeout(() -> open.set(false));
+            this.emitter.onError(error -> open.set(false));
+        }
+
+        private SseEmitter emitter() {
+            return emitter;
+        }
+
+        private void send(CognitiveEvent event) {
+            if (!open.get()) {
+                return;
+            }
+            try {
+                emitter.send(SseEmitter.event()
+                        .name(event.event().name())
+                        .data(event));
+            } catch (IllegalStateException exception) {
+                open.set(false);
+            } catch (IOException exception) {
+                open.set(false);
+                throw new SseDeliveryException("Failed to send SSE event", exception);
+            }
+        }
+
+        private void complete() {
+            if (open.compareAndSet(true, false)) {
+                emitter.complete();
+            }
+        }
+
+        private void completeWithError(RuntimeException exception) {
+            if (open.compareAndSet(true, false)) {
+                emitter.completeWithError(exception);
+            }
         }
     }
 }

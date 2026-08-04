@@ -92,8 +92,10 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
         synchronized (session) {
             try {
                 session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
+            } catch (IllegalStateException exception) {
+                LOGGER.debug("[JARVIS] WebSocket session already closed");
             } catch (IOException exception) {
-                throw new IllegalStateException("Could not send WebSocket message", exception);
+                LOGGER.debug("[JARVIS] Could not send WebSocket message: {}", exception.getMessage());
             }
         }
     }
