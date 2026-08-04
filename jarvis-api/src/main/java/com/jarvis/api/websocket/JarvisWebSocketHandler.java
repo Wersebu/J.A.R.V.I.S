@@ -13,7 +13,6 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * Persistent WebSocket endpoint for realtime Jarvis communication.
@@ -63,15 +62,13 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        CompletableFuture.runAsync(() -> {
-            try {
-                chatService.stream(request, event -> sendEvent(session, event));
-                send(session, new WebSocketStatus("COMPLETED", "Request completed"));
-            } catch (RuntimeException exception) {
-                LOGGER.error("[JARVIS] WebSocket chat failed", exception);
-                send(session, new WebSocketStatus("ERROR", exception.getMessage() == null ? "Request failed" : exception.getMessage()));
-            }
-        });
+        try {
+            chatService.stream(request, event -> sendEvent(session, event));
+            send(session, new WebSocketStatus("COMPLETED", "Request completed"));
+        } catch (RuntimeException exception) {
+            LOGGER.error("[JARVIS] WebSocket chat failed", exception);
+            send(session, new WebSocketStatus("ERROR", exception.getMessage() == null ? "Request failed" : exception.getMessage()));
+        }
     }
 
     /**

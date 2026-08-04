@@ -1,12 +1,19 @@
 package com.jarvis.core.pipeline;
 
 import com.jarvis.common.dto.ChatRequest;
+import com.jarvis.common.diagnostics.InferenceDiagnostics;
+import com.jarvis.common.diagnostics.InferenceDiagnosticsContext;
+import com.jarvis.common.diagnostics.InferenceDiagnosticsService;
 import com.jarvis.common.event.ChatEventSink;
 import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.common.event.CognitiveEventBus;
+import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.memory.pipeline.PipelineContext;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
 
@@ -17,14 +24,19 @@ import java.util.function.Consumer;
 public class PipelineContextFactory {
 
     private final CognitiveEventBus cognitiveEventBus;
+    private final InferenceDiagnosticsService diagnosticsService;
 
     /**
      * Creates the context factory.
      *
      * @param cognitiveEventBus cognitive event bus
      */
-    public PipelineContextFactory(CognitiveEventBus cognitiveEventBus) {
+    public PipelineContextFactory(
+            CognitiveEventBus cognitiveEventBus,
+            InferenceDiagnosticsService diagnosticsService
+    ) {
         this.cognitiveEventBus = cognitiveEventBus;
+        this.diagnosticsService = diagnosticsService;
     }
 
     /**
@@ -46,13 +58,28 @@ public class PipelineContextFactory {
      */
     public PipelineContext create(ChatRequest request, Consumer<CognitiveEvent> eventSink) {
         String conversationId = normalizeConversationId(request.conversationId());
-        String requestId = UUID.randomUUID().toString();
+        UUID requestUuid = UUID.randomUUID();
+        String requestId = requestUuid.toString();
+        Instant serverReceivedAt = Instant.now();
+        InferenceDiagnostics diagnostics = diagnosticsService.create(requestUuid, conversationId);
+        diagnostics.setClientRequestTimestamp(request.clientRequestTimestamp());
+        diagnostics.setServerReceivedTimestamp(serverReceivedAt);
+        if (request.clientRequestTimestamp() != null) {
+            diagnostics.setClientToServerMs(Duration.between(request.clientRequestTimestamp(), serverReceivedAt).toMillis());
+        }
+        InferenceDiagnosticsContext.bind(diagnostics);
         cognitiveEventBus.startRequest(requestId, conversationId, eventSink);
+        cognitiveEventBus.publish(CognitiveEventType.REQUEST_RECEIVED, "RECEIVED", "Incoming request", null, Map.of(
+                "requestId", requestId,
+                "conversationId", conversationId,
+                "serverReceivedAt", serverReceivedAt.toString(),
+                "messageLength", request.message() == null ? 0 : request.message().length()
+        ));
         ChatEventSink modelEventSink = event -> { };
         return PipelineContext.initial(
                 conversationId,
                 requestId,
-                new ChatRequest(conversationId, request.message()),
+                new ChatRequest(conversationId, request.message(), request.clientRequestTimestamp()),
                 modelEventSink,
                 eventSink
         );
@@ -63,6 +90,7 @@ public class PipelineContextFactory {
      */
     public void finish() {
         cognitiveEventBus.finishRequest();
+        InferenceDiagnosticsContext.clear();
     }
 
     private String normalizeConversationId(String conversationId) {

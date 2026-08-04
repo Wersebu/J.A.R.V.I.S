@@ -3,8 +3,11 @@ package com.jarvis.ollama;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.common.ai.AIProvider;
+import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.ai.Brain;
 import com.jarvis.common.dto.ChatResponse;
+import com.jarvis.common.diagnostics.InferenceDiagnostics;
+import com.jarvis.common.diagnostics.InferenceDiagnosticsContext;
 import com.jarvis.common.event.ChatEventSink;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
@@ -43,6 +46,7 @@ public class OllamaProvider implements AIProvider {
     private final ObjectMapper objectMapper;
     private final OllamaProperties properties;
     private final CognitiveEventBus cognitiveEventBus;
+    private final OllamaRequestCoordinator requestCoordinator;
 
     /**
      * Creates the Ollama HTTP service.
@@ -51,17 +55,20 @@ public class OllamaProvider implements AIProvider {
      * @param objectMapper JSON mapper
      * @param properties Ollama configuration
      * @param cognitiveEventBus cognitive event bus
+     * @param requestCoordinator Ollama request coordinator
      */
     public OllamaProvider(
             HttpClient httpClient,
             ObjectMapper objectMapper,
             OllamaProperties properties,
-            CognitiveEventBus cognitiveEventBus
+            CognitiveEventBus cognitiveEventBus,
+            OllamaRequestCoordinator requestCoordinator
     ) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.cognitiveEventBus = cognitiveEventBus;
+        this.requestCoordinator = requestCoordinator;
     }
 
     /**
@@ -83,8 +90,13 @@ public class OllamaProvider implements AIProvider {
      */
     @Override
     public ChatResponse chat(Brain brain, String prompt) {
+        return chat(brain, prompt, AIJobType.CHAT);
+    }
+
+    @Override
+    public ChatResponse chat(Brain brain, String prompt, AIJobType jobType) {
         StringBuilder responseBuilder = new StringBuilder();
-        stream("", brain, prompt, event -> {
+        stream("", brain, prompt, jobType, event -> {
             if (event instanceof TokenEvent tokenEvent) {
                 responseBuilder.append(tokenEvent.text());
             }
@@ -102,62 +114,72 @@ public class OllamaProvider implements AIProvider {
      */
     @Override
     public void stream(String conversationId, Brain brain, String prompt, ChatEventSink eventSink) {
+        stream(conversationId, brain, prompt, AIJobType.CHAT, eventSink);
+    }
+
+    @Override
+    public void stream(String conversationId, Brain brain, String prompt, AIJobType jobType, ChatEventSink eventSink) {
         Instant startedAt = Instant.now();
+        long startedNano = System.nanoTime();
+        String requestId = diagnosticsRequestId();
         try {
-            LOGGER.info("[JARVIS] Model: {}", brain.model());
-            LOGGER.info("""
-                    [JARVIS]
-                    OLLAMA PROMPT PREVIEW
-
-                    Model:
-                    {}
-
-                    Reasoning level:
-                    {}
-
-                    Contains Memory:
-                    {}
-
-                    Preview:
-                    {}
-                    """, brain.model(), brain.reasoningLevel(), prompt.contains("COGNITIVE MEMORY"), promptPreview(prompt));
+            LOGGER.info("[JARVIS][requestId={}][OLLAMA] HTTP_CALL_PREPARING model={} reasoning={}",
+                    requestId, brain.model(), brain.reasoningLevel());
             eventSink.publish(StatusChangedEvent.create(ChatEventType.MODEL_LOADING, conversationId, "MODEL_LOADING"));
             String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/generate";
             cognitiveEventBus.publish(CognitiveEventType.MODEL_REQUEST_STARTED, "REQUESTING", "Model request started", "model:" + brain.model(), Map.of(
                     "model", brain.model(),
                     "endpoint", endpoint,
-                    "provider", provider()
+                    "provider", provider(),
+                    "reasoningLevel", brain.reasoningLevel().name()
             ));
 
-            OllamaGenerateRequest requestBody = new OllamaGenerateRequest(
-                    brain.model(),
-                    prompt,
-                    true,
-                    brain.reasoningLevel().name().toLowerCase(java.util.Locale.ROOT)
-            );
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(endpoint))
-                    .timeout(Duration.ofMinutes(5))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(requestBody)))
-                    .build();
+            try (OllamaRequestCoordinator.Permit ignored = requestCoordinator.acquire(jobType, requestId)) {
+                long httpPreparationStarted = System.nanoTime();
+                OllamaGenerateRequest requestBody = new OllamaGenerateRequest(
+                        brain.model(),
+                        prompt,
+                        true,
+                        brain.reasoningLevel().name().toLowerCase(java.util.Locale.ROOT),
+                        properties.keepAlive()
+                );
+                HttpRequest httpRequest = HttpRequest.newBuilder()
+                        .uri(URI.create(endpoint))
+                        .timeout(Duration.ofMinutes(5))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(requestBody)))
+                        .build();
+                InferenceDiagnostics diagnostics = InferenceDiagnosticsContext.current();
+                if (diagnostics != null) {
+                    diagnostics.setHttpClientPreparationMs(nanosToMillis(System.nanoTime() - httpPreparationStarted));
+                    diagnostics.setModel(brain.model());
+                    diagnostics.setReasoningLevel(brain.reasoningLevel().name());
+                }
 
-            Instant requestStartedAt = Instant.now();
-            HttpResponse<InputStream> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
-            long ollamaRequestLatencyMs = Duration.between(requestStartedAt, Instant.now()).toMillis();
-            LOGGER.info("[JARVIS] Ollama request latency: {} ms", ollamaRequestLatencyMs);
+                long requestStartedNano = System.nanoTime();
+                LOGGER.info("[JARVIS][requestId={}][OLLAMA] HTTP_CALL_STARTED model={} reasoning={}",
+                        requestId, brain.model(), brain.reasoningLevel());
+                HttpResponse<InputStream> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+                long ollamaRequestLatencyMs = nanosToMillis(System.nanoTime() - requestStartedNano);
+                if (diagnostics != null) {
+                    diagnostics.setResponseHeadersReceivedMs(ollamaRequestLatencyMs);
+                }
+                LOGGER.info("[JARVIS][requestId={}][OLLAMA] RESPONSE_HEADERS_RECEIVED elapsedMs={}",
+                        requestId, ollamaRequestLatencyMs);
 
-            if (httpResponse.statusCode() < 200 || httpResponse.statusCode() >= 300) {
-                LOGGER.error("[JARVIS] Ollama HTTP error. Status: {}", httpResponse.statusCode());
-                throw new OllamaException("Ollama request failed with status " + httpResponse.statusCode());
+                if (httpResponse.statusCode() < 200 || httpResponse.statusCode() >= 300) {
+                    LOGGER.error("[JARVIS][requestId={}][OLLAMA] HTTP_ERROR status={}", requestId, httpResponse.statusCode());
+                    throw new OllamaException("Ollama request failed with status " + httpResponse.statusCode());
+                }
+
+                eventSink.publish(ThinkingEvent.create(conversationId));
+                cognitiveEventBus.publish(CognitiveEventType.WAITING_FIRST_TOKEN, "WAITING", "Waiting for first token", "model:" + brain.model(), Map.of(
+                        "model", brain.model(),
+                        "requestLatencyMs", ollamaRequestLatencyMs,
+                        "reasoningLevel", brain.reasoningLevel().name()
+                ));
+                streamResponse(conversationId, brain, httpResponse.body(), startedAt, startedNano, eventSink);
             }
-
-            eventSink.publish(ThinkingEvent.create(conversationId));
-            cognitiveEventBus.publish(CognitiveEventType.WAITING_FIRST_TOKEN, "WAITING", "Waiting for first token", "model:" + brain.model(), Map.of(
-                    "model", brain.model(),
-                    "requestLatencyMs", ollamaRequestLatencyMs
-            ));
-            streamResponse(conversationId, brain, httpResponse.body(), startedAt, eventSink);
         } catch (JsonProcessingException exception) {
             LOGGER.error("[JARVIS] Ollama JSON error", exception);
             eventSink.publish(ErrorEvent.create(conversationId, "AI provider response could not be processed"));
@@ -189,12 +211,20 @@ public class OllamaProvider implements AIProvider {
             Brain brain,
             InputStream inputStream,
             Instant startedAt,
+            long startedNano,
             ChatEventSink eventSink
     ) throws IOException {
-        boolean generationStarted = false;
-        Instant firstTokenAt = null;
+        boolean thinkingStarted = false;
+        boolean thinkingFinished = false;
+        boolean answerStarted = false;
+        long firstThinkingNano = 0L;
+        long lastThinkingNano = 0L;
+        long firstAnswerNano = 0L;
         OllamaGenerateResponse finalResponse = null;
-        int streamedTokens = 0;
+        int thinkingChunks = 0;
+        int answerChunks = 0;
+        int thinkingCharacters = 0;
+        int answerCharacters = 0;
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
             String line;
@@ -209,38 +239,111 @@ public class OllamaProvider implements AIProvider {
                     break;
                 }
 
-                String token = response.response();
-                if (token == null || token.isEmpty()) {
-                    continue;
+                String thinking = response.thinking();
+                if (thinking != null && !thinking.isEmpty()) {
+                    if (!thinkingStarted) {
+                        thinkingStarted = true;
+                        firstThinkingNano = System.nanoTime();
+                        long elapsedMs = nanosToMillis(firstThinkingNano - startedNano);
+                        diagnostics(d -> d.setFirstThinkingTokenMs(elapsedMs));
+                        cognitiveEventBus.publish(CognitiveEventType.FIRST_TOKEN_RECEIVED, "RECEIVED", "First model output received", "model:" + brain.model(), Map.of(
+                                "latencyMs", elapsedMs,
+                                "model", brain.model(),
+                                "channel", "thinking"
+                        ));
+                        cognitiveEventBus.publish(CognitiveEventType.THINKING_STARTED, "THINKING", "Thinking started", "model:" + brain.model(), Map.of(
+                                "model", brain.model(),
+                                "reasoningLevel", brain.reasoningLevel().name()
+                        ));
+                        LOGGER.info("[JARVIS][requestId={}][OLLAMA] FIRST_THINKING_CHUNK elapsedMs={}", diagnosticsRequestId(), elapsedMs);
+                    }
+                    lastThinkingNano = System.nanoTime();
+                    thinkingChunks++;
+                    thinkingCharacters += thinking.length();
+                    cognitiveEventBus.publish(CognitiveEventType.THINKING_TOKEN, "THINKING", thinking, "model:" + brain.model(), Map.of(
+                            "text", thinking,
+                            "index", thinkingChunks
+                    ));
                 }
 
-                if (!generationStarted) {
-                    generationStarted = true;
-                    firstTokenAt = Instant.now();
-                    eventSink.publish(StatusChangedEvent.create(ChatEventType.GENERATING, conversationId, "GENERATING"));
-                    long firstTokenLatencyMs = Duration.between(startedAt, firstTokenAt).toMillis();
-                    cognitiveEventBus.publish(CognitiveEventType.FIRST_TOKEN_RECEIVED, "RECEIVED", "First token received", "model:" + brain.model(), Map.of(
-                            "latencyMs", firstTokenLatencyMs,
-                            "model", brain.model()
+                String token = response.response();
+                if (token != null && !token.isEmpty()) {
+                    if (thinkingStarted && !thinkingFinished) {
+                        thinkingFinished = true;
+                        long durationMs = nanosToMillis((lastThinkingNano == 0L ? System.nanoTime() : lastThinkingNano) - firstThinkingNano);
+                        long finalThinkingChunks = thinkingChunks;
+                        diagnostics(d -> {
+                            d.setThinkingDurationMs(durationMs);
+                            d.setThinkingTokensOrChunks(finalThinkingChunks);
+                        });
+                        cognitiveEventBus.publish(CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished", "model:" + brain.model(), Map.of(
+                                "durationMs", durationMs,
+                                "chunks", thinkingChunks,
+                                "characters", thinkingCharacters
+                        ));
+                    }
+                    if (!answerStarted) {
+                        answerStarted = true;
+                        firstAnswerNano = System.nanoTime();
+                        long firstTokenLatencyMs = nanosToMillis(firstAnswerNano - startedNano);
+                        diagnostics(d -> d.setFirstAnswerTokenMs(firstTokenLatencyMs));
+                        LOGGER.info("[JARVIS][requestId={}][OLLAMA] FIRST_ANSWER_TOKEN elapsedMs={}",
+                                diagnosticsRequestId(), firstTokenLatencyMs);
+                        cognitiveEventBus.publish(CognitiveEventType.ANSWER_STARTED, "ANSWERING", "Answer started", "model:" + brain.model(), Map.of(
+                                "model", brain.model(),
+                                "timeToFirstAnswerTokenMs", firstTokenLatencyMs
+                        ));
+                        eventSink.publish(StatusChangedEvent.create(ChatEventType.GENERATING, conversationId, "GENERATING"));
+                        cognitiveEventBus.publish(CognitiveEventType.FIRST_TOKEN_RECEIVED, "RECEIVED", "First token received", "model:" + brain.model(), Map.of(
+                                "latencyMs", firstTokenLatencyMs,
+                                "model", brain.model()
+                        ));
+                        cognitiveEventBus.publish(CognitiveEventType.STREAMING_STARTED, "STREAMING", "Streaming started", "model:" + brain.model(), Map.of(
+                                "model", brain.model()
+                        ));
+                        LOGGER.info("[JARVIS][requestId={}][OLLAMA] TIME_TO_FIRST_TOKEN elapsedMs={}",
+                                diagnosticsRequestId(), firstTokenLatencyMs);
+                    }
+                    answerChunks++;
+                    answerCharacters += token.length();
+                    cognitiveEventBus.publish(CognitiveEventType.ANSWER_TOKEN, "TOKEN", token, "model:" + brain.model(), Map.of(
+                            "text", token,
+                            "index", answerChunks
                     ));
-                    cognitiveEventBus.publish(CognitiveEventType.STREAMING_STARTED, "STREAMING", "Streaming started", "model:" + brain.model(), Map.of(
-                            "model", brain.model()
+                    cognitiveEventBus.publish(CognitiveEventType.TOKEN, "TOKEN", token, "model:" + brain.model(), Map.of(
+                            "text", token,
+                            "index", answerChunks
                     ));
-                    LOGGER.info(
-                            "[JARVIS] Time to first token: {} ms",
-                            firstTokenLatencyMs
-                    );
+                    eventSink.publish(TokenEvent.create(conversationId, token));
                 }
-                streamedTokens++;
-                cognitiveEventBus.publish(CognitiveEventType.TOKEN, "TOKEN", token, "model:" + brain.model(), Map.of(
-                        "text", token,
-                        "index", streamedTokens
-                ));
-                eventSink.publish(TokenEvent.create(conversationId, token));
             }
         }
 
+        if (thinkingStarted && !thinkingFinished) {
+            long durationMs = nanosToMillis((lastThinkingNano == 0L ? System.nanoTime() : lastThinkingNano) - firstThinkingNano);
+            long finalThinkingChunks = thinkingChunks;
+            diagnostics(d -> {
+                d.setThinkingDurationMs(durationMs);
+                d.setThinkingTokensOrChunks(finalThinkingChunks);
+            });
+            cognitiveEventBus.publish(CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished", "model:" + brain.model(), Map.of(
+                    "durationMs", durationMs,
+                    "chunks", thinkingChunks,
+                    "characters", thinkingCharacters
+            ));
+        }
+        if (answerStarted) {
+            long answerDurationMs = nanosToMillis(System.nanoTime() - firstAnswerNano);
+            diagnostics(d -> d.setAnswerStreamingDurationMs(answerDurationMs));
+            cognitiveEventBus.publish(CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Answer finished", "model:" + brain.model(), Map.of(
+                    "durationMs", answerDurationMs,
+                    "characters", answerCharacters,
+                    "tokens", finalResponse == null || finalResponse.evalCount() == null ? answerChunks : finalResponse.evalCount()
+            ));
+        }
+
         long generationTimeMs = Duration.between(startedAt, Instant.now()).toMillis();
+        diagnostics(d -> d.setTotalModelRequestMs(generationTimeMs));
         Integer completionTokens = finalResponse == null ? null : finalResponse.evalCount();
         Integer promptTokens = finalResponse == null ? null : finalResponse.promptEvalCount();
         Double tokensPerSecond = tokensPerSecond(completionTokens, generationTimeMs);
@@ -254,8 +357,8 @@ public class OllamaProvider implements AIProvider {
         cognitiveEventBus.publish(CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Streaming finished", "model:" + brain.model(), Map.of(
                 "generationTimeMs", generationTimeMs,
                 "promptTokens", promptTokens == null ? 0 : promptTokens,
-                "completionTokens", completionTokens == null ? streamedTokens : completionTokens,
-                "tokensStreamed", streamedTokens,
+                "completionTokens", completionTokens == null ? answerChunks : completionTokens,
+                "tokensStreamed", answerChunks,
                 "tokensPerSecond", tokensPerSecond == null ? 0.0d : tokensPerSecond
         ));
         eventSink.publish(GenerationFinishedEvent.create(
@@ -275,6 +378,22 @@ public class OllamaProvider implements AIProvider {
             return baseUrl.substring(0, baseUrl.length() - 1);
         }
         return baseUrl;
+    }
+
+    private long nanosToMillis(long nanos) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(nanos);
+    }
+
+    private void diagnostics(java.util.function.Consumer<InferenceDiagnostics> consumer) {
+        InferenceDiagnostics diagnostics = InferenceDiagnosticsContext.current();
+        if (diagnostics != null) {
+            consumer.accept(diagnostics);
+        }
+    }
+
+    private String diagnosticsRequestId() {
+        InferenceDiagnostics diagnostics = InferenceDiagnosticsContext.current();
+        return diagnostics == null ? "background" : diagnostics.getRequestId().toString();
     }
 
     private String promptPreview(String prompt) {

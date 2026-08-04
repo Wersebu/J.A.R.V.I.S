@@ -6,6 +6,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * Minimal Ollama generate response used by Jarvis.
  *
  * @param response generated text
+ * @param thinking native model reasoning text
  * @param done whether generation is complete
  * @param evalCount generated token count, when available
  * @param promptEvalCount prompt token count, when available
@@ -13,6 +14,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  */
 public record OllamaGenerateResponse(
         String response,
+        String thinking,
         Boolean done,
         @JsonProperty("eval_count") Integer evalCount,
         @JsonProperty("prompt_eval_count") Integer promptEvalCount,

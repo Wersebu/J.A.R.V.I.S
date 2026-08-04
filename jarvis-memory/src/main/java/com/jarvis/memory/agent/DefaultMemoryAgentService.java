@@ -2,6 +2,7 @@ package com.jarvis.memory.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.common.ai.AIProvider;
+import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.ai.Brain;
 import com.jarvis.common.ai.BrainType;
 import com.jarvis.common.ai.ReasoningLevel;
@@ -105,7 +106,7 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
             String prompt = prompt(context);
             Brain brain = new Brain(BrainType.CLASSIFIER, "ollama", MODEL, "Background memory agent")
                     .withRoutingMetadata("Memory extraction", 0L, ReasoningLevel.LOW);
-            String response = selectProvider().chat(brain, prompt).response();
+            String response = selectProvider().chat(brain, prompt, AIJobType.MEMORY_AGENT).response();
             return parseDecision(response);
         } catch (RuntimeException exception) {
             LOGGER.error("[JARVIS] Memory Agent decision failed", exception);

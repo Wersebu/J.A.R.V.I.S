@@ -25,6 +25,18 @@ public interface AIProvider {
     ChatResponse chat(Brain brain, String prompt);
 
     /**
+     * Sends a prepared prompt to the selected AI brain as a specific job type.
+     *
+     * @param brain selected logical brain
+     * @param prompt prepared prompt
+     * @param jobType job type
+     * @return provider chat response
+     */
+    default ChatResponse chat(Brain brain, String prompt, AIJobType jobType) {
+        return chat(brain, prompt);
+    }
+
+    /**
      * Streams a prepared prompt through the selected AI brain.
      *
      * @param conversationId conversation identifier
@@ -33,4 +45,17 @@ public interface AIProvider {
      * @param eventSink event sink
      */
     void stream(String conversationId, Brain brain, String prompt, ChatEventSink eventSink);
+
+    /**
+     * Streams a prepared prompt through the selected AI brain as a specific job type.
+     *
+     * @param conversationId conversation identifier
+     * @param brain selected logical brain
+     * @param prompt prepared prompt
+     * @param jobType job type
+     * @param eventSink event sink
+     */
+    default void stream(String conversationId, Brain brain, String prompt, AIJobType jobType, ChatEventSink eventSink) {
+        stream(conversationId, brain, prompt, eventSink);
+    }
 }

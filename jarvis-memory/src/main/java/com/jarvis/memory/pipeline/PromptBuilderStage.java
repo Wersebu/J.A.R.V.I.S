@@ -56,26 +56,8 @@ public class PromptBuilderStage implements PipelineStage {
                     "memoryCharacters", context.memoryContext().totalCharacters()
             ));
         }
-        LOGGER.info("""
-                [JARVIS]
-                PROMPT PREVIEW BEFORE MODEL
-
-                SYSTEM
-                {}
-
-                MEMORY
-                {}
-
-                KNOWLEDGE
-                {}
-
-                USER
-                {}
-                """,
-                preview(prompt, "AI identity:", "COGNITIVE MEMORY"),
-                containsMemory ? preview(prompt, "COGNITIVE MEMORY", "KNOWLEDGE BASE") : "None",
-                prompt.contains("KNOWLEDGE BASE") ? preview(prompt, "KNOWLEDGE BASE", "User message:") : "None",
-                preview(prompt, "User message:", null));
+        LOGGER.info("[JARVIS] Prompt built characters={} estimatedTokens={} memories={} documents={}",
+                prompt.length(), prompt.length() / 4, context.memoryContext().memoryCount(), context.knowledgeContext().sourceCount());
         cognitiveEventBus.publish(CognitiveEventType.PROMPT_BUILD_FINISHED, "FINISHED", "Prompt built", null, Map.of(
                 "promptBuildTimeMs", durationMs,
                 "promptCharacters", prompt.length(),
@@ -86,21 +68,4 @@ public class PromptBuilderStage implements PipelineStage {
                 .withMetadata("estimatedPromptTokens", prompt.length() / 4);
     }
 
-    private String preview(String prompt, String startMarker, String endMarker) {
-        int start = prompt.indexOf(startMarker);
-        if (start < 0) {
-            return "";
-        }
-        int end = endMarker == null ? prompt.length() : prompt.indexOf(endMarker, start + startMarker.length());
-        if (end < 0) {
-            end = prompt.length();
-        }
-        String section = prompt.substring(start, end)
-                .replaceAll("\\s+", " ")
-                .strip();
-        if (section.length() <= 300) {
-            return section;
-        }
-        return section.substring(0, 300) + "...";
-    }
 }

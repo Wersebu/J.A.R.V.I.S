@@ -82,6 +82,18 @@ public enum CognitiveEventType {
     WAITING_FIRST_TOKEN,
     /** First model token was received. */
     FIRST_TOKEN_RECEIVED,
+    /** Native model thinking stream started. */
+    THINKING_STARTED,
+    /** Native model thinking fragment is available. */
+    THINKING_TOKEN,
+    /** Native model thinking stream finished. */
+    THINKING_FINISHED,
+    /** Final answer stream started. */
+    ANSWER_STARTED,
+    /** Final answer fragment is available. */
+    ANSWER_TOKEN,
+    /** Final answer stream finished. */
+    ANSWER_FINISHED,
     /** Streaming started. */
     STREAMING_STARTED,
     /** A generated token is available. */

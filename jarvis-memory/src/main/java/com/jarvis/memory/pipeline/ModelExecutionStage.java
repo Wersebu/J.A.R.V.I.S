@@ -2,6 +2,7 @@ package com.jarvis.memory.pipeline;
 
 import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.AIProviderException;
+import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.event.GenerationFinishedEvent;
 import com.jarvis.common.event.TokenEvent;
 import org.springframework.core.annotation.Order;
@@ -36,7 +37,7 @@ public class ModelExecutionStage implements PipelineStage {
     public PipelineContext execute(PipelineContext context) {
         StringBuilder responseBuilder = new StringBuilder();
         GenerationFinishedHolder finishedHolder = new GenerationFinishedHolder();
-        selectProvider(context).stream(context.conversationId(), context.brain(), context.prompt(), event -> {
+        selectProvider(context).stream(context.conversationId(), context.brain(), context.prompt(), AIJobType.CHAT, event -> {
             if (event instanceof TokenEvent tokenEvent) {
                 responseBuilder.append(tokenEvent.text());
             }

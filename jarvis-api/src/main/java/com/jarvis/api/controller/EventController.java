@@ -27,7 +27,7 @@ public class EventController {
     @GetMapping("/schema")
     public List<CognitiveEventSchema> schema() {
         return List.of(
-                schema(CognitiveEventType.REQUEST_RECEIVED, "Request entered the backend.", "messageLength"),
+                schema(CognitiveEventType.REQUEST_RECEIVED, "Request entered the backend.", "requestId", "conversationId", "serverReceivedAt", "messageLength"),
                 schema(CognitiveEventType.BRAIN_ROUTING_STARTED, "Brain routing started."),
                 schema(CognitiveEventType.BRAIN_SELECTED, "Brain was selected.", "brain", "model", "reasoningLevel", "reason", "latencyMs"),
                 schema(CognitiveEventType.MEMORY_SEARCH_STARTED, "Memory search started.", "query"),
@@ -57,6 +57,12 @@ public class EventController {
                 schema(CognitiveEventType.MODEL_REQUEST_STARTED, "Model request started.", "model", "endpoint", "provider"),
                 schema(CognitiveEventType.WAITING_FIRST_TOKEN, "Waiting for first token.", "model", "requestLatencyMs"),
                 schema(CognitiveEventType.FIRST_TOKEN_RECEIVED, "First token received.", "latencyMs", "model"),
+                schema(CognitiveEventType.THINKING_STARTED, "Native model thinking started.", "model", "reasoningLevel"),
+                schema(CognitiveEventType.THINKING_TOKEN, "Native model thinking fragment.", "text", "index"),
+                schema(CognitiveEventType.THINKING_FINISHED, "Native model thinking finished.", "durationMs", "chunks", "characters"),
+                schema(CognitiveEventType.ANSWER_STARTED, "Final answer started.", "model", "timeToFirstAnswerTokenMs"),
+                schema(CognitiveEventType.ANSWER_TOKEN, "Final answer fragment.", "text", "index"),
+                schema(CognitiveEventType.ANSWER_FINISHED, "Final answer finished.", "durationMs", "characters", "tokens"),
                 schema(CognitiveEventType.STREAMING_STARTED, "Streaming started.", "model"),
                 schema(CognitiveEventType.TOKEN, "Generated token.", "text", "index"),
                 schema(CognitiveEventType.STREAMING_FINISHED, "Streaming finished.", "generationTimeMs", "promptTokens", "completionTokens", "tokensStreamed", "tokensPerSecond"),
@@ -116,7 +122,9 @@ public class EventController {
         return switch (event) {
             case DOCUMENT_FOUND, DOCUMENT_READING_STARTED, DOCUMENT_READING_FINISHED, SOURCE_ADDED -> "knowledge:Spring.md";
             case BRAIN_SELECTED -> "brain:REASONING";
-            case MODEL_REQUEST_STARTED, WAITING_FIRST_TOKEN, FIRST_TOKEN_RECEIVED, STREAMING_STARTED, TOKEN, STREAMING_FINISHED -> "model:gpt-oss:20b";
+            case MODEL_REQUEST_STARTED, WAITING_FIRST_TOKEN, FIRST_TOKEN_RECEIVED, THINKING_STARTED, THINKING_TOKEN,
+                    THINKING_FINISHED, ANSWER_STARTED, ANSWER_TOKEN, ANSWER_FINISHED, STREAMING_STARTED, TOKEN,
+                    STREAMING_FINISHED -> "model:gpt-oss:20b";
             case MEMORY_AGENT_STARTED, MEMORY_AGENT_DECISION, MEMORY_AGENT_FINISHED -> "memory:agent";
             case MEMORY_CANDIDATE_FOUND, MEMORY_INJECTED, MEMORY_CREATED, MEMORY_UPDATED, MEMORY_DELETED -> "memory:sample";
             default -> null;
@@ -133,6 +141,12 @@ public class EventController {
             case MEMORY_CREATED -> Map.of("content", "User owns RTX3060", "category", "DEVICE", "priority", "HIGH");
             case MEMORY_UPDATED -> Map.of("oldContent", "User owns RTX3060", "newContent", "User owns RTX5090");
             case FIRST_TOKEN_RECEIVED -> Map.of("latencyMs", 420);
+            case THINKING_STARTED -> Map.of("model", "gpt-oss:20b", "reasoningLevel", "HIGH");
+            case THINKING_TOKEN -> Map.of("text", "Analyzing context...", "index", 1);
+            case THINKING_FINISHED -> Map.of("durationMs", 8400, "chunks", 32, "characters", 1200);
+            case ANSWER_STARTED -> Map.of("model", "gpt-oss:20b", "timeToFirstAnswerTokenMs", 9217);
+            case ANSWER_TOKEN -> Map.of("text", "Final answer", "index", 1);
+            case ANSWER_FINISHED -> Map.of("durationMs", 4670, "characters", 700, "tokens", 128);
             case REQUEST_FINISHED -> Map.of("generationTimeMs", 1400, "retrievalTimeMs", 4, "contextBuildTimeMs", 3, "promptBuildTimeMs", 2, "documentsUsed", 2, "tokensGenerated", 64, "estimatedPromptTokens", 800);
             case TOKEN -> Map.of("text", "Hello", "index", 1);
             default -> Map.of();
