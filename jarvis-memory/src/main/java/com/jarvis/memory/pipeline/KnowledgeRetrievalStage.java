@@ -24,7 +24,7 @@ public class KnowledgeRetrievalStage implements PipelineStage {
 
     @Override
     public String name() {
-        return "Knowledge Retrieval";
+        return "KnowledgeRetrievalStage";
     }
 
     @Override

@@ -29,7 +29,7 @@ public class ModelExecutionStage implements PipelineStage {
 
     @Override
     public String name() {
-        return "Model Execution";
+        return "ModelExecutionStage";
     }
 
     @Override

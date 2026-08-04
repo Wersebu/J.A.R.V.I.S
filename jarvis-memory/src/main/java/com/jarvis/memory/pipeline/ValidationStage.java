@@ -35,7 +35,7 @@ public class ValidationStage implements PipelineStage {
 
     @Override
     public String name() {
-        return "Request Validation";
+        return "ValidationStage";
     }
 
     @Override

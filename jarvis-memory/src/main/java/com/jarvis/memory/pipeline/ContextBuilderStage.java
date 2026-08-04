@@ -24,7 +24,7 @@ public class ContextBuilderStage implements PipelineStage {
 
     @Override
     public String name() {
-        return "Context Building";
+        return "ContextBuilderStage";
     }
 
     @Override

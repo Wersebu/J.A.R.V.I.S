@@ -35,7 +35,7 @@ public class ExecutionPlanStage implements PipelineStage {
 
     @Override
     public String name() {
-        return "Execution Plan";
+        return "ExecutionPlanStage";
     }
 
     @Override

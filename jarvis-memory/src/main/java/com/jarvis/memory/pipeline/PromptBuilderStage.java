@@ -33,7 +33,7 @@ public class PromptBuilderStage implements PipelineStage {
 
     @Override
     public String name() {
-        return "Prompt Building";
+        return "PromptBuilderStage";
     }
 
     @Override

@@ -2,9 +2,13 @@ package com.jarvis.memory.pipeline;
 
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
+import com.jarvis.common.memory.ConversationMessage;
+import com.jarvis.common.memory.MessageRole;
+import com.jarvis.memory.ConversationMemoryService;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.Map;
 
 /**
@@ -15,19 +19,22 @@ import java.util.Map;
 public class ResponseValidationStage implements PipelineStage {
 
     private final CognitiveEventBus cognitiveEventBus;
+    private final ConversationMemoryService memoryService;
 
     /**
      * Creates the response validation stage.
      *
      * @param cognitiveEventBus event bus
+     * @param memoryService memory service
      */
-    public ResponseValidationStage(CognitiveEventBus cognitiveEventBus) {
+    public ResponseValidationStage(CognitiveEventBus cognitiveEventBus, ConversationMemoryService memoryService) {
         this.cognitiveEventBus = cognitiveEventBus;
+        this.memoryService = memoryService;
     }
 
     @Override
     public String name() {
-        return "Response Validation";
+        return "ResponseValidationStage";
     }
 
     @Override
@@ -38,6 +45,10 @@ public class ResponseValidationStage implements PipelineStage {
         if (context.response().isBlank()) {
             throw new IllegalStateException("Model response is empty");
         }
+        memoryService.addMessage(
+                context.conversationId(),
+                new ConversationMessage(MessageRole.ASSISTANT, context.response(), Instant.now())
+        );
         var finishedEvent = context.generationFinishedEvent();
         cognitiveEventBus.publish(CognitiveEventType.REQUEST_FINISHED, "FINISHED", "Request finished", null, Map.ofEntries(
                 Map.entry("generationTimeMs", finishedEvent == null ? 0 : finishedEvent.generationTimeMs()),

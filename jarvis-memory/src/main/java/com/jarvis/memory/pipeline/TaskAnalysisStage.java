@@ -31,7 +31,7 @@ public class TaskAnalysisStage implements PipelineStage {
 
     @Override
     public String name() {
-        return "Task Analysis";
+        return "TaskAnalysisStage";
     }
 
     @Override

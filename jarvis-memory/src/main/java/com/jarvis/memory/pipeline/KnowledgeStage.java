@@ -31,7 +31,7 @@ public class KnowledgeStage implements PipelineStage {
 
     @Override
     public String name() {
-        return "Knowledge Analysis";
+        return "KnowledgeStage";
     }
 
     @Override

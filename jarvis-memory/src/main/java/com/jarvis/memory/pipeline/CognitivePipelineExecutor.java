@@ -1,11 +1,7 @@
 package com.jarvis.memory.pipeline;
 
-import com.jarvis.common.dto.ChatResponse;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
-import com.jarvis.common.memory.ConversationMessage;
-import com.jarvis.common.memory.MessageRole;
-import com.jarvis.memory.ConversationMemoryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -26,34 +22,31 @@ public class CognitivePipelineExecutor {
 
     private final List<PipelineStage> stages;
     private final CognitiveEventBus cognitiveEventBus;
-    private final ConversationMemoryService memoryService;
 
     /**
      * Creates the pipeline executor.
      *
      * @param stages ordered pipeline stages
      * @param cognitiveEventBus event bus
-     * @param memoryService memory service
      */
     public CognitivePipelineExecutor(
             List<PipelineStage> stages,
-            CognitiveEventBus cognitiveEventBus,
-            ConversationMemoryService memoryService
+            CognitiveEventBus cognitiveEventBus
     ) {
         this.stages = List.copyOf(stages);
         this.cognitiveEventBus = cognitiveEventBus;
-        this.memoryService = memoryService;
     }
 
     /**
      * Runs all configured pipeline stages.
      *
      * @param initialContext initial context
-     * @return final chat response
+     * @return final pipeline context
      */
-    public ChatResponse execute(PipelineContext initialContext) {
+    public PipelineContext execute(PipelineContext initialContext) {
         Instant pipelineStartedAt = Instant.now();
         PipelineContext context = initialContext;
+        LOGGER.info("[JARVIS] PIPELINE STARTED");
         cognitiveEventBus.publish(CognitiveEventType.PIPELINE_STARTED, "STARTED", "Cognitive pipeline started", null, Map.of(
                 "stages", stages.size()
         ));
@@ -68,10 +61,13 @@ public class CognitivePipelineExecutor {
                     "stages", context.metrics().size(),
                     "success", true
             ));
-            persistAssistantResponse(context);
-            return new ChatResponse(context.response());
+            LOGGER.info("[JARVIS] PIPELINE FINISHED ({} ms)", durationMs);
+            return context;
         } catch (RuntimeException exception) {
             long durationMs = Duration.between(pipelineStartedAt, Instant.now()).toMillis();
+            PipelineContext failedContext = exception instanceof PipelineExecutionException pipelineException
+                    ? pipelineException.context()
+                    : initialContext;
             LOGGER.error("[JARVIS] Cognitive pipeline failed", exception);
             cognitiveEventBus.error("Cognitive pipeline failed", Map.of(
                     "exception", exception.getClass().getSimpleName(),
@@ -82,11 +78,8 @@ public class CognitivePipelineExecutor {
                     "durationMs", durationMs,
                     "success", false
             ));
-            memoryService.addMessage(
-                    initialContext.conversationId(),
-                    new ConversationMessage(MessageRole.ASSISTANT, GRACEFUL_ERROR_RESPONSE, Instant.now())
-            );
-            return new ChatResponse(GRACEFUL_ERROR_RESPONSE);
+            LOGGER.info("[JARVIS] PIPELINE FINISHED ({} ms)", durationMs);
+            return failedContext.withResponse(GRACEFUL_ERROR_RESPONSE, null);
         }
     }
 
@@ -99,6 +92,7 @@ public class CognitivePipelineExecutor {
             PipelineContext updated = stage.execute(context);
             long durationMs = Duration.between(startedAt, Instant.now()).toMillis();
             StageMetric metric = new StageMetric(stage.name(), startedAt, Instant.now(), durationMs, true, "");
+            LOGGER.info("[JARVIS] {} OK ({} ms)", stage.name(), durationMs);
             cognitiveEventBus.publish(CognitiveEventType.STAGE_FINISHED, "FINISHED", "Stage finished", stageNode(stage), Map.of(
                     "stageName", stage.name(),
                     "durationMs", durationMs,
@@ -108,6 +102,7 @@ public class CognitivePipelineExecutor {
         } catch (RuntimeException exception) {
             long durationMs = Duration.between(startedAt, Instant.now()).toMillis();
             StageMetric metric = new StageMetric(stage.name(), startedAt, Instant.now(), durationMs, false, exception.getMessage());
+            LOGGER.info("[JARVIS] {} FAILED ({} ms)", stage.name(), durationMs);
             cognitiveEventBus.publish(CognitiveEventType.STAGE_FINISHED, "FAILED", "Stage failed", stageNode(stage), Map.of(
                     "stageName", stage.name(),
                     "durationMs", durationMs,
@@ -116,13 +111,6 @@ public class CognitivePipelineExecutor {
             ));
             throw new PipelineExecutionException("Pipeline stage failed: " + stage.name(), exception, context.withMetric(metric));
         }
-    }
-
-    private void persistAssistantResponse(PipelineContext context) {
-        memoryService.addMessage(
-                context.conversationId(),
-                new ConversationMessage(MessageRole.ASSISTANT, context.response(), Instant.now())
-        );
     }
 
     private String stageNode(PipelineStage stage) {

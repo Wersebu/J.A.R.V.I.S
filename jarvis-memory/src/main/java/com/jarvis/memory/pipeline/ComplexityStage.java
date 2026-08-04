@@ -31,7 +31,7 @@ public class ComplexityStage implements PipelineStage {
 
     @Override
     public String name() {
-        return "Complexity Analysis";
+        return "ComplexityStage";
     }
 
     @Override
