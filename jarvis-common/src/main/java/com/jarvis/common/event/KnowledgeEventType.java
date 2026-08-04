@@ -32,5 +32,15 @@ public enum KnowledgeEventType {
     /**
      * A knowledge retrieval request finished.
      */
-    KNOWLEDGE_RETRIEVAL_FINISHED
+    KNOWLEDGE_RETRIEVAL_FINISHED,
+
+    /**
+     * A knowledge context build started.
+     */
+    CONTEXT_BUILD_STARTED,
+
+    /**
+     * A knowledge context build finished.
+     */
+    CONTEXT_BUILD_FINISHED
 }

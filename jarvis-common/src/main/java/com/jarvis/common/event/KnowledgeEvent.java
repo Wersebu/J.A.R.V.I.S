@@ -48,4 +48,14 @@ public record KnowledgeEvent(
     public static KnowledgeEvent retrieval(KnowledgeEventType type) {
         return new KnowledgeEvent(type, Instant.now(), null, null);
     }
+
+    /**
+     * Creates a context build lifecycle event.
+     *
+     * @param type context event type
+     * @return knowledge event
+     */
+    public static KnowledgeEvent context(KnowledgeEventType type) {
+        return new KnowledgeEvent(type, Instant.now(), null, null);
+    }
 }
