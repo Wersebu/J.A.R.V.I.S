@@ -4,6 +4,7 @@ import com.jarvis.brain.BrainRouter;
 import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.AIProviderException;
 import com.jarvis.common.ai.Brain;
+import com.jarvis.brain.decision.ExecutionPlan;
 import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.common.context.KnowledgeUsage;
 import com.jarvis.common.dto.ChatRequest;
@@ -159,13 +160,21 @@ public class InMemoryConversationService implements ConversationService {
         ChatRequest normalizedRequest = new ChatRequest(conversationId, request.message());
 
         cognitiveEventBus.publish(CognitiveEventType.BRAIN_ROUTING_STARTED, "ROUTING", "Selecting brain", null, Map.of());
-        Brain brain = brainRouter.select(normalizedRequest);
+        ExecutionPlan executionPlan = brainRouter.plan(normalizedRequest);
+        publishExecutionPlanEvents(executionPlan);
+        Brain brain = brainRouter.select(executionPlan);
         cognitiveEventBus.updateBrain(brain.type(), brain.model());
         cognitiveEventBus.publish(CognitiveEventType.BRAIN_SELECTED, "SELECTED", "Brain selected", "brain:" + brain.type(), Map.of(
                 "brain", brain.type().name(),
                 "model", brain.model(),
                 "reason", brain.selectionReason(),
-                "latencyMs", brain.routerLatencyMs()
+                "latencyMs", brain.routerLatencyMs(),
+                "taskType", executionPlan.taskType().name(),
+                "complexity", executionPlan.complexityScore(),
+                "confidence", executionPlan.confidence(),
+                "estimatedPromptTokens", executionPlan.estimatedPromptTokens(),
+                "knowledgeRequired", executionPlan.knowledgeRequired(),
+                "estimatedKnowledgeDocuments", executionPlan.estimatedKnowledgeDocuments()
         ));
 
         RetrievalResult retrievalResult = knowledgeRetriever.retrieve(normalizedRequest.message());
@@ -192,8 +201,37 @@ public class InMemoryConversationService implements ConversationService {
                 retrievalResult.executionTimeMs(),
                 knowledgeContext.buildTimeMs(),
                 promptLatencyMs,
-                prompt.length() / 4
+                prompt.length() / 4,
+                executionPlan
         );
+    }
+
+    private void publishExecutionPlanEvents(ExecutionPlan executionPlan) {
+        cognitiveEventBus.publish(CognitiveEventType.TASK_ANALYZED, "ANALYZED", "Task analyzed", null, Map.of(
+                "taskType", executionPlan.taskType().name(),
+                "confidence", executionPlan.confidence(),
+                "reason", executionPlan.reason()
+        ));
+        cognitiveEventBus.publish(CognitiveEventType.COMPLEXITY_ANALYZED, "ANALYZED", "Complexity analyzed", null, Map.of(
+                "complexity", executionPlan.complexityScore(),
+                "reason", executionPlan.reason()
+        ));
+        cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_ANALYZED, "ANALYZED", "Knowledge requirements analyzed", null, Map.of(
+                "knowledgeRequired", executionPlan.knowledgeRequired(),
+                "estimatedKnowledgeDocuments", executionPlan.estimatedKnowledgeDocuments(),
+                "reason", executionPlan.reason()
+        ));
+        cognitiveEventBus.publish(CognitiveEventType.EXECUTION_PLAN_CREATED, "CREATED", "Execution plan created", null, Map.of(
+                "taskType", executionPlan.taskType().name(),
+                "confidence", executionPlan.confidence(),
+                "complexity", executionPlan.complexityScore(),
+                "knowledgeRequired", executionPlan.knowledgeRequired(),
+                "estimatedKnowledgeDocuments", executionPlan.estimatedKnowledgeDocuments(),
+                "estimatedPromptTokens", executionPlan.estimatedPromptTokens(),
+                "brain", executionPlan.selectedBrain().name(),
+                "model", executionPlan.selectedModel(),
+                "reason", executionPlan.reason()
+        ));
     }
 
     private KnowledgeUsage usage(ChatPipelineContext context, long generationTimeMs) {
@@ -208,14 +246,18 @@ public class InMemoryConversationService implements ConversationService {
     }
 
     private void publishRequestFinished(ChatPipelineContext context, GenerationFinishedEvent finishedEvent) {
-        cognitiveEventBus.publish(CognitiveEventType.REQUEST_FINISHED, "FINISHED", "Request finished", null, Map.of(
-                "generationTimeMs", finishedEvent.generationTimeMs(),
-                "retrievalTimeMs", context.retrievalTimeMs(),
-                "contextBuildTimeMs", context.contextBuildTimeMs(),
-                "promptBuildTimeMs", context.promptBuildTimeMs(),
-                "documentsUsed", context.knowledgeContext().sourceCount(),
-                "tokensGenerated", finishedEvent.completionTokens() == null ? 0 : finishedEvent.completionTokens(),
-                "estimatedPromptTokens", context.estimatedPromptTokens()
+        cognitiveEventBus.publish(CognitiveEventType.REQUEST_FINISHED, "FINISHED", "Request finished", null, Map.ofEntries(
+                Map.entry("generationTimeMs", finishedEvent.generationTimeMs()),
+                Map.entry("retrievalTimeMs", context.retrievalTimeMs()),
+                Map.entry("contextBuildTimeMs", context.contextBuildTimeMs()),
+                Map.entry("promptBuildTimeMs", context.promptBuildTimeMs()),
+                Map.entry("documentsUsed", context.knowledgeContext().sourceCount()),
+                Map.entry("tokensGenerated", finishedEvent.completionTokens() == null ? 0 : finishedEvent.completionTokens()),
+                Map.entry("estimatedPromptTokens", context.estimatedPromptTokens()),
+                Map.entry("taskType", context.executionPlan().taskType().name()),
+                Map.entry("complexity", context.executionPlan().complexityScore()),
+                Map.entry("reason", context.executionPlan().reason()),
+                Map.entry("confidence", context.executionPlan().confidence())
         ));
     }
 
@@ -251,7 +293,8 @@ public class InMemoryConversationService implements ConversationService {
             long retrievalTimeMs,
             long contextBuildTimeMs,
             long promptBuildTimeMs,
-            int estimatedPromptTokens
+            int estimatedPromptTokens,
+            ExecutionPlan executionPlan
     ) {
     }
 }

@@ -6,10 +6,15 @@ server:
   port: 8080
 
 jarvis:
-  version: "0.8"
+  version: "0.9"
   ai:
     base-url: http://localhost:11434
     identity-file: file:config/jarvis.md
+  decision:
+    reasoning-complexity-threshold: 6
+    large-prompt-token-threshold: 800
+    knowledge-document-estimate: 4
+    knowledge-context-characters-per-document: 1500
 
 brains:
   FAST:

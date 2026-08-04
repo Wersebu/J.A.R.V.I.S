@@ -7,7 +7,7 @@
     <parent>
         <groupId>com.jarvis</groupId>
         <artifactId>jarvis-parent</artifactId>
-        <version>0.8.0-SNAPSHOT</version>
+        <version>0.9.0-SNAPSHOT</version>
     </parent>
 
     <artifactId>jarvis-api</artifactId>
@@ -21,6 +21,10 @@
         <dependency>
             <groupId>com.jarvis</groupId>
             <artifactId>jarvis-knowledge</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.jarvis</groupId>
+            <artifactId>jarvis-brain-router</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

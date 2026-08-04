@@ -8,6 +8,14 @@ public enum CognitiveEventType {
     REQUEST_RECEIVED,
     /** Brain routing started. */
     BRAIN_ROUTING_STARTED,
+    /** Task type was analyzed. */
+    TASK_ANALYZED,
+    /** Request complexity was analyzed. */
+    COMPLEXITY_ANALYZED,
+    /** Knowledge requirements were analyzed. */
+    KNOWLEDGE_ANALYZED,
+    /** Execution plan was created. */
+    EXECUTION_PLAN_CREATED,
     /** Brain was selected. */
     BRAIN_SELECTED,
     /** Knowledge retrieval started. */
