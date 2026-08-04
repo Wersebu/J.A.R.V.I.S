@@ -1,13 +1,17 @@
 package com.jarvis.api.controller;
 
+import com.jarvis.api.dto.KnowledgeRetrievalRequest;
 import com.jarvis.knowledge.KnowledgeDocument;
 import com.jarvis.knowledge.KnowledgeService;
+import com.jarvis.knowledge.retrieval.KnowledgeRetriever;
+import com.jarvis.knowledge.retrieval.RetrievalResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -24,14 +28,17 @@ public class KnowledgeController {
     private static final Logger LOGGER = LoggerFactory.getLogger(KnowledgeController.class);
 
     private final KnowledgeService knowledgeService;
+    private final KnowledgeRetriever knowledgeRetriever;
 
     /**
      * Creates the knowledge controller.
      *
      * @param knowledgeService knowledge service
+     * @param knowledgeRetriever knowledge retriever
      */
-    public KnowledgeController(KnowledgeService knowledgeService) {
+    public KnowledgeController(KnowledgeService knowledgeService, KnowledgeRetriever knowledgeRetriever) {
         this.knowledgeService = knowledgeService;
+        this.knowledgeRetriever = knowledgeRetriever;
     }
 
     /**
@@ -68,5 +75,18 @@ public class KnowledgeController {
     public List<KnowledgeDocument> reindex() {
         LOGGER.info("[JARVIS] Knowledge reindex requested");
         return knowledgeService.reindex();
+    }
+
+    /**
+     * Retrieves knowledge documents by query.
+     *
+     * @param request retrieval request
+     * @return retrieval result
+     */
+    @PostMapping("/retrieve")
+    public RetrievalResult retrieve(@RequestBody KnowledgeRetrievalRequest request) {
+        String query = request == null ? "" : request.query();
+        LOGGER.info("[JARVIS] Knowledge retrieval requested query=\"{}\"", query);
+        return knowledgeRetriever.retrieve(query);
     }
 }

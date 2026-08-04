@@ -38,4 +38,14 @@ public record KnowledgeEvent(
     public static KnowledgeEvent indexCompleted() {
         return new KnowledgeEvent(KnowledgeEventType.INDEX_COMPLETED, Instant.now(), null, null);
     }
+
+    /**
+     * Creates a retrieval lifecycle event.
+     *
+     * @param type retrieval event type
+     * @return knowledge event
+     */
+    public static KnowledgeEvent retrieval(KnowledgeEventType type) {
+        return new KnowledgeEvent(type, Instant.now(), null, null);
+    }
 }

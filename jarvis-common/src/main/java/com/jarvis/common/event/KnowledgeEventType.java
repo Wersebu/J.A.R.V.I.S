@@ -22,5 +22,15 @@ public enum KnowledgeEventType {
     /**
      * A full index rebuild completed.
      */
-    INDEX_COMPLETED
+    INDEX_COMPLETED,
+
+    /**
+     * A knowledge retrieval request started.
+     */
+    KNOWLEDGE_RETRIEVAL_STARTED,
+
+    /**
+     * A knowledge retrieval request finished.
+     */
+    KNOWLEDGE_RETRIEVAL_FINISHED
 }

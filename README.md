@@ -2,7 +2,7 @@
 
 Jarvis is a long-term AI operating system backend foundation.
 
-Version `0.5` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE token streaming, and a metadata-only knowledge engine foundation.
+Version `0.5.1` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE token streaming, a metadata-only knowledge engine foundation, and keyword retrieval over indexed metadata.
 
 ## Modules
 
@@ -61,6 +61,16 @@ curl -X POST http://localhost:8080/api/v1/knowledge/reindex
 ```
 
 The knowledge engine keeps metadata only. Source documents remain in the configured knowledge root and are not moved or modified.
+
+## Retrieval v0.5.1
+
+```bash
+curl -X POST http://localhost:8080/api/v1/knowledge/retrieve \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Spring Dependency Injection"}'
+```
+
+Retrieval depends on the `KnowledgeRetriever` interface. The default implementation uses keyword scoring over indexed metadata only and does not read source files from disk.
 
 ## Configuration
 
