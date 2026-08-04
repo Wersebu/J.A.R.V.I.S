@@ -71,7 +71,7 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
             watcherThread = new Thread(this::watchLoop, "jarvis-knowledge-watch");
             watcherThread.setDaemon(true);
             watcherThread.start();
-            LOGGER.info("[JARVIS] Knowledge watcher started root={}", root);
+            LOGGER.info("[JARVIS] WatchService started. root={}", root);
         } catch (IOException exception) {
             throw new KnowledgeException("Failed to start knowledge file watcher", exception);
         }
@@ -101,6 +101,17 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
     @Override
     public boolean isRunning() {
         return running;
+    }
+
+    /**
+     * Disables automatic Spring lifecycle startup so the knowledge initializer
+     * can build the index before watching starts.
+     *
+     * @return false because startup is coordinated explicitly
+     */
+    @Override
+    public boolean isAutoStartup() {
+        return false;
     }
 
     private void watchLoop() {
