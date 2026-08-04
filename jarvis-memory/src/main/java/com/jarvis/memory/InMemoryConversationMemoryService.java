@@ -1,7 +1,6 @@
 package com.jarvis.memory;
 
 import com.jarvis.common.memory.ConversationMessage;
-import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Map;
@@ -11,7 +10,6 @@ import java.util.concurrent.CopyOnWriteArrayList;
 /**
  * In-memory conversation history store for version 0.1.
  */
-@Service
 public class InMemoryConversationMemoryService implements ConversationMemoryService {
 
     private final Map<String, List<ConversationMessage>> conversations = new ConcurrentHashMap<>();

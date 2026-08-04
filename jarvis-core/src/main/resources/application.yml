@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "0.9.6"
+  version: "1.0"
   ai:
     base-url: http://localhost:11434
     identity-file: file:config/jarvis.md
@@ -15,6 +15,9 @@ jarvis:
     large-prompt-token-threshold: 800
     knowledge-document-estimate: 4
     knowledge-context-characters-per-document: 1500
+  memory:
+    database-path: ./data/jarvis-memory.db
+    working-history-length: 20
 
 brains:
   FAST:

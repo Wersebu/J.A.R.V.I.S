@@ -39,10 +39,11 @@ public class PromptBuilderStage implements PipelineStage {
     @Override
     public PipelineContext execute(PipelineContext context) {
         cognitiveEventBus.publish(CognitiveEventType.PROMPT_BUILD_STARTED, "BUILDING", "Building prompt", null, Map.of(
-                "documentsUsed", context.knowledgeContext().sourceCount()
+                "documentsUsed", context.knowledgeContext().sourceCount(),
+                "memoriesUsed", context.memoryContext().memoryCount()
         ));
         Instant startedAt = Instant.now();
-        String prompt = promptBuilder.buildPrompt(context.request(), context.knowledgeContext());
+        String prompt = promptBuilder.buildPrompt(context.request(), context.knowledgeContext(), context.memoryContext());
         long durationMs = Duration.between(startedAt, Instant.now()).toMillis();
         cognitiveEventBus.publish(CognitiveEventType.PROMPT_BUILD_FINISHED, "FINISHED", "Prompt built", null, Map.of(
                 "promptBuildTimeMs", durationMs,

@@ -7,3 +7,4 @@ javac-output-test/
 *.log
 .env
 .DS_Store
+data/

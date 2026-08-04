@@ -9,6 +9,7 @@ import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.event.ChatEventSink;
 import com.jarvis.common.event.GenerationFinishedEvent;
+import com.jarvis.common.memory.CognitiveMemoryContext;
 import com.jarvis.common.memory.ConversationMessage;
 import com.jarvis.knowledge.retrieval.RetrievalResult;
 
@@ -22,7 +23,7 @@ import java.util.Map;
  * @param conversationId conversation identifier
  * @param request normalized chat request
  * @param conversation conversation messages loaded for this request
- * @param futureMemory future memory placeholder
+ * @param memoryContext retrieved cognitive memory context
  * @param taskAnalysis task analysis
  * @param complexityScore complexity score
  * @param knowledgeAnalysis knowledge analysis
@@ -42,7 +43,7 @@ public record PipelineContext(
         String conversationId,
         ChatRequest request,
         List<ConversationMessage> conversation,
-        String futureMemory,
+        CognitiveMemoryContext memoryContext,
         TaskAnalysis taskAnalysis,
         ComplexityScore complexityScore,
         KnowledgeAnalysis knowledgeAnalysis,
@@ -72,7 +73,7 @@ public record PipelineContext(
                 conversationId,
                 request,
                 List.of(),
-                "",
+                CognitiveMemoryContext.empty(),
                 null,
                 null,
                 null,
@@ -100,68 +101,73 @@ public record PipelineContext(
         Map<String, StageMetric> updated = new LinkedHashMap<>(metrics);
         updated.put(metric.stageName(), metric);
         return new PipelineContext(
-                conversationId, request, conversation, futureMemory, taskAnalysis, complexityScore,
+                conversationId, request, conversation, memoryContext, taskAnalysis, complexityScore,
                 knowledgeAnalysis, executionPlan, retrievalResult, knowledgeContext, prompt, brain, model,
                 response, generationFinishedEvent, Map.copyOf(updated), metadata, modelEventSink
         );
     }
 
     public PipelineContext withConversation(List<ConversationMessage> value) {
-        return copy(value, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+        return copy(value, memoryContext, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
                 retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, metadata);
     }
 
     public PipelineContext withTaskAnalysis(TaskAnalysis value) {
-        return copy(conversation, futureMemory, value, complexityScore, knowledgeAnalysis, executionPlan,
+        return copy(conversation, memoryContext, value, complexityScore, knowledgeAnalysis, executionPlan,
                 retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, metadata);
     }
 
     public PipelineContext withComplexityScore(ComplexityScore value) {
-        return copy(conversation, futureMemory, taskAnalysis, value, knowledgeAnalysis, executionPlan,
+        return copy(conversation, memoryContext, taskAnalysis, value, knowledgeAnalysis, executionPlan,
                 retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, metadata);
     }
 
     public PipelineContext withKnowledgeAnalysis(KnowledgeAnalysis value) {
-        return copy(conversation, futureMemory, taskAnalysis, complexityScore, value, executionPlan,
+        return copy(conversation, memoryContext, taskAnalysis, complexityScore, value, executionPlan,
                 retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, metadata);
     }
 
     public PipelineContext withExecution(ExecutionPlan plan, Brain selectedBrain) {
-        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, plan,
+        return copy(conversation, memoryContext, taskAnalysis, complexityScore, knowledgeAnalysis, plan,
                 retrievalResult, knowledgeContext, prompt, selectedBrain, selectedBrain.model(), response,
                 generationFinishedEvent, metadata);
     }
 
     public PipelineContext withRetrievalResult(RetrievalResult value) {
-        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+        return copy(conversation, memoryContext, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
                 value, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, metadata);
     }
 
+    public PipelineContext withMemoryContext(CognitiveMemoryContext value) {
+        return copy(conversation, value, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+                retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, metadata);
+    }
+
     public PipelineContext withKnowledgeContext(KnowledgeContext value) {
-        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+        return copy(conversation, memoryContext, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
                 retrievalResult, value, prompt, brain, model, response, generationFinishedEvent, metadata);
     }
 
     public PipelineContext withPrompt(String value) {
-        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+        return copy(conversation, memoryContext, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
                 retrievalResult, knowledgeContext, value, brain, model, response, generationFinishedEvent, metadata);
     }
 
     public PipelineContext withResponse(String value, GenerationFinishedEvent finishedEvent) {
-        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+        return copy(conversation, memoryContext, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
                 retrievalResult, knowledgeContext, prompt, brain, model, value, finishedEvent, metadata);
     }
 
     public PipelineContext withMetadata(String key, Object value) {
         Map<String, Object> updated = new LinkedHashMap<>(metadata);
         updated.put(key, value);
-        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+        return copy(conversation, memoryContext, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
                 retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, Map.copyOf(updated));
     }
 
     private PipelineContext copy(
             List<ConversationMessage> conversation,
-            String futureMemory,
+            CognitiveMemoryContext memoryContext,
             TaskAnalysis taskAnalysis,
             ComplexityScore complexityScore,
             KnowledgeAnalysis knowledgeAnalysis,
@@ -176,7 +182,8 @@ public record PipelineContext(
             Map<String, Object> metadata
     ) {
         return new PipelineContext(
-                conversationId, request, conversation == null ? List.of() : List.copyOf(conversation), futureMemory,
+                conversationId, request, conversation == null ? List.of() : List.copyOf(conversation),
+                memoryContext == null ? CognitiveMemoryContext.empty() : memoryContext,
                 taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan, retrievalResult,
                 knowledgeContext == null ? KnowledgeContext.empty() : knowledgeContext, prompt, brain, model,
                 response, generationFinishedEvent, metrics, metadata, modelEventSink

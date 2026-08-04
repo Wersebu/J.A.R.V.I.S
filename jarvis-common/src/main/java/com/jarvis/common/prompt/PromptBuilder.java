@@ -2,6 +2,7 @@ package com.jarvis.common.prompt;
 
 import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.common.dto.ChatRequest;
+import com.jarvis.common.memory.CognitiveMemoryContext;
 
 /**
  * Composes prompts sent to AI providers.
@@ -26,6 +27,22 @@ public interface PromptBuilder {
      * @return prompt text
      */
     String buildPrompt(ChatRequest request, KnowledgeContext knowledgeContext);
+
+    /**
+     * Builds a provider prompt from a user chat request, memory, and knowledge context.
+     *
+     * @param request user chat request
+     * @param knowledgeContext knowledge context
+     * @param memoryContext cognitive memory context
+     * @return prompt text
+     */
+    default String buildPrompt(
+            ChatRequest request,
+            KnowledgeContext knowledgeContext,
+            CognitiveMemoryContext memoryContext
+    ) {
+        return buildPrompt(request, knowledgeContext);
+    }
 
     /**
      * Builds a debug view of the provider prompt.

@@ -14,6 +14,16 @@ public enum CognitiveEventType {
     PIPELINE_FINISHED,
     /** Request entered the backend. */
     REQUEST_RECEIVED,
+    /** Cognitive memory search started. */
+    MEMORY_SEARCH_STARTED,
+    /** A relevant memory was found. */
+    MEMORY_FOUND,
+    /** A memory was updated. */
+    MEMORY_UPDATED,
+    /** A memory was created. */
+    MEMORY_CREATED,
+    /** Memory update or retrieval was skipped. */
+    MEMORY_SKIPPED,
     /** Brain routing started. */
     BRAIN_ROUTING_STARTED,
     /** Task type was analyzed. */

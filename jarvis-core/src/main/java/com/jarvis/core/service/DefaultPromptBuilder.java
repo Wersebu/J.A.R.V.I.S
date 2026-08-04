@@ -4,6 +4,7 @@ import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
+import com.jarvis.common.memory.CognitiveMemoryContext;
 import com.jarvis.common.prompt.PromptBuilder;
 import com.jarvis.common.prompt.PromptDebugResult;
 import org.slf4j.Logger;
@@ -56,7 +57,25 @@ public class DefaultPromptBuilder implements PromptBuilder {
      */
     @Override
     public String buildPrompt(ChatRequest request, KnowledgeContext knowledgeContext) {
-        return buildDebugPrompt(request, knowledgeContext).finalPrompt();
+        return buildPrompt(request, knowledgeContext, CognitiveMemoryContext.empty());
+    }
+
+    @Override
+    public String buildPrompt(ChatRequest request, KnowledgeContext knowledgeContext, CognitiveMemoryContext memoryContext) {
+        KnowledgeContext context = knowledgeContext == null ? KnowledgeContext.empty() : knowledgeContext;
+        CognitiveMemoryContext memory = memoryContext == null ? CognitiveMemoryContext.empty() : memoryContext;
+        String systemPrompt = systemPrompt();
+        String memoryPrompt = memoryBlock(memory);
+        String knowledge = knowledgeBlock(context);
+        String userPrompt = userPrompt(request);
+        String finalPrompt = systemPrompt + memoryPrompt + knowledge + userPrompt;
+        LOGGER.info("[JARVIS] Prompt size={} memoryItems={} knowledgeSources={} charactersInjected={} estimatedTokens={}",
+                finalPrompt.length(),
+                memory.memoryCount(),
+                context.sourceCount(),
+                context.totalCharacters() + memory.totalCharacters(),
+                finalPrompt.length() / 4);
+        return finalPrompt;
     }
 
     /**
@@ -79,6 +98,23 @@ public class DefaultPromptBuilder implements PromptBuilder {
                 context.totalCharacters(),
                 context.estimatedTokens());
         return new PromptDebugResult(systemPrompt, knowledge, userPrompt, finalPrompt);
+    }
+
+    private String memoryBlock(CognitiveMemoryContext memoryContext) {
+        if (memoryContext.isEmpty()) {
+            return "";
+        }
+        return """
+                COGNITIVE MEMORY
+
+                The following information comes from J.A.R.V.I.S. memory, not from the knowledge library.
+
+                Use it as remembered user context when it is relevant.
+
+                ----------------------------------------
+
+                %s
+                """.formatted(memoryContext.context());
     }
 
     private String systemPrompt() {
