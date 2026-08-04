@@ -3,11 +3,13 @@ package com.jarvis.core.service;
 import com.jarvis.api.service.ChatService;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.dto.ChatResponse;
-import com.jarvis.common.event.ChatEventSink;
+import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.memory.ConversationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+
+import java.util.function.Consumer;
 
 /**
  * Default chat entry service for version 0.2.
@@ -47,7 +49,7 @@ public class DefaultChatService implements ChatService {
      * @param eventSink event sink
      */
     @Override
-    public void stream(ChatRequest request, ChatEventSink eventSink) {
+    public void stream(ChatRequest request, Consumer<CognitiveEvent> eventSink) {
         LOGGER.info("[JARVIS] Incoming streaming request");
         conversationService.stream(request, eventSink);
     }

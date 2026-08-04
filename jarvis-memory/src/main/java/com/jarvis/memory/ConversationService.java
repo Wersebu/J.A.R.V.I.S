@@ -2,7 +2,9 @@ package com.jarvis.memory;
 
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.dto.ChatResponse;
-import com.jarvis.common.event.ChatEventSink;
+import com.jarvis.common.event.CognitiveEvent;
+
+import java.util.function.Consumer;
 
 /**
  * Orchestrates conversation state and provider calls.
@@ -23,5 +25,5 @@ public interface ConversationService {
      * @param request user chat request
      * @param eventSink event sink
      */
-    void stream(ChatRequest request, ChatEventSink eventSink);
+    void stream(ChatRequest request, Consumer<CognitiveEvent> eventSink);
 }

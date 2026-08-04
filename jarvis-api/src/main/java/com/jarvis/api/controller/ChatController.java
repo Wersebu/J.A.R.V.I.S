@@ -3,7 +3,7 @@ package com.jarvis.api.controller;
 import com.jarvis.api.service.ChatService;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.dto.ChatResponse;
-import com.jarvis.common.event.ChatEvent;
+import com.jarvis.common.event.CognitiveEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -83,10 +83,10 @@ public class ChatController {
         return emitter;
     }
 
-    private void send(SseEmitter emitter, ChatEvent event) {
+    private void send(SseEmitter emitter, CognitiveEvent event) {
         try {
             emitter.send(SseEmitter.event()
-                    .name(event.type().name())
+                    .name(event.event().name())
                     .data(event));
         } catch (IOException exception) {
             throw new SseDeliveryException("Failed to send SSE event", exception);

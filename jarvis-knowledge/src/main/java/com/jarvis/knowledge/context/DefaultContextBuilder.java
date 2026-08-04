@@ -1,10 +1,9 @@
 package com.jarvis.knowledge.context;
 
-import com.jarvis.common.event.KnowledgeEvent;
-import com.jarvis.common.event.KnowledgeEventType;
 import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.common.context.KnowledgeSource;
-import com.jarvis.knowledge.KnowledgeEventPublisher;
+import com.jarvis.common.event.CognitiveEventBus;
+import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.knowledge.KnowledgeException;
 import com.jarvis.knowledge.KnowledgeProperties;
 import com.jarvis.knowledge.retrieval.RetrievalDocument;
@@ -20,6 +19,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Default context builder for Markdown and plain text knowledge documents.
@@ -33,17 +33,17 @@ public class DefaultContextBuilder implements ContextBuilder {
     private static final String SOURCE_BOUNDARY = "----------------------------------------";
 
     private final KnowledgeProperties properties;
-    private final KnowledgeEventPublisher eventPublisher;
+    private final CognitiveEventBus cognitiveEventBus;
 
     /**
      * Creates the default context builder.
      *
      * @param properties knowledge configuration
-     * @param eventPublisher knowledge event publisher
+     * @param cognitiveEventBus cognitive event bus
      */
-    public DefaultContextBuilder(KnowledgeProperties properties, KnowledgeEventPublisher eventPublisher) {
+    public DefaultContextBuilder(KnowledgeProperties properties, CognitiveEventBus cognitiveEventBus) {
         this.properties = properties;
-        this.eventPublisher = eventPublisher;
+        this.cognitiveEventBus = cognitiveEventBus;
     }
 
     /**
@@ -55,7 +55,9 @@ public class DefaultContextBuilder implements ContextBuilder {
     @Override
     public KnowledgeContext build(RetrievalResult retrievalResult) {
         long started = System.nanoTime();
-        eventPublisher.publish(KnowledgeEvent.context(KnowledgeEventType.CONTEXT_BUILD_STARTED));
+        cognitiveEventBus.publish(CognitiveEventType.CONTEXT_BUILD_STARTED, "BUILDING", "Building knowledge context", null, Map.of(
+                "retrievedDocuments", documents(retrievalResult).size()
+        ));
 
         List<KnowledgeSource> sources = new ArrayList<>();
         StringBuilder context = new StringBuilder(CONTEXT_BOUNDARY).append(System.lineSeparator()).append(System.lineSeparator());
@@ -69,7 +71,17 @@ public class DefaultContextBuilder implements ContextBuilder {
             if (!Files.isRegularFile(path)) {
                 continue;
             }
+            cognitiveEventBus.publish(CognitiveEventType.DOCUMENT_READING_STARTED, "READING", "Reading knowledge document", nodeId(document.relativePath()), Map.of(
+                    "title", document.title(),
+                    "relativePath", document.relativePath(),
+                    "category", document.category()
+            ));
             String content = readContent(path).trim();
+            cognitiveEventBus.publish(CognitiveEventType.DOCUMENT_READING_FINISHED, "READ", "Knowledge document read", nodeId(document.relativePath()), Map.of(
+                    "title", document.title(),
+                    "relativePath", document.relativePath(),
+                    "charactersRead", content.length()
+            ));
             if (content.isBlank()) {
                 continue;
             }
@@ -89,6 +101,12 @@ public class DefaultContextBuilder implements ContextBuilder {
             truncated = truncated || usedContent.length() < content.length();
 
             context.append(prefix).append(usedContent).append(suffix);
+            cognitiveEventBus.publish(CognitiveEventType.SOURCE_ADDED, "ADDED", "Knowledge source added to context", nodeId(document.relativePath()), Map.of(
+                    "title", document.title(),
+                    "relativePath", document.relativePath(),
+                    "category", document.category(),
+                    "charactersUsed", usedContent.length()
+            ));
             sources.add(new KnowledgeSource(
                     document.documentId(),
                     document.title(),
@@ -107,7 +125,13 @@ public class DefaultContextBuilder implements ContextBuilder {
         int totalCharacters = context.length();
         int estimatedTokens = totalCharacters / 4;
 
-        eventPublisher.publish(KnowledgeEvent.context(KnowledgeEventType.CONTEXT_BUILD_FINISHED));
+        cognitiveEventBus.publish(CognitiveEventType.CONTEXT_BUILD_FINISHED, "FINISHED", "Knowledge context built", null, Map.of(
+                "sources", sources.size(),
+                "characters", totalCharacters,
+                "estimatedTokens", estimatedTokens,
+                "buildTimeMs", buildTimeMs,
+                "truncated", truncated
+        ));
         LOGGER.info("[JARVIS] Context build sources={} characters={} estimatedTokens={} buildTimeMs={} truncated={}",
                 sources.size(),
                 totalCharacters,
@@ -149,6 +173,10 @@ public class DefaultContextBuilder implements ContextBuilder {
     private String sourceName(String relativePath) {
         int index = relativePath.lastIndexOf('/');
         return index >= 0 ? relativePath.substring(index + 1) : relativePath;
+    }
+
+    private String nodeId(String relativePath) {
+        return "knowledge:" + sourceName(relativePath);
     }
 
     private Path resolveKnowledgePath(String relativePath) {

@@ -6,6 +6,8 @@ import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.Brain;
 import com.jarvis.common.dto.ChatResponse;
 import com.jarvis.common.event.ChatEventSink;
+import com.jarvis.common.event.CognitiveEventBus;
+import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.ChatEventType;
 import com.jarvis.common.event.ErrorEvent;
 import com.jarvis.common.event.GenerationFinishedEvent;
@@ -27,6 +29,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Map;
 
 /**
  * Ollama implementation of the provider-independent AI provider contract.
@@ -39,6 +42,7 @@ public class OllamaProvider implements AIProvider {
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final OllamaProperties properties;
+    private final CognitiveEventBus cognitiveEventBus;
 
     /**
      * Creates the Ollama HTTP service.
@@ -46,15 +50,18 @@ public class OllamaProvider implements AIProvider {
      * @param httpClient HTTP client
      * @param objectMapper JSON mapper
      * @param properties Ollama configuration
+     * @param cognitiveEventBus cognitive event bus
      */
     public OllamaProvider(
             HttpClient httpClient,
             ObjectMapper objectMapper,
-            OllamaProperties properties
+            OllamaProperties properties,
+            CognitiveEventBus cognitiveEventBus
     ) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
         this.properties = properties;
+        this.cognitiveEventBus = cognitiveEventBus;
     }
 
     /**
@@ -99,10 +106,16 @@ public class OllamaProvider implements AIProvider {
         try {
             LOGGER.info("[JARVIS] Model: {}", brain.model());
             eventSink.publish(StatusChangedEvent.create(ChatEventType.MODEL_LOADING, conversationId, "MODEL_LOADING"));
+            String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/generate";
+            cognitiveEventBus.publish(CognitiveEventType.MODEL_REQUEST_STARTED, "REQUESTING", "Model request started", "model:" + brain.model(), Map.of(
+                    "model", brain.model(),
+                    "endpoint", endpoint,
+                    "provider", provider()
+            ));
 
             OllamaGenerateRequest requestBody = new OllamaGenerateRequest(brain.model(), prompt, true);
             HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(normalizeBaseUrl(properties.baseUrl()) + "/api/generate"))
+                    .uri(URI.create(endpoint))
                     .timeout(Duration.ofMinutes(5))
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(requestBody)))
@@ -119,19 +132,33 @@ public class OllamaProvider implements AIProvider {
             }
 
             eventSink.publish(ThinkingEvent.create(conversationId));
+            cognitiveEventBus.publish(CognitiveEventType.WAITING_FIRST_TOKEN, "WAITING", "Waiting for first token", "model:" + brain.model(), Map.of(
+                    "model", brain.model(),
+                    "requestLatencyMs", ollamaRequestLatencyMs
+            ));
             streamResponse(conversationId, brain, httpResponse.body(), startedAt, eventSink);
         } catch (JsonProcessingException exception) {
             LOGGER.error("[JARVIS] Ollama JSON error", exception);
             eventSink.publish(ErrorEvent.create(conversationId, "AI provider response could not be processed"));
+            cognitiveEventBus.error("AI provider response could not be processed", Map.of(
+                    "exception", exception.getClass().getSimpleName()
+            ));
             throw new OllamaException("Failed to serialize Ollama request", exception);
         } catch (IOException exception) {
             LOGGER.error("[JARVIS] Ollama is unreachable at {}", properties.baseUrl(), exception);
             eventSink.publish(ErrorEvent.create(conversationId, "AI provider disconnected"));
+            cognitiveEventBus.error("AI provider disconnected", Map.of(
+                    "baseUrl", properties.baseUrl(),
+                    "exception", exception.getClass().getSimpleName()
+            ));
             throw new OllamaException("Failed to communicate with Ollama", exception);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             LOGGER.error("[JARVIS] Ollama request interrupted", exception);
             eventSink.publish(ErrorEvent.create(conversationId, "AI provider request was interrupted"));
+            cognitiveEventBus.error("AI provider request was interrupted", Map.of(
+                    "exception", exception.getClass().getSimpleName()
+            ));
             throw new OllamaException("Ollama request was interrupted", exception);
         }
     }
@@ -146,6 +173,7 @@ public class OllamaProvider implements AIProvider {
         boolean generationStarted = false;
         Instant firstTokenAt = null;
         OllamaGenerateResponse finalResponse = null;
+        int streamedTokens = 0;
 
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
             String line;
@@ -169,11 +197,24 @@ public class OllamaProvider implements AIProvider {
                     generationStarted = true;
                     firstTokenAt = Instant.now();
                     eventSink.publish(StatusChangedEvent.create(ChatEventType.GENERATING, conversationId, "GENERATING"));
+                    long firstTokenLatencyMs = Duration.between(startedAt, firstTokenAt).toMillis();
+                    cognitiveEventBus.publish(CognitiveEventType.FIRST_TOKEN_RECEIVED, "RECEIVED", "First token received", "model:" + brain.model(), Map.of(
+                            "latencyMs", firstTokenLatencyMs,
+                            "model", brain.model()
+                    ));
+                    cognitiveEventBus.publish(CognitiveEventType.STREAMING_STARTED, "STREAMING", "Streaming started", "model:" + brain.model(), Map.of(
+                            "model", brain.model()
+                    ));
                     LOGGER.info(
                             "[JARVIS] Time to first token: {} ms",
-                            Duration.between(startedAt, firstTokenAt).toMillis()
+                            firstTokenLatencyMs
                     );
                 }
+                streamedTokens++;
+                cognitiveEventBus.publish(CognitiveEventType.TOKEN, "TOKEN", token, "model:" + brain.model(), Map.of(
+                        "text", token,
+                        "index", streamedTokens
+                ));
                 eventSink.publish(TokenEvent.create(conversationId, token));
             }
         }
@@ -189,6 +230,13 @@ public class OllamaProvider implements AIProvider {
                 tokenSummary(finalResponse),
                 tokensPerSecond == null ? "unavailable" : tokensPerSecond
         );
+        cognitiveEventBus.publish(CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Streaming finished", "model:" + brain.model(), Map.of(
+                "generationTimeMs", generationTimeMs,
+                "promptTokens", promptTokens == null ? 0 : promptTokens,
+                "completionTokens", completionTokens == null ? streamedTokens : completionTokens,
+                "tokensStreamed", streamedTokens,
+                "tokensPerSecond", tokensPerSecond == null ? 0.0d : tokensPerSecond
+        ));
         eventSink.publish(GenerationFinishedEvent.create(
                 conversationId,
                 generationTimeMs,

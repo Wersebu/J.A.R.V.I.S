@@ -2,11 +2,10 @@ package com.jarvis.core.service;
 
 import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.common.dto.ChatRequest;
-import com.jarvis.common.event.KnowledgeEvent;
-import com.jarvis.common.event.KnowledgeEventType;
+import com.jarvis.common.event.CognitiveEventBus;
+import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.prompt.PromptBuilder;
 import com.jarvis.common.prompt.PromptDebugResult;
-import com.jarvis.knowledge.KnowledgeEventPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,6 +18,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Map;
 
 /**
  * Builds prompts using Jarvis identity loaded from a markdown file.
@@ -30,21 +30,21 @@ public class DefaultPromptBuilder implements PromptBuilder {
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     private final Resource identityResource;
-    private final KnowledgeEventPublisher knowledgeEventPublisher;
+    private final CognitiveEventBus cognitiveEventBus;
     private final Clock clock;
 
     /**
      * Creates the default prompt builder.
      *
      * @param identityResource identity markdown resource
-     * @param knowledgeEventPublisher knowledge event publisher
+     * @param cognitiveEventBus cognitive event bus
      */
     public DefaultPromptBuilder(
             @Value("${jarvis.ai.identity-file}") Resource identityResource,
-            KnowledgeEventPublisher knowledgeEventPublisher
+            CognitiveEventBus cognitiveEventBus
     ) {
         this.identityResource = identityResource;
-        this.knowledgeEventPublisher = knowledgeEventPublisher;
+        this.cognitiveEventBus = cognitiveEventBus;
         this.clock = Clock.systemDefaultZone();
     }
 
@@ -96,7 +96,11 @@ public class DefaultPromptBuilder implements PromptBuilder {
         if (knowledgeContext.sourceCount() == 0) {
             return "";
         }
-        knowledgeEventPublisher.publish(KnowledgeEvent.injection(KnowledgeEventType.KNOWLEDGE_INJECTION_STARTED));
+        cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_INJECTION_STARTED, "INJECTING", "Injecting knowledge into prompt", null, Map.of(
+                "sources", knowledgeContext.sourceCount(),
+                "charactersInjected", knowledgeContext.totalCharacters(),
+                "estimatedTokens", knowledgeContext.estimatedTokens()
+        ));
         String knowledge = """
                 ========================================
 
@@ -115,7 +119,11 @@ public class DefaultPromptBuilder implements PromptBuilder {
                 ========================================
 
                 """.formatted(knowledgeContext.context());
-        knowledgeEventPublisher.publish(KnowledgeEvent.injection(KnowledgeEventType.KNOWLEDGE_INJECTION_FINISHED));
+        cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_INJECTION_FINISHED, "FINISHED", "Knowledge injection finished", null, Map.of(
+                "sources", knowledgeContext.sourceCount(),
+                "charactersInjected", knowledgeContext.totalCharacters(),
+                "estimatedTokens", knowledgeContext.estimatedTokens()
+        ));
         LOGGER.info("[JARVIS] Knowledge injected sources={} characters={} estimatedTokens={}",
                 knowledgeContext.sourceCount(),
                 knowledgeContext.totalCharacters(),

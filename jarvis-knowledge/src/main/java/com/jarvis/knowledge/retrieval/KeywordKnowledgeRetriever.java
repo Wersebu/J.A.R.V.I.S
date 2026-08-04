@@ -1,9 +1,8 @@
 package com.jarvis.knowledge.retrieval;
 
-import com.jarvis.common.event.KnowledgeEvent;
-import com.jarvis.common.event.KnowledgeEventType;
+import com.jarvis.common.event.CognitiveEventBus;
+import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.knowledge.KnowledgeDocument;
-import com.jarvis.knowledge.KnowledgeEventPublisher;
 import com.jarvis.knowledge.KnowledgeIndex;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,6 +13,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /**
  * Keyword-based retrieval implementation using indexed metadata only.
@@ -30,17 +30,17 @@ public class KeywordKnowledgeRetriever implements KnowledgeRetriever {
     private static final int PREVIEW_WEIGHT = 20;
 
     private final KnowledgeIndex knowledgeIndex;
-    private final KnowledgeEventPublisher eventPublisher;
+    private final CognitiveEventBus cognitiveEventBus;
 
     /**
      * Creates the keyword retriever.
      *
      * @param knowledgeIndex metadata index
-     * @param eventPublisher knowledge event publisher
+     * @param cognitiveEventBus cognitive event bus
      */
-    public KeywordKnowledgeRetriever(KnowledgeIndex knowledgeIndex, KnowledgeEventPublisher eventPublisher) {
+    public KeywordKnowledgeRetriever(KnowledgeIndex knowledgeIndex, CognitiveEventBus cognitiveEventBus) {
         this.knowledgeIndex = knowledgeIndex;
-        this.eventPublisher = eventPublisher;
+        this.cognitiveEventBus = cognitiveEventBus;
     }
 
     /**
@@ -53,7 +53,9 @@ public class KeywordKnowledgeRetriever implements KnowledgeRetriever {
     public RetrievalResult retrieve(String query) {
         long started = System.nanoTime();
         String normalizedQuery = query == null ? "" : query.trim();
-        eventPublisher.publish(KnowledgeEvent.retrieval(KnowledgeEventType.KNOWLEDGE_RETRIEVAL_STARTED));
+        cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_SEARCH_STARTED, "SEARCHING", "Searching knowledge index", null, Map.of(
+                "query", normalizedQuery
+        ));
 
         List<String> keywords = keywords(normalizedQuery);
         List<KnowledgeDocument> documents = keywords.isEmpty() ? List.of() : knowledgeIndex.list();
@@ -66,7 +68,25 @@ public class KeywordKnowledgeRetriever implements KnowledgeRetriever {
                 .toList();
 
         long executionTimeMs = (System.nanoTime() - started) / 1_000_000;
-        eventPublisher.publish(KnowledgeEvent.retrieval(KnowledgeEventType.KNOWLEDGE_RETRIEVAL_FINISHED));
+        results.forEach(document -> cognitiveEventBus.publish(
+                CognitiveEventType.DOCUMENT_FOUND,
+                "FOUND",
+                "Knowledge document found",
+                nodeId(document.relativePath()),
+                Map.of(
+                        "documentId", document.documentId().toString(),
+                        "title", document.title(),
+                        "relativePath", document.relativePath(),
+                        "category", document.category(),
+                        "score", document.score()
+                )
+        ));
+        cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_SEARCH_FINISHED, "FINISHED", "Knowledge search finished", null, Map.of(
+                "query", normalizedQuery,
+                "documentsScanned", documents.size(),
+                "resultsReturned", results.size(),
+                "executionTimeMs", executionTimeMs
+        ));
         LOGGER.info("[JARVIS] Knowledge retrieval query=\"{}\" executionTimeMs={} documentsScanned={} resultsReturned={}",
                 normalizedQuery,
                 executionTimeMs,
@@ -124,5 +144,9 @@ public class KeywordKnowledgeRetriever implements KnowledgeRetriever {
     private String filename(String relativePath) {
         int index = relativePath.lastIndexOf('/');
         return index >= 0 ? relativePath.substring(index + 1) : relativePath;
+    }
+
+    private String nodeId(String relativePath) {
+        return "knowledge:" + filename(relativePath);
     }
 }

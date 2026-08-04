@@ -2,7 +2,7 @@
 
 Jarvis is a long-term AI operating system backend foundation.
 
-Version `0.7` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE token streaming, a metadata-only knowledge engine foundation, keyword retrieval over indexed metadata, structured context building, and Knowledge Injection into prompts.
+Version `0.8` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE token streaming, a metadata-only knowledge engine foundation, keyword retrieval over indexed metadata, structured context building, Knowledge Injection into prompts, and a unified Cognitive Event Bus.
 
 ## Modules
 
@@ -32,7 +32,7 @@ curl http://localhost:8080/api/health
 Expected response:
 
 ```json
-{"status":"online","version":"0.7"}
+{"status":"online","version":"0.8"}
 ```
 
 ## Chat v0.2
@@ -91,6 +91,15 @@ curl -X POST http://localhost:8080/api/v1/prompt/debug \
 ```
 
 The debug endpoint shows the system prompt, injected knowledge, user prompt, and final prompt without invoking Ollama.
+
+## Cognitive Events v0.8
+
+```bash
+curl http://localhost:8080/api/v1/events/schema
+curl http://localhost:8080/api/v1/events/sample
+```
+
+The streaming chat endpoint emits unified `CognitiveEvent` payloads for request, routing, retrieval, context, prompt, model, token, and completion steps. Each event includes `requestId`, `conversationId`, `timestamp`, and optional `nodeId`.
 
 ## Configuration
 
