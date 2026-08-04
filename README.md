@@ -2,7 +2,7 @@
 
 Jarvis is a long-term AI operating system backend foundation.
 
-Version `0.6` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE token streaming, a metadata-only knowledge engine foundation, keyword retrieval over indexed metadata, and structured context building.
+Version `0.7` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE token streaming, a metadata-only knowledge engine foundation, keyword retrieval over indexed metadata, structured context building, and Knowledge Injection into prompts.
 
 ## Modules
 
@@ -32,7 +32,7 @@ curl http://localhost:8080/api/health
 Expected response:
 
 ```json
-{"status":"online","version":"0.1"}
+{"status":"online","version":"0.7"}
 ```
 
 ## Chat v0.2
@@ -43,7 +43,7 @@ curl -X POST http://localhost:8080/api/v1/chat \
   -d '{"conversationId":"default","message":"Hello"}'
 ```
 
-The chat flow is `ChatController -> ChatService -> ConversationService -> PromptBuilder -> BrainRouter -> Brain -> AIProvider -> OllamaProvider -> Ollama HTTP API`.
+The chat flow is `ChatController -> ChatService -> ConversationService -> BrainRouter -> KnowledgeRetriever -> ContextBuilder -> PromptBuilder -> AIProvider -> OllamaProvider -> Ollama HTTP API`.
 
 ## Streaming Chat v0.4
 
@@ -81,6 +81,16 @@ curl -X POST http://localhost:8080/api/v1/context/build \
 ```
 
 The context builder retrieves matching metadata, loads supported source files, and returns a `KnowledgeContext` without invoking Ollama.
+
+## Prompt Debug v0.7
+
+```bash
+curl -X POST http://localhost:8080/api/v1/prompt/debug \
+  -H "Content-Type: application/json" \
+  -d '{"query":"Spring Dependency Injection"}'
+```
+
+The debug endpoint shows the system prompt, injected knowledge, user prompt, and final prompt without invoking Ollama.
 
 ## Configuration
 

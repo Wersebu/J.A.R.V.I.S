@@ -1,5 +1,6 @@
 package com.jarvis.knowledge.context;
 
+import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.knowledge.retrieval.RetrievalResult;
 
 /**

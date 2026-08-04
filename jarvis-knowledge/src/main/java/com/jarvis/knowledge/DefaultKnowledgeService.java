@@ -243,8 +243,9 @@ public class DefaultKnowledgeService implements KnowledgeService {
     }
 
     private String category(String relativePath) {
-        int separator = relativePath.indexOf('/');
-        return separator > 0 ? relativePath.substring(0, separator) : "";
+        String normalizedPath = relativePath.replace('\\', '/');
+        int separator = normalizedPath.indexOf('/');
+        return separator > 0 ? normalizedPath.substring(0, separator) : "";
     }
 
 }

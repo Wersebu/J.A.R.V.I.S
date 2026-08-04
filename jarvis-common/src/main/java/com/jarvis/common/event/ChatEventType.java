@@ -45,6 +45,11 @@ public enum ChatEventType {
     FINISHED,
 
     /**
+     * Knowledge usage metadata is available after generation.
+     */
+    KNOWLEDGE_USAGE,
+
+    /**
      * The backend is idle after completing a request.
      */
     IDLE,

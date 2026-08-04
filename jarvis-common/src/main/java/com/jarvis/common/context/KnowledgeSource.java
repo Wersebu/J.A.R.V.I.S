@@ -1,4 +1,4 @@
-package com.jarvis.knowledge.context;
+package com.jarvis.common.context;
 
 import java.util.UUID;
 

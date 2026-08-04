@@ -58,4 +58,14 @@ public record KnowledgeEvent(
     public static KnowledgeEvent context(KnowledgeEventType type) {
         return new KnowledgeEvent(type, Instant.now(), null, null);
     }
+
+    /**
+     * Creates a knowledge injection lifecycle event.
+     *
+     * @param type injection event type
+     * @return knowledge event
+     */
+    public static KnowledgeEvent injection(KnowledgeEventType type) {
+        return new KnowledgeEvent(type, Instant.now(), null, null);
+    }
 }

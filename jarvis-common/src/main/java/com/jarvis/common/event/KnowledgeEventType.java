@@ -42,5 +42,15 @@ public enum KnowledgeEventType {
     /**
      * A knowledge context build finished.
      */
-    CONTEXT_BUILD_FINISHED
+    CONTEXT_BUILD_FINISHED,
+
+    /**
+     * Knowledge injection into a prompt started.
+     */
+    KNOWLEDGE_INJECTION_STARTED,
+
+    /**
+     * Knowledge injection into a prompt finished.
+     */
+    KNOWLEDGE_INJECTION_FINISHED
 }

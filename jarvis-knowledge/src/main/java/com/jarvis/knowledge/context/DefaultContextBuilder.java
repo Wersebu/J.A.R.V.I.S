@@ -2,6 +2,8 @@ package com.jarvis.knowledge.context;
 
 import com.jarvis.common.event.KnowledgeEvent;
 import com.jarvis.common.event.KnowledgeEventType;
+import com.jarvis.common.context.KnowledgeContext;
+import com.jarvis.common.context.KnowledgeSource;
 import com.jarvis.knowledge.KnowledgeEventPublisher;
 import com.jarvis.knowledge.KnowledgeException;
 import com.jarvis.knowledge.KnowledgeProperties;

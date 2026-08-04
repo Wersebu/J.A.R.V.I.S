@@ -1,5 +1,6 @@
 package com.jarvis.common.prompt;
 
+import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.common.dto.ChatRequest;
 
 /**
@@ -13,5 +14,25 @@ public interface PromptBuilder {
      * @param request user chat request
      * @return prompt text
      */
-    String buildPrompt(ChatRequest request);
+    default String buildPrompt(ChatRequest request) {
+        return buildPrompt(request, KnowledgeContext.empty());
+    }
+
+    /**
+     * Builds a provider prompt from a user chat request and knowledge context.
+     *
+     * @param request user chat request
+     * @param knowledgeContext knowledge context
+     * @return prompt text
+     */
+    String buildPrompt(ChatRequest request, KnowledgeContext knowledgeContext);
+
+    /**
+     * Builds a debug view of the provider prompt.
+     *
+     * @param request user chat request
+     * @param knowledgeContext knowledge context
+     * @return prompt debug result
+     */
+    PromptDebugResult buildDebugPrompt(ChatRequest request, KnowledgeContext knowledgeContext);
 }

@@ -1,4 +1,4 @@
-package com.jarvis.knowledge.context;
+package com.jarvis.common.context;
 
 import java.util.List;
 
@@ -22,4 +22,13 @@ public record KnowledgeContext(
         boolean truncated,
         long buildTimeMs
 ) {
+
+    /**
+     * Creates an empty knowledge context.
+     *
+     * @return empty context
+     */
+    public static KnowledgeContext empty() {
+        return new KnowledgeContext("", List.of(), 0, 0, 0, false, 0);
+    }
 }

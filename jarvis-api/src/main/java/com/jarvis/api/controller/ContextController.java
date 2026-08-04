@@ -1,8 +1,8 @@
 package com.jarvis.api.controller;
 
 import com.jarvis.api.dto.KnowledgeRetrievalRequest;
+import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.knowledge.context.ContextBuilder;
-import com.jarvis.knowledge.context.KnowledgeContext;
 import com.jarvis.knowledge.retrieval.KnowledgeRetriever;
 import com.jarvis.knowledge.retrieval.RetrievalResult;
 import org.slf4j.Logger;

@@ -1,7 +1,12 @@
 package com.jarvis.core.service;
 
+import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.common.dto.ChatRequest;
+import com.jarvis.common.event.KnowledgeEvent;
+import com.jarvis.common.event.KnowledgeEventType;
 import com.jarvis.common.prompt.PromptBuilder;
+import com.jarvis.common.prompt.PromptDebugResult;
+import com.jarvis.knowledge.KnowledgeEventPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -25,15 +30,21 @@ public class DefaultPromptBuilder implements PromptBuilder {
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     private final Resource identityResource;
+    private final KnowledgeEventPublisher knowledgeEventPublisher;
     private final Clock clock;
 
     /**
      * Creates the default prompt builder.
      *
      * @param identityResource identity markdown resource
+     * @param knowledgeEventPublisher knowledge event publisher
      */
-    public DefaultPromptBuilder(@Value("${jarvis.ai.identity-file}") Resource identityResource) {
+    public DefaultPromptBuilder(
+            @Value("${jarvis.ai.identity-file}") Resource identityResource,
+            KnowledgeEventPublisher knowledgeEventPublisher
+    ) {
         this.identityResource = identityResource;
+        this.knowledgeEventPublisher = knowledgeEventPublisher;
         this.clock = Clock.systemDefaultZone();
     }
 
@@ -44,7 +55,33 @@ public class DefaultPromptBuilder implements PromptBuilder {
      * @return composed prompt
      */
     @Override
-    public String buildPrompt(ChatRequest request) {
+    public String buildPrompt(ChatRequest request, KnowledgeContext knowledgeContext) {
+        return buildDebugPrompt(request, knowledgeContext).finalPrompt();
+    }
+
+    /**
+     * Builds the debug prompt view with system, knowledge, user, and final prompt sections.
+     *
+     * @param request user chat request
+     * @param knowledgeContext knowledge context
+     * @return prompt debug result
+     */
+    @Override
+    public PromptDebugResult buildDebugPrompt(ChatRequest request, KnowledgeContext knowledgeContext) {
+        KnowledgeContext context = knowledgeContext == null ? KnowledgeContext.empty() : knowledgeContext;
+        String systemPrompt = systemPrompt();
+        String knowledge = knowledgeBlock(context);
+        String userPrompt = userPrompt(request);
+        String finalPrompt = systemPrompt + knowledge + userPrompt;
+        LOGGER.info("[JARVIS] Prompt size={} knowledgeSources={} charactersInjected={} estimatedTokens={}",
+                finalPrompt.length(),
+                context.sourceCount(),
+                context.totalCharacters(),
+                context.estimatedTokens());
+        return new PromptDebugResult(systemPrompt, knowledge, userPrompt, finalPrompt);
+    }
+
+    private String systemPrompt() {
         return """
                 AI identity:
                 %s
@@ -52,9 +89,45 @@ public class DefaultPromptBuilder implements PromptBuilder {
                 Current date: %s
                 Current time: %s
 
+                """.formatted(loadIdentity(), LocalDate.now(clock), LocalTime.now(clock).format(TIME_FORMATTER));
+    }
+
+    private String knowledgeBlock(KnowledgeContext knowledgeContext) {
+        if (knowledgeContext.sourceCount() == 0) {
+            return "";
+        }
+        knowledgeEventPublisher.publish(KnowledgeEvent.injection(KnowledgeEventType.KNOWLEDGE_INJECTION_STARTED));
+        String knowledge = """
+                ========================================
+
+                KNOWLEDGE BASE
+
+                The following information comes from J.A.R.V.I.S. local knowledge library.
+
+                Always prefer this information over your own model knowledge.
+
+                If the answer cannot be found here, use your own reasoning.
+
+                ----------------------------------------
+
+                %s
+
+                ========================================
+
+                """.formatted(knowledgeContext.context());
+        knowledgeEventPublisher.publish(KnowledgeEvent.injection(KnowledgeEventType.KNOWLEDGE_INJECTION_FINISHED));
+        LOGGER.info("[JARVIS] Knowledge injected sources={} characters={} estimatedTokens={}",
+                knowledgeContext.sourceCount(),
+                knowledgeContext.totalCharacters(),
+                knowledgeContext.estimatedTokens());
+        return knowledge;
+    }
+
+    private String userPrompt(ChatRequest request) {
+        return """
                 User message:
                 %s
-                """.formatted(loadIdentity(), LocalDate.now(clock), LocalTime.now(clock).format(TIME_FORMATTER), request.message());
+                """.formatted(request.message());
     }
 
     private String loadIdentity() {
