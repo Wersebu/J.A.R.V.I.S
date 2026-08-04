@@ -18,6 +18,14 @@ public enum CognitiveEventType {
     MEMORY_SEARCH_STARTED,
     /** A relevant memory was found. */
     MEMORY_FOUND,
+    /** A scored memory candidate was found. */
+    MEMORY_CANDIDATE_FOUND,
+    /** Memory was injected into the prompt context. */
+    MEMORY_INJECTED,
+    /** No relevant memory was found. */
+    MEMORY_NOT_FOUND,
+    /** Prompt builder injected memory into the final prompt. */
+    PROMPT_MEMORY_INJECTED,
     /** A memory was updated. */
     MEMORY_UPDATED,
     /** A memory was created. */

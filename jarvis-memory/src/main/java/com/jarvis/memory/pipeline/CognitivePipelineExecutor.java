@@ -2,6 +2,7 @@ package com.jarvis.memory.pipeline;
 
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
+import com.jarvis.memory.debug.PipelineDebugService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -22,19 +23,23 @@ public class CognitivePipelineExecutor {
 
     private final List<PipelineStage> stages;
     private final CognitiveEventBus cognitiveEventBus;
+    private final PipelineDebugService pipelineDebugService;
 
     /**
      * Creates the pipeline executor.
      *
      * @param stages ordered pipeline stages
      * @param cognitiveEventBus event bus
+     * @param pipelineDebugService debug snapshot service
      */
     public CognitivePipelineExecutor(
             List<PipelineStage> stages,
-            CognitiveEventBus cognitiveEventBus
+            CognitiveEventBus cognitiveEventBus,
+            PipelineDebugService pipelineDebugService
     ) {
         this.stages = List.copyOf(stages);
         this.cognitiveEventBus = cognitiveEventBus;
+        this.pipelineDebugService = pipelineDebugService;
     }
 
     /**
@@ -98,7 +103,9 @@ public class CognitivePipelineExecutor {
                     "durationMs", durationMs,
                     "success", true
             ));
-            return updated.withMetric(metric);
+            PipelineContext updatedWithMetric = updated.withMetric(metric);
+            pipelineDebugService.update(updatedWithMetric);
+            return updatedWithMetric;
         } catch (RuntimeException exception) {
             long durationMs = Duration.between(startedAt, Instant.now()).toMillis();
             StageMetric metric = new StageMetric(stage.name(), startedAt, Instant.now(), durationMs, false, exception.getMessage());
@@ -109,7 +116,9 @@ public class CognitivePipelineExecutor {
                     "success", false,
                     "failure", exception.getMessage() == null ? "" : exception.getMessage()
             ));
-            throw new PipelineExecutionException("Pipeline stage failed: " + stage.name(), exception, context.withMetric(metric));
+            PipelineContext failedContext = context.withMetric(metric);
+            pipelineDebugService.update(failedContext);
+            throw new PipelineExecutionException("Pipeline stage failed: " + stage.name(), exception, failedContext);
         }
     }
 

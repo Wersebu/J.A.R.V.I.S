@@ -2,6 +2,7 @@ package com.jarvis.memory.cognitive;
 
 import com.jarvis.common.memory.CognitiveMemoryContext;
 import com.jarvis.common.memory.MemoryRecord;
+import com.jarvis.common.memory.MemorySearchMatch;
 import com.jarvis.common.memory.MemorySearchResult;
 import com.jarvis.common.memory.MemoryType;
 import org.slf4j.Logger;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * Default cognitive memory service backed by structured SQLite stores.
@@ -27,6 +29,7 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultCognitiveMemoryService.class);
     private static final int SEARCH_LIMIT = 10;
     private static final int CONTEXT_LIMIT = 6_000;
+    private static final Pattern LETTER_NUMBER_BOUNDARY = Pattern.compile("(?<=[a-zA-Z])(?=\\d)|(?<=\\d)(?=[a-zA-Z])");
 
     private final SemanticMemoryStore semanticStore;
     private final EpisodicMemoryStore episodicStore;
@@ -67,24 +70,70 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
     @Override
     public MemorySearchResult search(String query) {
         Instant startedAt = Instant.now();
-        List<String> tokens = tokens(query);
+        Set<String> queryTokens = expandedTokens(query);
+        LOGGER.info("""
+                [JARVIS]
+                MEMORY SEARCH STARTED
+
+                Query:
+                "{}"
+
+                Normalized tokens:
+                {}
+                """, query, queryTokens);
         List<ScoredMemory> scored = listAll().stream()
-                .map(memory -> new ScoredMemory(memory, score(memory, tokens)))
-                .filter(memory -> tokens.isEmpty() || memory.score() > 0)
-                .sorted(Comparator.comparingInt(ScoredMemory::score).reversed())
+                .map(memory -> score(memory, queryTokens))
+                .filter(memory -> queryTokens.isEmpty() || memory.rawScore() > 0)
+                .sorted(Comparator.comparingInt(ScoredMemory::rawScore).reversed())
                 .limit(SEARCH_LIMIT)
                 .toList();
         List<MemoryRecord> memories = scored.stream().map(ScoredMemory::memory).toList();
+        List<MemorySearchMatch> matches = scored.stream()
+                .map(match -> new MemorySearchMatch(match.memory(), match.normalizedScore(), match.reason()))
+                .toList();
         long durationMs = Duration.between(startedAt, Instant.now()).toMillis();
-        LOGGER.info("[JARVIS] Memory search query=\"{}\" executionTimeMs={} results={}",
-                query, durationMs, memories.size());
-        return new MemorySearchResult(query, durationMs, memories);
+        LOGGER.info("""
+                [JARVIS]
+                MEMORY SEARCH FINISHED
+
+                Found {} candidate memories
+                Execution time:
+                {} ms
+                """, memories.size(), durationMs);
+        for (int index = 0; index < matches.size(); index++) {
+            MemorySearchMatch match = matches.get(index);
+            LOGGER.info("""
+                    [JARVIS]
+                    MEMORY CANDIDATE {}
+
+                    Type:
+                    {}
+
+                    Memory:
+                    {}
+
+                    Score:
+                    {}
+
+                    Reason:
+                    {}
+                    """, index + 1, match.memory().type(), match.memory().content(), match.score(), match.reason());
+        }
+        return new MemorySearchResult(query, durationMs, memories, matches);
     }
 
     @Override
     public CognitiveMemoryContext retrieveContext(String query) {
-        List<MemoryRecord> memories = search(query).memories();
+        MemorySearchResult searchResult = search(query);
+        List<MemoryRecord> memories = searchResult.memories();
         if (memories.isEmpty()) {
+            LOGGER.info("""
+                    [JARVIS]
+                    MEMORY INJECTION SKIPPED
+
+                    Injected memories:
+                    0
+                    """);
             return CognitiveMemoryContext.empty();
         }
         StringBuilder builder = new StringBuilder();
@@ -106,6 +155,19 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
         }
         builder.append("========================================\n\n");
         String context = builder.toString();
+        LOGGER.info("""
+                [JARVIS]
+                MEMORY INJECTION PREPARED
+
+                Injected memories:
+                {}
+
+                Characters:
+                {}
+
+                Estimated tokens:
+                {}
+                """, memories.size(), context.length(), context.length() / 4);
         return new CognitiveMemoryContext(
                 context,
                 memories,
@@ -270,37 +332,83 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
         );
     }
 
-    private List<String> tokens(String query) {
-        if (query == null || query.isBlank()) {
-            return List.of();
+    private Set<String> expandedTokens(String text) {
+        Set<String> tokens = new LinkedHashSet<>();
+        if (text == null || text.isBlank()) {
+            return tokens;
         }
-        Set<String> unique = new LinkedHashSet<>();
-        for (String token : query.toLowerCase(Locale.ROOT).split("[^\\p{L}\\p{N}]+")) {
+        String normalized = LETTER_NUMBER_BOUNDARY.matcher(text.toLowerCase(Locale.ROOT)).replaceAll(" ");
+        normalized = normalized.replaceAll("[^\\p{L}\\p{N}]+", " ");
+        for (String token : normalized.split("\\s+")) {
             if (!token.isBlank()) {
-                unique.add(token);
+                addToken(tokens, token);
             }
         }
-        return List.copyOf(unique);
+        expandDomainTokens(tokens);
+        return tokens;
     }
 
-    private int score(MemoryRecord memory, List<String> tokens) {
-        if (tokens.isEmpty()) {
-            return 1;
+    private void addToken(Set<String> tokens, String token) {
+        tokens.add(token);
+        if (token.startsWith("rtx")) {
+            tokens.add("rtx");
+            tokens.add("gpu");
+            tokens.add("graphics");
+            tokens.add("card");
         }
-        String title = memory.title().toLowerCase(Locale.ROOT);
-        String content = memory.content().toLowerCase(Locale.ROOT);
-        int score = 0;
-        for (String token : tokens) {
-            if (title.contains(token)) {
-                score += 50;
-            }
-            if (content.contains(token)) {
-                score += 20;
-            }
-        }
-        return score;
     }
 
-    private record ScoredMemory(MemoryRecord memory, int score) {
+    private void expandDomainTokens(Set<String> tokens) {
+        Set<String> original = Set.copyOf(tokens);
+        if (original.contains("gpu") || original.contains("graphics") || original.contains("video") || original.contains("rtx")) {
+            tokens.add("gpu");
+            tokens.add("graphics");
+            tokens.add("video");
+            tokens.add("card");
+            tokens.add("rtx");
+            tokens.add("nvidia");
+        }
+        if (original.contains("own") || original.contains("owns") || original.contains("have") || original.contains("has")
+                || original.contains("use") || original.contains("uses") || original.contains("drive")) {
+            tokens.add("own");
+            tokens.add("owns");
+            tokens.add("have");
+            tokens.add("has");
+            tokens.add("use");
+            tokens.add("uses");
+        }
+        if (original.contains("car") || original.contains("drive") || original.contains("audi") || original.contains("vehicle")) {
+            tokens.add("car");
+            tokens.add("vehicle");
+            tokens.add("drive");
+            tokens.add("audi");
+        }
+    }
+
+    private ScoredMemory score(MemoryRecord memory, Set<String> queryTokens) {
+        if (queryTokens.isEmpty()) {
+            return new ScoredMemory(memory, 1, 0.01d, "empty query");
+        }
+        Set<String> memoryTokens = expandedTokens(memory.title() + " " + memory.content());
+        int rawScore = 0;
+        List<String> reasons = new ArrayList<>();
+        for (String token : queryTokens) {
+            if (memoryTokens.contains(token)) {
+                rawScore += 20;
+                reasons.add(token);
+            }
+        }
+        if (memory.type() == MemoryType.SEMANTIC && memory.content().toLowerCase(Locale.ROOT).contains("owns")) {
+            if (queryTokens.contains("have") || queryTokens.contains("own") || queryTokens.contains("use") || queryTokens.contains("drive")) {
+                rawScore += 25;
+                reasons.add("ownership");
+            }
+        }
+        double normalizedScore = Math.min(1.0d, rawScore / 100.0d);
+        String reason = reasons.isEmpty() ? "no overlap" : "matched " + String.join(", ", reasons.stream().distinct().toList());
+        return new ScoredMemory(memory, rawScore, normalizedScore, reason);
+    }
+
+    private record ScoredMemory(MemoryRecord memory, int rawScore, double normalizedScore, String reason) {
     }
 }

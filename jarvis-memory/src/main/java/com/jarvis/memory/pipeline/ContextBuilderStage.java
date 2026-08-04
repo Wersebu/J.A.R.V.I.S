@@ -1,6 +1,8 @@
 package com.jarvis.memory.pipeline;
 
 import com.jarvis.knowledge.context.ContextBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
@@ -10,6 +12,8 @@ import org.springframework.stereotype.Service;
 @Service
 @Order(70)
 public class ContextBuilderStage implements PipelineStage {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(ContextBuilderStage.class);
 
     private final ContextBuilder contextBuilder;
 
@@ -29,6 +33,18 @@ public class ContextBuilderStage implements PipelineStage {
 
     @Override
     public PipelineContext execute(PipelineContext context) {
+        LOGGER.info("""
+                [JARVIS]
+                CONTEXT BUILDER INPUT
+
+                Retrieved memories:
+                {}
+
+                Retrieved knowledge documents:
+                {}
+                """,
+                context.memoryContext().memoryCount(),
+                context.retrievalResult() == null ? 0 : context.retrievalResult().documents().size());
         return context.withKnowledgeContext(contextBuilder.build(context.retrievalResult()));
     }
 }

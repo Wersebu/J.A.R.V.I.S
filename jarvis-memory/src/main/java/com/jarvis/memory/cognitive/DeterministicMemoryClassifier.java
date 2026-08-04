@@ -1,9 +1,7 @@
 package com.jarvis.memory.cognitive;
 
-import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Component;
@@ -14,11 +12,12 @@ import org.springframework.stereotype.Component;
 @Component
 public class DeterministicMemoryClassifier {
 
-    private static final Pattern OWNERSHIP = Pattern.compile("\\b(?:mam|posiadam|i own|i have)\\s+(.{2,80})");
-    private static final Pattern PROJECT = Pattern.compile("\\b(?:pracuje nad|tworze|rozwijam|i develop|i am developing|i work on)\\s+(.{2,80})");
-    private static final Pattern ATTRIBUTE = Pattern.compile("\\b(?:moj|moja|moje|my)\\s+([a-z0-9 _-]{2,40})\\s+(?:to|is)\\s+(.{2,80})");
-    private static final Pattern PROCEDURE = Pattern.compile("\\b(?:procedura|workflow|instrukcja|steps to|how to)\\s+(.{2,120})");
-    private static final Pattern EVENT = Pattern.compile("\\b(?:kupilem|kupiłem|finished|completed|started|utworzylem|utworzyłem|zaczalem|zacząłem)\\s+(.{2,120})");
+    private static final int FLAGS = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE;
+    private static final Pattern OWNERSHIP = Pattern.compile("\\b(?:mam|posiadam|i own|i have)\\s+(.{2,80})", FLAGS);
+    private static final Pattern PROJECT = Pattern.compile("\\b(?:pracuje nad|pracuję nad|tworze|tworzę|rozwijam|i develop|i am developing|i work on)\\s+(.{2,80})", FLAGS);
+    private static final Pattern ATTRIBUTE = Pattern.compile("\\b(?:moj|mój|moja|moje|my)\\s+([\\p{L}0-9 _-]{2,40})\\s+(?:to|is)\\s+(.{2,80})", FLAGS);
+    private static final Pattern PROCEDURE = Pattern.compile("\\b(?:procedura|workflow|instrukcja|steps to|how to)\\s+(.{2,120})", FLAGS);
+    private static final Pattern EVENT = Pattern.compile("\\b(?:kupilem|kupiłem|finished|completed|started|utworzylem|utworzyłem|zaczalem|zacząłem)\\s+(.{2,120})", FLAGS);
 
     /**
      * Extracts memory candidates from a user message.
@@ -28,13 +27,12 @@ public class DeterministicMemoryClassifier {
      */
     public List<MemoryCandidate> classify(String message) {
         String source = message == null ? "" : message.strip();
-        String normalized = normalize(source);
         List<MemoryCandidate> candidates = new ArrayList<>();
-        match(normalized, OWNERSHIP).forEach(value ->
+        match(source, OWNERSHIP).forEach(value ->
                 candidates.add(new MemoryCandidate(MemoryCandidateType.SEMANTIC, "user", "owns", cleanup(value), 0.82)));
-        match(normalized, PROJECT).forEach(value ->
+        match(source, PROJECT).forEach(value ->
                 candidates.add(new MemoryCandidate(MemoryCandidateType.SEMANTIC, "user", "develops", cleanup(value), 0.82)));
-        Matcher attributeMatcher = ATTRIBUTE.matcher(normalized);
+        Matcher attributeMatcher = ATTRIBUTE.matcher(source);
         while (attributeMatcher.find()) {
             candidates.add(new MemoryCandidate(
                     MemoryCandidateType.SEMANTIC,
@@ -44,9 +42,9 @@ public class DeterministicMemoryClassifier {
                     0.78
             ));
         }
-        match(normalized, PROCEDURE).forEach(value ->
+        match(source, PROCEDURE).forEach(value ->
                 candidates.add(new MemoryCandidate(MemoryCandidateType.PROCEDURAL, "procedure", cleanup(value), cleanup(source), 0.7)));
-        match(normalized, EVENT).forEach(value ->
+        match(source, EVENT).forEach(value ->
                 candidates.add(new MemoryCandidate(MemoryCandidateType.EPISODIC, "event", cleanup(value), cleanup(source), 0.68)));
         return candidates;
     }
@@ -58,12 +56,6 @@ public class DeterministicMemoryClassifier {
             values.add(matcher.group(1));
         }
         return values;
-    }
-
-    private String normalize(String value) {
-        String normalized = Normalizer.normalize(value, Normalizer.Form.NFD)
-                .replaceAll("\\p{M}", "");
-        return normalized.toLowerCase(Locale.ROOT);
     }
 
     private String cleanup(String value) {

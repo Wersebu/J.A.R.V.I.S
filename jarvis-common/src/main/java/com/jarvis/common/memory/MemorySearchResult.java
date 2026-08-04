@@ -8,8 +8,25 @@ import java.util.List;
  * @param query original query
  * @param executionTimeMs search execution time in milliseconds
  * @param memories matching memories
+ * @param matches scored matching memories
  */
-public record MemorySearchResult(String query, long executionTimeMs, List<MemoryRecord> memories) {
+public record MemorySearchResult(
+        String query,
+        long executionTimeMs,
+        List<MemoryRecord> memories,
+        List<MemorySearchMatch> matches
+) {
+
+    /**
+     * Creates a search result without detailed scores.
+     *
+     * @param query original query
+     * @param executionTimeMs search execution time in milliseconds
+     * @param memories matching memories
+     */
+    public MemorySearchResult(String query, long executionTimeMs, List<MemoryRecord> memories) {
+        this(query, executionTimeMs, memories, List.of());
+    }
 
     /**
      * Creates an immutable search result.
@@ -20,5 +37,6 @@ public record MemorySearchResult(String query, long executionTimeMs, List<Memory
      */
     public MemorySearchResult {
         memories = memories == null ? List.of() : List.copyOf(memories);
+        matches = matches == null ? List.of() : List.copyOf(matches);
     }
 }

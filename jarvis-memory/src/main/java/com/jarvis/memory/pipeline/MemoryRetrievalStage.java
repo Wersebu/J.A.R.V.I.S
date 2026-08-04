@@ -3,6 +3,8 @@ package com.jarvis.memory.pipeline;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.memory.cognitive.CognitiveMemoryService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
@@ -16,6 +18,8 @@ import java.util.Map;
 @Service
 @Order(25)
 public class MemoryRetrievalStage implements PipelineStage {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(MemoryRetrievalStage.class);
 
     private final CognitiveMemoryService memoryService;
     private final CognitiveEventBus cognitiveEventBus;
@@ -45,15 +49,25 @@ public class MemoryRetrievalStage implements PipelineStage {
         var memoryContext = memoryService.retrieveContext(context.request().message());
         long durationMs = Duration.between(startedAt, Instant.now()).toMillis();
         if (memoryContext.memoryCount() == 0) {
-            cognitiveEventBus.publish(CognitiveEventType.MEMORY_SKIPPED, "SKIPPED", "No relevant memories found", null, Map.of(
+            cognitiveEventBus.publish(CognitiveEventType.MEMORY_NOT_FOUND, "NOT_FOUND", "No relevant memories found", null, Map.of(
                     "query", context.request().message(),
                     "executionTimeMs", durationMs
             ));
+            LOGGER.info("""
+                    [JARVIS]
+                    MEMORY RETRIEVAL FINISHED
+
+                    Result:
+                    No relevant memories found
+
+                    Execution time:
+                    {} ms
+                    """, durationMs);
         } else {
             memoryContext.memories().forEach(memory -> cognitiveEventBus.publish(
-                    CognitiveEventType.MEMORY_FOUND,
-                    "FOUND",
-                    "Memory found",
+                    CognitiveEventType.MEMORY_CANDIDATE_FOUND,
+                    "CANDIDATE",
+                    "Memory candidate found",
                     "memory:" + memory.id(),
                     Map.of(
                             "type", memory.type().name(),
@@ -61,6 +75,25 @@ public class MemoryRetrievalStage implements PipelineStage {
                             "confidence", memory.confidence()
                     )
             ));
+            cognitiveEventBus.publish(CognitiveEventType.MEMORY_INJECTED, "INJECTED", "Memory injected into pipeline context", null, Map.of(
+                    "memories", memoryContext.memoryCount(),
+                    "characters", memoryContext.totalCharacters(),
+                    "estimatedTokens", memoryContext.estimatedTokens(),
+                    "executionTimeMs", durationMs
+            ));
+            LOGGER.info("""
+                    [JARVIS]
+                    MEMORY RETRIEVAL FINISHED
+
+                    Injected memories:
+                    {}
+
+                    Characters:
+                    {}
+
+                    PipelineContext.memory:
+                    populated
+                    """, memoryContext.memoryCount(), memoryContext.totalCharacters());
         }
         return context.withMemoryContext(memoryContext)
                 .withMetadata("memoryRetrievalTimeMs", durationMs)

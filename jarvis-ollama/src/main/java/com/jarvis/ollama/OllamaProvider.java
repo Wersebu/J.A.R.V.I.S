@@ -105,6 +105,19 @@ public class OllamaProvider implements AIProvider {
         Instant startedAt = Instant.now();
         try {
             LOGGER.info("[JARVIS] Model: {}", brain.model());
+            LOGGER.info("""
+                    [JARVIS]
+                    OLLAMA PROMPT PREVIEW
+
+                    Model:
+                    {}
+
+                    Contains Memory:
+                    {}
+
+                    Preview:
+                    {}
+                    """, brain.model(), prompt.contains("COGNITIVE MEMORY"), promptPreview(prompt));
             eventSink.publish(StatusChangedEvent.create(ChatEventType.MODEL_LOADING, conversationId, "MODEL_LOADING"));
             String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/generate";
             cognitiveEventBus.publish(CognitiveEventType.MODEL_REQUEST_STARTED, "REQUESTING", "Model request started", "model:" + brain.model(), Map.of(
@@ -254,6 +267,14 @@ public class OllamaProvider implements AIProvider {
             return baseUrl.substring(0, baseUrl.length() - 1);
         }
         return baseUrl;
+    }
+
+    private String promptPreview(String prompt) {
+        String compact = prompt == null ? "" : prompt.replaceAll("\\s+", " ").strip();
+        if (compact.length() <= 500) {
+            return compact;
+        }
+        return compact.substring(0, 500) + "...";
     }
 
     private String tokenSummary(OllamaGenerateResponse response) {
