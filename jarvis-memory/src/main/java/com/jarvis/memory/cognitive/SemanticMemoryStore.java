@@ -34,6 +34,14 @@ public interface SemanticMemoryStore {
     Optional<SemanticMemoryRecord> findExact(String subject, String predicate, String value);
 
     /**
+     * Finds a semantic memory by identifier.
+     *
+     * @param id memory identifier
+     * @return memory record
+     */
+    Optional<SemanticMemoryRecord> findById(UUID id);
+
+    /**
      * Searches facts using a query.
      *
      * @param query query text

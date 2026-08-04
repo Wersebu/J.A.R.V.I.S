@@ -69,6 +69,7 @@ public class RouterController {
                 plan.estimatedPromptTokens(),
                 plan.selectedBrain().name(),
                 plan.selectedModel(),
+                plan.reasoningLevel().name(),
                 plan.reason(),
                 plan.confidence()
         );

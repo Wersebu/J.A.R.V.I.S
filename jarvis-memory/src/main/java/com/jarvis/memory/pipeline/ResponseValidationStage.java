@@ -5,6 +5,7 @@ import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.memory.ConversationMessage;
 import com.jarvis.common.memory.MessageRole;
 import com.jarvis.memory.ConversationMemoryService;
+import com.jarvis.memory.agent.MemoryAgentService;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
@@ -20,16 +21,23 @@ public class ResponseValidationStage implements PipelineStage {
 
     private final CognitiveEventBus cognitiveEventBus;
     private final ConversationMemoryService memoryService;
+    private final MemoryAgentService memoryAgentService;
 
     /**
      * Creates the response validation stage.
      *
      * @param cognitiveEventBus event bus
      * @param memoryService memory service
+     * @param memoryAgentService background memory agent service
      */
-    public ResponseValidationStage(CognitiveEventBus cognitiveEventBus, ConversationMemoryService memoryService) {
+    public ResponseValidationStage(
+            CognitiveEventBus cognitiveEventBus,
+            ConversationMemoryService memoryService,
+            MemoryAgentService memoryAgentService
+    ) {
         this.cognitiveEventBus = cognitiveEventBus;
         this.memoryService = memoryService;
+        this.memoryAgentService = memoryAgentService;
     }
 
     @Override
@@ -60,9 +68,10 @@ public class ResponseValidationStage implements PipelineStage {
                 Map.entry("estimatedPromptTokens", context.metadata().getOrDefault("estimatedPromptTokens", 0)),
                 Map.entry("taskType", context.executionPlan().taskType().name()),
                 Map.entry("complexity", context.executionPlan().complexityScore()),
+                Map.entry("reasoningLevel", context.executionPlan().reasoningLevel().name()),
                 Map.entry("reason", context.executionPlan().reason()),
                 Map.entry("confidence", context.executionPlan().confidence())
         ));
-        return context;
+        return context.withMemoryAgentFuture(memoryAgentService.analyzeAsync(context, context.cognitiveEventSink()));
     }
 }

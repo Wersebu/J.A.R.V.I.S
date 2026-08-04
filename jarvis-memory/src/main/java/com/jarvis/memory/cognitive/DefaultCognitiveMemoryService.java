@@ -300,6 +300,8 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
                 record.subject() + " " + record.predicate(),
                 record.subject() + " " + record.predicate() + " " + record.value(),
                 record.confidence(),
+                record.priority(),
+                record.category(),
                 record.createdAt(),
                 record.updatedAt(),
                 record.sourceConversation()

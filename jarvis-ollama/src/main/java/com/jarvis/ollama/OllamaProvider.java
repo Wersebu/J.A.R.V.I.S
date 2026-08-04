@@ -112,12 +112,15 @@ public class OllamaProvider implements AIProvider {
                     Model:
                     {}
 
+                    Reasoning level:
+                    {}
+
                     Contains Memory:
                     {}
 
                     Preview:
                     {}
-                    """, brain.model(), prompt.contains("COGNITIVE MEMORY"), promptPreview(prompt));
+                    """, brain.model(), brain.reasoningLevel(), prompt.contains("COGNITIVE MEMORY"), promptPreview(prompt));
             eventSink.publish(StatusChangedEvent.create(ChatEventType.MODEL_LOADING, conversationId, "MODEL_LOADING"));
             String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/generate";
             cognitiveEventBus.publish(CognitiveEventType.MODEL_REQUEST_STARTED, "REQUESTING", "Model request started", "model:" + brain.model(), Map.of(
@@ -126,7 +129,12 @@ public class OllamaProvider implements AIProvider {
                     "provider", provider()
             ));
 
-            OllamaGenerateRequest requestBody = new OllamaGenerateRequest(brain.model(), prompt, true);
+            OllamaGenerateRequest requestBody = new OllamaGenerateRequest(
+                    brain.model(),
+                    prompt,
+                    true,
+                    brain.reasoningLevel().name().toLowerCase(java.util.Locale.ROOT)
+            );
             HttpRequest httpRequest = HttpRequest.newBuilder()
                     .uri(URI.create(endpoint))
                     .timeout(Duration.ofMinutes(5))

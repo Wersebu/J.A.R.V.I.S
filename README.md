@@ -103,7 +103,7 @@ The streaming chat endpoint emits unified `CognitiveEvent` payloads for request,
 
 ## Configuration
 
-Ollama defaults to `http://localhost:11434`. Models are selected through configured logical brains.
+Ollama defaults to `http://localhost:11434`. J.A.R.V.I.S. uses `gpt-oss:20b` as the default model and routes requests by reasoning level: `LOW`, `MEDIUM`, or `HIGH`.
 
 Override with:
 
@@ -116,13 +116,13 @@ jarvis:
 brains:
   FAST:
     provider: ollama
-    model: qwen3:8b
+    model: gpt-oss:20b
   REASONING:
     provider: ollama
-    model: qwen3:14b
+    model: gpt-oss:20b
   CLASSIFIER:
     provider: ollama
-    model: qwen3:0.6b
+    model: gpt-oss:20b
 ```
 
 The AI identity is loaded from `config/jarvis.md`.

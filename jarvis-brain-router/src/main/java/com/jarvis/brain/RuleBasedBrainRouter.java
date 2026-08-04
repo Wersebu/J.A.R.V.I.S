@@ -76,11 +76,12 @@ public class RuleBasedBrainRouter implements BrainRouter {
         Instant startedAt = Instant.now();
         long latencyMs = Duration.between(startedAt, Instant.now()).toMillis();
         Brain brain = brainCatalog.get(plan.selectedBrain())
-                .withRoutingMetadata(plan.reason(), latencyMs);
+                .withRoutingMetadata(plan.reason(), latencyMs, plan.reasoningLevel());
         LOGGER.info(
-                "[JARVIS] Selected Brain: {}, Selected Model: {}, TaskType: {}, Complexity: {}, Confidence: {}, Selection reason: {}, Router latency: {} ms",
+                "[JARVIS] Selected Brain: {}, Selected Model: {}, ReasoningLevel: {}, TaskType: {}, Complexity: {}, Confidence: {}, Selection reason: {}, Router latency: {} ms",
                 brain.type(),
                 brain.model(),
+                brain.reasoningLevel(),
                 plan.taskType(),
                 plan.complexityScore(),
                 plan.confidence(),

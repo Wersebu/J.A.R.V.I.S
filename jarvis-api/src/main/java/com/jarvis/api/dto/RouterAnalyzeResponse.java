@@ -10,6 +10,7 @@ package com.jarvis.api.dto;
  * @param estimatedPromptTokens estimated prompt tokens
  * @param brain selected brain
  * @param model selected model
+ * @param reasoningLevel selected reasoning level
  * @param reason explanation
  * @param confidence task confidence
  */
@@ -21,6 +22,7 @@ public record RouterAnalyzeResponse(
         int estimatedPromptTokens,
         String brain,
         String model,
+        String reasoningLevel,
         String reason,
         double confidence
 ) {

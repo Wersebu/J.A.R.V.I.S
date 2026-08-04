@@ -53,19 +53,21 @@ public class ExecutionPlanStage implements PipelineStage {
                 "estimatedPromptTokens", plan.estimatedPromptTokens(),
                 "brain", plan.selectedBrain().name(),
                 "model", plan.selectedModel(),
+                "reasoningLevel", plan.reasoningLevel().name(),
                 "reason", plan.reason()
         ));
-        cognitiveEventBus.publish(CognitiveEventType.BRAIN_SELECTED, "SELECTED", "Brain selected", "brain:" + brain.type(), Map.of(
-                "brain", brain.type().name(),
-                "model", brain.model(),
-                "reason", brain.selectionReason(),
-                "latencyMs", brain.routerLatencyMs(),
-                "taskType", plan.taskType().name(),
-                "complexity", plan.complexityScore(),
-                "confidence", plan.confidence(),
-                "estimatedPromptTokens", plan.estimatedPromptTokens(),
-                "knowledgeRequired", plan.knowledgeRequired(),
-                "estimatedKnowledgeDocuments", plan.estimatedKnowledgeDocuments()
+        cognitiveEventBus.publish(CognitiveEventType.BRAIN_SELECTED, "SELECTED", "Brain selected", "brain:" + brain.type(), Map.ofEntries(
+                Map.entry("brain", brain.type().name()),
+                Map.entry("model", brain.model()),
+                Map.entry("reason", brain.selectionReason()),
+                Map.entry("reasoningLevel", brain.reasoningLevel().name()),
+                Map.entry("latencyMs", brain.routerLatencyMs()),
+                Map.entry("taskType", plan.taskType().name()),
+                Map.entry("complexity", plan.complexityScore()),
+                Map.entry("confidence", plan.confidence()),
+                Map.entry("estimatedPromptTokens", plan.estimatedPromptTokens()),
+                Map.entry("knowledgeRequired", plan.knowledgeRequired()),
+                Map.entry("estimatedKnowledgeDocuments", plan.estimatedKnowledgeDocuments())
         ));
         return context.withExecution(plan, brain);
     }

@@ -92,6 +92,13 @@ class DefaultCognitiveMemoryServiceTest {
         }
 
         @Override
+        public Optional<SemanticMemoryRecord> findById(UUID id) {
+            return records.stream()
+                    .filter(record -> record.id().equals(id))
+                    .findFirst();
+        }
+
+        @Override
         public List<SemanticMemoryRecord> search(String query, int limit) {
             return records.stream().limit(limit).toList();
         }

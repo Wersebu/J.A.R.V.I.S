@@ -65,7 +65,8 @@ public class DefaultChatService implements ChatService {
     public void stream(ChatRequest request, Consumer<CognitiveEvent> eventSink) {
         try {
             PipelineContext context = pipelineContextFactory.create(request, eventSink);
-            pipelineExecutor.execute(context);
+            PipelineContext completedContext = pipelineExecutor.execute(context);
+            completedContext.memoryAgentFuture().join();
         } finally {
             pipelineContextFactory.finish();
         }

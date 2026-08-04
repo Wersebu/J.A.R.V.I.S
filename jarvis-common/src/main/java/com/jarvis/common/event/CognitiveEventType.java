@@ -26,6 +26,14 @@ public enum CognitiveEventType {
     MEMORY_NOT_FOUND,
     /** Prompt builder injected memory into the final prompt. */
     PROMPT_MEMORY_INJECTED,
+    /** Background memory agent started. */
+    MEMORY_AGENT_STARTED,
+    /** Background memory agent made a decision. */
+    MEMORY_AGENT_DECISION,
+    /** A memory was deleted. */
+    MEMORY_DELETED,
+    /** Background memory agent finished. */
+    MEMORY_AGENT_FINISHED,
     /** A memory was updated. */
     MEMORY_UPDATED,
     /** A memory was created. */

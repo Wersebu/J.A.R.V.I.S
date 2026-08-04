@@ -2,6 +2,7 @@ package com.jarvis.brain.decision;
 
 import com.jarvis.brain.BrainCatalog;
 import com.jarvis.common.ai.BrainType;
+import com.jarvis.common.ai.ReasoningLevel;
 import org.springframework.stereotype.Service;
 
 /**
@@ -39,7 +40,8 @@ public class DefaultDecisionEngine implements DecisionEngine {
             KnowledgeAnalysis knowledgeAnalysis
     ) {
         int estimatedPromptTokens = estimatePromptTokens(complexityScore, knowledgeAnalysis);
-        BrainType brain = selectBrain(taskAnalysis, complexityScore, estimatedPromptTokens);
+        ReasoningLevel reasoningLevel = selectReasoningLevel(taskAnalysis, complexityScore, knowledgeAnalysis, estimatedPromptTokens);
+        BrainType brain = selectedBrain(reasoningLevel);
         String model = brainCatalog.get(brain).model();
         String reason = reason(taskAnalysis, complexityScore, knowledgeAnalysis, estimatedPromptTokens);
         return new ExecutionPlan(
@@ -51,20 +53,33 @@ public class DefaultDecisionEngine implements DecisionEngine {
                 estimatedPromptTokens,
                 brain,
                 model,
+                reasoningLevel,
                 reason
         );
     }
 
-    private BrainType selectBrain(TaskAnalysis taskAnalysis, ComplexityScore complexityScore, int estimatedPromptTokens) {
+    private ReasoningLevel selectReasoningLevel(
+            TaskAnalysis taskAnalysis,
+            ComplexityScore complexityScore,
+            KnowledgeAnalysis knowledgeAnalysis,
+            int estimatedPromptTokens
+    ) {
         if (taskAnalysis.taskType() == TaskType.PROGRAMMING
                 || taskAnalysis.taskType() == TaskType.CODE_REVIEW
                 || taskAnalysis.taskType() == TaskType.ANALYSIS
                 || taskAnalysis.taskType() == TaskType.CONTENT_GENERATION
                 || complexityScore.score() >= properties.reasoningComplexityThreshold()
                 || isLargeGeneration(taskAnalysis, estimatedPromptTokens)) {
-            return BrainType.REASONING;
+            return ReasoningLevel.HIGH;
         }
-        return BrainType.FAST;
+        if (taskAnalysis.taskType() == TaskType.KNOWLEDGE_QA || knowledgeAnalysis.required()) {
+            return ReasoningLevel.MEDIUM;
+        }
+        return ReasoningLevel.LOW;
+    }
+
+    private BrainType selectedBrain(ReasoningLevel reasoningLevel) {
+        return reasoningLevel == ReasoningLevel.LOW ? BrainType.FAST : BrainType.REASONING;
     }
 
     private boolean isLargeGeneration(TaskAnalysis taskAnalysis, int estimatedPromptTokens) {

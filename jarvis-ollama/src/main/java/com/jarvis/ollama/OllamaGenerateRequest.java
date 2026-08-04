@@ -6,6 +6,7 @@ package com.jarvis.ollama;
  * @param model model name
  * @param prompt prompt text
  * @param stream whether streaming is enabled
+ * @param think native reasoning level for thinking-capable models
  */
-public record OllamaGenerateRequest(String model, String prompt, boolean stream) {
+public record OllamaGenerateRequest(String model, String prompt, boolean stream, String think) {
 }

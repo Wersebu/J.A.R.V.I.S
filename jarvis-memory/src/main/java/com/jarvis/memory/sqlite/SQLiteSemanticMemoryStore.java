@@ -2,6 +2,8 @@ package com.jarvis.memory.sqlite;
 
 import com.jarvis.memory.cognitive.SemanticMemoryRecord;
 import com.jarvis.memory.cognitive.SemanticMemoryStore;
+import com.jarvis.common.memory.MemoryCategory;
+import com.jarvis.common.memory.MemoryPriority;
 import org.springframework.stereotype.Repository;
 
 import java.sql.Connection;
@@ -36,8 +38,8 @@ public class SQLiteSemanticMemoryStore implements SemanticMemoryStore {
         try (Connection connection = connectionFactory.openConnection();
              PreparedStatement statement = connection.prepareStatement("""
                      INSERT INTO semantic_memory
-                     (id, subject, predicate, value, confidence, created_at, updated_at, source_conversation)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     (id, subject, predicate, value, confidence, priority, memory_category, created_at, updated_at, source_conversation)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      """)) {
             write(statement, record);
             statement.executeUpdate();
@@ -51,14 +53,16 @@ public class SQLiteSemanticMemoryStore implements SemanticMemoryStore {
         try (Connection connection = connectionFactory.openConnection();
              PreparedStatement statement = connection.prepareStatement("""
                      UPDATE semantic_memory
-                     SET value = ?, confidence = ?, updated_at = ?, source_conversation = ?
+                     SET value = ?, confidence = ?, priority = ?, memory_category = ?, updated_at = ?, source_conversation = ?
                      WHERE id = ?
                      """)) {
             statement.setString(1, record.value());
             statement.setDouble(2, record.confidence());
-            statement.setString(3, record.updatedAt().toString());
-            statement.setString(4, record.sourceConversation());
-            statement.setString(5, record.id().toString());
+            statement.setString(3, record.priority().name());
+            statement.setString(4, record.category().name());
+            statement.setString(5, record.updatedAt().toString());
+            statement.setString(6, record.sourceConversation());
+            statement.setString(7, record.id().toString());
             statement.executeUpdate();
         } catch (SQLException exception) {
             throw new IllegalStateException("Could not update semantic memory", exception);
@@ -83,6 +87,22 @@ public class SQLiteSemanticMemoryStore implements SemanticMemoryStore {
             }
         } catch (SQLException exception) {
             throw new IllegalStateException("Could not find semantic memory", exception);
+        }
+        return Optional.empty();
+    }
+
+    @Override
+    public Optional<SemanticMemoryRecord> findById(UUID id) {
+        try (Connection connection = connectionFactory.openConnection();
+             PreparedStatement statement = connection.prepareStatement("SELECT * FROM semantic_memory WHERE id = ? LIMIT 1")) {
+            statement.setString(1, id.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (resultSet.next()) {
+                    return Optional.of(read(resultSet));
+                }
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Could not find semantic memory by id", exception);
         }
         return Optional.empty();
     }
@@ -143,9 +163,11 @@ public class SQLiteSemanticMemoryStore implements SemanticMemoryStore {
         statement.setString(3, record.predicate());
         statement.setString(4, record.value());
         statement.setDouble(5, record.confidence());
-        statement.setString(6, record.createdAt().toString());
-        statement.setString(7, record.updatedAt().toString());
-        statement.setString(8, record.sourceConversation());
+        statement.setString(6, record.priority().name());
+        statement.setString(7, record.category().name());
+        statement.setString(8, record.createdAt().toString());
+        statement.setString(9, record.updatedAt().toString());
+        statement.setString(10, record.sourceConversation());
     }
 
     private SemanticMemoryRecord read(ResultSet resultSet) throws SQLException {
@@ -155,9 +177,27 @@ public class SQLiteSemanticMemoryStore implements SemanticMemoryStore {
                 resultSet.getString("predicate"),
                 resultSet.getString("value"),
                 resultSet.getDouble("confidence"),
+                parsePriority(resultSet.getString("priority")),
+                parseCategory(resultSet.getString("memory_category")),
                 Instant.parse(resultSet.getString("created_at")),
                 Instant.parse(resultSet.getString("updated_at")),
                 resultSet.getString("source_conversation")
         );
+    }
+
+    private MemoryPriority parsePriority(String value) {
+        try {
+            return value == null ? MemoryPriority.NORMAL : MemoryPriority.valueOf(value);
+        } catch (IllegalArgumentException exception) {
+            return MemoryPriority.NORMAL;
+        }
+    }
+
+    private MemoryCategory parseCategory(String value) {
+        try {
+            return value == null ? MemoryCategory.SEMANTIC : MemoryCategory.valueOf(value);
+        } catch (IllegalArgumentException exception) {
+            return MemoryCategory.SEMANTIC;
+        }
     }
 }

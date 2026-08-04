@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "1.0.1"
+  version: "1.1.0"
   ai:
     base-url: http://localhost:11434
     identity-file: file:config/jarvis.md
@@ -22,16 +22,16 @@ jarvis:
 brains:
   FAST:
     provider: ollama
-    model: qwen3:8b
-    description: Fast responses for greetings and simple questions.
+    model: gpt-oss:20b
+    description: GPT-OSS with LOW reasoning for greetings and simple questions.
   REASONING:
     provider: ollama
-    model: qwen3:14b
-    description: Deeper reasoning for programming, architecture, planning, and longer requests.
+    model: gpt-oss:20b
+    description: GPT-OSS with MEDIUM or HIGH reasoning for knowledge, programming, and analysis.
   CLASSIFIER:
     provider: ollama
-    model: qwen3:0.6b
-    description: Future classifier brain for routing decisions only.
+    model: gpt-oss:20b
+    description: GPT-OSS with LOW reasoning for background memory decisions.
 
 knowledge:
   root: ./knowledge

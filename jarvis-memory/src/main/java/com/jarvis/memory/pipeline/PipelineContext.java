@@ -16,11 +16,15 @@ import com.jarvis.knowledge.retrieval.RetrievalResult;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
+import com.jarvis.common.event.CognitiveEvent;
 
 /**
  * Immutable state passed between cognitive pipeline stages.
  *
  * @param conversationId conversation identifier
+ * @param requestId request identifier
  * @param request normalized chat request
  * @param conversation conversation messages loaded for this request
  * @param memoryContext retrieved cognitive memory context
@@ -38,9 +42,12 @@ import java.util.Map;
  * @param metrics stage metrics
  * @param metadata additional metadata
  * @param modelEventSink provider event sink
+ * @param cognitiveEventSink cognitive event sink
+ * @param memoryAgentFuture background memory agent future
  */
 public record PipelineContext(
         String conversationId,
+        String requestId,
         ChatRequest request,
         List<ConversationMessage> conversation,
         CognitiveMemoryContext memoryContext,
@@ -57,7 +64,9 @@ public record PipelineContext(
         GenerationFinishedEvent generationFinishedEvent,
         Map<String, StageMetric> metrics,
         Map<String, Object> metadata,
-        ChatEventSink modelEventSink
+        ChatEventSink modelEventSink,
+        Consumer<CognitiveEvent> cognitiveEventSink,
+        CompletableFuture<Void> memoryAgentFuture
 ) {
 
     /**
@@ -68,9 +77,16 @@ public record PipelineContext(
      * @param modelEventSink provider event sink
      * @return context
      */
-    public static PipelineContext initial(String conversationId, ChatRequest request, ChatEventSink modelEventSink) {
+    public static PipelineContext initial(
+            String conversationId,
+            String requestId,
+            ChatRequest request,
+            ChatEventSink modelEventSink,
+            Consumer<CognitiveEvent> cognitiveEventSink
+    ) {
         return new PipelineContext(
                 conversationId,
+                requestId,
                 request,
                 List.of(),
                 CognitiveMemoryContext.empty(),
@@ -87,7 +103,9 @@ public record PipelineContext(
                 null,
                 Map.of(),
                 Map.of(),
-                modelEventSink == null ? event -> { } : modelEventSink
+                modelEventSink == null ? event -> { } : modelEventSink,
+                cognitiveEventSink == null ? event -> { } : cognitiveEventSink,
+                CompletableFuture.completedFuture(null)
         );
     }
 
@@ -101,9 +119,10 @@ public record PipelineContext(
         Map<String, StageMetric> updated = new LinkedHashMap<>(metrics);
         updated.put(metric.stageName(), metric);
         return new PipelineContext(
-                conversationId, request, conversation, memoryContext, taskAnalysis, complexityScore,
+                conversationId, requestId, request, conversation, memoryContext, taskAnalysis, complexityScore,
                 knowledgeAnalysis, executionPlan, retrievalResult, knowledgeContext, prompt, brain, model,
-                response, generationFinishedEvent, Map.copyOf(updated), metadata, modelEventSink
+                response, generationFinishedEvent, Map.copyOf(updated), metadata, modelEventSink,
+                cognitiveEventSink, memoryAgentFuture
         );
     }
 
@@ -165,6 +184,15 @@ public record PipelineContext(
                 retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, Map.copyOf(updated));
     }
 
+    public PipelineContext withMemoryAgentFuture(CompletableFuture<Void> value) {
+        return new PipelineContext(
+                conversationId, requestId, request, conversation, memoryContext, taskAnalysis, complexityScore,
+                knowledgeAnalysis, executionPlan, retrievalResult, knowledgeContext, prompt, brain, model,
+                response, generationFinishedEvent, metrics, metadata, modelEventSink, cognitiveEventSink,
+                value == null ? CompletableFuture.completedFuture(null) : value
+        );
+    }
+
     private PipelineContext copy(
             List<ConversationMessage> conversation,
             CognitiveMemoryContext memoryContext,
@@ -182,11 +210,12 @@ public record PipelineContext(
             Map<String, Object> metadata
     ) {
         return new PipelineContext(
-                conversationId, request, conversation == null ? List.of() : List.copyOf(conversation),
+                conversationId, requestId, request, conversation == null ? List.of() : List.copyOf(conversation),
                 memoryContext == null ? CognitiveMemoryContext.empty() : memoryContext,
                 taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan, retrievalResult,
                 knowledgeContext == null ? KnowledgeContext.empty() : knowledgeContext, prompt, brain, model,
-                response, generationFinishedEvent, metrics, metadata, modelEventSink
+                response, generationFinishedEvent, metrics, metadata, modelEventSink, cognitiveEventSink,
+                memoryAgentFuture
         );
     }
 }

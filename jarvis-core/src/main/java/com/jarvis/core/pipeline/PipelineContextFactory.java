@@ -51,8 +51,10 @@ public class PipelineContextFactory {
         ChatEventSink modelEventSink = event -> { };
         return PipelineContext.initial(
                 conversationId,
+                requestId,
                 new ChatRequest(conversationId, request.message()),
-                modelEventSink
+                modelEventSink,
+                eventSink
         );
     }
 

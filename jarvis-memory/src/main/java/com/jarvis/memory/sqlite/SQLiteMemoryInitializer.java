@@ -51,6 +51,8 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                         predicate TEXT NOT NULL,
                         value TEXT NOT NULL,
                         confidence REAL NOT NULL,
+                        priority TEXT NOT NULL DEFAULT 'NORMAL',
+                        memory_category TEXT NOT NULL DEFAULT 'SEMANTIC',
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         source_conversation TEXT NOT NULL
@@ -77,9 +79,21 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                         source_conversation TEXT NOT NULL
                     )
                     """);
+            addColumnIfMissing(statement, "semantic_memory", "priority", "TEXT NOT NULL DEFAULT 'NORMAL'");
+            addColumnIfMissing(statement, "semantic_memory", "memory_category", "TEXT NOT NULL DEFAULT 'SEMANTIC'");
             LOGGER.info("[JARVIS] Cognitive Memory SQLite initialized.");
         } catch (SQLException exception) {
             throw new IllegalStateException("Could not initialize SQLite memory tables", exception);
+        }
+    }
+
+    private void addColumnIfMissing(Statement statement, String table, String column, String definition) throws SQLException {
+        try {
+            statement.executeUpdate("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
+        } catch (SQLException exception) {
+            if (!exception.getMessage().toLowerCase(java.util.Locale.ROOT).contains("duplicate column name")) {
+                throw exception;
+            }
         }
     }
 }

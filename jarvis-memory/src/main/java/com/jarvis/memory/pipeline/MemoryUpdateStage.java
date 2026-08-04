@@ -5,14 +5,12 @@ import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.memory.cognitive.CognitiveMemoryService;
 import com.jarvis.memory.cognitive.MemoryMutationType;
 import org.springframework.core.annotation.Order;
-import org.springframework.stereotype.Service;
 
 import java.util.Map;
 
 /**
  * Updates cognitive memory after model execution.
  */
-@Service
 @Order(95)
 public class MemoryUpdateStage implements PipelineStage {
 

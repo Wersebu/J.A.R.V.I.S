@@ -1,6 +1,7 @@
 package com.jarvis.brain.decision;
 
 import com.jarvis.common.ai.BrainType;
+import com.jarvis.common.ai.ReasoningLevel;
 
 /**
  * Immutable execution plan produced before model execution.
@@ -13,6 +14,7 @@ import com.jarvis.common.ai.BrainType;
  * @param estimatedPromptTokens estimated prompt tokens
  * @param selectedBrain selected logical brain
  * @param selectedModel configured model name
+ * @param reasoningLevel selected native reasoning level
  * @param reason decision explanation
  */
 public record ExecutionPlan(
@@ -24,6 +26,7 @@ public record ExecutionPlan(
         int estimatedPromptTokens,
         BrainType selectedBrain,
         String selectedModel,
+        ReasoningLevel reasoningLevel,
         String reason
 ) {
 }
