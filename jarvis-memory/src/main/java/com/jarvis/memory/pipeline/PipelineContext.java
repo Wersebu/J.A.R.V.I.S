@@ -1,0 +1,185 @@
+package com.jarvis.memory.pipeline;
+
+import com.jarvis.brain.decision.ComplexityScore;
+import com.jarvis.brain.decision.ExecutionPlan;
+import com.jarvis.brain.decision.KnowledgeAnalysis;
+import com.jarvis.brain.decision.TaskAnalysis;
+import com.jarvis.common.ai.Brain;
+import com.jarvis.common.context.KnowledgeContext;
+import com.jarvis.common.dto.ChatRequest;
+import com.jarvis.common.event.ChatEventSink;
+import com.jarvis.common.event.GenerationFinishedEvent;
+import com.jarvis.common.memory.ConversationMessage;
+import com.jarvis.knowledge.retrieval.RetrievalResult;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Immutable state passed between cognitive pipeline stages.
+ *
+ * @param conversationId conversation identifier
+ * @param request normalized chat request
+ * @param conversation conversation messages loaded for this request
+ * @param futureMemory future memory placeholder
+ * @param taskAnalysis task analysis
+ * @param complexityScore complexity score
+ * @param knowledgeAnalysis knowledge analysis
+ * @param executionPlan execution plan
+ * @param retrievalResult knowledge retrieval result
+ * @param knowledgeContext built knowledge context
+ * @param prompt prepared prompt
+ * @param brain selected brain
+ * @param model selected model
+ * @param response generated response
+ * @param generationFinishedEvent generation finished event
+ * @param metrics stage metrics
+ * @param metadata additional metadata
+ * @param modelEventSink provider event sink
+ */
+public record PipelineContext(
+        String conversationId,
+        ChatRequest request,
+        List<ConversationMessage> conversation,
+        String futureMemory,
+        TaskAnalysis taskAnalysis,
+        ComplexityScore complexityScore,
+        KnowledgeAnalysis knowledgeAnalysis,
+        ExecutionPlan executionPlan,
+        RetrievalResult retrievalResult,
+        KnowledgeContext knowledgeContext,
+        String prompt,
+        Brain brain,
+        String model,
+        String response,
+        GenerationFinishedEvent generationFinishedEvent,
+        Map<String, StageMetric> metrics,
+        Map<String, Object> metadata,
+        ChatEventSink modelEventSink
+) {
+
+    /**
+     * Creates an initial pipeline context.
+     *
+     * @param conversationId conversation identifier
+     * @param request normalized request
+     * @param modelEventSink provider event sink
+     * @return context
+     */
+    public static PipelineContext initial(String conversationId, ChatRequest request, ChatEventSink modelEventSink) {
+        return new PipelineContext(
+                conversationId,
+                request,
+                List.of(),
+                "",
+                null,
+                null,
+                null,
+                null,
+                null,
+                KnowledgeContext.empty(),
+                "",
+                null,
+                "",
+                "",
+                null,
+                Map.of(),
+                Map.of(),
+                modelEventSink == null ? event -> { } : modelEventSink
+        );
+    }
+
+    /**
+     * Adds a stage metric.
+     *
+     * @param metric stage metric
+     * @return updated context
+     */
+    public PipelineContext withMetric(StageMetric metric) {
+        Map<String, StageMetric> updated = new LinkedHashMap<>(metrics);
+        updated.put(metric.stageName(), metric);
+        return new PipelineContext(
+                conversationId, request, conversation, futureMemory, taskAnalysis, complexityScore,
+                knowledgeAnalysis, executionPlan, retrievalResult, knowledgeContext, prompt, brain, model,
+                response, generationFinishedEvent, Map.copyOf(updated), metadata, modelEventSink
+        );
+    }
+
+    public PipelineContext withConversation(List<ConversationMessage> value) {
+        return copy(value, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+                retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, metadata);
+    }
+
+    public PipelineContext withTaskAnalysis(TaskAnalysis value) {
+        return copy(conversation, futureMemory, value, complexityScore, knowledgeAnalysis, executionPlan,
+                retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, metadata);
+    }
+
+    public PipelineContext withComplexityScore(ComplexityScore value) {
+        return copy(conversation, futureMemory, taskAnalysis, value, knowledgeAnalysis, executionPlan,
+                retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, metadata);
+    }
+
+    public PipelineContext withKnowledgeAnalysis(KnowledgeAnalysis value) {
+        return copy(conversation, futureMemory, taskAnalysis, complexityScore, value, executionPlan,
+                retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, metadata);
+    }
+
+    public PipelineContext withExecution(ExecutionPlan plan, Brain selectedBrain) {
+        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, plan,
+                retrievalResult, knowledgeContext, prompt, selectedBrain, selectedBrain.model(), response,
+                generationFinishedEvent, metadata);
+    }
+
+    public PipelineContext withRetrievalResult(RetrievalResult value) {
+        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+                value, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, metadata);
+    }
+
+    public PipelineContext withKnowledgeContext(KnowledgeContext value) {
+        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+                retrievalResult, value, prompt, brain, model, response, generationFinishedEvent, metadata);
+    }
+
+    public PipelineContext withPrompt(String value) {
+        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+                retrievalResult, knowledgeContext, value, brain, model, response, generationFinishedEvent, metadata);
+    }
+
+    public PipelineContext withResponse(String value, GenerationFinishedEvent finishedEvent) {
+        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+                retrievalResult, knowledgeContext, prompt, brain, model, value, finishedEvent, metadata);
+    }
+
+    public PipelineContext withMetadata(String key, Object value) {
+        Map<String, Object> updated = new LinkedHashMap<>(metadata);
+        updated.put(key, value);
+        return copy(conversation, futureMemory, taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan,
+                retrievalResult, knowledgeContext, prompt, brain, model, response, generationFinishedEvent, Map.copyOf(updated));
+    }
+
+    private PipelineContext copy(
+            List<ConversationMessage> conversation,
+            String futureMemory,
+            TaskAnalysis taskAnalysis,
+            ComplexityScore complexityScore,
+            KnowledgeAnalysis knowledgeAnalysis,
+            ExecutionPlan executionPlan,
+            RetrievalResult retrievalResult,
+            KnowledgeContext knowledgeContext,
+            String prompt,
+            Brain brain,
+            String model,
+            String response,
+            GenerationFinishedEvent generationFinishedEvent,
+            Map<String, Object> metadata
+    ) {
+        return new PipelineContext(
+                conversationId, request, conversation == null ? List.of() : List.copyOf(conversation), futureMemory,
+                taskAnalysis, complexityScore, knowledgeAnalysis, executionPlan, retrievalResult,
+                knowledgeContext == null ? KnowledgeContext.empty() : knowledgeContext, prompt, brain, model,
+                response, generationFinishedEvent, metrics, metadata, modelEventSink
+        );
+    }
+}

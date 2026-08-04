@@ -34,7 +34,7 @@ public class HeuristicComplexityAnalyzer implements ComplexityAnalyzer {
             case CREATIVE_WRITING, TRANSLATION -> 1;
             default -> 0;
         };
-        if (knowledgeAnalysis.required()) {
+        if (knowledgeAnalysis != null && knowledgeAnalysis.required()) {
             score += 1;
         }
         if (contains(normalized, "five", "5", "multiple", "several", "architecture", "step by step", "detailed")) {

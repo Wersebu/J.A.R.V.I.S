@@ -7,7 +7,7 @@
     <parent>
         <groupId>com.jarvis</groupId>
         <artifactId>jarvis-parent</artifactId>
-        <version>0.9.0-SNAPSHOT</version>
+        <version>0.9.5-SNAPSHOT</version>
     </parent>
 
     <artifactId>jarvis-tools</artifactId>

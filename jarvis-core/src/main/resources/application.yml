@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "0.9"
+  version: "0.9.5"
   ai:
     base-url: http://localhost:11434
     identity-file: file:config/jarvis.md
