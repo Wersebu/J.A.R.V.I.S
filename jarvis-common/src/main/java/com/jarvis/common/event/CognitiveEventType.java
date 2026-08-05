@@ -74,6 +74,22 @@ public enum CognitiveEventType {
     DOCUMENT_READING_FINISHED,
     /** Knowledge retrieval finished. */
     KNOWLEDGE_SEARCH_FINISHED,
+    /** Agentic research mode started. */
+    RESEARCH_STARTED,
+    /** Agentic research model is planning the next knowledge action. */
+    RESEARCH_PLANNING,
+    /** Agentic research search action started. */
+    RESEARCH_SEARCH_STARTED,
+    /** Agentic research search action finished. */
+    RESEARCH_SEARCH_FINISHED,
+    /** Agentic research document selection happened. */
+    RESEARCH_DOCUMENT_SELECTED,
+    /** Agentic research document read action happened. */
+    RESEARCH_DOCUMENT_READ,
+    /** Agentic research section read action happened. */
+    RESEARCH_SECTION_READ,
+    /** Agentic research mode finished. */
+    RESEARCH_FINISHED,
     /** Context building started. */
     CONTEXT_BUILD_STARTED,
     /** A source was added to context. */

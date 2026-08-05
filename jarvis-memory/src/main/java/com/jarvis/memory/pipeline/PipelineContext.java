@@ -9,6 +9,7 @@ import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.event.ChatEventSink;
 import com.jarvis.common.event.GenerationFinishedEvent;
+import com.jarvis.common.knowledge.KnowledgeMode;
 import com.jarvis.common.memory.CognitiveMemoryContext;
 import com.jarvis.common.memory.ConversationMessage;
 import com.jarvis.common.prompt.PromptContext;
@@ -200,6 +201,23 @@ public record PipelineContext(
                 response, generationFinishedEvent, metrics, metadata, modelEventSink, cognitiveEventSink,
                 value == null ? CompletableFuture.completedFuture(null) : value
         );
+    }
+
+    /**
+     * Returns the effective knowledge mode selected for this request.
+     *
+     * @return effective knowledge mode
+     */
+    public KnowledgeMode effectiveKnowledgeMode() {
+        Object value = metadata.get("knowledgeMode");
+        if (value instanceof KnowledgeMode mode) {
+            return mode;
+        }
+        try {
+            return value == null ? KnowledgeMode.FAST : KnowledgeMode.valueOf(String.valueOf(value));
+        } catch (IllegalArgumentException exception) {
+            return KnowledgeMode.FAST;
+        }
     }
 
     private PipelineContext copy(

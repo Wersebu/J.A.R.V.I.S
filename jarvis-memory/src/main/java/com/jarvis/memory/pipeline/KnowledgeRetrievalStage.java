@@ -1,6 +1,7 @@
 package com.jarvis.memory.pipeline;
 
 import com.jarvis.knowledge.retrieval.KnowledgeRetriever;
+import com.jarvis.common.knowledge.KnowledgeMode;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
@@ -29,6 +30,9 @@ public class KnowledgeRetrievalStage implements PipelineStage {
 
     @Override
     public PipelineContext execute(PipelineContext context) {
+        if (context.effectiveKnowledgeMode() == KnowledgeMode.RESEARCH) {
+            return context;
+        }
         return context.withRetrievalResult(knowledgeRetriever.retrieve(context.request().message()));
     }
 }

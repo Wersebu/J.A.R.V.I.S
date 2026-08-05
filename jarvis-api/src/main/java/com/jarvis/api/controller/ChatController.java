@@ -4,6 +4,7 @@ import com.jarvis.api.service.ChatService;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.dto.ChatResponse;
 import com.jarvis.common.event.CognitiveEvent;
+import com.jarvis.common.knowledge.KnowledgeMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -63,10 +64,11 @@ public class ChatController {
     @GetMapping(path = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(
             @RequestParam String conversationId,
-            @RequestParam String message
+            @RequestParam String message,
+            @RequestParam(defaultValue = "AUTO") KnowledgeMode knowledgeMode
     ) {
         SseStreamSession session = new SseStreamSession(new SseEmitter(SSE_TIMEOUT_MS));
-        ChatRequest request = new ChatRequest(conversationId, message);
+        ChatRequest request = new ChatRequest(conversationId, message, null, knowledgeMode);
 
         CompletableFuture.runAsync(() -> {
             try {

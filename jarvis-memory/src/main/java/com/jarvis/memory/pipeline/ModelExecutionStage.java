@@ -35,6 +35,9 @@ public class ModelExecutionStage implements PipelineStage {
 
     @Override
     public PipelineContext execute(PipelineContext context) {
+        if (context.response() != null && !context.response().isBlank()) {
+            return context;
+        }
         StringBuilder responseBuilder = new StringBuilder();
         GenerationFinishedHolder finishedHolder = new GenerationFinishedHolder();
         selectProvider(context).stream(context.conversationId(), context.brain(), context.prompt(), AIJobType.CHAT, event -> {

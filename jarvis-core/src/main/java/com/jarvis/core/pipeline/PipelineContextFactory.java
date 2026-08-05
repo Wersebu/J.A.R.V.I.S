@@ -79,7 +79,7 @@ public class PipelineContextFactory {
         return PipelineContext.initial(
                 conversationId,
                 requestId,
-                new ChatRequest(conversationId, request.message(), request.clientRequestTimestamp()),
+                new ChatRequest(conversationId, request.message(), request.clientRequestTimestamp(), request.knowledgeMode()),
                 modelEventSink,
                 eventSink
         );
