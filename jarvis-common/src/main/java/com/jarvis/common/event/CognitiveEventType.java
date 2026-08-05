@@ -76,20 +76,46 @@ public enum CognitiveEventType {
     KNOWLEDGE_SEARCH_FINISHED,
     /** Agentic research mode started. */
     RESEARCH_STARTED,
+    /** Agentic research planning started. */
+    RESEARCH_PLANNING_STARTED,
     /** Agentic research model is planning the next knowledge action. */
     RESEARCH_PLANNING,
+    /** Agentic research action was selected. */
+    RESEARCH_ACTION_SELECTED,
     /** Agentic research search action started. */
     RESEARCH_SEARCH_STARTED,
+    /** Research found a knowledge candidate. */
+    KNOWLEDGE_CANDIDATE_FOUND,
     /** Agentic research search action finished. */
     RESEARCH_SEARCH_FINISHED,
     /** Agentic research document selection happened. */
     RESEARCH_DOCUMENT_SELECTED,
+    /** Research document read started. */
+    DOCUMENT_READ_STARTED,
+    /** Research document content was received. */
+    DOCUMENT_CONTENT_RECEIVED,
+    /** Research document read finished. */
+    DOCUMENT_READ_FINISHED,
     /** Agentic research document read action happened. */
     RESEARCH_DOCUMENT_READ,
+    /** Research find action started. */
+    DOCUMENT_FIND_STARTED,
+    /** Research find action matched content. */
+    DOCUMENT_FIND_MATCH,
+    /** Research find action finished. */
+    DOCUMENT_FIND_FINISHED,
     /** Agentic research section read action happened. */
     RESEARCH_SECTION_READ,
+    /** Research source was accepted as supporting evidence. */
+    RESEARCH_SOURCE_ACCEPTED,
+    /** Research source was rejected. */
+    RESEARCH_SOURCE_REJECTED,
+    /** Research has enough grounded information to answer. */
+    RESEARCH_READY_TO_ANSWER,
     /** Agentic research mode finished. */
     RESEARCH_FINISHED,
+    /** Agentic research failed. */
+    RESEARCH_ERROR,
     /** Context building started. */
     CONTEXT_BUILD_STARTED,
     /** A source was added to context. */
