@@ -13,6 +13,7 @@ import com.jarvis.common.memory.MemoryPriority;
 import com.jarvis.common.memory.MemoryRecord;
 import com.jarvis.memory.cognitive.SemanticMemoryRecord;
 import com.jarvis.memory.cognitive.SemanticMemoryStore;
+import com.jarvis.memory.embedding.EmbeddingMemoryEngine;
 import com.jarvis.memory.pipeline.PipelineContext;
 import com.jarvis.memory.retrieval.MemoryQueryNormalizer;
 import org.slf4j.Logger;
@@ -43,6 +44,7 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
     private final ObjectMapper objectMapper;
     private final ExecutorService executorService;
     private final MemoryQueryNormalizer queryNormalizer;
+    private final EmbeddingMemoryEngine embeddingMemoryEngine;
 
     /**
      * Creates the default memory agent service.
@@ -55,12 +57,14 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
             List<AIProvider> aiProviders,
             SemanticMemoryStore semanticStore,
             ObjectMapper objectMapper,
-            MemoryQueryNormalizer queryNormalizer
+            MemoryQueryNormalizer queryNormalizer,
+            EmbeddingMemoryEngine embeddingMemoryEngine
     ) {
         this.aiProviders = List.copyOf(aiProviders);
         this.semanticStore = semanticStore;
         this.objectMapper = objectMapper;
         this.queryNormalizer = queryNormalizer;
+        this.embeddingMemoryEngine = embeddingMemoryEngine;
         this.executorService = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "jarvis-memory-agent");
             thread.setDaemon(true);
@@ -188,6 +192,7 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
                 context.conversationId()
         );
         semanticStore.save(record);
+        indexEmbedding(record);
         publish(context, eventSink, CognitiveEventType.MEMORY_CREATED, "CREATED", "Memory created",
                 "memory:" + record.id(), Map.of("content", content, "category", record.category().name(), "priority", record.priority().name()));
     }
@@ -223,8 +228,17 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
                 context.conversationId()
         );
         semanticStore.update(updated);
+        indexEmbedding(updated);
         publish(context, eventSink, CognitiveEventType.MEMORY_UPDATED, "UPDATED", "Memory updated",
                 "memory:" + updated.id(), Map.of("oldContent", existing.value(), "newContent", content));
+    }
+
+    private void indexEmbedding(SemanticMemoryRecord record) {
+        try {
+            embeddingMemoryEngine.index(record);
+        } catch (RuntimeException exception) {
+            LOGGER.warn("[JARVIS] Memory Agent saved memory but embedding indexing failed memoryId={}", record.id(), exception);
+        }
     }
 
     private void deleteMemory(PipelineContext context, Consumer<CognitiveEvent> eventSink, MemoryAgentDecision decision) {

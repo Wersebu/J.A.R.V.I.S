@@ -53,6 +53,9 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                         confidence REAL NOT NULL,
                         priority TEXT NOT NULL DEFAULT 'NORMAL',
                         memory_category TEXT NOT NULL DEFAULT 'SEMANTIC',
+                        embedding_model TEXT,
+                        embedding_dimension INTEGER,
+                        embedding_vector TEXT,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL,
                         source_conversation TEXT NOT NULL
@@ -81,6 +84,9 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                     """);
             addColumnIfMissing(statement, "semantic_memory", "priority", "TEXT NOT NULL DEFAULT 'NORMAL'");
             addColumnIfMissing(statement, "semantic_memory", "memory_category", "TEXT NOT NULL DEFAULT 'SEMANTIC'");
+            addColumnIfMissing(statement, "semantic_memory", "embedding_model", "TEXT");
+            addColumnIfMissing(statement, "semantic_memory", "embedding_dimension", "INTEGER");
+            addColumnIfMissing(statement, "semantic_memory", "embedding_vector", "TEXT");
             LOGGER.info("[JARVIS] Cognitive Memory SQLite initialized.");
         } catch (SQLException exception) {
             throw new IllegalStateException("Could not initialize SQLite memory tables", exception);

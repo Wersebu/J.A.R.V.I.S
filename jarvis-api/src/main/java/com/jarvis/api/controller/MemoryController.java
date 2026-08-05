@@ -69,14 +69,17 @@ public class MemoryController {
     public MemorySearchDebugResponse searchPost(@RequestBody MemorySearchRequest request) {
         MemorySearchResult result = memoryService.search(request.query());
         return new MemorySearchDebugResponse(
-                result.normalizedQuery(),
+                result.embeddingModel(),
+                result.embeddingTimeMs(),
                 result.matches().stream()
                         .map(match -> new MemorySearchCandidateResponse(
                                 match.memory().id().toString(),
                                 match.memory().content(),
+                                match.similarity(),
                                 match.score()
                         ))
                         .toList(),
+                result.normalizedQuery(),
                 result.memories().isEmpty() ? null : result.memories().getFirst().content()
         );
     }

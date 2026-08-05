@@ -5,7 +5,8 @@ package com.jarvis.api.dto;
  *
  * @param id memory id
  * @param memory memory content
- * @param score score
+ * @param similarity raw embedding similarity
+ * @param score final normalized score
  */
-public record MemorySearchCandidateResponse(String id, String memory, double score) {
+public record MemorySearchCandidateResponse(String id, String memory, double similarity, double score) {
 }

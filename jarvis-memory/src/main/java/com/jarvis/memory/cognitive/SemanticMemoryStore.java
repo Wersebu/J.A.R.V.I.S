@@ -3,6 +3,7 @@ package com.jarvis.memory.cognitive;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import com.jarvis.memory.embedding.StoredMemoryEmbedding;
 
 /**
  * Stores stable semantic facts.
@@ -40,6 +41,27 @@ public interface SemanticMemoryStore {
      * @return memory record
      */
     Optional<SemanticMemoryRecord> findById(UUID id);
+
+    /**
+     * Stores embedding data for a semantic memory.
+     *
+     * @param memoryId memory identifier
+     * @param model embedding model
+     * @param dimension vector dimension
+     * @param vector serialized vector
+     */
+    default void updateEmbedding(UUID memoryId, String model, int dimension, String vector) {
+    }
+
+    /**
+     * Finds persisted embedding data for a semantic memory.
+     *
+     * @param memoryId memory identifier
+     * @return stored embedding
+     */
+    default Optional<StoredMemoryEmbedding> findEmbedding(UUID memoryId) {
+        return Optional.empty();
+    }
 
     /**
      * Searches facts using a query.

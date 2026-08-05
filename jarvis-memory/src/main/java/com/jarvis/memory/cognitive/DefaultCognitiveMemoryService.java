@@ -7,6 +7,8 @@ import com.jarvis.common.memory.MemorySearchMatch;
 import com.jarvis.common.memory.MemorySearchResult;
 import com.jarvis.common.memory.MemoryType;
 import com.jarvis.memory.retrieval.MemoryCandidateRetriever;
+import com.jarvis.memory.embedding.EmbeddingMemoryEngine;
+import com.jarvis.memory.embedding.EmbeddingMemorySearchResult;
 import com.jarvis.memory.retrieval.MemoryProfileBuilder;
 import com.jarvis.memory.retrieval.MemoryQuery;
 import com.jarvis.memory.retrieval.MemoryQueryNormalizer;
@@ -51,6 +53,7 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
     private final MemoryScorer memoryScorer;
     private final MemoryReranker memoryReranker;
     private final MemoryProfileBuilder profileBuilder;
+    private final EmbeddingMemoryEngine embeddingMemoryEngine;
 
     /**
      * Creates the default cognitive memory service.
@@ -70,7 +73,8 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
             MemoryCandidateRetriever candidateRetriever,
             MemoryScorer memoryScorer,
             MemoryReranker memoryReranker,
-            MemoryProfileBuilder profileBuilder
+            MemoryProfileBuilder profileBuilder,
+            EmbeddingMemoryEngine embeddingMemoryEngine
     ) {
         this.semanticStore = semanticStore;
         this.episodicStore = episodicStore;
@@ -81,6 +85,7 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
         this.memoryScorer = memoryScorer;
         this.memoryReranker = memoryReranker;
         this.profileBuilder = profileBuilder;
+        this.embeddingMemoryEngine = embeddingMemoryEngine;
     }
 
     /**
@@ -106,7 +111,8 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
                 new IndexedMemoryCandidateRetriever(new DefaultMemoryQueryNormalizer()),
                 new TokenMemoryScorer(new DefaultMemoryQueryNormalizer()),
                 new NoOpMemoryReranker(),
-                new StructuredMemoryProfileBuilder()
+                new StructuredMemoryProfileBuilder(),
+                null
         );
     }
 
@@ -123,6 +129,37 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
 
     @Override
     public MemorySearchResult search(String query) {
+        if (embeddingMemoryEngine != null) {
+            try {
+                return embeddingSearch(query);
+            } catch (RuntimeException exception) {
+                LOGGER.warn("[JARVIS] Embedding memory search failed, falling back to token retrieval", exception);
+            }
+        }
+        return tokenSearch(query);
+    }
+
+    private MemorySearchResult embeddingSearch(String query) {
+        EmbeddingMemorySearchResult result = embeddingMemoryEngine.search(query);
+        List<MemoryRecord> memories = result.matches().stream()
+                .map(match -> match.memory())
+                .toList();
+        List<MemorySearchMatch> matches = result.matches().stream()
+                .map(match -> new MemorySearchMatch(match.memory(), match.score(), match.similarity(), match.reason()))
+                .toList();
+        return new MemorySearchResult(
+                query,
+                result.executionTimeMs(),
+                memories,
+                matches,
+                List.of(),
+                result.candidates(),
+                result.embeddingModel(),
+                result.embeddingTimeMs()
+        );
+    }
+
+    private MemorySearchResult tokenSearch(String query) {
         Instant startedAt = Instant.now();
         MemoryQuery normalizedQuery = queryNormalizer.normalize(query);
         LOGGER.info("""
@@ -168,7 +205,7 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
                 scoreLog(matches),
                 matches.isEmpty() ? "None" : matches.getFirst().memory().content(),
                 durationMs);
-        return new MemorySearchResult(query, durationMs, memories, matches, normalizedQuery.tokens(), candidates.size());
+        return new MemorySearchResult(query, durationMs, memories, matches, normalizedQuery.tokens(), candidates.size(), "", 0L);
     }
 
     @Override
@@ -309,6 +346,7 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
                     conversationId
             );
             semanticStore.update(updated);
+            indexEmbedding(updated);
             return new MemoryMutation(MemoryMutationType.UPDATED, toMemory(updated), "updated fact");
         }
         SemanticMemoryRecord created = new SemanticMemoryRecord(
@@ -324,7 +362,19 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
                 conversationId
         );
         semanticStore.save(created);
+        indexEmbedding(created);
         return new MemoryMutation(MemoryMutationType.CREATED, toMemory(created), "new fact");
+    }
+
+    private void indexEmbedding(SemanticMemoryRecord record) {
+        if (embeddingMemoryEngine == null) {
+            return;
+        }
+        try {
+            embeddingMemoryEngine.index(record);
+        } catch (RuntimeException exception) {
+            LOGGER.warn("[JARVIS] Semantic memory saved but embedding indexing failed memoryId={}", record.id(), exception);
+        }
     }
 
     private MemoryCategory inferCategory(MemoryCandidate candidate) {

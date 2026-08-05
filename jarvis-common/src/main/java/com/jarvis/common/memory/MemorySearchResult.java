@@ -11,6 +11,8 @@ import java.util.List;
  * @param matches scored matching memories
  * @param normalizedQuery normalized query tokens
  * @param candidateCount number of candidate memories before final scoring limit
+ * @param embeddingModel embedding model used for semantic retrieval
+ * @param embeddingTimeMs query embedding generation time in milliseconds
  */
 public record MemorySearchResult(
         String query,
@@ -18,7 +20,9 @@ public record MemorySearchResult(
         List<MemoryRecord> memories,
         List<MemorySearchMatch> matches,
         List<String> normalizedQuery,
-        int candidateCount
+        int candidateCount,
+        String embeddingModel,
+        long embeddingTimeMs
 ) {
 
     /**
@@ -29,7 +33,7 @@ public record MemorySearchResult(
      * @param memories matching memories
      */
     public MemorySearchResult(String query, long executionTimeMs, List<MemoryRecord> memories) {
-        this(query, executionTimeMs, memories, List.of(), List.of(), memories == null ? 0 : memories.size());
+        this(query, executionTimeMs, memories, List.of(), List.of(), memories == null ? 0 : memories.size(), "", 0L);
     }
 
     /**
@@ -41,7 +45,7 @@ public record MemorySearchResult(
      * @param matches scored matching memories
      */
     public MemorySearchResult(String query, long executionTimeMs, List<MemoryRecord> memories, List<MemorySearchMatch> matches) {
-        this(query, executionTimeMs, memories, matches, List.of(), memories == null ? 0 : memories.size());
+        this(query, executionTimeMs, memories, matches, List.of(), memories == null ? 0 : memories.size(), "", 0L);
     }
 
     /**
@@ -55,5 +59,6 @@ public record MemorySearchResult(
         memories = memories == null ? List.of() : List.copyOf(memories);
         matches = matches == null ? List.of() : List.copyOf(matches);
         normalizedQuery = normalizedQuery == null ? List.of() : List.copyOf(normalizedQuery);
+        embeddingModel = embeddingModel == null ? "" : embeddingModel;
     }
 }

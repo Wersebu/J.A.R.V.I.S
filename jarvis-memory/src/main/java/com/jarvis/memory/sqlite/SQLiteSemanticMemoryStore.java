@@ -1,9 +1,13 @@
 package com.jarvis.memory.sqlite;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.memory.cognitive.SemanticMemoryRecord;
 import com.jarvis.memory.cognitive.SemanticMemoryStore;
 import com.jarvis.common.memory.MemoryCategory;
 import com.jarvis.common.memory.MemoryPriority;
+import com.jarvis.memory.embedding.StoredMemoryEmbedding;
 import org.springframework.stereotype.Repository;
 
 import java.sql.Connection;
@@ -23,14 +27,16 @@ import java.util.UUID;
 public class SQLiteSemanticMemoryStore implements SemanticMemoryStore {
 
     private final SQLiteConnectionFactory connectionFactory;
+    private final ObjectMapper objectMapper;
 
     /**
      * Creates the semantic memory store.
      *
      * @param connectionFactory SQLite connection factory
      */
-    public SQLiteSemanticMemoryStore(SQLiteConnectionFactory connectionFactory) {
+    public SQLiteSemanticMemoryStore(SQLiteConnectionFactory connectionFactory, ObjectMapper objectMapper) {
         this.connectionFactory = connectionFactory;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -105,6 +111,51 @@ public class SQLiteSemanticMemoryStore implements SemanticMemoryStore {
             throw new IllegalStateException("Could not find semantic memory by id", exception);
         }
         return Optional.empty();
+    }
+
+    @Override
+    public void updateEmbedding(UUID memoryId, String model, int dimension, String vector) {
+        try (Connection connection = connectionFactory.openConnection();
+             PreparedStatement statement = connection.prepareStatement("""
+                     UPDATE semantic_memory
+                     SET embedding_model = ?, embedding_dimension = ?, embedding_vector = ?
+                     WHERE id = ?
+                     """)) {
+            statement.setString(1, model);
+            statement.setInt(2, dimension);
+            statement.setString(3, vector);
+            statement.setString(4, memoryId.toString());
+            statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Could not update semantic memory embedding", exception);
+        }
+    }
+
+    @Override
+    public Optional<StoredMemoryEmbedding> findEmbedding(UUID memoryId) {
+        try (Connection connection = connectionFactory.openConnection();
+             PreparedStatement statement = connection.prepareStatement("""
+                     SELECT embedding_model, embedding_dimension, embedding_vector
+                     FROM semantic_memory
+                     WHERE id = ?
+                     LIMIT 1
+                     """)) {
+            statement.setString(1, memoryId.toString());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                String model = resultSet.getString("embedding_model");
+                String vector = resultSet.getString("embedding_vector");
+                int dimension = resultSet.getInt("embedding_dimension");
+                if (model == null || model.isBlank() || vector == null || vector.isBlank() || dimension <= 0) {
+                    return Optional.empty();
+                }
+                return Optional.of(new StoredMemoryEmbedding(memoryId, model, dimension, readVector(vector)));
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Could not find semantic memory embedding", exception);
+        }
     }
 
     @Override
@@ -198,6 +249,15 @@ public class SQLiteSemanticMemoryStore implements SemanticMemoryStore {
             return value == null ? MemoryCategory.SEMANTIC : MemoryCategory.valueOf(value);
         } catch (IllegalArgumentException exception) {
             return MemoryCategory.SEMANTIC;
+        }
+    }
+
+    private List<Double> readVector(String vector) {
+        try {
+            return objectMapper.readValue(vector, new TypeReference<>() {
+            });
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Could not parse semantic memory embedding", exception);
         }
     }
 }
