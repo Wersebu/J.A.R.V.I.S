@@ -12,7 +12,7 @@ import org.springframework.stereotype.Service;
  * Executes native tool-calling before ordinary final model streaming.
  */
 @Service
-@Order(88)
+@Order(84)
 public class ToolCallingStage implements PipelineStage {
 
     private final ToolCallingRuntime toolCallingRuntime;

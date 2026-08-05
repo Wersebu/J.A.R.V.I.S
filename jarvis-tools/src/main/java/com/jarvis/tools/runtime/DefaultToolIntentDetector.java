@@ -2,6 +2,7 @@ package com.jarvis.tools.runtime;
 
 import org.springframework.stereotype.Service;
 
+import java.text.Normalizer;
 import java.util.Locale;
 
 /**
@@ -12,34 +13,39 @@ public class DefaultToolIntentDetector implements ToolIntentDetector {
 
     @Override
     public ToolIntent detect(String message) {
-        String value = message == null ? "" : message.toLowerCase(Locale.ROOT);
-        if (containsAny(value, "usuń", "usun", "delete", "skasuj")) {
+        String value = normalize(message);
+        if (containsAny(value, "usun", "delete", "skasuj")) {
             return ToolIntent.DELETE_KNOWLEDGE;
         }
-        if (containsAny(value, "zaktualizuj", "update", "zmień", "zmien", "popraw")) {
+        if (containsAny(value, "zaktualizuj", "update", "zmien", "popraw")) {
             return ToolIntent.UPDATE_DOCUMENT;
         }
-        if (containsAny(value, "dopisz", "append", "dodaj do", "uzupełnij", "uzupelnij")) {
+        if (containsAny(value, "dopisz", "append", "dodaj do", "uzupelnij")) {
             return ToolIntent.APPEND_DOCUMENT;
         }
-        if (containsAny(value, "stwórz", "stworz", "utwórz", "utworz", "create", "nowy dokument", "osobny dokument")) {
+        if (containsAny(value, "stworz", "utworz", "create", "nowy dokument", "nowy plik", "plik wiedzy", "osobny dokument")) {
             return ToolIntent.CREATE_DOCUMENT;
         }
-        if (containsAny(value, "zapisz", "save", "zapamiętaj w wiedzy", "zapamietaj w wiedzy", "podziel", "podziel to")) {
+        if (containsAny(value, "zapisz", "save", "zapamietaj w wiedzy", "podziel", "podziel to")) {
             return ToolIntent.SAVE_KNOWLEDGE;
         }
-        if (containsAny(value, "przeczytaj", "read", "co masz o", "pokaż dokument", "pokaz dokument")) {
+        if (containsAny(value, "przeczytaj", "read", "co masz o", "pokaz dokument")) {
             return ToolIntent.READ_DOCUMENT;
         }
-        if (containsAny(value, "wyszukaj", "search", "znajdź w wiedzy", "znajdz w wiedzy", "szukaj",
-                "jakie podzespoły", "jakie podzespoly", "jaką kartę", "jaka karte", "jakie gpu",
-                "co wiesz o", "pamiętasz", "pamietasz")) {
+        if (containsAny(value, "wyszukaj", "search", "znajdz w wiedzy", "szukaj",
+                "jakie podzespoly", "jaka karte", "jakie gpu", "co wiesz o", "pamietasz")) {
             return ToolIntent.SEARCH_KNOWLEDGE;
         }
-        if (containsAny(value, "uporządkuj", "uporzadkuj", "organize", "przenieś", "przenies", "rename", "move")) {
+        if (containsAny(value, "uporzadkuj", "organize", "przenies", "rename", "move")) {
             return ToolIntent.ORGANIZE_KNOWLEDGE;
         }
         return ToolIntent.NO_TOOL;
+    }
+
+    private String normalize(String message) {
+        String value = message == null ? "" : message.toLowerCase(Locale.ROOT);
+        return Normalizer.normalize(value, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "");
     }
 
     private boolean containsAny(String value, String... needles) {

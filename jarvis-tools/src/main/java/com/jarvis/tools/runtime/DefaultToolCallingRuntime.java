@@ -28,8 +28,10 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.text.Normalizer;
 
 /**
  * Default native LLM tool-calling runtime.
@@ -104,10 +106,16 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING", "Selecting tool action", null, step, Map.of());
                 ToolAction action = nextAction(request, intent, observation, step, errors);
                 if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
-                    steps.add(new ToolRuntimeStep(step, "FINAL_ANSWER", "", "", "FINISHED", null));
-                    saveDebug(request, intent, steps, "FINISHED", errors);
-                    publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished", null, step, Map.of());
-                    return new ToolCallingResult(true, action.answer(), steps, results);
+                    if (step == 1 && results.isEmpty()) {
+                        LOGGER.info("[TOOL_LOOP] firstAction=FINAL_ANSWER ignoredForExplicitIntent intent={}", intent);
+                        errors.add("Model attempted FINAL_ANSWER before using a tool for explicit intent.");
+                        action = fallbackAction(request, intent, step);
+                    } else {
+                        steps.add(new ToolRuntimeStep(step, "FINAL_ANSWER", "", "", "FINISHED", null));
+                        saveDebug(request, intent, steps, "FINISHED", errors);
+                        publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished", null, step, Map.of());
+                        return new ToolCallingResult(true, action.answer(), steps, results);
+                    }
                 }
 
                 publish(request, CognitiveEventType.TOOL_CALL_PROPOSED, "PROPOSED", "Tool call proposed", null, step,
@@ -251,8 +259,96 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             return new ToolAction("TOOL_CALL", "knowledge", "SEARCH_CONTENT", Map.of("query", message),
                     "Fallback search for explicit knowledge request.", "");
         }
+        if (intent == ToolIntent.CREATE_DOCUMENT || intent == ToolIntent.SAVE_KNOWLEDGE) {
+            String path = inferDocumentPath(message);
+            return new ToolAction("TOOL_CALL", "knowledge", "CREATE_DOCUMENT", Map.of(
+                    "path", path,
+                    "content", "# " + titleFromPath(path) + "\n\n" + message
+            ), "Fallback document creation for explicit knowledge write request.", "");
+        }
         return new ToolAction("TOOL_CALL", "knowledge", "PLAN_KNOWLEDGE_UPDATE", Map.of("query", message, "content", message),
                 "Fallback plan for explicit knowledge write request.", "");
+    }
+
+    private String inferDocumentPath(String message) {
+        String normalized = normalize(message);
+        String folder = wordAfter(normalized, "folderze");
+        if (folder.isBlank()) {
+            folder = wordAfter(normalized, "folder");
+        }
+        String name = wordsAfter(normalized, "nazwie", 3);
+        if (name.isBlank()) {
+            name = wordsAfter(normalized, "name", 3);
+        }
+        if (name.isBlank()) {
+            name = "KnowledgeNote";
+        }
+        String fileName = slug(name);
+        if (!fileName.endsWith(".md")) {
+            fileName = fileName + ".md";
+        }
+        String folderName = folder.isBlank() ? "Inbox" : slug(folder);
+        return capitalize(folderName) + "/" + fileName;
+    }
+
+    private String wordAfter(String value, String marker) {
+        String[] tokens = value.split("\\s+");
+        for (int index = 0; index < tokens.length - 1; index++) {
+            if (tokens[index].equals(marker)) {
+                return tokens[index + 1];
+            }
+        }
+        return "";
+    }
+
+    private String wordsAfter(String value, String marker, int limit) {
+        String[] tokens = value.split("\\s+");
+        for (int index = 0; index < tokens.length - 1; index++) {
+            if (tokens[index].equals(marker)) {
+                StringBuilder builder = new StringBuilder();
+                for (int cursor = index + 1; cursor < tokens.length && cursor <= index + limit; cursor++) {
+                    if (isStopToken(tokens[cursor])) {
+                        break;
+                    }
+                    if (!builder.isEmpty()) {
+                        builder.append('-');
+                    }
+                    builder.append(tokens[cursor]);
+                }
+                return builder.toString();
+            }
+        }
+        return "";
+    }
+
+    private boolean isStopToken(String token) {
+        return token.equals("i") || token.equals("oraz") || token.equals("w") || token.equals("do");
+    }
+
+    private String slug(String value) {
+        String slug = value == null ? "" : value.replaceAll("[^a-zA-Z0-9._-]+", "-")
+                .replaceAll("-+", "-")
+                .replaceAll("^-|-$", "");
+        return slug.isBlank() ? "KnowledgeNote" : slug;
+    }
+
+    private String titleFromPath(String path) {
+        int slash = path.lastIndexOf('/');
+        String file = slash >= 0 ? path.substring(slash + 1) : path;
+        return file.replaceFirst("\\.md$", "").replace('-', ' ');
+    }
+
+    private String capitalize(String value) {
+        if (value == null || value.isBlank()) {
+            return "Inbox";
+        }
+        return value.substring(0, 1).toUpperCase(Locale.ROOT) + value.substring(1);
+    }
+
+    private String normalize(String message) {
+        String value = message == null ? "" : message.toLowerCase(Locale.ROOT);
+        return Normalizer.normalize(value, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "");
     }
 
     private String prompt(ToolCallingRequest request, ToolIntent intent, String observation, int step) {
