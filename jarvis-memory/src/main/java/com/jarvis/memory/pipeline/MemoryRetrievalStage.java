@@ -83,6 +83,19 @@ public class MemoryRetrievalStage implements PipelineStage {
                     "estimatedTokens", memoryContext.estimatedTokens(),
                     "executionTimeMs", durationMs
             ));
+            memoryContext.memories().forEach(memory -> cognitiveEventBus.publish(
+                    CognitiveEventType.MEMORY_INJECTED,
+                    "USED",
+                    "Memory used by prompt context",
+                    memoryNodeId(memory),
+                    Map.of(
+                            "id", memoryNodeId(memory),
+                            "memoryId", memory.id().toString(),
+                            "type", memory.type().name(),
+                            "title", memory.title(),
+                            "confidence", memory.confidence()
+                    )
+            ));
             LOGGER.info("""
                     [JARVIS]
                     MEMORY RETRIEVAL FINISHED
@@ -103,7 +116,6 @@ public class MemoryRetrievalStage implements PipelineStage {
     }
 
     private String memoryNodeId(com.jarvis.common.memory.MemoryRecord memory) {
-        String category = memory.category() == null ? "SEMANTIC" : memory.category().name();
-        return "memory:" + category + ":" + memory.id();
+        return "memory-record:" + memory.id();
     }
 }

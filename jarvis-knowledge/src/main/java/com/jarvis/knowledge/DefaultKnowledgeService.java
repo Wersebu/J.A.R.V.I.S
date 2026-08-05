@@ -73,6 +73,26 @@ public class DefaultKnowledgeService implements KnowledgeService {
     }
 
     /**
+     * Lists current knowledge directories from the filesystem.
+     *
+     * @return relative directory paths
+     */
+    @Override
+    public List<String> listDirectories() {
+        Path root = rootPath();
+        ensureRootExists(root);
+        try (Stream<Path> paths = Files.walk(root)) {
+            return paths.filter(Files::isDirectory)
+                    .filter(path -> !path.equals(root))
+                    .map(this::relativePath)
+                    .sorted()
+                    .toList();
+        } catch (IOException exception) {
+            throw new KnowledgeException("Failed to list knowledge directories from " + root, exception);
+        }
+    }
+
+    /**
      * Finds a document by identifier.
      *
      * @param id document identifier
@@ -161,11 +181,18 @@ public class DefaultKnowledgeService implements KnowledgeService {
     ) {
         try {
             String relativePath = relativePath(path);
+            Optional<KnowledgeDocument> existing = index.findByRelativePath(relativePath);
             BasicFileAttributes attributes = Files.readAttributes(path, BasicFileAttributes.class);
+            String sha256 = sha256Hasher.hash(path);
+            if (existing.isPresent() && existing.get().sha256().equals(sha256)) {
+                LOGGER.info("[KNOWLEDGE_WATCHER] DOCUMENT_INDEXING_SKIPPED path={} hashChanged=false", relativePath);
+                return existing.get();
+            }
+            LOGGER.info("[KNOWLEDGE_WATCHER] DOCUMENT_INDEXING_STARTED path={} hashChanged={}", relativePath, existing.isEmpty());
             String extension = supportedFileTypes.extension(path);
             String preview = preview(path, extension);
             KnowledgeDocument previousDocument = previousDocuments.get(relativePath);
-            KnowledgeDocument existingDocument = index.findByRelativePath(relativePath).orElse(null);
+            KnowledgeDocument existingDocument = existing.orElse(null);
             UUID id = Optional.ofNullable(existingDocument)
                     .map(KnowledgeDocument::id)
                     .or(() -> Optional.ofNullable(previousDocument).map(KnowledgeDocument::id))
@@ -180,12 +207,13 @@ public class DefaultKnowledgeService implements KnowledgeService {
                     attributes.size(),
                     attributes.creationTime().toInstant(),
                     attributes.lastModifiedTime().toInstant(),
-                    sha256Hasher.hash(path),
+                    sha256,
                     preview,
                     status
             );
             index.upsert(document);
             publishDocumentEvent(document, status);
+            LOGGER.info("[KNOWLEDGE_WATCHER] DOCUMENT_INDEXING_FINISHED path={} contentHash={}", relativePath, sha256);
             return document;
         } catch (IOException exception) {
             throw new KnowledgeException("Failed to index knowledge document " + path, exception);

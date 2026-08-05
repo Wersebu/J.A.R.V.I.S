@@ -58,3 +58,4 @@ knowledge:
   root: ./knowledge
   watch: true
   preview-length: 500
+  watcher-debounce-ms: 300

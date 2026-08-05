@@ -18,6 +18,13 @@ public interface KnowledgeService {
     List<KnowledgeDocument> listDocuments();
 
     /**
+     * Lists knowledge directories relative to the configured knowledge root.
+     *
+     * @return relative directory paths
+     */
+    List<String> listDirectories();
+
+    /**
      * Finds a document by identifier.
      *
      * @param id document identifier

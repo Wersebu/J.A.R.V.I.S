@@ -14,6 +14,10 @@ import java.nio.file.WatchKey;
 import java.nio.file.WatchService;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 import static java.nio.file.StandardWatchEventKinds.ENTRY_CREATE;
 import static java.nio.file.StandardWatchEventKinds.ENTRY_DELETE;
@@ -32,10 +36,12 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
     private final KnowledgeService knowledgeService;
     private final SupportedFileTypes supportedFileTypes;
     private final Map<WatchKey, Path> directoriesByKey = new ConcurrentHashMap<>();
+    private final Map<Path, ScheduledFuture<?>> pendingEvents = new ConcurrentHashMap<>();
 
     private volatile boolean running;
     private WatchService watchService;
     private Thread watcherThread;
+    private ScheduledExecutorService debounceExecutor;
 
     /**
      * Creates the knowledge file watcher.
@@ -66,6 +72,11 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
             Path root = Path.of(properties.root()).toAbsolutePath().normalize();
             Files.createDirectories(root);
             watchService = FileSystems.getDefault().newWatchService();
+            debounceExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "jarvis-knowledge-debounce");
+                thread.setDaemon(true);
+                return thread;
+            });
             registerRecursively(root);
             running = true;
             watcherThread = new Thread(this::watchLoop, "jarvis-knowledge-watch");
@@ -84,6 +95,11 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
     public void stop() {
         running = false;
         directoriesByKey.clear();
+        pendingEvents.values().forEach(future -> future.cancel(false));
+        pendingEvents.clear();
+        if (debounceExecutor != null) {
+            debounceExecutor.shutdownNow();
+        }
         if (watchService != null) {
             try {
                 watchService.close();
@@ -145,18 +161,38 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
             Path changedPath = directory.resolve((Path) event.context()).toAbsolutePath().normalize();
             if (event.kind() == ENTRY_CREATE && Files.isDirectory(changedPath)) {
                 registerRecursively(changedPath);
+                LOGGER.info("[KNOWLEDGE_WATCHER] CREATE path={}", changedPath);
+                continue;
             }
             if (!supportedFileTypes.supports(changedPath)) {
                 continue;
             }
             if (event.kind() == ENTRY_DELETE) {
-                knowledgeService.removeFile(changedPath);
+                schedule(changedPath, () -> knowledgeService.removeFile(changedPath), "DELETE");
             } else if (event.kind() == ENTRY_CREATE) {
-                knowledgeService.indexFile(changedPath, DocumentStatus.NEW);
+                schedule(changedPath, () -> knowledgeService.indexFile(changedPath, DocumentStatus.NEW), "CREATE");
             } else if (event.kind() == ENTRY_MODIFY) {
-                knowledgeService.indexFile(changedPath, DocumentStatus.UPDATED);
+                schedule(changedPath, () -> knowledgeService.indexFile(changedPath, DocumentStatus.UPDATED), "MODIFY");
             }
         }
+    }
+
+    private void schedule(Path path, Runnable action, String eventType) {
+        ScheduledFuture<?> previous = pendingEvents.remove(path);
+        if (previous != null) {
+            previous.cancel(false);
+            LOGGER.info("[KNOWLEDGE_WATCHER] DEBOUNCED path={} event={}", path, eventType);
+        } else {
+            LOGGER.info("[KNOWLEDGE_WATCHER] {} path={}", eventType, path);
+        }
+        ScheduledFuture<?> future = debounceExecutor.schedule(() -> {
+            try {
+                action.run();
+            } finally {
+                pendingEvents.remove(path);
+            }
+        }, properties.watcherDebounceMs(), TimeUnit.MILLISECONDS);
+        pendingEvents.put(path, future);
     }
 
     private void registerRecursively(Path root) throws IOException {

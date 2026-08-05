@@ -22,6 +22,8 @@ public enum CognitiveEventType {
     MEMORY_CANDIDATE_FOUND,
     /** Memory was injected into the prompt context. */
     MEMORY_INJECTED,
+    /** Memory was used as a final prompt source. */
+    MEMORY_USED,
     /** No relevant memory was found. */
     MEMORY_NOT_FOUND,
     /** Prompt builder injected memory into the final prompt. */
@@ -60,6 +62,12 @@ public enum CognitiveEventType {
     KNOWLEDGE_SEARCH_STARTED,
     /** A matching knowledge document was found. */
     DOCUMENT_FOUND,
+    /** A knowledge document was added. */
+    DOCUMENT_ADDED,
+    /** A knowledge document was updated. */
+    DOCUMENT_UPDATED,
+    /** A knowledge document was removed. */
+    DOCUMENT_REMOVED,
     /** Knowledge document reading started. */
     DOCUMENT_READING_STARTED,
     /** Knowledge document reading finished. */
@@ -70,6 +78,8 @@ public enum CognitiveEventType {
     CONTEXT_BUILD_STARTED,
     /** A source was added to context. */
     SOURCE_ADDED,
+    /** A knowledge source was injected into the final prompt. */
+    KNOWLEDGE_SOURCE_INJECTED,
     /** Context building finished. */
     CONTEXT_BUILD_FINISHED,
     /** Knowledge injection into the prompt started. */
@@ -109,5 +119,17 @@ public enum CognitiveEventType {
     /** Request finished. */
     REQUEST_FINISHED,
     /** Request failed. */
-    ERROR
+    ERROR,
+    /** Graph node was added. */
+    GRAPH_NODE_ADDED,
+    /** Graph node was updated. */
+    GRAPH_NODE_UPDATED,
+    /** Graph node was removed. */
+    GRAPH_NODE_REMOVED,
+    /** Graph node was moved. */
+    GRAPH_NODE_MOVED,
+    /** Graph edge was added. */
+    GRAPH_EDGE_ADDED,
+    /** Graph edge was removed. */
+    GRAPH_EDGE_REMOVED
 }

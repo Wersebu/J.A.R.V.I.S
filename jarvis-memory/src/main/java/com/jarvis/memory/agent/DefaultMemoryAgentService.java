@@ -186,7 +186,7 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
         semanticStore.save(record);
         indexEmbedding(job, record);
         publish(job, CognitiveEventType.MEMORY_CREATED, "CREATED", "Memory created",
-                "memory:" + record.id(), Map.of("content", content, "category", record.category().name(), "priority", record.priority().name()));
+                "memory-record:" + record.id(), Map.of("title", memoryTitle(content), "content", content, "category", record.category().name(), "priority", record.priority().name()));
     }
 
     private void updateMemory(MemoryJob job, MemoryAgentDecision decision) {
@@ -220,17 +220,25 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
         semanticStore.update(updated);
         indexEmbedding(job, updated);
         publish(job, CognitiveEventType.MEMORY_UPDATED, "UPDATED", "Memory updated",
-                "memory:" + updated.id(), Map.of("oldContent", existing.value(), "newContent", content));
+                "memory-record:" + updated.id(), Map.of("title", memoryTitle(content), "oldContent", existing.value(), "newContent", content, "category", updated.category().name()));
     }
 
     private void deleteMemory(MemoryJob job, MemoryAgentDecision decision) {
         if (decision.memoryId() != null && semanticStore.delete(decision.memoryId())) {
             publish(job, CognitiveEventType.MEMORY_DELETED, "DELETED", "Memory deleted",
-                    "memory:" + decision.memoryId(), Map.of());
+                    "memory-record:" + decision.memoryId(), Map.of());
             return;
         }
         publish(job, CognitiveEventType.MEMORY_SKIPPED, "SKIPPED",
                 "Memory delete skipped", "memory:agent", Map.of("reason", "memory not found"));
+    }
+
+    private String memoryTitle(String content) {
+        if (content == null || content.isBlank()) {
+            return "Memory";
+        }
+        String normalized = content.replaceAll("\\s+", " ").trim();
+        return normalized.length() <= 80 ? normalized : normalized.substring(0, 80);
     }
 
     private SemanticMemoryRecord findMemoryForUpdate(MemoryAgentDecision decision) {

@@ -123,14 +123,19 @@ public class EventController {
 
     private String sampleNodeId(CognitiveEventType event) {
         return switch (event) {
-            case DOCUMENT_FOUND, DOCUMENT_READING_STARTED, DOCUMENT_READING_FINISHED, SOURCE_ADDED -> "knowledge:Spring.md";
+            case DOCUMENT_FOUND, DOCUMENT_READING_STARTED, DOCUMENT_READING_FINISHED, SOURCE_ADDED,
+                    KNOWLEDGE_SOURCE_INJECTED, DOCUMENT_ADDED, DOCUMENT_UPDATED, DOCUMENT_REMOVED ->
+                    "knowledge-document:Java/Spring.md";
             case BRAIN_SELECTED -> "brain:REASONING";
             case MODEL_REQUEST_STARTED, WAITING_FIRST_TOKEN, FIRST_TOKEN_RECEIVED, THINKING_STARTED, THINKING_TOKEN,
                     THINKING_FINISHED, ANSWER_STARTED, ANSWER_TOKEN, ANSWER_FINISHED, STREAMING_STARTED, TOKEN,
                     STREAMING_FINISHED -> "model:gpt-oss:20b";
             case RESPONSE_GROUNDING -> "grounding:response";
             case MEMORY_JOB_QUEUED, MEMORY_AGENT_STARTED, MEMORY_AGENT_DECISION, MEMORY_AGENT_FINISHED, MEMORY_AGENT_ERROR -> "memory:agent";
-            case MEMORY_CANDIDATE_FOUND, MEMORY_INJECTED, MEMORY_CREATED, MEMORY_UPDATED, MEMORY_DELETED -> "memory:sample";
+            case MEMORY_CANDIDATE_FOUND, MEMORY_INJECTED, MEMORY_USED, MEMORY_CREATED, MEMORY_UPDATED, MEMORY_DELETED ->
+                    "memory-record:00000000-0000-0000-0000-000000000000";
+            case GRAPH_NODE_ADDED, GRAPH_NODE_UPDATED, GRAPH_NODE_REMOVED, GRAPH_NODE_MOVED ->
+                    "knowledge-folder:Java";
             default -> null;
         };
     }

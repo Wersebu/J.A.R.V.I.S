@@ -11,11 +11,13 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * REST API exposing a safe cognitive graph snapshot for the Windows hologram.
@@ -24,8 +26,12 @@ import java.util.Map;
 @RequestMapping("/api/v1/cognitive-graph")
 public class CognitiveGraphController {
 
-    private static final String KNOWLEDGE_PREFIX = "knowledge:";
+    private static final String KNOWLEDGE_FOLDER_PREFIX = "knowledge-folder:";
+    private static final String KNOWLEDGE_DOCUMENT_PREFIX = "knowledge-document:";
     private static final String MEMORY_ROOT_ID = "memory";
+    private static final String MEMORY_CATEGORY_PREFIX = "memory-category:";
+    private static final String MEMORY_RECORD_PREFIX = "memory-record:";
+    private static final AtomicLong REVISION = new AtomicLong();
 
     private final KnowledgeService knowledgeService;
     private final CognitiveMemoryService memoryService;
@@ -50,15 +56,53 @@ public class CognitiveGraphController {
     public CognitiveGraphResponse graph() {
         Map<String, NodeAccumulator> nodes = new LinkedHashMap<>();
         Map<String, CognitiveGraphEdgeResponse> edges = new LinkedHashMap<>();
-        addKnowledge(nodes, edges, knowledgeService.listDocuments());
+        addKnowledgeFolders(nodes, edges, knowledgeService.listDirectories());
+        addKnowledgeDocuments(nodes, edges, knowledgeService.listDocuments());
         addMemory(nodes, edges, memoryService.listAll());
         return new CognitiveGraphResponse(
+                REVISION.incrementAndGet(),
+                Instant.now().toString(),
                 nodes.values().stream().map(NodeAccumulator::response).toList(),
                 List.copyOf(edges.values())
         );
     }
 
-    private void addKnowledge(
+    /**
+     * Returns lightweight graph diagnostics.
+     *
+     * @return diagnostics
+     */
+    @GetMapping("/debug")
+    public Map<String, Object> debug() {
+        List<String> directories = knowledgeService.listDirectories();
+        List<KnowledgeDocument> documents = knowledgeService.listDocuments();
+        List<MemoryRecord> memories = memoryService.listAll();
+        return Map.of(
+                "graphRevision", REVISION.get(),
+                "watchedDirectories", directories.size(),
+                "knowledgeNodes", directories.size() + documents.size(),
+                "memoryNodes", memories.size(),
+                "edges", Math.max(0, directories.size() + documents.size() + memories.size() - 1),
+                "activeRequests", 0,
+                "unmatchedActivityEvents", List.of(),
+                "lastFilesystemEvents", List.of()
+        );
+    }
+
+    private void addKnowledgeFolders(
+            Map<String, NodeAccumulator> nodes,
+            Map<String, CognitiveGraphEdgeResponse> edges,
+            List<String> directories
+    ) {
+        for (String directory : directories) {
+            String normalized = normalize(directory);
+            if (!normalized.isBlank()) {
+                addFolder(nodes, edges, normalized);
+            }
+        }
+    }
+
+    private void addKnowledgeDocuments(
             Map<String, NodeAccumulator> nodes,
             Map<String, CognitiveGraphEdgeResponse> edges,
             List<KnowledgeDocument> documents
@@ -69,7 +113,7 @@ public class CognitiveGraphController {
                 continue;
             }
             String parentId = addFolderPath(nodes, edges, relativePath);
-            String documentId = KNOWLEDGE_PREFIX + relativePath;
+            String documentId = KNOWLEDGE_DOCUMENT_PREFIX + relativePath;
             put(nodes, documentId, "KNOWLEDGE_DOCUMENT", safe(document.title(), fileName(relativePath)), parentId, Map.of(
                     "path", relativePath,
                     "indexed", document.status() == null ? "INDEXED" : document.status().name(),
@@ -100,7 +144,7 @@ public class CognitiveGraphController {
                 path.append('/');
             }
             path.append(part);
-            String id = KNOWLEDGE_PREFIX + path;
+            String id = KNOWLEDGE_FOLDER_PREFIX + path;
             put(nodes, id, "KNOWLEDGE_FOLDER", part, parentId, Map.of("path", path.toString()));
             if (parentId != null) {
                 connect(edges, parentId, id, "PARENT_CHILD");
@@ -108,6 +152,20 @@ public class CognitiveGraphController {
             parentId = id;
         }
         return parentId;
+    }
+
+    private String addFolder(
+            Map<String, NodeAccumulator> nodes,
+            Map<String, CognitiveGraphEdgeResponse> edges,
+            String directory
+    ) {
+        String normalized = normalize(directory);
+        String parentPath = parentPath(normalized);
+        String parentId = parentPath.isBlank() ? null : addFolder(nodes, edges, parentPath);
+        String id = KNOWLEDGE_FOLDER_PREFIX + normalized;
+        put(nodes, id, "KNOWLEDGE_FOLDER", fileName(normalized), parentId, Map.of("path", normalized));
+        connect(edges, parentId, id, "PARENT_CHILD");
+        return id;
     }
 
     private void addMemory(
@@ -118,14 +176,14 @@ public class CognitiveGraphController {
         if (memories.isEmpty()) {
             return;
         }
-        put(nodes, MEMORY_ROOT_ID, "MEMORY_CLUSTER", "Memory", null, Map.of());
+        put(nodes, MEMORY_ROOT_ID, "MEMORY_ROOT", "Memory", null, Map.of());
         for (MemoryRecord memory : memories) {
             String category = memory.category() == null ? "SEMANTIC" : memory.category().name();
-            String categoryId = "memory:" + category;
+            String categoryId = MEMORY_CATEGORY_PREFIX + category;
             put(nodes, categoryId, "MEMORY_CATEGORY", category, MEMORY_ROOT_ID, Map.of("category", category));
             connect(edges, MEMORY_ROOT_ID, categoryId, "PARENT_CHILD");
-            String memoryId = "memory:" + category + ":" + memory.id();
-            put(nodes, memoryId, "MEMORY", safeTitle(memory), categoryId, Map.of(
+            String memoryId = MEMORY_RECORD_PREFIX + memory.id();
+            put(nodes, memoryId, "MEMORY_RECORD", safeTitle(memory), categoryId, Map.of(
                     "category", category,
                     "confidence", memory.confidence(),
                     "priority", memory.priority() == null ? "NORMAL" : memory.priority().name(),
@@ -182,6 +240,12 @@ public class CognitiveGraphController {
         String normalized = normalize(relativePath);
         int slash = normalized.lastIndexOf('/');
         return slash >= 0 ? normalized.substring(slash + 1) : normalized;
+    }
+
+    private String parentPath(String relativePath) {
+        String normalized = normalize(relativePath);
+        int slash = normalized.lastIndexOf('/');
+        return slash > 0 ? normalized.substring(0, slash) : "";
     }
 
     private String safe(String value, String fallback) {
