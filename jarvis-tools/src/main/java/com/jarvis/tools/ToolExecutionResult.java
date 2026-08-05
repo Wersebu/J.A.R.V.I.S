@@ -10,4 +10,11 @@ import java.util.Map;
  * @param metadata structured result metadata
  */
 public record ToolExecutionResult(boolean success, String output, Map<String, Object> metadata) {
+
+    /**
+     * Creates an immutable result.
+     */
+    public ToolExecutionResult {
+        metadata = metadata == null ? Map.of() : Map.copyOf(metadata);
+    }
 }

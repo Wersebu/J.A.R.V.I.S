@@ -13,7 +13,7 @@ public interface ToolManager {
      *
      * @return registered tools
      */
-    List<Tool> listTools();
+    List<JarvisTool> listTools();
 
     /**
      * Finds a registered tool by name.
@@ -21,5 +21,13 @@ public interface ToolManager {
      * @param name stable tool name
      * @return matching tool, when present
      */
-    Optional<Tool> findTool(String name);
+    Optional<JarvisTool> findTool(String name);
+
+    /**
+     * Executes a registered tool.
+     *
+     * @param request native tool request
+     * @return tool result
+     */
+    ToolResult execute(ToolRequest request);
 }

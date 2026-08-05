@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "1.3.2"
+  version: "2.1.0"
   ai:
     identity-file: file:config/jarvis.md
   diagnostics:

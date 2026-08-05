@@ -34,6 +34,14 @@ public interface KnowledgeWorkspaceService {
     KnowledgeToolResult read(UUID documentId);
 
     /**
+     * Reads a knowledge document by logical path.
+     *
+     * @param logicalPath path relative to the knowledge root
+     * @return operation result containing content
+     */
+    KnowledgeToolResult read(String logicalPath);
+
+    /**
      * Creates a folder.
      */
     KnowledgeToolResult createFolder(String parentId, String name);
@@ -49,9 +57,28 @@ public interface KnowledgeWorkspaceService {
     KnowledgeToolResult updateDocument(UUID documentId, String newContent);
 
     /**
+     * Applies an instruction-based update to a document.
+     *
+     * @param logicalPath document logical path
+     * @param instruction update instruction
+     * @param text optional content used by the instruction
+     * @return operation result
+     */
+    KnowledgeToolResult updateDocument(String logicalPath, String instruction, String text);
+
+    /**
      * Appends text to a document.
      */
     KnowledgeToolResult appendDocument(UUID documentId, String text);
+
+    /**
+     * Appends text to a document by logical path.
+     *
+     * @param logicalPath document logical path
+     * @param text appended text
+     * @return operation result
+     */
+    KnowledgeToolResult appendDocument(String logicalPath, String text);
 
     /**
      * Renames a folder or document.

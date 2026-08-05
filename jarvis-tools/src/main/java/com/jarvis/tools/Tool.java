@@ -3,7 +3,7 @@ package com.jarvis.tools;
 /**
  * Contract for executable Jarvis tools.
  */
-public interface Tool {
+public interface Tool extends JarvisTool {
 
     /**
      * Returns the stable tool name.
@@ -26,4 +26,20 @@ public interface Tool {
      * @return execution result
      */
     ToolExecutionResult execute(ToolExecutionRequest request);
+
+    @Override
+    default String getName() {
+        return name();
+    }
+
+    @Override
+    default String getDescription() {
+        return description();
+    }
+
+    @Override
+    default ToolResult execute(ToolRequest request) {
+        ToolExecutionResult result = execute(new ToolExecutionRequest(request.arguments()));
+        return new ToolResult(result.success(), result.output(), result.metadata());
+    }
 }

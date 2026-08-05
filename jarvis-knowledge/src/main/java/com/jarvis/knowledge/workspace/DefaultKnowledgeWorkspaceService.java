@@ -87,17 +87,25 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     @Override
     public KnowledgeToolResult read(UUID documentId) {
         KnowledgeDocument document = document(documentId);
-        Path path = resolveRelative(document.relativePath());
+        return read(document.relativePath());
+    }
+
+    @Override
+    public KnowledgeToolResult read(String logicalPath) {
+        Path path = resolveRelative(logicalPath);
+        String relativePath = relativePath(path);
         try {
             String content = Files.readString(path, StandardCharsets.UTF_8);
-            return result("knowledge.read", true, false, "Document read", nodeId(document.relativePath()),
-                    document.relativePath(), Map.of(
-                            "documentId", document.id().toString(),
+            return result("knowledge.read", true, false, "Document read", nodeId(relativePath),
+                    relativePath, Map.of(
+                            "documentId", knowledgeIndex.findByRelativePath(relativePath)
+                                    .map(document -> document.id().toString())
+                                    .orElse(""),
                             "content", content,
                             "characters", content.length()
                     ));
         } catch (IOException exception) {
-            throw new KnowledgeException("Failed to read knowledge document " + document.relativePath(), exception);
+            throw new KnowledgeException("Failed to read knowledge document " + relativePath, exception);
         }
     }
 
@@ -142,16 +150,60 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     }
 
     @Override
+    public KnowledgeToolResult updateDocument(String logicalPath, String instruction, String text) {
+        Path path = resolveRelative(logicalPath);
+        String relativePath = relativePath(path);
+        String normalizedInstruction = instruction == null ? "" : instruction.trim();
+        String payload = text == null ? "" : text.trim();
+        return writeOperation("knowledge.updateDocument", nodeId(relativePath), relativePath,
+                CognitiveEventType.DOCUMENT_UPDATED,
+                "Document updated",
+                Map.of(
+                        "instruction", normalizedInstruction,
+                        "characters", payload.length()
+                ),
+                () -> {
+                    Optional<KnowledgeDocument> document = knowledgeIndex.findByRelativePath(relativePath);
+                    if (document.isPresent()) {
+                        saveVersion(document.get(), "Instruction update: " + normalizedInstruction);
+                    }
+                    String current = Files.exists(path) ? Files.readString(path, StandardCharsets.UTF_8) : "";
+                    String updated = applyInstruction(current, normalizedInstruction, payload);
+                    ensureDirectory(path.getParent());
+                    Files.writeString(path, updated, StandardCharsets.UTF_8);
+                });
+    }
+
+    @Override
     public KnowledgeToolResult appendDocument(UUID documentId, String text) {
         KnowledgeDocument document = document(documentId);
-        Path path = resolveRelative(document.relativePath());
+        return appendDocument(document.relativePath(), text);
+    }
+
+    @Override
+    public KnowledgeToolResult appendDocument(String logicalPath, String text) {
+        Path path = resolveRelative(logicalPath);
+        String relativePath = relativePath(path);
         String addition = text == null ? "" : text;
-        return writeOperation("knowledge.appendDocument", nodeId(document.relativePath()), document.relativePath(),
+        return writeOperation("knowledge.appendDocument", nodeId(relativePath), relativePath,
                 CognitiveEventType.DOCUMENT_UPDATED,
                 "Document appended",
-                Map.of("documentId", document.id().toString(), "characters", addition.length()),
+                Map.of(
+                        "documentId", knowledgeIndex.findByRelativePath(relativePath)
+                                .map(document -> document.id().toString())
+                                .orElse(""),
+                        "characters", addition.length()
+                ),
                 () -> {
-                    saveVersion(document, "Append document content");
+                    Optional<KnowledgeDocument> document = knowledgeIndex.findByRelativePath(relativePath);
+                    if (document.isPresent()) {
+                        saveVersion(document.get(), "Append document content");
+                    }
+                    ensureDirectory(path.getParent());
+                    if (!Files.exists(path)) {
+                        Files.writeString(path, withMetadata(path.getFileName().toString(), addition), StandardCharsets.UTF_8);
+                        return;
+                    }
                     Files.writeString(path, System.lineSeparator() + addition, StandardCharsets.UTF_8,
                             java.nio.file.StandardOpenOption.APPEND);
                 });
@@ -370,6 +422,7 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
         Path folder = historyRoot().resolve(document.id().toString());
         ensureDirectory(folder);
         String versionId = DateTimeFormatter.ISO_INSTANT.format(Instant.now()).replace(':', '-');
+        KnowledgeWorkspaceAuditContext.Audit audit = KnowledgeWorkspaceAuditContext.current();
         Path copy = folder.resolve(versionId + "__" + source.getFileName());
         Files.copy(source, copy, StandardCopyOption.REPLACE_EXISTING);
         Path metadata = folder.resolve(versionId + ".meta");
@@ -380,6 +433,11 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
                 "timestamp=" + Instant.now(),
                 "author=" + AI_AUTHOR,
                 "summary=" + summary,
+                "conversationId=" + sanitizeAudit(audit.conversationId()),
+                "requestId=" + sanitizeAudit(audit.requestId()),
+                "tool=" + sanitizeAudit(audit.tool()),
+                "reason=" + sanitizeAudit(audit.reason()),
+                "reasoningSummary=" + sanitizeAudit(audit.reasoningSummary()),
                 "previousVersionPath=" + rootPath().relativize(copy).toString().replace('\\', '/')
         ), StandardCharsets.UTF_8);
     }
@@ -429,6 +487,11 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
                     Instant.parse(values.getOrDefault("timestamp", Instant.EPOCH.toString())),
                     values.getOrDefault("author", AI_AUTHOR),
                     values.getOrDefault("summary", ""),
+                    values.getOrDefault("conversationId", ""),
+                    values.getOrDefault("requestId", ""),
+                    values.getOrDefault("tool", ""),
+                    values.getOrDefault("reason", ""),
+                    values.getOrDefault("reasoningSummary", ""),
                     values.getOrDefault("previousVersionPath", "")
             );
         } catch (IOException exception) {
@@ -621,6 +684,37 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
                 + content;
     }
 
+    private String applyInstruction(String current, String instruction, String text) {
+        String safeCurrent = current == null ? "" : current;
+        String safeInstruction = instruction == null ? "" : instruction;
+        String safeText = text == null ? "" : text;
+        String lowerInstruction = safeInstruction.toLowerCase(Locale.ROOT);
+        if ((lowerInstruction.contains("remove") || lowerInstruction.contains("delete") || lowerInstruction.contains("usun"))
+                && !safeText.isBlank()) {
+            return removeLinesContaining(safeCurrent, safeText);
+        }
+        StringBuilder builder = new StringBuilder(safeCurrent.stripTrailing());
+        if (!builder.isEmpty()) {
+            builder.append(System.lineSeparator()).append(System.lineSeparator());
+        }
+        builder.append("## AI Workspace Update").append(System.lineSeparator())
+                .append("- Instruction: ").append(safeInstruction.isBlank() ? "Update document" : safeInstruction)
+                .append(System.lineSeparator());
+        if (!safeText.isBlank()) {
+            builder.append("- Change: ").append(safeText).append(System.lineSeparator());
+        }
+        builder.append("- Updated: ").append(Instant.now()).append(System.lineSeparator());
+        return builder.toString();
+    }
+
+    private String removeLinesContaining(String current, String phrase) {
+        String needle = phrase.toLowerCase(Locale.ROOT);
+        return current.lines()
+                .filter(line -> !line.toLowerCase(Locale.ROOT).contains(needle))
+                .reduce((left, right) -> left + System.lineSeparator() + right)
+                .orElse("");
+    }
+
     private KnowledgeToolResult result(
             String tool,
             boolean applied,
@@ -635,6 +729,10 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
 
     private String nullToEmpty(String value) {
         return value == null ? "" : value;
+    }
+
+    private String sanitizeAudit(String value) {
+        return value == null ? "" : value.replace('\n', ' ').replace('\r', ' ');
     }
 
     @FunctionalInterface

@@ -187,5 +187,17 @@ public enum CognitiveEventType {
     /** Knowledge workspace index was refreshed. */
     INDEX_REFRESH,
     /** Knowledge graph model should be refreshed. */
-    GRAPH_REFRESH
+    GRAPH_REFRESH,
+    /** Tool execution started. */
+    TOOL_STARTED,
+    /** Tool read a document. */
+    DOCUMENT_READ,
+    /** Tool search started. */
+    SEARCH_STARTED,
+    /** Tool search result was produced. */
+    SEARCH_RESULT,
+    /** Tool search finished. */
+    SEARCH_FINISHED,
+    /** Tool execution finished. */
+    TOOL_FINISHED
 }
