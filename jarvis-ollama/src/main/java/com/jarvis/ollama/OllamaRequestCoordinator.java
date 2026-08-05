@@ -5,6 +5,7 @@ import com.jarvis.common.diagnostics.InferenceDiagnostics;
 import com.jarvis.common.diagnostics.InferenceDiagnosticsContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -17,9 +18,20 @@ import java.util.concurrent.TimeUnit;
 public class OllamaRequestCoordinator {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(OllamaRequestCoordinator.class);
+    private static final long MEMORY_AGENT_PRIORITY_GRACE_MS = 200L;
 
+    private final boolean chatPriority;
     private AIJobType activeJob;
     private int waitingChatJobs;
+
+    /**
+     * Creates the Ollama request coordinator.
+     *
+     * @param chatPriority whether chat requests have priority over memory jobs
+     */
+    public OllamaRequestCoordinator(@Value("${jarvis.memory.background.chat-priority:true}") boolean chatPriority) {
+        this.chatPriority = chatPriority;
+    }
 
     /**
      * Acquires an Ollama permit for one job.
@@ -39,12 +51,17 @@ public class OllamaRequestCoordinator {
             }
             LOGGER.info("[JARVIS][requestId={}][OLLAMA] QUEUE_STARTED jobType={} activeJob={}",
                     requestId, jobType, activeAtQueue == null ? "NONE" : activeAtQueue);
+            if (chatPriority && jobType == AIJobType.MEMORY_AGENT && activeJob == null && waitingChatJobs == 0) {
+                LOGGER.info("[JARVIS][requestId={}][OLLAMA] WAITING_FOR_OLLAMA_PRIORITY graceMs={}",
+                        requestId, MEMORY_AGENT_PRIORITY_GRACE_MS);
+                waitQuietly(MEMORY_AGENT_PRIORITY_GRACE_MS);
+            }
             while (activeJob != null || shouldPostpone(jobType)) {
                 if (jobType == AIJobType.CHAT && activeJob == AIJobType.MEMORY_AGENT) {
                     LOGGER.info("[JARVIS][requestId={}][OLLAMA] CHAT_WAITING_BEHIND_MEMORY_AGENT", requestId);
                 }
                 if (jobType == AIJobType.MEMORY_AGENT && waitingChatJobs > 0) {
-                    LOGGER.info("[JARVIS][requestId={}][OLLAMA] MEMORY_AGENT_POSTPONED chatPending={}", requestId, waitingChatJobs);
+                    LOGGER.info("[JARVIS][requestId={}][OLLAMA] WAITING_FOR_OLLAMA_PRIORITY chatPending={}", requestId, waitingChatJobs);
                 }
                 waitQuietly();
             }
@@ -66,12 +83,21 @@ public class OllamaRequestCoordinator {
     }
 
     private boolean shouldPostpone(AIJobType jobType) {
-        return jobType == AIJobType.MEMORY_AGENT && waitingChatJobs > 0;
+        return chatPriority && jobType == AIJobType.MEMORY_AGENT && waitingChatJobs > 0;
     }
 
     private void waitQuietly() {
         try {
             wait();
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new OllamaException("Interrupted while waiting for Ollama permit", exception);
+        }
+    }
+
+    private void waitQuietly(long millis) {
+        try {
+            wait(millis);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             throw new OllamaException("Interrupted while waiting for Ollama permit", exception);

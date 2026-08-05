@@ -4,6 +4,8 @@ import com.jarvis.common.ai.BrainType;
 import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -16,6 +18,7 @@ import java.util.function.Consumer;
 @Service
 public class DefaultCognitiveEventBus implements CognitiveEventBus {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(DefaultCognitiveEventBus.class);
     private static final ThreadLocal<RequestScope> REQUEST_SCOPE = new ThreadLocal<>();
 
     /**
@@ -79,6 +82,20 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
                 nodeId,
                 metadata
         ));
+    }
+
+    @Override
+    public void publishBackground(
+            String requestId,
+            String conversationId,
+            CognitiveEventType event,
+            String status,
+            String message,
+            String nodeId,
+            Map<String, Object> metadata
+    ) {
+        LOGGER.info("[JARVIS][MEMORY][sourceRequestId={}] event={} status={} conversationId={} nodeId={} metadata={}",
+                requestId, event, status, conversationId, nodeId, metadata == null ? Map.of() : metadata);
     }
 
     private record RequestScope(

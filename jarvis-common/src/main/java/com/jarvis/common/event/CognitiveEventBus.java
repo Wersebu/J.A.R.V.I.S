@@ -44,6 +44,29 @@ public interface CognitiveEventBus {
     void publish(CognitiveEventType event, String status, String message, String nodeId, Map<String, Object> metadata);
 
     /**
+     * Publishes a background event outside the active request SSE lifecycle.
+     *
+     * @param requestId source request identifier
+     * @param conversationId conversation identifier
+     * @param event event type
+     * @param status short status
+     * @param message message
+     * @param nodeId logical node identifier, when available
+     * @param metadata metadata
+     */
+    default void publishBackground(
+            String requestId,
+            String conversationId,
+            CognitiveEventType event,
+            String status,
+            String message,
+            String nodeId,
+            Map<String, Object> metadata
+    ) {
+        publish(event, status, message, nodeId, metadata);
+    }
+
+    /**
      * Publishes an error event.
      *
      * @param message error message

@@ -35,6 +35,7 @@ public class EventController {
                 schema(CognitiveEventType.MEMORY_INJECTED, "Memory was injected into pipeline context.", "memories", "characters", "estimatedTokens"),
                 schema(CognitiveEventType.MEMORY_NOT_FOUND, "No relevant memory was found.", "query", "executionTimeMs"),
                 schema(CognitiveEventType.PROMPT_MEMORY_INJECTED, "Prompt contains memory section.", "memories", "memoryCharacters"),
+                schema(CognitiveEventType.MEMORY_JOB_QUEUED, "Background memory job was queued.", "memoryJobId", "sourceRequestId", "conversationId", "timestamp"),
                 schema(CognitiveEventType.MEMORY_AGENT_STARTED, "Background Memory Agent started.", "conversationId", "existingMemories"),
                 schema(CognitiveEventType.MEMORY_AGENT_DECISION, "Background Memory Agent made a decision.", "action", "category", "priority", "confidence", "reason"),
                 schema(CognitiveEventType.MEMORY_CREATED, "Memory was created.", "content", "category", "priority"),
@@ -42,6 +43,7 @@ public class EventController {
                 schema(CognitiveEventType.MEMORY_DELETED, "Memory was deleted."),
                 schema(CognitiveEventType.MEMORY_SKIPPED, "Memory operation was skipped.", "reason"),
                 schema(CognitiveEventType.MEMORY_AGENT_FINISHED, "Background Memory Agent finished.", "durationMs"),
+                schema(CognitiveEventType.MEMORY_AGENT_ERROR, "Background Memory Agent failed.", "error"),
                 schema(CognitiveEventType.KNOWLEDGE_SEARCH_STARTED, "Knowledge search started.", "query"),
                 schema(CognitiveEventType.DOCUMENT_FOUND, "A matching document was found.", "documentId", "title", "relativePath", "category", "score"),
                 schema(CognitiveEventType.DOCUMENT_READING_STARTED, "Source document reading started.", "title", "relativePath", "category"),
@@ -125,7 +127,7 @@ public class EventController {
             case MODEL_REQUEST_STARTED, WAITING_FIRST_TOKEN, FIRST_TOKEN_RECEIVED, THINKING_STARTED, THINKING_TOKEN,
                     THINKING_FINISHED, ANSWER_STARTED, ANSWER_TOKEN, ANSWER_FINISHED, STREAMING_STARTED, TOKEN,
                     STREAMING_FINISHED -> "model:gpt-oss:20b";
-            case MEMORY_AGENT_STARTED, MEMORY_AGENT_DECISION, MEMORY_AGENT_FINISHED -> "memory:agent";
+            case MEMORY_JOB_QUEUED, MEMORY_AGENT_STARTED, MEMORY_AGENT_DECISION, MEMORY_AGENT_FINISHED, MEMORY_AGENT_ERROR -> "memory:agent";
             case MEMORY_CANDIDATE_FOUND, MEMORY_INJECTED, MEMORY_CREATED, MEMORY_UPDATED, MEMORY_DELETED -> "memory:sample";
             default -> null;
         };
@@ -138,6 +140,8 @@ public class EventController {
             case BRAIN_SELECTED -> Map.of("brain", "REASONING", "model", "gpt-oss:20b", "reasoningLevel", "HIGH", "reason", "Sample reasoning request", "latencyMs", 3);
             case MODEL_REQUEST_STARTED -> Map.of("model", "gpt-oss:20b", "reasoningLevel", "HIGH", "endpoint", "http://localhost:11434/api/generate", "provider", "ollama");
             case MEMORY_AGENT_DECISION -> Map.of("action", "UPDATE", "category", "DEVICE", "priority", "HIGH", "confidence", 0.91, "reason", "User upgraded GPU");
+            case MEMORY_JOB_QUEUED -> Map.of("memoryJobId", "00000000-0000-0000-0000-000000000001", "sourceRequestId", "sample-request", "conversationId", "sample-conversation");
+            case MEMORY_AGENT_ERROR -> Map.of("error", "Memory Agent failed");
             case MEMORY_CREATED -> Map.of("content", "User owns RTX3060", "category", "DEVICE", "priority", "HIGH");
             case MEMORY_UPDATED -> Map.of("oldContent", "User owns RTX3060", "newContent", "User owns RTX5090");
             case FIRST_TOKEN_RECEIVED -> Map.of("latencyMs", 420);

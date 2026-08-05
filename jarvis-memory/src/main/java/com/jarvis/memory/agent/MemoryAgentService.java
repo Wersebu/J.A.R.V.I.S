@@ -1,10 +1,6 @@
 package com.jarvis.memory.agent;
 
-import com.jarvis.common.event.CognitiveEvent;
-import com.jarvis.memory.pipeline.PipelineContext;
-
-import java.util.concurrent.CompletableFuture;
-import java.util.function.Consumer;
+import com.jarvis.memory.job.MemoryJob;
 
 /**
  * Runs background memory extraction after a conversation is finished.
@@ -12,11 +8,9 @@ import java.util.function.Consumer;
 public interface MemoryAgentService {
 
     /**
-     * Starts background memory analysis.
+     * Runs memory analysis for a queued background job.
      *
-     * @param context completed pipeline context
-     * @param eventSink cognitive event sink
-     * @return background task future
+     * @param job immutable memory job
      */
-    CompletableFuture<Void> analyzeAsync(PipelineContext context, Consumer<CognitiveEvent> eventSink);
+    void analyze(MemoryJob job);
 }

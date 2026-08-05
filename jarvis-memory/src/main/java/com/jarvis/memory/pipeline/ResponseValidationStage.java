@@ -5,7 +5,7 @@ import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.memory.ConversationMessage;
 import com.jarvis.common.memory.MessageRole;
 import com.jarvis.memory.ConversationMemoryService;
-import com.jarvis.memory.agent.MemoryAgentService;
+import com.jarvis.memory.job.MemoryJobService;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
@@ -21,23 +21,23 @@ public class ResponseValidationStage implements PipelineStage {
 
     private final CognitiveEventBus cognitiveEventBus;
     private final ConversationMemoryService memoryService;
-    private final MemoryAgentService memoryAgentService;
+    private final MemoryJobService memoryJobService;
 
     /**
      * Creates the response validation stage.
      *
      * @param cognitiveEventBus event bus
      * @param memoryService memory service
-     * @param memoryAgentService background memory agent service
+     * @param memoryJobService background memory job service
      */
     public ResponseValidationStage(
             CognitiveEventBus cognitiveEventBus,
             ConversationMemoryService memoryService,
-            MemoryAgentService memoryAgentService
+            MemoryJobService memoryJobService
     ) {
         this.cognitiveEventBus = cognitiveEventBus;
         this.memoryService = memoryService;
-        this.memoryAgentService = memoryAgentService;
+        this.memoryJobService = memoryJobService;
     }
 
     @Override
@@ -72,6 +72,7 @@ public class ResponseValidationStage implements PipelineStage {
                 Map.entry("reason", context.executionPlan().reason()),
                 Map.entry("confidence", context.executionPlan().confidence())
         ));
-        return context.withMemoryAgentFuture(memoryAgentService.analyzeAsync(context, context.cognitiveEventSink()));
+        memoryJobService.submit(context);
+        return context.withMetadata("memoryJobSubmitted", true);
     }
 }

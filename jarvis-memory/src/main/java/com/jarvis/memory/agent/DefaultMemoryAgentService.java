@@ -1,37 +1,33 @@
 package com.jarvis.memory.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.AIJobType;
+import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.Brain;
 import com.jarvis.common.ai.BrainType;
 import com.jarvis.common.ai.ReasoningLevel;
-import com.jarvis.common.event.CognitiveEvent;
+import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.memory.MemoryCategory;
 import com.jarvis.common.memory.MemoryPriority;
-import com.jarvis.common.memory.MemoryRecord;
 import com.jarvis.memory.cognitive.SemanticMemoryRecord;
 import com.jarvis.memory.cognitive.SemanticMemoryStore;
 import com.jarvis.memory.embedding.EmbeddingMemoryEngine;
-import com.jarvis.memory.pipeline.PipelineContext;
+import com.jarvis.memory.job.MemoryJob;
 import com.jarvis.memory.retrieval.MemoryQueryNormalizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.function.Consumer;
 
 /**
- * Default AI-powered asynchronous memory agent.
+ * AI-powered memory agent executed by the background memory job queue.
  */
 @Service
 public class DefaultMemoryAgentService implements MemoryAgentService {
@@ -42,9 +38,9 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
     private final List<AIProvider> aiProviders;
     private final SemanticMemoryStore semanticStore;
     private final ObjectMapper objectMapper;
-    private final ExecutorService executorService;
     private final MemoryQueryNormalizer queryNormalizer;
     private final EmbeddingMemoryEngine embeddingMemoryEngine;
+    private final CognitiveEventBus cognitiveEventBus;
 
     /**
      * Creates the default memory agent service.
@@ -52,48 +48,38 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
      * @param aiProviders available AI providers
      * @param semanticStore semantic memory store
      * @param objectMapper JSON object mapper
+     * @param queryNormalizer memory query normalizer
+     * @param embeddingMemoryEngine embedding memory engine
+     * @param cognitiveEventBus cognitive event bus
      */
     public DefaultMemoryAgentService(
             List<AIProvider> aiProviders,
             SemanticMemoryStore semanticStore,
             ObjectMapper objectMapper,
             MemoryQueryNormalizer queryNormalizer,
-            EmbeddingMemoryEngine embeddingMemoryEngine
+            EmbeddingMemoryEngine embeddingMemoryEngine,
+            CognitiveEventBus cognitiveEventBus
     ) {
         this.aiProviders = List.copyOf(aiProviders);
         this.semanticStore = semanticStore;
         this.objectMapper = objectMapper;
         this.queryNormalizer = queryNormalizer;
         this.embeddingMemoryEngine = embeddingMemoryEngine;
-        this.executorService = Executors.newSingleThreadExecutor(runnable -> {
-            Thread thread = new Thread(runnable, "jarvis-memory-agent");
-            thread.setDaemon(true);
-            return thread;
-        });
+        this.cognitiveEventBus = cognitiveEventBus;
     }
 
     @Override
-    public CompletableFuture<Void> analyzeAsync(PipelineContext context, Consumer<CognitiveEvent> eventSink) {
-        return CompletableFuture.runAsync(() -> analyze(context, eventSink == null ? event -> { } : eventSink), executorService)
-                .exceptionally(exception -> {
-                    LOGGER.error("[JARVIS] Memory Agent failed", exception);
-                    publish(context, eventSink, CognitiveEventType.MEMORY_AGENT_FINISHED, "FAILED",
-                            "Memory Agent failed", null, Map.of("error", exception.getMessage() == null ? "" : exception.getMessage()));
-                    return null;
-                });
-    }
-
-    private void analyze(PipelineContext context, Consumer<CognitiveEvent> eventSink) {
+    public void analyze(MemoryJob job) {
         Instant startedAt = Instant.now();
-        publish(context, eventSink, CognitiveEventType.MEMORY_AGENT_STARTED, "STARTED",
+        publish(job, CognitiveEventType.MEMORY_AGENT_STARTED, "STARTED",
                 "Memory Agent analyzing conversation", "memory:agent", Map.of(
-                        "conversationId", context.conversationId(),
-                        "existingMemories", context.memoryContext().memoryCount()
+                        "existingMemories", job.currentMemories().size()
                 ));
-        LOGGER.info("[JARVIS] Memory Agent started conversationId={}", context.conversationId());
+        LOGGER.info("[JARVIS][MEMORY][jobId={}][sourceRequestId={}] MEMORY_AGENT_STARTED",
+                job.memoryJobId(), job.sourceRequestId());
 
-        MemoryAgentDecision decision = decide(context);
-        publish(context, eventSink, CognitiveEventType.MEMORY_AGENT_DECISION, decision.action().name(),
+        MemoryAgentDecision decision = decide(job);
+        publish(job, CognitiveEventType.MEMORY_AGENT_DECISION, decision.action().name(),
                 "Memory Agent decision", "memory:agent", Map.of(
                         "action", decision.action().name(),
                         "category", safeCategory(decision).name(),
@@ -102,22 +88,28 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
                         "reason", decision.reason() == null ? "" : decision.reason()
                 ));
 
-        applyDecision(context, eventSink, decision);
+        applyDecision(job, decision);
         long durationMs = java.time.Duration.between(startedAt, Instant.now()).toMillis();
-        publish(context, eventSink, CognitiveEventType.MEMORY_AGENT_FINISHED, "FINISHED",
+        publish(job, CognitiveEventType.MEMORY_AGENT_FINISHED, "FINISHED",
                 "Memory Agent finished", "memory:agent", Map.of("durationMs", durationMs));
-        LOGGER.info("[JARVIS] Memory Agent finished action={} durationMs={}", decision.action(), durationMs);
+        LOGGER.info("[JARVIS][MEMORY][jobId={}][sourceRequestId={}] MEMORY_AGENT_FINISHED action={} durationMs={}",
+                job.memoryJobId(), job.sourceRequestId(), decision.action(), durationMs);
     }
 
-    private MemoryAgentDecision decide(PipelineContext context) {
+    private MemoryAgentDecision decide(MemoryJob job) {
         try {
-            String prompt = prompt(context);
+            String prompt = prompt(job);
             Brain brain = new Brain(BrainType.CLASSIFIER, "ollama", MODEL, "Background memory agent")
                     .withRoutingMetadata("Memory extraction", 0L, ReasoningLevel.LOW);
             String response = selectProvider().chat(brain, prompt, AIJobType.MEMORY_AGENT).response();
             return parseDecision(response);
         } catch (RuntimeException exception) {
-            LOGGER.error("[JARVIS] Memory Agent decision failed", exception);
+            LOGGER.error("[JARVIS][MEMORY][jobId={}][sourceRequestId={}] MEMORY_AGENT_DECISION_FAILED",
+                    job.memoryJobId(), job.sourceRequestId(), exception);
+            publish(job, CognitiveEventType.MEMORY_AGENT_ERROR, "ERROR",
+                    "Memory Agent decision failed", "memory:agent", Map.of(
+                            "error", exception.getMessage() == null ? "" : exception.getMessage()
+                    ));
             return MemoryAgentDecision.none("agent failure");
         }
     }
@@ -153,30 +145,30 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
         return "{\"action\":\"NONE\",\"reason\":\"no json returned\"}";
     }
 
-    private void applyDecision(PipelineContext context, Consumer<CognitiveEvent> eventSink, MemoryAgentDecision decision) {
+    private void applyDecision(MemoryJob job, MemoryAgentDecision decision) {
         switch (decision.action()) {
-            case NONE -> publish(context, eventSink, CognitiveEventType.MEMORY_SKIPPED, "SKIPPED",
+            case NONE -> publish(job, CognitiveEventType.MEMORY_SKIPPED, "SKIPPED",
                     "Memory Agent skipped update", "memory:agent", Map.of("reason", decision.reason() == null ? "" : decision.reason()));
-            case CREATE -> createMemory(context, eventSink, decision);
-            case UPDATE -> updateMemory(context, eventSink, decision);
-            case DELETE -> deleteMemory(context, eventSink, decision);
+            case CREATE -> createMemory(job, decision);
+            case UPDATE -> updateMemory(job, decision);
+            case DELETE -> deleteMemory(job, decision);
         }
     }
 
-    private void createMemory(PipelineContext context, Consumer<CognitiveEvent> eventSink, MemoryAgentDecision decision) {
+    private void createMemory(MemoryJob job, MemoryAgentDecision decision) {
         Instant now = Instant.now();
         String content = usefulContent(decision);
         SemanticMemoryRecord existing = findRelatedMemory(content, safeCategory(decision));
         if (existing != null) {
             if (specificity(content) <= specificity(existing.value())) {
-                publish(context, eventSink, CognitiveEventType.MEMORY_SKIPPED, "SKIPPED",
+                publish(job, CognitiveEventType.MEMORY_SKIPPED, "SKIPPED",
                         "Memory Agent skipped less specific duplicate", "memory:" + existing.id(), Map.of(
                                 "existingContent", existing.value(),
                                 "candidateContent", content
                         ));
                 return;
             }
-            updateExistingMemory(context, eventSink, decision, existing, content);
+            updateExistingMemory(job, decision, existing, content);
             return;
         }
         SemanticMemoryRecord record = new SemanticMemoryRecord(
@@ -189,27 +181,25 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
                 safeCategory(decision),
                 now,
                 now,
-                context.conversationId()
+                job.conversationId()
         );
         semanticStore.save(record);
-        indexEmbedding(record);
-        publish(context, eventSink, CognitiveEventType.MEMORY_CREATED, "CREATED", "Memory created",
+        indexEmbedding(job, record);
+        publish(job, CognitiveEventType.MEMORY_CREATED, "CREATED", "Memory created",
                 "memory:" + record.id(), Map.of("content", content, "category", record.category().name(), "priority", record.priority().name()));
     }
 
-    private void updateMemory(PipelineContext context, Consumer<CognitiveEvent> eventSink, MemoryAgentDecision decision) {
+    private void updateMemory(MemoryJob job, MemoryAgentDecision decision) {
         SemanticMemoryRecord existing = findMemoryForUpdate(decision);
         if (existing == null) {
-            createMemory(context, eventSink, decision);
+            createMemory(job, decision);
             return;
         }
-        String content = usefulContent(decision);
-        updateExistingMemory(context, eventSink, decision, existing, content);
+        updateExistingMemory(job, decision, existing, usefulContent(decision));
     }
 
     private void updateExistingMemory(
-            PipelineContext context,
-            Consumer<CognitiveEvent> eventSink,
+            MemoryJob job,
             MemoryAgentDecision decision,
             SemanticMemoryRecord existing,
             String content
@@ -225,29 +215,21 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
                 safeCategory(decision),
                 existing.createdAt(),
                 now,
-                context.conversationId()
+                job.conversationId()
         );
         semanticStore.update(updated);
-        indexEmbedding(updated);
-        publish(context, eventSink, CognitiveEventType.MEMORY_UPDATED, "UPDATED", "Memory updated",
+        indexEmbedding(job, updated);
+        publish(job, CognitiveEventType.MEMORY_UPDATED, "UPDATED", "Memory updated",
                 "memory:" + updated.id(), Map.of("oldContent", existing.value(), "newContent", content));
     }
 
-    private void indexEmbedding(SemanticMemoryRecord record) {
-        try {
-            embeddingMemoryEngine.index(record);
-        } catch (RuntimeException exception) {
-            LOGGER.warn("[JARVIS] Memory Agent saved memory but embedding indexing failed memoryId={}", record.id(), exception);
-        }
-    }
-
-    private void deleteMemory(PipelineContext context, Consumer<CognitiveEvent> eventSink, MemoryAgentDecision decision) {
+    private void deleteMemory(MemoryJob job, MemoryAgentDecision decision) {
         if (decision.memoryId() != null && semanticStore.delete(decision.memoryId())) {
-            publish(context, eventSink, CognitiveEventType.MEMORY_DELETED, "DELETED", "Memory deleted",
+            publish(job, CognitiveEventType.MEMORY_DELETED, "DELETED", "Memory deleted",
                     "memory:" + decision.memoryId(), Map.of());
             return;
         }
-        publish(context, eventSink, CognitiveEventType.MEMORY_SKIPPED, "SKIPPED",
+        publish(job, CognitiveEventType.MEMORY_SKIPPED, "SKIPPED",
                 "Memory delete skipped", "memory:agent", Map.of("reason", "memory not found"));
     }
 
@@ -313,7 +295,7 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
         return decision.category() == null ? MemoryCategory.SEMANTIC : decision.category();
     }
 
-    private String prompt(PipelineContext context) {
+    private String prompt(MemoryJob job) {
         String memories = semanticStore.listAll().stream()
                 .map(memory -> "- id=%s category=%s priority=%s content=%s".formatted(
                         memory.id(), memory.category(), memory.priority(), memory.value()))
@@ -354,29 +336,39 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
                 Latest conversation:
                 USER: %s
                 ASSISTANT: %s
-                """.formatted(memories.isBlank() ? "None" : memories, context.request().message(), context.response());
+                """.formatted(memories.isBlank() ? "None" : memories, job.userMessage(), job.assistantAnswer());
+    }
+
+    private void indexEmbedding(MemoryJob job, SemanticMemoryRecord record) {
+        try {
+            embeddingMemoryEngine.index(record);
+        } catch (RuntimeException exception) {
+            LOGGER.warn("[JARVIS][MEMORY][jobId={}][sourceRequestId={}] EMBEDDING_INDEX_FAILED memoryId={}",
+                    job.memoryJobId(), job.sourceRequestId(), record.id(), exception);
+        }
     }
 
     private void publish(
-            PipelineContext context,
-            Consumer<CognitiveEvent> eventSink,
+            MemoryJob job,
             CognitiveEventType eventType,
             String status,
             String message,
             String nodeId,
             Map<String, Object> metadata
     ) {
-        eventSink.accept(new CognitiveEvent(
-                context.requestId(),
-                context.conversationId(),
-                Instant.now(),
+        Map<String, Object> enriched = new LinkedHashMap<>(metadata == null ? Map.of() : metadata);
+        enriched.put("memoryJobId", job.memoryJobId().toString());
+        enriched.put("sourceRequestId", job.sourceRequestId());
+        enriched.put("conversationId", job.conversationId());
+        enriched.put("timestamp", Instant.now().toString());
+        cognitiveEventBus.publishBackground(
+                job.sourceRequestId(),
+                job.conversationId(),
                 eventType,
                 status,
                 message,
-                BrainType.CLASSIFIER,
-                MODEL,
                 nodeId,
-                metadata
-        ));
+                Map.copyOf(enriched)
+        );
     }
 }
