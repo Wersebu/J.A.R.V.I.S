@@ -15,6 +15,11 @@ import com.jarvis.tools.JarvisTool;
 import com.jarvis.tools.ToolException;
 import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
+import com.jarvis.tools.schema.ToolArgumentDefinition;
+import com.jarvis.tools.schema.ToolDefinition;
+import com.jarvis.tools.schema.ToolOperationDefinition;
+import com.jarvis.tools.schema.ToolSafetyLevel;
+import com.jarvis.tools.schema.ToolSchemaProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -29,7 +34,7 @@ import java.util.Optional;
  * Native cognitive tool for reading and maintaining the knowledge workspace.
  */
 @Service
-public class KnowledgeTool implements JarvisTool {
+public class KnowledgeTool implements JarvisTool, ToolSchemaProvider {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(KnowledgeTool.class);
     private static final String TOOL_NAME = "knowledge";
@@ -59,6 +64,28 @@ public class KnowledgeTool implements JarvisTool {
     @Override
     public String getDescription() {
         return "Manages the J.A.R.V.I.S. logical Knowledge Workspace.";
+    }
+
+    @Override
+    public ToolDefinition definition() {
+        return new ToolDefinition(TOOL_NAME, getDescription(), List.of(
+                operation("READ_DOCUMENT", "Read a document by logical path.", false, ToolSafetyLevel.READ, arg("path", true)),
+                operation("CREATE_DOCUMENT", "Create a document by logical path.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("content", true)),
+                operation("UPDATE_DOCUMENT", "Instruction-based document update.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("instruction", true), arg("text", false)),
+                operation("APPEND_DOCUMENT", "Append text to a document.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("text", true)),
+                operation("DELETE_DOCUMENT", "Delete a document.", true, ToolSafetyLevel.DELETE, arg("path", true)),
+                operation("MOVE_DOCUMENT", "Move a document.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("newParent", true)),
+                operation("RENAME_DOCUMENT", "Rename a document.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("newName", true)),
+                operation("LIST_FOLDER", "List one logical folder.", false, ToolSafetyLevel.READ, arg("path", false)),
+                operation("SEARCH_DOCUMENT", "Search indexed knowledge documents.", false, ToolSafetyLevel.READ, arg("query", true)),
+                operation("SEARCH_CONTENT", "Search knowledge content using the configured retriever.", false, ToolSafetyLevel.READ, arg("query", true)),
+                operation("CREATE_FOLDER", "Create a logical folder.", true, ToolSafetyLevel.WRITE, arg("path", true)),
+                operation("DELETE_FOLDER", "Delete a logical folder.", true, ToolSafetyLevel.DELETE, arg("path", true)),
+                operation("MOVE_FOLDER", "Move a logical folder.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("newParent", true)),
+                operation("LIST_TREE", "List the knowledge tree.", false, ToolSafetyLevel.READ),
+                operation("DOCUMENT_EXISTS", "Check whether a logical path exists.", false, ToolSafetyLevel.READ, arg("path", true)),
+                operation("PLAN_KNOWLEDGE_UPDATE", "Plan a multi-document knowledge update before writing.", false, ToolSafetyLevel.READ, arg("query", false), arg("changes", false), arg("content", false))
+        ));
     }
 
     @Override
@@ -212,18 +239,49 @@ public class KnowledgeTool implements JarvisTool {
     }
 
     private ToolResult wrapResult(KnowledgeToolResult result) {
-        return new ToolResult(true, result.message(), Map.of(
+        Map<String, Object> data = result.data();
+        boolean requiresApproval = Boolean.parseBoolean(String.valueOf(data.getOrDefault("requiresApproval", result.draft())));
+        String draftId = String.valueOf(data.getOrDefault("draftId", ""));
+        return new ToolResult(
+                true,
+                TOOL_NAME,
+                result.tool().replace("knowledge.", "").toUpperCase(Locale.ROOT),
+                "",
+                "",
+                result.applied(),
+                result.nodeId() == null || result.nodeId().isBlank() ? List.of() : List.of(result.nodeId()),
+                result.message(),
+                Map.of(
                 "applied", result.applied(),
                 "draft", result.draft(),
                 "nodeId", empty(result.nodeId()),
                 "path", empty(result.path()),
                 "timestamp", result.timestamp().toString(),
                 "data", result.data()
-        ));
+                ),
+                "",
+                "",
+                requiresApproval,
+                draftId
+        );
     }
 
     private ToolResult success(String output, Map<String, Object> metadata) {
-        return new ToolResult(true, output, metadata);
+        return new ToolResult(true, TOOL_NAME, "", "", "", false, List.of(), output, metadata, "", "", false, "");
+    }
+
+    private ToolOperationDefinition operation(
+            String name,
+            String description,
+            boolean write,
+            ToolSafetyLevel safetyLevel,
+            ToolArgumentDefinition... arguments
+    ) {
+        return new ToolOperationDefinition(name, description, List.of(arguments), write, safetyLevel);
+    }
+
+    private ToolArgumentDefinition arg(String name, boolean required) {
+        return new ToolArgumentDefinition(name, name.equals("changes") ? "array" : "string", required, "");
     }
 
     private KnowledgeToolOperation operation(ToolRequest request) {

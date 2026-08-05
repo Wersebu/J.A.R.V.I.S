@@ -109,4 +109,27 @@ public interface KnowledgeWorkspaceService {
      * Lists stored document versions.
      */
     List<KnowledgeVersion> history(UUID documentId);
+
+    /**
+     * Lists pending knowledge drafts.
+     *
+     * @return pending drafts
+     */
+    List<KnowledgeDraft> drafts();
+
+    /**
+     * Approves and applies a draft.
+     *
+     * @param draftId draft identifier
+     * @return operation result
+     */
+    KnowledgeToolResult approveDraft(String draftId);
+
+    /**
+     * Rejects a draft.
+     *
+     * @param draftId draft identifier
+     * @return operation result
+     */
+    KnowledgeToolResult rejectDraft(String draftId);
 }

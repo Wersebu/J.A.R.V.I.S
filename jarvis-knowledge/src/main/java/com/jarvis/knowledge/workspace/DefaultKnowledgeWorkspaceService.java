@@ -27,6 +27,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 /**
@@ -47,6 +48,7 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     private final KnowledgeIndex knowledgeIndex;
     private final KnowledgeRetriever knowledgeRetriever;
     private final CognitiveEventBus cognitiveEventBus;
+    private final Map<String, PendingDraft> pendingDrafts = new ConcurrentHashMap<>();
 
     /**
      * Creates the workspace service.
@@ -288,6 +290,41 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
         }
     }
 
+    @Override
+    public List<KnowledgeDraft> drafts() {
+        return pendingDrafts.values().stream()
+                .map(PendingDraft::draft)
+                .sorted(Comparator.comparing(KnowledgeDraft::createdAt).reversed())
+                .toList();
+    }
+
+    @Override
+    public KnowledgeToolResult approveDraft(String draftId) {
+        PendingDraft draft = pendingDrafts.remove(draftId);
+        if (draft == null) {
+            return result("knowledge.approveDraft", false, false, "Draft not found", null, null,
+                    Map.of("draftId", nullToEmpty(draftId), "approved", false));
+        }
+        try {
+            draft.write().apply();
+            refreshAfterChange(draft.eventType(), draft.message(), draft.nodeId(), draft.path(), draft.data());
+            return result("knowledge.approveDraft", true, false, "Draft approved", draft.nodeId(), draft.path(),
+                    Map.of("draftId", draftId, "approved", true));
+        } catch (IOException exception) {
+            throw new KnowledgeException("Failed to approve knowledge draft " + draftId, exception);
+        }
+    }
+
+    @Override
+    public KnowledgeToolResult rejectDraft(String draftId) {
+        PendingDraft removed = pendingDrafts.remove(draftId);
+        return result("knowledge.rejectDraft", false, false,
+                removed == null ? "Draft not found" : "Draft rejected",
+                removed == null ? null : removed.nodeId(),
+                removed == null ? null : removed.path(),
+                Map.of("draftId", nullToEmpty(draftId), "rejected", removed != null));
+    }
+
     private KnowledgeToolResult moveLike(
             String tool,
             String resultNodeId,
@@ -328,8 +365,14 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
             return result(tool, false, false, "Knowledge workspace is read-only", nodeId, path, data);
         }
         if (mode == KnowledgeWriteMode.AUTO_DRAFT) {
-            saveDraft(tool, path, data);
-            return result(tool, false, true, "Draft created. No filesystem changes applied.", nodeId, path, data);
+            String draftId = saveDraft(tool, path, eventType, message, nodeId, data, write);
+            Map<String, Object> draftData = new HashMap<>(data == null ? Map.of() : data);
+            draftData.put("draftId", draftId);
+            draftData.put("requiresApproval", true);
+            draftData.put("targetPath", path == null ? "" : path);
+            cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_DRAFT_CREATED, "WAITING_APPROVAL",
+                    "Knowledge draft created", nodeId, eventData(path, draftData));
+            return result(tool, false, true, "Draft created. No filesystem changes applied.", nodeId, path, draftData);
         }
         try {
             write.apply();
@@ -499,18 +542,31 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
         }
     }
 
-    private void saveDraft(String tool, String path, Map<String, Object> data) {
+    private String saveDraft(
+            String tool,
+            String path,
+            CognitiveEventType eventType,
+            String message,
+            String nodeId,
+            Map<String, Object> data,
+            WorkspaceWrite write
+    ) {
         try {
             Path folder = draftsRoot();
             ensureDirectory(folder);
-            String draftId = DateTimeFormatter.ISO_INSTANT.format(Instant.now()).replace(':', '-')
-                    + "-" + UUID.randomUUID();
+            String draftId = "draft-" + UUID.randomUUID();
+            Instant now = Instant.now();
+            KnowledgeDraft draft = new KnowledgeDraft(draftId, tool, nullToEmpty(path), message, now,
+                    data == null ? Map.of() : data);
+            pendingDrafts.put(draftId, new PendingDraft(draft, eventType, message, nodeId, path, data, write));
             Files.writeString(folder.resolve(draftId + ".draft"), String.join(System.lineSeparator(),
                     "tool=" + tool,
                     "path=" + nullToEmpty(path),
-                    "timestamp=" + Instant.now(),
+                    "timestamp=" + now,
+                    "summary=" + message,
                     "data=" + String.valueOf(data)
             ), StandardCharsets.UTF_8);
+            return draftId;
         } catch (IOException exception) {
             throw new KnowledgeException("Failed to save knowledge draft", exception);
         }
@@ -738,5 +794,16 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     @FunctionalInterface
     private interface WorkspaceWrite {
         void apply() throws IOException;
+    }
+
+    private record PendingDraft(
+            KnowledgeDraft draft,
+            CognitiveEventType eventType,
+            String message,
+            String nodeId,
+            String path,
+            Map<String, Object> data,
+            WorkspaceWrite write
+    ) {
     }
 }

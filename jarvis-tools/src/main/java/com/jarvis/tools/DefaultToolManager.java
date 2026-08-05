@@ -56,6 +56,21 @@ public class DefaultToolManager implements ToolManager {
             throw new ToolException("Tool not registered: " + request.toolName());
         }
         LOGGER.info("[TOOL] Executing tool={} operation={}", request.toolName(), request.operation());
-        return tool.execute(request);
+        ToolResult result = tool.execute(request);
+        return new ToolResult(
+                result.success(),
+                result.tool().isBlank() ? request.toolName() : result.tool(),
+                request.operation(),
+                result.requestId().isBlank() ? request.requestId() : result.requestId(),
+                result.conversationId().isBlank() ? request.conversationId() : result.conversationId(),
+                result.changed(),
+                result.targetNodeIds(),
+                result.message(),
+                result.data(),
+                result.errorCode(),
+                result.errorMessage(),
+                result.requiresApproval(),
+                result.draftId()
+        );
     }
 }

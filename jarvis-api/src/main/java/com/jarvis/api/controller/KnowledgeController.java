@@ -14,6 +14,7 @@ import com.jarvis.knowledge.KnowledgeService;
 import com.jarvis.knowledge.retrieval.KnowledgeRetriever;
 import com.jarvis.knowledge.retrieval.RetrievalResult;
 import com.jarvis.knowledge.workspace.KnowledgeToolResult;
+import com.jarvis.knowledge.workspace.KnowledgeDraft;
 import com.jarvis.knowledge.workspace.KnowledgeVersion;
 import com.jarvis.knowledge.workspace.KnowledgeWorkspaceService;
 import com.jarvis.knowledge.workspace.KnowledgeWorkspaceTree;
@@ -210,6 +211,38 @@ public class KnowledgeController {
     @GetMapping("/{id}/history")
     public List<KnowledgeVersion> history(@PathVariable UUID id) {
         return knowledgeWorkspaceService.history(id);
+    }
+
+    /**
+     * Lists pending knowledge drafts.
+     *
+     * @return pending drafts
+     */
+    @GetMapping("/drafts")
+    public List<KnowledgeDraft> drafts() {
+        return knowledgeWorkspaceService.drafts();
+    }
+
+    /**
+     * Approves and applies a knowledge draft.
+     *
+     * @param draftId draft identifier
+     * @return approval result
+     */
+    @PostMapping("/drafts/{draftId}/approve")
+    public KnowledgeToolResult approveDraft(@PathVariable String draftId) {
+        return knowledgeWorkspaceService.approveDraft(draftId);
+    }
+
+    /**
+     * Rejects a knowledge draft.
+     *
+     * @param draftId draft identifier
+     * @return rejection result
+     */
+    @PostMapping("/drafts/{draftId}/reject")
+    public KnowledgeToolResult rejectDraft(@PathVariable String draftId) {
+        return knowledgeWorkspaceService.rejectDraft(draftId);
     }
 
     private Object invokeTool(String tool, Map<String, Object> args) {

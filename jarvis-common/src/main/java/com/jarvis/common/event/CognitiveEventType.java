@@ -199,5 +199,31 @@ public enum CognitiveEventType {
     /** Tool search finished. */
     SEARCH_FINISHED,
     /** Tool execution finished. */
-    TOOL_FINISHED
+    TOOL_FINISHED,
+    /** Native tool loop started. */
+    TOOL_LOOP_STARTED,
+    /** Tool selection started. */
+    TOOL_SELECTION_STARTED,
+    /** Model proposed a tool call. */
+    TOOL_CALL_PROPOSED,
+    /** Tool call was validated. */
+    TOOL_CALL_VALIDATED,
+    /** Tool call requires user approval. */
+    TOOL_APPROVAL_REQUIRED,
+    /** Tool execution started. */
+    TOOL_EXECUTION_STARTED,
+    /** Tool execution finished. */
+    TOOL_EXECUTION_FINISHED,
+    /** Tool result was received by the runtime. */
+    TOOL_RESULT_RECEIVED,
+    /** Tool result verification started. */
+    TOOL_VERIFICATION_STARTED,
+    /** Tool result verification finished. */
+    TOOL_VERIFICATION_FINISHED,
+    /** Native tool loop finished. */
+    TOOL_LOOP_FINISHED,
+    /** Native tool loop failed. */
+    TOOL_LOOP_ERROR,
+    /** Knowledge draft was created and waits for approval. */
+    KNOWLEDGE_DRAFT_CREATED
 }

@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.1.0"
+  version: "2.2.0"
   ai:
     identity-file: file:config/jarvis.md
   diagnostics:
@@ -14,6 +14,12 @@ jarvis:
     request-history-size: 100
     log-prompt-preview: false
     expose-debug-api: true
+  tools:
+    enabled: true
+    max-calls-fast: 2
+    max-calls-research: 8
+    max-consecutive-failures: 2
+    timeout-seconds: 180
   thinking:
     stream-to-clients: true
     persist: false
