@@ -10,6 +10,8 @@ public enum MemoryCategory {
     PREFERENCE,
     /** Project-related memory. */
     PROJECT,
+    /** Person-related memory. */
+    PERSON,
     /** Relationship memory. */
     RELATIONSHIP,
     /** Device or hardware memory. */
@@ -20,6 +22,8 @@ public enum MemoryCategory {
     WORK,
     /** Programming-related memory. */
     PROGRAMMING,
+    /** Location-related memory. */
+    LOCATION,
     /** Temporary memory. */
     TEMPORARY
 }

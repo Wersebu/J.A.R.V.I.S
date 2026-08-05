@@ -14,6 +14,7 @@ import com.jarvis.common.memory.MemoryRecord;
 import com.jarvis.memory.cognitive.SemanticMemoryRecord;
 import com.jarvis.memory.cognitive.SemanticMemoryStore;
 import com.jarvis.memory.pipeline.PipelineContext;
+import com.jarvis.memory.retrieval.MemoryQueryNormalizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -41,6 +42,7 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
     private final SemanticMemoryStore semanticStore;
     private final ObjectMapper objectMapper;
     private final ExecutorService executorService;
+    private final MemoryQueryNormalizer queryNormalizer;
 
     /**
      * Creates the default memory agent service.
@@ -52,11 +54,13 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
     public DefaultMemoryAgentService(
             List<AIProvider> aiProviders,
             SemanticMemoryStore semanticStore,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            MemoryQueryNormalizer queryNormalizer
     ) {
         this.aiProviders = List.copyOf(aiProviders);
         this.semanticStore = semanticStore;
         this.objectMapper = objectMapper;
+        this.queryNormalizer = queryNormalizer;
         this.executorService = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "jarvis-memory-agent");
             thread.setDaemon(true);
@@ -160,6 +164,14 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
         String content = usefulContent(decision);
         SemanticMemoryRecord existing = findRelatedMemory(content, safeCategory(decision));
         if (existing != null) {
+            if (specificity(content) <= specificity(existing.value())) {
+                publish(context, eventSink, CognitiveEventType.MEMORY_SKIPPED, "SKIPPED",
+                        "Memory Agent skipped less specific duplicate", "memory:" + existing.id(), Map.of(
+                                "existingContent", existing.value(),
+                                "candidateContent", content
+                        ));
+                return;
+            }
             updateExistingMemory(context, eventSink, decision, existing, content);
             return;
         }
@@ -241,33 +253,31 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
     }
 
     private SemanticMemoryRecord findRelatedMemory(String content, MemoryCategory category) {
-        String normalized = content == null ? "" : content.toLowerCase(Locale.ROOT);
         return semanticStore.listAll().stream()
                 .filter(memory -> memory.category() == category)
-                .filter(memory -> isSameMemoryDomain(memory.value().toLowerCase(Locale.ROOT), normalized))
+                .filter(memory -> related(memory.value(), content))
                 .findFirst()
                 .orElse(null);
     }
 
-    private boolean isSameMemoryDomain(String existing, String candidate) {
-        if (existing.equalsIgnoreCase(candidate)) {
-            return true;
+    private boolean related(String existing, String candidate) {
+        var existingTokens = new java.util.LinkedHashSet<>(queryNormalizer.normalize(existing).tokens());
+        var candidateTokens = new java.util.LinkedHashSet<>(queryNormalizer.normalize(candidate).tokens());
+        if (existingTokens.isEmpty() || candidateTokens.isEmpty()) {
+            return false;
         }
-        return hasAny(existing, "rtx", "gpu", "graphics card", "video card")
-                && hasAny(candidate, "rtx", "gpu", "graphics card", "video card")
-                || hasAny(existing, "audi", "car", "vehicle")
-                && hasAny(candidate, "audi", "car", "vehicle")
-                || hasAny(existing, "ide", "intellij", "eclipse")
-                && hasAny(candidate, "ide", "intellij", "eclipse");
+        var intersection = new java.util.LinkedHashSet<>(existingTokens);
+        intersection.retainAll(candidateTokens);
+        double ratio = intersection.size() / (double) Math.min(existingTokens.size(), candidateTokens.size());
+        return ratio >= 0.45d;
     }
 
-    private boolean hasAny(String value, String... tokens) {
-        for (String token : tokens) {
-            if (value.contains(token)) {
-                return true;
-            }
+    private int specificity(String value) {
+        int score = queryNormalizer.normalize(value).tokens().size();
+        if (value != null && value.matches(".*\\d+.*")) {
+            score += 3;
         }
-        return false;
+        return score;
     }
 
     private String usefulContent(MemoryAgentDecision decision) {
@@ -301,7 +311,7 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
 
                 Supported actions: NONE, CREATE, UPDATE, DELETE.
                 Supported priorities: CRITICAL, HIGH, NORMAL, LOW, TEMPORARY.
-                Supported categories: SEMANTIC, PREFERENCE, PROJECT, RELATIONSHIP, DEVICE, VEHICLE, WORK, PROGRAMMING, TEMPORARY.
+                Supported categories: SEMANTIC, PREFERENCE, PROJECT, PERSON, RELATIONSHIP, DEVICE, VEHICLE, WORK, PROGRAMMING, LOCATION, TEMPORARY.
 
                 Rules:
                 - Remember durable facts, preferences, projects, devices, vehicles, work, relationships, and programming preferences.

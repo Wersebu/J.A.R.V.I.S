@@ -2,9 +2,22 @@ package com.jarvis.memory.cognitive;
 
 import com.jarvis.common.memory.CognitiveMemoryContext;
 import com.jarvis.common.memory.MemoryRecord;
+import com.jarvis.common.memory.MemoryCategory;
 import com.jarvis.common.memory.MemorySearchMatch;
 import com.jarvis.common.memory.MemorySearchResult;
 import com.jarvis.common.memory.MemoryType;
+import com.jarvis.memory.retrieval.MemoryCandidateRetriever;
+import com.jarvis.memory.retrieval.MemoryProfileBuilder;
+import com.jarvis.memory.retrieval.MemoryQuery;
+import com.jarvis.memory.retrieval.MemoryQueryNormalizer;
+import com.jarvis.memory.retrieval.MemoryReranker;
+import com.jarvis.memory.retrieval.MemoryScore;
+import com.jarvis.memory.retrieval.MemoryScorer;
+import com.jarvis.memory.retrieval.DefaultMemoryQueryNormalizer;
+import com.jarvis.memory.retrieval.IndexedMemoryCandidateRetriever;
+import com.jarvis.memory.retrieval.NoOpMemoryReranker;
+import com.jarvis.memory.retrieval.StructuredMemoryProfileBuilder;
+import com.jarvis.memory.retrieval.TokenMemoryScorer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -15,10 +28,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
-import java.util.regex.Pattern;
 
 /**
  * Default cognitive memory service backed by structured SQLite stores.
@@ -29,12 +40,16 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultCognitiveMemoryService.class);
     private static final int SEARCH_LIMIT = 10;
     private static final int CONTEXT_LIMIT = 6_000;
-    private static final Pattern LETTER_NUMBER_BOUNDARY = Pattern.compile("(?<=[a-zA-Z])(?=\\d)|(?<=\\d)(?=[a-zA-Z])");
 
     private final SemanticMemoryStore semanticStore;
     private final EpisodicMemoryStore episodicStore;
     private final ProceduralMemoryStore proceduralStore;
     private final DeterministicMemoryClassifier classifier;
+    private final MemoryQueryNormalizer queryNormalizer;
+    private final MemoryCandidateRetriever candidateRetriever;
+    private final MemoryScorer memoryScorer;
+    private final MemoryReranker memoryReranker;
+    private final MemoryProfileBuilder profileBuilder;
 
     /**
      * Creates the default cognitive memory service.
@@ -48,12 +63,49 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
             SemanticMemoryStore semanticStore,
             EpisodicMemoryStore episodicStore,
             ProceduralMemoryStore proceduralStore,
-            DeterministicMemoryClassifier classifier
+            DeterministicMemoryClassifier classifier,
+            MemoryQueryNormalizer queryNormalizer,
+            MemoryCandidateRetriever candidateRetriever,
+            MemoryScorer memoryScorer,
+            MemoryReranker memoryReranker,
+            MemoryProfileBuilder profileBuilder
     ) {
         this.semanticStore = semanticStore;
         this.episodicStore = episodicStore;
         this.proceduralStore = proceduralStore;
         this.classifier = classifier;
+        this.queryNormalizer = queryNormalizer;
+        this.candidateRetriever = candidateRetriever;
+        this.memoryScorer = memoryScorer;
+        this.memoryReranker = memoryReranker;
+        this.profileBuilder = profileBuilder;
+    }
+
+    /**
+     * Creates the service with default retrieval components.
+     *
+     * @param semanticStore semantic memory store
+     * @param episodicStore episodic memory store
+     * @param proceduralStore procedural memory store
+     * @param classifier deterministic classifier
+     */
+    public DefaultCognitiveMemoryService(
+            SemanticMemoryStore semanticStore,
+            EpisodicMemoryStore episodicStore,
+            ProceduralMemoryStore proceduralStore,
+            DeterministicMemoryClassifier classifier
+    ) {
+        this(
+                semanticStore,
+                episodicStore,
+                proceduralStore,
+                classifier,
+                new DefaultMemoryQueryNormalizer(),
+                new IndexedMemoryCandidateRetriever(new DefaultMemoryQueryNormalizer()),
+                new TokenMemoryScorer(new DefaultMemoryQueryNormalizer()),
+                new NoOpMemoryReranker(),
+                new StructuredMemoryProfileBuilder()
+        );
     }
 
     @Override
@@ -70,56 +122,51 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
     @Override
     public MemorySearchResult search(String query) {
         Instant startedAt = Instant.now();
-        Set<String> queryTokens = expandedTokens(query);
+        MemoryQuery normalizedQuery = queryNormalizer.normalize(query);
         LOGGER.info("""
                 [JARVIS]
                 MEMORY SEARCH STARTED
 
-                Query:
+                Original query:
                 "{}"
 
-                Normalized tokens:
+                Normalized query:
                 {}
-                """, query, queryTokens);
-        List<ScoredMemory> scored = listAll().stream()
-                .map(memory -> score(memory, queryTokens))
-                .filter(memory -> queryTokens.isEmpty() || memory.rawScore() > 0)
-                .sorted(Comparator.comparingInt(ScoredMemory::rawScore).reversed())
+                """, query, normalizedQuery.tokens());
+        List<MemoryRecord> candidates = candidateRetriever.candidates(normalizedQuery, listAll());
+        List<MemoryScore> scored = candidates.stream()
+                .map(memory -> memoryScorer.score(normalizedQuery, memory))
+                .filter(memory -> memory.score() >= 0.18d)
+                .sorted(Comparator.comparingDouble(MemoryScore::score).reversed())
                 .limit(SEARCH_LIMIT)
                 .toList();
-        List<MemoryRecord> memories = scored.stream().map(ScoredMemory::memory).toList();
+        scored = applyReranking(query, scored);
+        List<MemoryRecord> memories = scored.stream().map(MemoryScore::memory).toList();
         List<MemorySearchMatch> matches = scored.stream()
-                .map(match -> new MemorySearchMatch(match.memory(), match.normalizedScore(), match.reason()))
+                .map(match -> new MemorySearchMatch(match.memory(), match.score(), match.reason()))
                 .toList();
         long durationMs = Duration.between(startedAt, Instant.now()).toMillis();
         LOGGER.info("""
                 [JARVIS]
                 MEMORY SEARCH FINISHED
 
-                Found {} candidate memories
-                Execution time:
+                Candidates:
+                {}
+
+                Scoring:
+                {}
+
+                Best candidate:
+                {}
+
+                Memory retrieval:
                 {} ms
-                """, memories.size(), durationMs);
-        for (int index = 0; index < matches.size(); index++) {
-            MemorySearchMatch match = matches.get(index);
-            LOGGER.info("""
-                    [JARVIS]
-                    MEMORY CANDIDATE {}
-
-                    Type:
-                    {}
-
-                    Memory:
-                    {}
-
-                    Score:
-                    {}
-
-                    Reason:
-                    {}
-                    """, index + 1, match.memory().type(), match.memory().content(), match.score(), match.reason());
-        }
-        return new MemorySearchResult(query, durationMs, memories, matches);
+                """,
+                candidates.size(),
+                scoreLog(matches),
+                matches.isEmpty() ? "None" : matches.getFirst().memory().content(),
+                durationMs);
+        return new MemorySearchResult(query, durationMs, memories, matches, normalizedQuery.tokens(), candidates.size());
     }
 
     @Override
@@ -136,25 +183,10 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
                     """);
             return CognitiveMemoryContext.empty();
         }
-        StringBuilder builder = new StringBuilder();
-        builder.append("========================================\n\n");
-        builder.append("COGNITIVE MEMORY\n\n");
-        for (MemoryRecord memory : memories) {
-            String block = """
-                    Type: %s
-                    Memory: %s
-                    %s
-
-                    ----------------------------------------
-
-                    """.formatted(memory.type(), memory.title(), memory.content());
-            if (builder.length() + block.length() > CONTEXT_LIMIT) {
-                break;
-            }
-            builder.append(block);
+        String context = profileBuilder.buildProfile(memories);
+        if (context.length() > CONTEXT_LIMIT) {
+            context = context.substring(0, CONTEXT_LIMIT);
         }
-        builder.append("========================================\n\n");
-        String context = builder.toString();
         LOGGER.info("""
                 [JARVIS]
                 MEMORY INJECTION PREPARED
@@ -176,6 +208,46 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
                 context.length() / 4,
                 false
         );
+    }
+
+    private List<MemoryScore> applyReranking(String query, List<MemoryScore> scored) {
+        if (scored.size() < 2) {
+            return scored;
+        }
+        List<MemoryScore> sensible = scored.stream()
+                .filter(score -> score.score() >= 0.28d)
+                .limit(5)
+                .toList();
+        if (sensible.size() < 2) {
+            return scored;
+        }
+        return memoryReranker.rerank(query, sensible)
+                .map(selectedId -> scored.stream()
+                        .sorted((left, right) -> {
+                            if (left.memory().id().equals(selectedId)) {
+                                return -1;
+                            }
+                            if (right.memory().id().equals(selectedId)) {
+                                return 1;
+                            }
+                            return Double.compare(right.score(), left.score());
+                        })
+                        .toList())
+                .orElse(scored);
+    }
+
+    private String scoreLog(List<MemorySearchMatch> matches) {
+        if (matches.isEmpty()) {
+            return "None";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (MemorySearchMatch match : matches) {
+            builder.append(match.memory().content())
+                    .append(" -> ")
+                    .append("%.2f".formatted(match.score()))
+                    .append('\n');
+        }
+        return builder.toString();
     }
 
     @Override
@@ -208,23 +280,28 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
 
     private MemoryMutation upsertSemantic(String conversationId, MemoryCandidate candidate) {
         Instant now = Instant.now();
+        MemoryCategory category = inferCategory(candidate);
         var exact = semanticStore.findExact(candidate.subject(), candidate.predicate(), candidate.value());
         if (exact.isPresent()) {
             return new MemoryMutation(MemoryMutationType.SKIPPED, toMemory(exact.get()), "repeated fact");
         }
-        var conflict = semanticStore.listAll().stream()
-                .filter(memory -> memory.subject().equalsIgnoreCase(candidate.subject()))
-                .filter(memory -> memory.predicate().equalsIgnoreCase(candidate.predicate()))
-                .filter(memory -> candidate.predicate().startsWith("has."))
+        var duplicate = semanticStore.listAll().stream()
+                .filter(memory -> memory.category() == category)
+                .filter(memory -> related(memory.value(), candidate.value()))
                 .findFirst();
-        if (conflict.isPresent()) {
-            SemanticMemoryRecord existing = conflict.get();
+        if (duplicate.isPresent()) {
+            SemanticMemoryRecord existing = duplicate.get();
+            if (specificity(candidate.value()) <= specificity(existing.value())) {
+                return new MemoryMutation(MemoryMutationType.SKIPPED, toMemory(existing), "less specific duplicate");
+            }
             SemanticMemoryRecord updated = new SemanticMemoryRecord(
                     existing.id(),
-                    existing.subject(),
-                    existing.predicate(),
+                    candidate.subject(),
+                    candidate.predicate(),
                     candidate.value(),
                     Math.max(existing.confidence(), candidate.confidence()),
+                    existing.priority(),
+                    category,
                     existing.createdAt(),
                     now,
                     conversationId
@@ -238,12 +315,40 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
                 candidate.predicate(),
                 candidate.value(),
                 candidate.confidence(),
+                com.jarvis.common.memory.MemoryPriority.NORMAL,
+                category,
                 now,
                 now,
                 conversationId
         );
         semanticStore.save(created);
         return new MemoryMutation(MemoryMutationType.CREATED, toMemory(created), "new fact");
+    }
+
+    private MemoryCategory inferCategory(MemoryCandidate candidate) {
+        MemoryQuery query = queryNormalizer.normalize(candidate.predicate() + " " + candidate.value());
+        return query.preferredCategories().stream().findFirst().orElse(MemoryCategory.SEMANTIC);
+    }
+
+    private boolean related(String existing, String candidate) {
+        Set<String> existingTokens = Set.copyOf(queryNormalizer.normalize(existing).tokens());
+        Set<String> candidateTokens = Set.copyOf(queryNormalizer.normalize(candidate).tokens());
+        if (existingTokens.isEmpty() || candidateTokens.isEmpty()) {
+            return false;
+        }
+        Set<String> intersection = new LinkedHashSet<>(existingTokens);
+        intersection.retainAll(candidateTokens);
+        double ratio = intersection.size() / (double) Math.min(existingTokens.size(), candidateTokens.size());
+        return ratio >= 0.45d;
+    }
+
+    private int specificity(String value) {
+        MemoryQuery query = queryNormalizer.normalize(value);
+        int score = query.tokens().size();
+        if (value != null && value.matches(".*\\d+.*")) {
+            score += 3;
+        }
+        return score;
     }
 
     private MemoryMutation createEpisodic(String conversationId, MemoryCandidate candidate) {
@@ -332,85 +437,5 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
                 record.updatedAt(),
                 record.sourceConversation()
         );
-    }
-
-    private Set<String> expandedTokens(String text) {
-        Set<String> tokens = new LinkedHashSet<>();
-        if (text == null || text.isBlank()) {
-            return tokens;
-        }
-        String normalized = LETTER_NUMBER_BOUNDARY.matcher(text.toLowerCase(Locale.ROOT)).replaceAll(" ");
-        normalized = normalized.replaceAll("[^\\p{L}\\p{N}]+", " ");
-        for (String token : normalized.split("\\s+")) {
-            if (!token.isBlank()) {
-                addToken(tokens, token);
-            }
-        }
-        expandDomainTokens(tokens);
-        return tokens;
-    }
-
-    private void addToken(Set<String> tokens, String token) {
-        tokens.add(token);
-        if (token.startsWith("rtx")) {
-            tokens.add("rtx");
-            tokens.add("gpu");
-            tokens.add("graphics");
-            tokens.add("card");
-        }
-    }
-
-    private void expandDomainTokens(Set<String> tokens) {
-        Set<String> original = Set.copyOf(tokens);
-        if (original.contains("gpu") || original.contains("graphics") || original.contains("video") || original.contains("rtx")) {
-            tokens.add("gpu");
-            tokens.add("graphics");
-            tokens.add("video");
-            tokens.add("card");
-            tokens.add("rtx");
-            tokens.add("nvidia");
-        }
-        if (original.contains("own") || original.contains("owns") || original.contains("have") || original.contains("has")
-                || original.contains("use") || original.contains("uses") || original.contains("drive")) {
-            tokens.add("own");
-            tokens.add("owns");
-            tokens.add("have");
-            tokens.add("has");
-            tokens.add("use");
-            tokens.add("uses");
-        }
-        if (original.contains("car") || original.contains("drive") || original.contains("audi") || original.contains("vehicle")) {
-            tokens.add("car");
-            tokens.add("vehicle");
-            tokens.add("drive");
-            tokens.add("audi");
-        }
-    }
-
-    private ScoredMemory score(MemoryRecord memory, Set<String> queryTokens) {
-        if (queryTokens.isEmpty()) {
-            return new ScoredMemory(memory, 1, 0.01d, "empty query");
-        }
-        Set<String> memoryTokens = expandedTokens(memory.title() + " " + memory.content());
-        int rawScore = 0;
-        List<String> reasons = new ArrayList<>();
-        for (String token : queryTokens) {
-            if (memoryTokens.contains(token)) {
-                rawScore += 20;
-                reasons.add(token);
-            }
-        }
-        if (memory.type() == MemoryType.SEMANTIC && memory.content().toLowerCase(Locale.ROOT).contains("owns")) {
-            if (queryTokens.contains("have") || queryTokens.contains("own") || queryTokens.contains("use") || queryTokens.contains("drive")) {
-                rawScore += 25;
-                reasons.add("ownership");
-            }
-        }
-        double normalizedScore = Math.min(1.0d, rawScore / 100.0d);
-        String reason = reasons.isEmpty() ? "no overlap" : "matched " + String.join(", ", reasons.stream().distinct().toList());
-        return new ScoredMemory(memory, rawScore, normalizedScore, reason);
-    }
-
-    private record ScoredMemory(MemoryRecord memory, int rawScore, double normalizedScore, String reason) {
     }
 }
