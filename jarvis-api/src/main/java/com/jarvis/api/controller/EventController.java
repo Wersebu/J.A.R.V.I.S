@@ -65,6 +65,7 @@ public class EventController {
                 schema(CognitiveEventType.ANSWER_STARTED, "Final answer started.", "model", "timeToFirstAnswerTokenMs"),
                 schema(CognitiveEventType.ANSWER_TOKEN, "Final answer fragment.", "text", "index"),
                 schema(CognitiveEventType.ANSWER_FINISHED, "Final answer finished.", "durationMs", "characters", "tokens"),
+                schema(CognitiveEventType.RESPONSE_GROUNDING, "Response grounding diagnostics.", "personalQuery", "grounded", "memorySourcesUsed", "knowledgeSourcesUsed", "toolSourcesUsed", "unsupportedClaimDetected", "regenerated"),
                 schema(CognitiveEventType.STREAMING_STARTED, "Streaming started.", "model"),
                 schema(CognitiveEventType.TOKEN, "Generated token.", "text", "index"),
                 schema(CognitiveEventType.STREAMING_FINISHED, "Streaming finished.", "generationTimeMs", "promptTokens", "completionTokens", "tokensStreamed", "tokensPerSecond"),
@@ -127,6 +128,7 @@ public class EventController {
             case MODEL_REQUEST_STARTED, WAITING_FIRST_TOKEN, FIRST_TOKEN_RECEIVED, THINKING_STARTED, THINKING_TOKEN,
                     THINKING_FINISHED, ANSWER_STARTED, ANSWER_TOKEN, ANSWER_FINISHED, STREAMING_STARTED, TOKEN,
                     STREAMING_FINISHED -> "model:gpt-oss:20b";
+            case RESPONSE_GROUNDING -> "grounding:response";
             case MEMORY_JOB_QUEUED, MEMORY_AGENT_STARTED, MEMORY_AGENT_DECISION, MEMORY_AGENT_FINISHED, MEMORY_AGENT_ERROR -> "memory:agent";
             case MEMORY_CANDIDATE_FOUND, MEMORY_INJECTED, MEMORY_CREATED, MEMORY_UPDATED, MEMORY_DELETED -> "memory:sample";
             default -> null;
@@ -151,6 +153,7 @@ public class EventController {
             case ANSWER_STARTED -> Map.of("model", "gpt-oss:20b", "timeToFirstAnswerTokenMs", 9217);
             case ANSWER_TOKEN -> Map.of("text", "Final answer", "index", 1);
             case ANSWER_FINISHED -> Map.of("durationMs", 4670, "characters", 700, "tokens", 128);
+            case RESPONSE_GROUNDING -> Map.of("personalQuery", true, "grounded", true, "memorySourcesUsed", 1, "knowledgeSourcesUsed", 0, "toolSourcesUsed", 0, "unsupportedClaimDetected", false, "regenerated", false);
             case REQUEST_FINISHED -> Map.of("generationTimeMs", 1400, "retrievalTimeMs", 4, "contextBuildTimeMs", 3, "promptBuildTimeMs", 2, "documentsUsed", 2, "tokensGenerated", 64, "estimatedPromptTokens", 800);
             case TOKEN -> Map.of("text", "Hello", "index", 1);
             default -> Map.of();

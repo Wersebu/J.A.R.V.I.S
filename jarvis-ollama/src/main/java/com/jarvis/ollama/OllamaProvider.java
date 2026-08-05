@@ -127,7 +127,7 @@ public class OllamaProvider implements AIProvider {
                     requestId, brain.model(), brain.reasoningLevel());
             eventSink.publish(StatusChangedEvent.create(ChatEventType.MODEL_LOADING, conversationId, "MODEL_LOADING"));
             String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/generate";
-            cognitiveEventBus.publish(CognitiveEventType.MODEL_REQUEST_STARTED, "REQUESTING", "Model request started", "model:" + brain.model(), Map.of(
+            publishCognitive(jobType, CognitiveEventType.MODEL_REQUEST_STARTED, "REQUESTING", "Model request started", "model:" + brain.model(), Map.of(
                     "model", brain.model(),
                     "endpoint", endpoint,
                     "provider", provider(),
@@ -173,12 +173,12 @@ public class OllamaProvider implements AIProvider {
                 }
 
                 eventSink.publish(ThinkingEvent.create(conversationId));
-                cognitiveEventBus.publish(CognitiveEventType.WAITING_FIRST_TOKEN, "WAITING", "Waiting for first token", "model:" + brain.model(), Map.of(
+                publishCognitive(jobType, CognitiveEventType.WAITING_FIRST_TOKEN, "WAITING", "Waiting for first token", "model:" + brain.model(), Map.of(
                         "model", brain.model(),
                         "requestLatencyMs", ollamaRequestLatencyMs,
                         "reasoningLevel", brain.reasoningLevel().name()
                 ));
-                streamResponse(conversationId, brain, httpResponse.body(), startedAt, startedNano, eventSink);
+                streamResponse(conversationId, brain, httpResponse.body(), startedAt, startedNano, jobType, eventSink);
             }
         } catch (JsonProcessingException exception) {
             LOGGER.error("[JARVIS] Ollama JSON error", exception);
@@ -212,6 +212,7 @@ public class OllamaProvider implements AIProvider {
             InputStream inputStream,
             Instant startedAt,
             long startedNano,
+            AIJobType jobType,
             ChatEventSink eventSink
     ) throws IOException {
         boolean thinkingStarted = false;
@@ -246,12 +247,12 @@ public class OllamaProvider implements AIProvider {
                         firstThinkingNano = System.nanoTime();
                         long elapsedMs = nanosToMillis(firstThinkingNano - startedNano);
                         diagnostics(d -> d.setFirstThinkingTokenMs(elapsedMs));
-                        cognitiveEventBus.publish(CognitiveEventType.FIRST_TOKEN_RECEIVED, "RECEIVED", "First model output received", "model:" + brain.model(), Map.of(
+                        publishCognitive(jobType, CognitiveEventType.FIRST_TOKEN_RECEIVED, "RECEIVED", "First model output received", "model:" + brain.model(), Map.of(
                                 "latencyMs", elapsedMs,
                                 "model", brain.model(),
                                 "channel", "thinking"
                         ));
-                        cognitiveEventBus.publish(CognitiveEventType.THINKING_STARTED, "THINKING", "Thinking started", "model:" + brain.model(), Map.of(
+                        publishCognitive(jobType, CognitiveEventType.THINKING_STARTED, "THINKING", "Thinking started", "model:" + brain.model(), Map.of(
                                 "model", brain.model(),
                                 "reasoningLevel", brain.reasoningLevel().name()
                         ));
@@ -260,7 +261,7 @@ public class OllamaProvider implements AIProvider {
                     lastThinkingNano = System.nanoTime();
                     thinkingChunks++;
                     thinkingCharacters += thinking.length();
-                    cognitiveEventBus.publish(CognitiveEventType.THINKING_TOKEN, "THINKING", thinking, "model:" + brain.model(), Map.of(
+                    publishCognitive(jobType, CognitiveEventType.THINKING_TOKEN, "THINKING", thinking, "model:" + brain.model(), Map.of(
                             "text", thinking,
                             "index", thinkingChunks
                     ));
@@ -276,7 +277,7 @@ public class OllamaProvider implements AIProvider {
                             d.setThinkingDurationMs(durationMs);
                             d.setThinkingTokensOrChunks(finalThinkingChunks);
                         });
-                        cognitiveEventBus.publish(CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished", "model:" + brain.model(), Map.of(
+                        publishCognitive(jobType, CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished", "model:" + brain.model(), Map.of(
                                 "durationMs", durationMs,
                                 "chunks", thinkingChunks,
                                 "characters", thinkingCharacters
@@ -289,16 +290,16 @@ public class OllamaProvider implements AIProvider {
                         diagnostics(d -> d.setFirstAnswerTokenMs(firstTokenLatencyMs));
                         LOGGER.info("[JARVIS][requestId={}][OLLAMA] FIRST_ANSWER_TOKEN elapsedMs={}",
                                 diagnosticsRequestId(), firstTokenLatencyMs);
-                        cognitiveEventBus.publish(CognitiveEventType.ANSWER_STARTED, "ANSWERING", "Answer started", "model:" + brain.model(), Map.of(
+                        publishCognitive(jobType, CognitiveEventType.ANSWER_STARTED, "ANSWERING", "Answer started", "model:" + brain.model(), Map.of(
                                 "model", brain.model(),
                                 "timeToFirstAnswerTokenMs", firstTokenLatencyMs
                         ));
                         eventSink.publish(StatusChangedEvent.create(ChatEventType.GENERATING, conversationId, "GENERATING"));
-                        cognitiveEventBus.publish(CognitiveEventType.FIRST_TOKEN_RECEIVED, "RECEIVED", "First token received", "model:" + brain.model(), Map.of(
+                        publishCognitive(jobType, CognitiveEventType.FIRST_TOKEN_RECEIVED, "RECEIVED", "First token received", "model:" + brain.model(), Map.of(
                                 "latencyMs", firstTokenLatencyMs,
                                 "model", brain.model()
                         ));
-                        cognitiveEventBus.publish(CognitiveEventType.STREAMING_STARTED, "STREAMING", "Streaming started", "model:" + brain.model(), Map.of(
+                        publishCognitive(jobType, CognitiveEventType.STREAMING_STARTED, "STREAMING", "Streaming started", "model:" + brain.model(), Map.of(
                                 "model", brain.model()
                         ));
                         LOGGER.info("[JARVIS][requestId={}][OLLAMA] TIME_TO_FIRST_TOKEN elapsedMs={}",
@@ -306,11 +307,11 @@ public class OllamaProvider implements AIProvider {
                     }
                     answerChunks++;
                     answerCharacters += token.length();
-                    cognitiveEventBus.publish(CognitiveEventType.ANSWER_TOKEN, "TOKEN", token, "model:" + brain.model(), Map.of(
+                    publishCognitive(jobType, CognitiveEventType.ANSWER_TOKEN, "TOKEN", token, "model:" + brain.model(), Map.of(
                             "text", token,
                             "index", answerChunks
                     ));
-                    cognitiveEventBus.publish(CognitiveEventType.TOKEN, "TOKEN", token, "model:" + brain.model(), Map.of(
+                    publishCognitive(jobType, CognitiveEventType.TOKEN, "TOKEN", token, "model:" + brain.model(), Map.of(
                             "text", token,
                             "index", answerChunks
                     ));
@@ -326,7 +327,7 @@ public class OllamaProvider implements AIProvider {
                 d.setThinkingDurationMs(durationMs);
                 d.setThinkingTokensOrChunks(finalThinkingChunks);
             });
-            cognitiveEventBus.publish(CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished", "model:" + brain.model(), Map.of(
+            publishCognitive(jobType, CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished", "model:" + brain.model(), Map.of(
                     "durationMs", durationMs,
                     "chunks", thinkingChunks,
                     "characters", thinkingCharacters
@@ -335,7 +336,7 @@ public class OllamaProvider implements AIProvider {
         if (answerStarted) {
             long answerDurationMs = nanosToMillis(System.nanoTime() - firstAnswerNano);
             diagnostics(d -> d.setAnswerStreamingDurationMs(answerDurationMs));
-            cognitiveEventBus.publish(CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Answer finished", "model:" + brain.model(), Map.of(
+            publishCognitive(jobType, CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Answer finished", "model:" + brain.model(), Map.of(
                     "durationMs", answerDurationMs,
                     "characters", answerCharacters,
                     "tokens", finalResponse == null || finalResponse.evalCount() == null ? answerChunks : finalResponse.evalCount()
@@ -354,7 +355,7 @@ public class OllamaProvider implements AIProvider {
                 tokenSummary(finalResponse),
                 tokensPerSecond == null ? "unavailable" : tokensPerSecond
         );
-        cognitiveEventBus.publish(CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Streaming finished", "model:" + brain.model(), Map.of(
+        publishCognitive(jobType, CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Streaming finished", "model:" + brain.model(), Map.of(
                 "generationTimeMs", generationTimeMs,
                 "promptTokens", promptTokens == null ? 0 : promptTokens,
                 "completionTokens", completionTokens == null ? answerChunks : completionTokens,
@@ -371,6 +372,19 @@ public class OllamaProvider implements AIProvider {
                 tokensPerSecond
         ));
         eventSink.publish(StatusChangedEvent.create(ChatEventType.IDLE, conversationId, "IDLE"));
+    }
+
+    private void publishCognitive(
+            AIJobType jobType,
+            CognitiveEventType event,
+            String status,
+            String message,
+            String nodeId,
+            Map<String, Object> metadata
+    ) {
+        if (jobType == AIJobType.CHAT) {
+            cognitiveEventBus.publish(event, status, message, nodeId, metadata);
+        }
     }
 
     private String normalizeBaseUrl(String baseUrl) {

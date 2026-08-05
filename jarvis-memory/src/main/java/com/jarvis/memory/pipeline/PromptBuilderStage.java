@@ -3,6 +3,8 @@ package com.jarvis.memory.pipeline;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.prompt.PromptBuilder;
+import com.jarvis.common.prompt.PromptContext;
+import com.jarvis.common.prompt.PromptContextFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
@@ -22,16 +24,23 @@ public class PromptBuilderStage implements PipelineStage {
     private static final Logger LOGGER = LoggerFactory.getLogger(PromptBuilderStage.class);
 
     private final PromptBuilder promptBuilder;
+    private final PromptContextFactory promptContextFactory;
     private final CognitiveEventBus cognitiveEventBus;
 
     /**
      * Creates the prompt builder stage.
      *
      * @param promptBuilder prompt builder
+     * @param promptContextFactory prompt context factory
      * @param cognitiveEventBus event bus
      */
-    public PromptBuilderStage(PromptBuilder promptBuilder, CognitiveEventBus cognitiveEventBus) {
+    public PromptBuilderStage(
+            PromptBuilder promptBuilder,
+            PromptContextFactory promptContextFactory,
+            CognitiveEventBus cognitiveEventBus
+    ) {
         this.promptBuilder = promptBuilder;
+        this.promptContextFactory = promptContextFactory;
         this.cognitiveEventBus = cognitiveEventBus;
     }
 
@@ -47,7 +56,18 @@ public class PromptBuilderStage implements PipelineStage {
                 "memoriesUsed", context.memoryContext().memoryCount()
         ));
         Instant startedAt = Instant.now();
-        String prompt = promptBuilder.buildPrompt(context.request(), context.knowledgeContext(), context.memoryContext());
+        PromptContext promptContext = promptContextFactory.create(
+                context.request().message(),
+                context.memoryContext(),
+                context.knowledgeContext(),
+                context.conversation()
+        );
+        String prompt = promptBuilder.buildPrompt(
+                context.request(),
+                context.knowledgeContext(),
+                context.memoryContext(),
+                promptContext
+        );
         long durationMs = Duration.between(startedAt, Instant.now()).toMillis();
         boolean containsMemory = prompt.contains("COGNITIVE MEMORY");
         if (containsMemory) {
@@ -63,9 +83,12 @@ public class PromptBuilderStage implements PipelineStage {
                 "promptCharacters", prompt.length(),
                 "estimatedPromptTokens", prompt.length() / 4
         ));
-        return context.withPrompt(prompt)
+        return context.withPromptContext(promptContext)
+                .withPrompt(prompt)
                 .withMetadata("promptBuildTimeMs", durationMs)
-                .withMetadata("estimatedPromptTokens", prompt.length() / 4);
+                .withMetadata("estimatedPromptTokens", prompt.length() / 4)
+                .withMetadata("responseMode", promptContext.responseMode().name())
+                .withMetadata("personalQuery", promptContext.personalQueryAnalysis().personalQuery());
     }
 
 }

@@ -45,6 +45,24 @@ public interface PromptBuilder {
     }
 
     /**
+     * Builds a provider prompt from user request, memory, knowledge and source manifest.
+     *
+     * @param request user chat request
+     * @param knowledgeContext knowledge context
+     * @param memoryContext cognitive memory context
+     * @param promptContext source-aware prompt context
+     * @return prompt text
+     */
+    default String buildPrompt(
+            ChatRequest request,
+            KnowledgeContext knowledgeContext,
+            CognitiveMemoryContext memoryContext,
+            PromptContext promptContext
+    ) {
+        return buildPrompt(request, knowledgeContext, memoryContext);
+    }
+
+    /**
      * Builds a debug view of the provider prompt.
      *
      * @param request user chat request

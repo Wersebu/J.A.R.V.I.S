@@ -98,6 +98,8 @@ public enum CognitiveEventType {
     ANSWER_TOKEN,
     /** Final answer stream finished. */
     ANSWER_FINISHED,
+    /** Grounding diagnostics for the final response. */
+    RESPONSE_GROUNDING,
     /** Streaming started. */
     STREAMING_STARTED,
     /** A generated token is available. */
