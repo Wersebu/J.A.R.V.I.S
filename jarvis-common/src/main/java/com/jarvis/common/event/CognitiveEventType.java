@@ -173,5 +173,19 @@ public enum CognitiveEventType {
     /** Graph edge was added. */
     GRAPH_EDGE_ADDED,
     /** Graph edge was removed. */
-    GRAPH_EDGE_REMOVED
+    GRAPH_EDGE_REMOVED,
+    /** Knowledge workspace folder was created. */
+    FOLDER_CREATED,
+    /** Knowledge workspace document was created. */
+    DOCUMENT_CREATED,
+    /** Knowledge workspace document was moved. */
+    DOCUMENT_MOVED,
+    /** Knowledge workspace node was deleted. */
+    DOCUMENT_DELETED,
+    /** Knowledge workspace node was renamed. */
+    DOCUMENT_RENAMED,
+    /** Knowledge workspace index was refreshed. */
+    INDEX_REFRESH,
+    /** Knowledge graph model should be refreshed. */
+    GRAPH_REFRESH
 }

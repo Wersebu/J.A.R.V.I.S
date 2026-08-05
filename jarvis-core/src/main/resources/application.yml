@@ -59,3 +59,7 @@ knowledge:
   watch: true
   preview-length: 500
   watcher-debounce-ms: 300
+  workspace:
+    write-mode: AUTO_DRAFT
+    history-directory: .history
+    drafts-directory: .drafts

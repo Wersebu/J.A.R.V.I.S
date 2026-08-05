@@ -7,6 +7,6 @@ import org.springframework.context.annotation.Configuration;
  * Enables knowledge engine configuration.
  */
 @Configuration
-@EnableConfigurationProperties(KnowledgeProperties.class)
+@EnableConfigurationProperties({KnowledgeProperties.class, com.jarvis.knowledge.workspace.KnowledgeWorkspaceProperties.class})
 public class KnowledgeConfiguration {
 }

@@ -84,6 +84,7 @@ public class DefaultKnowledgeService implements KnowledgeService {
         try (Stream<Path> paths = Files.walk(root)) {
             return paths.filter(Files::isDirectory)
                     .filter(path -> !path.equals(root))
+                    .filter(path -> !isWorkspaceInternal(path))
                     .map(this::relativePath)
                     .sorted()
                     .toList();
@@ -118,6 +119,7 @@ public class DefaultKnowledgeService implements KnowledgeService {
 
         try (Stream<Path> paths = Files.walk(root)) {
             paths.filter(Files::isRegularFile)
+                    .filter(path -> !isWorkspaceInternal(path))
                     .filter(supportedFileTypes::supports)
                     .forEach(path -> indexFile(path, DocumentStatus.INDEXED, previousDocuments));
             eventPublisher.publish(KnowledgeEvent.indexCompleted());
@@ -138,7 +140,7 @@ public class DefaultKnowledgeService implements KnowledgeService {
     @Override
     public Optional<KnowledgeDocument> indexFile(Path path, DocumentStatus status) {
         Path normalizedPath = path.toAbsolutePath().normalize();
-        if (!Files.isRegularFile(normalizedPath) || !supportedFileTypes.supports(normalizedPath)) {
+        if (!Files.isRegularFile(normalizedPath) || isWorkspaceInternal(normalizedPath) || !supportedFileTypes.supports(normalizedPath)) {
             return Optional.empty();
         }
         KnowledgeDocument document = indexFile(normalizedPath, status, Map.of());
@@ -274,6 +276,22 @@ public class DefaultKnowledgeService implements KnowledgeService {
         String normalizedPath = relativePath.replace('\\', '/');
         int separator = normalizedPath.indexOf('/');
         return separator > 0 ? normalizedPath.substring(0, separator) : "";
+    }
+
+    private boolean isWorkspaceInternal(Path path) {
+        Path root = rootPath();
+        Path normalizedPath = path.toAbsolutePath().normalize();
+        if (!normalizedPath.startsWith(root)) {
+            return false;
+        }
+        Path relative = root.relativize(normalizedPath);
+        for (Path part : relative) {
+            String name = part.toString();
+            if (name.equals(".history") || name.equals(".drafts")) {
+                return true;
+            }
+        }
+        return false;
     }
 
 }

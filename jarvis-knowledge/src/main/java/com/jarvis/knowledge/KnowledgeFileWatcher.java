@@ -160,11 +160,14 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
             }
             Path changedPath = directory.resolve((Path) event.context()).toAbsolutePath().normalize();
             if (event.kind() == ENTRY_CREATE && Files.isDirectory(changedPath)) {
+                if (isWorkspaceInternal(changedPath)) {
+                    continue;
+                }
                 registerRecursively(changedPath);
                 LOGGER.info("[KNOWLEDGE_WATCHER] CREATE path={}", changedPath);
                 continue;
             }
-            if (!supportedFileTypes.supports(changedPath)) {
+            if (isWorkspaceInternal(changedPath) || !supportedFileTypes.supports(changedPath)) {
                 continue;
             }
             if (event.kind() == ENTRY_DELETE) {
@@ -202,11 +205,30 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
     }
 
     private void registerDirectory(Path directory) {
+        if (isWorkspaceInternal(directory)) {
+            return;
+        }
         try {
             WatchKey key = directory.register(watchService, ENTRY_CREATE, ENTRY_MODIFY, ENTRY_DELETE);
             directoriesByKey.put(key, directory);
         } catch (IOException exception) {
             throw new KnowledgeException("Failed to watch knowledge directory " + directory, exception);
         }
+    }
+
+    private boolean isWorkspaceInternal(Path path) {
+        Path root = Path.of(properties.root()).toAbsolutePath().normalize();
+        Path normalizedPath = path.toAbsolutePath().normalize();
+        if (!normalizedPath.startsWith(root)) {
+            return false;
+        }
+        Path relative = root.relativize(normalizedPath);
+        for (Path part : relative) {
+            String name = part.toString();
+            if (name.equals(".history") || name.equals(".drafts")) {
+                return true;
+            }
+        }
+        return false;
     }
 }
