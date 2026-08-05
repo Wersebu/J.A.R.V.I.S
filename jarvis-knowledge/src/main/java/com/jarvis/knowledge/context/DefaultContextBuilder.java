@@ -176,7 +176,7 @@ public class DefaultContextBuilder implements ContextBuilder {
     }
 
     private String nodeId(String relativePath) {
-        return "knowledge:" + sourceName(relativePath);
+        return "knowledge:" + relativePath.replace('\\', '/');
     }
 
     private Path resolveKnowledgePath(String relativePath) {

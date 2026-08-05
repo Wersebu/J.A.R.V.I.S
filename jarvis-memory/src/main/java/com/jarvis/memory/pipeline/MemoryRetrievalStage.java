@@ -68,8 +68,10 @@ public class MemoryRetrievalStage implements PipelineStage {
                     CognitiveEventType.MEMORY_CANDIDATE_FOUND,
                     "CANDIDATE",
                     "Memory candidate found",
-                    "memory:" + memory.id(),
+                    memoryNodeId(memory),
                     Map.of(
+                            "id", memoryNodeId(memory),
+                            "memoryId", memory.id().toString(),
                             "type", memory.type().name(),
                             "title", memory.title(),
                             "confidence", memory.confidence()
@@ -98,5 +100,10 @@ public class MemoryRetrievalStage implements PipelineStage {
         return context.withMemoryContext(memoryContext)
                 .withMetadata("memoryRetrievalTimeMs", durationMs)
                 .withMetadata("memoriesUsed", memoryContext.memoryCount());
+    }
+
+    private String memoryNodeId(com.jarvis.common.memory.MemoryRecord memory) {
+        String category = memory.category() == null ? "SEMANTIC" : memory.category().name();
+        return "memory:" + category + ":" + memory.id();
     }
 }

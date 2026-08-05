@@ -147,6 +147,6 @@ public class KeywordKnowledgeRetriever implements KnowledgeRetriever {
     }
 
     private String nodeId(String relativePath) {
-        return "knowledge:" + filename(relativePath);
+        return "knowledge:" + relativePath.replace('\\', '/');
     }
 }
