@@ -10,6 +10,7 @@ import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
 import com.jarvis.common.event.TokenEvent;
+import com.jarvis.common.memory.ConversationMessage;
 import com.jarvis.knowledge.KnowledgeDocument;
 import com.jarvis.knowledge.KnowledgeException;
 import com.jarvis.knowledge.KnowledgeIndex;
@@ -204,7 +205,7 @@ public class DefaultResearchEngine implements ResearchEngine {
             LOGGER.info("[RESEARCH][requestId={}] AUTOMATIC_FALLBACK_ACTION {}", context.requestId(), deterministic.action());
             return deterministic;
         }
-        ChatResponse response = provider.chat(pipeline.brain(), decisionPrompt(context), AIJobType.BACKGROUND);
+        ChatResponse response = provider.chat(pipeline.brain(), decisionPrompt(pipeline, context), AIJobType.BACKGROUND);
         return actionParser.parseOrFallback(response.response(), provider, pipeline.brain(), repairPrompt(context), context);
     }
 
@@ -417,7 +418,7 @@ public class DefaultResearchEngine implements ResearchEngine {
         )));
     }
 
-    private String decisionPrompt(ResearchContext context) {
+    private String decisionPrompt(PipelineContext pipeline, ResearchContext context) {
         return """
                 You are J.A.R.V.I.S. Research Engine.
                 Select exactly one next action. Return JSON only. No markdown. No prose.
@@ -444,6 +445,9 @@ public class DefaultResearchEngine implements ResearchEngine {
                 User question:
                 %s
 
+                Recent conversation context:
+                %s
+
                 Candidate document ids:
                 %s
 
@@ -459,6 +463,7 @@ public class DefaultResearchEngine implements ResearchEngine {
                 context.documentReadCount(), MAX_DOCUMENTS_READ,
                 context.totalCharactersRead(), MAX_TOTAL_CHARACTERS,
                 context.originalQuery(),
+                conversationContext(pipeline),
                 context.candidateDocumentIds(),
                 context.readDocumentIds(),
                 context.observationsText().isBlank() ? "None." : context.observationsText()
@@ -492,6 +497,9 @@ public class DefaultResearchEngine implements ResearchEngine {
                 Research observations:
                 %s
 
+                Recent conversation context:
+                %s
+
                 Used document ids:
                 %s
 
@@ -499,9 +507,24 @@ public class DefaultResearchEngine implements ResearchEngine {
                 %s
                 """.formatted(
                 context.observationsText().isBlank() ? "No document content was read." : context.observationsText(),
+                conversationContext(pipeline),
                 context.usedDocumentIds(),
                 pipeline.request().message()
         );
+    }
+
+    private String conversationContext(PipelineContext pipeline) {
+        if (pipeline.conversation().isEmpty()) {
+            return "None.";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (ConversationMessage message : pipeline.conversation()) {
+            builder.append(message.role().name())
+                    .append(":\n")
+                    .append(message.content())
+                    .append("\n\n");
+        }
+        return builder.toString().strip();
     }
 
     private boolean canContinue(ResearchContext context, Instant startedAt) {

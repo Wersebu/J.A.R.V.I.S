@@ -3,6 +3,7 @@ package com.jarvis.memory.pipeline;
 import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
+import com.jarvis.common.memory.ConversationMessage;
 import com.jarvis.tools.runtime.ToolCallingRequest;
 import com.jarvis.tools.runtime.ToolCallingResult;
 import com.jarvis.tools.runtime.ToolCallingRuntime;
@@ -44,7 +45,7 @@ public class ToolCallingStage implements PipelineStage {
                 context.requestId(),
                 context.conversationId(),
                 context.request().message(),
-                context.prompt(),
+                toolBasePrompt(context),
                 context.brain(),
                 context.effectiveKnowledgeMode()
         ));
@@ -94,6 +95,45 @@ public class ToolCallingStage implements PipelineStage {
                 "tokensPerSecond", 0.0d,
                 "source", "tool"
         ));
+    }
+
+    private String toolBasePrompt(PipelineContext context) {
+        if (context.prompt() != null && !context.prompt().isBlank()) {
+            return context.prompt();
+        }
+        StringBuilder builder = new StringBuilder();
+        builder.append("""
+                You are J.A.R.V.I.S.
+
+                Long-term memory policy:
+                The Knowledge Workspace is the only authoritative long-term memory.
+                Do not rely on legacy SQLite semantic memory.
+                When asked to remember information permanently, use KnowledgeTool.
+
+                """);
+        if (!context.conversation().isEmpty()) {
+            builder.append("""
+                    === CONVERSATION CONTEXT ===
+
+                    The following messages are recent working conversation context.
+                    This is not durable long-term memory.
+                    Use it only for continuity inside the current conversation.
+
+                    ----------------------------------------
+
+                    """);
+            for (ConversationMessage message : context.conversation()) {
+                builder.append(message.role().name())
+                        .append(":\n")
+                        .append(message.content())
+                        .append("\n\n");
+            }
+            builder.append("=== END CONVERSATION CONTEXT ===\n\n");
+        }
+        builder.append("=== CURRENT USER MESSAGE ===\n\n")
+                .append(context.request().message())
+                .append("\n\n=== END CURRENT USER MESSAGE ===\n");
+        return builder.toString();
     }
 
     private void publish(PipelineContext context, CognitiveEventType event, String status, String message, Map<String, Object> metadata) {
