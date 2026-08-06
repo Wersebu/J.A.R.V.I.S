@@ -1,12 +1,16 @@
 package com.jarvis.memory.pipeline;
 
+import com.jarvis.common.event.CognitiveEvent;
+import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
-import com.jarvis.common.event.TokenEvent;
 import com.jarvis.tools.runtime.ToolCallingRequest;
 import com.jarvis.tools.runtime.ToolCallingResult;
 import com.jarvis.tools.runtime.ToolCallingRuntime;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
+
+import java.time.Instant;
+import java.util.Map;
 
 /**
  * Executes native tool-calling before ordinary final model streaming.
@@ -50,7 +54,7 @@ public class ToolCallingStage implements PipelineStage {
         String answer = result.finalAnswer() == null || result.finalAnswer().isBlank()
                 ? "Zakonczylem prace z narzedziami."
                 : result.finalAnswer();
-        context.modelEventSink().publish(TokenEvent.create(context.conversationId(), answer));
+        publishAnswer(context, answer);
         GenerationFinishedEvent finished = GenerationFinishedEvent.create(
                 context.conversationId(),
                 0,
@@ -64,5 +68,46 @@ public class ToolCallingStage implements PipelineStage {
         return context.withResponse(answer, finished)
                 .withMetadata("toolCallingHandled", true)
                 .withMetadata("toolCallingSteps", result.steps().size());
+    }
+
+    private void publishAnswer(PipelineContext context, String answer) {
+        publish(context, CognitiveEventType.ANSWER_STARTED, "ANSWERING", "Tool answer started", Map.of(
+                "model", context.model(),
+                "source", "tool"
+        ));
+        publish(context, CognitiveEventType.ANSWER_TOKEN, "TOKEN", answer, Map.of(
+                "text", answer,
+                "index", 1,
+                "source", "tool"
+        ));
+        publish(context, CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Tool answer finished", Map.of(
+                "durationMs", 0,
+                "characters", answer.length(),
+                "tokens", Math.max(1, answer.length() / 4),
+                "source", "tool"
+        ));
+        publish(context, CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Tool response finished", Map.of(
+                "generationTimeMs", 0,
+                "promptTokens", 0,
+                "completionTokens", Math.max(1, answer.length() / 4),
+                "tokensStreamed", 1,
+                "tokensPerSecond", 0.0d,
+                "source", "tool"
+        ));
+    }
+
+    private void publish(PipelineContext context, CognitiveEventType event, String status, String message, Map<String, Object> metadata) {
+        context.cognitiveEventSink().accept(new CognitiveEvent(
+                context.requestId(),
+                context.conversationId(),
+                Instant.now(),
+                event,
+                status,
+                message,
+                context.brain() == null ? null : context.brain().type(),
+                context.model(),
+                null,
+                metadata
+        ));
     }
 }

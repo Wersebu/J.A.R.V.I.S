@@ -104,7 +104,9 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 }
 
                 publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING", "Selecting tool action", null, step, Map.of());
-                ToolAction action = nextAction(request, intent, observation, step, errors);
+                ToolAction action = shouldUseDeterministicAction(request, intent, step)
+                        ? fallbackAction(request, intent, step)
+                        : nextAction(request, intent, observation, step, errors);
                 action = normalizeAction(request, intent, action);
                 if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
                     if (step == 1 && results.isEmpty()) {
@@ -166,6 +168,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
 
                 if (result.requiresApproval()) {
                     String answer = "Utworzyłem szkic zmiany i czeka on na zatwierdzenie.";
+                    answer = draftAnswer(action, result);
                     saveDebug(request, intent, steps, "WAITING_APPROVAL", errors);
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "WAITING_APPROVAL", "Tool loop waiting for approval",
                             targetNode(action), step, resultMetadata(result));
@@ -283,6 +286,21 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 "Fallback plan for explicit knowledge write request.", "");
     }
 
+    private boolean shouldUseDeterministicAction(ToolCallingRequest request, ToolIntent intent, int step) {
+        if (step != 1) {
+            return false;
+        }
+        if (intent != ToolIntent.CREATE_DOCUMENT && intent != ToolIntent.SAVE_KNOWLEDGE) {
+            return false;
+        }
+        String normalized = normalize(request.userMessage());
+        return normalized.contains("plik")
+                || normalized.contains("dokument")
+                || normalized.contains("zapisz")
+                || normalized.contains("utworz")
+                || normalized.contains("stworz");
+    }
+
     private String inferDocumentPath(String message) {
         String normalized = normalize(message);
         String folder = wordAfter(normalized, "folderze");
@@ -363,6 +381,14 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             return path.isBlank() ? "Usunalem dokument wiedzy." : "Usunalem dokument wiedzy: " + path + ".";
         }
         return result.message().isBlank() ? "Wykonalem operacje narzedziowa." : result.message();
+    }
+
+    private String draftAnswer(ToolAction action, ToolResult result) {
+        String path = String.valueOf(result.data().getOrDefault("path", action.arguments().getOrDefault("path", "")));
+        String target = path.isBlank() ? "zmiany w wiedzy" : path;
+        String draftId = result.draftId();
+        return "Przygotowalem szkic: " + target + ". Zatwierdz go w panelu, aby zapisac zmiany."
+                + (draftId.isBlank() ? "" : " Draft: " + draftId + ".");
     }
 
     private boolean looksLikeRawCommand(String value) {
