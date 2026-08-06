@@ -132,7 +132,24 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                     errors.add(exception.getMessage());
                     LOGGER.warn("[TOOL_LOOP] invalid tool action step={} error={}", step, exception.getMessage());
                     action = normalizeAction(retryInvalidToolAction(request, intent, action, exception.getMessage(), step));
-                    validate(action);
+                    if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
+                        steps.add(new ToolRuntimeStep(step, "FINAL_ANSWER", "", "", "FINISHED_AFTER_INVALID_ACTION", null));
+                        saveDebug(request, intent, steps, "FINISHED_AFTER_INVALID_ACTION", errors);
+                        publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED_AFTER_INVALID_ACTION",
+                                "LLM stopped tool loop after invalid action", null, step, Map.of("errors", errors));
+                        return new ToolCallingResult(true, action.answer(), steps, results);
+                    }
+                    try {
+                        validate(action);
+                    } catch (ToolException retryException) {
+                        errors.add(retryException.getMessage());
+                        LOGGER.warn("[TOOL_LOOP] invalid repaired tool action step={} error={}", step, retryException.getMessage());
+                        failures++;
+                        if (failures >= properties.maxConsecutiveFailures()) {
+                            break;
+                        }
+                        continue;
+                    }
                 }
                 publish(request, CognitiveEventType.TOOL_CALL_VALIDATED, "VALIDATED", "Tool call validated", null, step,
                         actionMetadata(action));
@@ -225,13 +242,23 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         } catch (RuntimeException exception) {
             LOGGER.warn("[TOOL_LOOP] invalid action JSON step={} raw={}", step, abbreviate(raw));
             String repaired = selectProvider(request).chat(request.brain(), repairPrompt(raw), AIJobType.BACKGROUND).response();
-            return parse(repaired);
+            try {
+                return parse(repaired);
+            } catch (RuntimeException repairException) {
+                LOGGER.warn("[TOOL_LOOP] action JSON repair failed step={} repaired={}", step, abbreviate(repaired));
+                return plainTextFinalAnswer(raw, "I could not convert the model response into a safe tool action.");
+            }
         }
     }
 
     private ToolAction retryToolAction(ToolCallingRequest request, ToolIntent intent, String previousAnswer, int step) {
         String raw = selectProvider(request).chat(request.brain(), retryPrompt(request, intent, previousAnswer, step), AIJobType.BACKGROUND).response();
-        return parse(raw);
+        try {
+            return parse(raw);
+        } catch (RuntimeException exception) {
+            LOGGER.warn("[TOOL_LOOP] retry action JSON invalid step={} raw={}", step, abbreviate(raw));
+            return plainTextFinalAnswer(raw, "Nie moglem bezpiecznie przygotowac poprawnego wywolania narzedzia.");
+        }
     }
 
     private ToolAction retryInvalidToolAction(
@@ -243,12 +270,17 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     ) {
         String prompt = retryInvalidPrompt(request, intent, invalidAction, validationError, step);
         String raw = selectProvider(request).chat(request.brain(), prompt, AIJobType.BACKGROUND).response();
-        return parse(raw);
+        try {
+            return parse(raw);
+        } catch (RuntimeException exception) {
+            LOGGER.warn("[TOOL_LOOP] invalid-action retry JSON invalid step={} raw={}", step, abbreviate(raw));
+            return plainTextFinalAnswer(raw, "Nie moglem bezpiecznie przygotowac poprawionego wywolania narzedzia.");
+        }
     }
 
     private ToolAction parse(String raw) {
         try {
-            JsonNode node = objectMapper.readTree(stripFences(raw));
+            JsonNode node = objectMapper.readTree(extractJsonPayload(raw));
             String action = text(node, "action");
             if (action.isBlank() && !text(node, "name").isBlank()) {
                 String name = text(node, "name");
@@ -266,6 +298,11 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         } catch (JsonProcessingException exception) {
             throw new ToolException("Invalid tool action JSON", exception);
         }
+    }
+
+    private ToolAction plainTextFinalAnswer(String raw, String fallback) {
+        String answer = raw == null || raw.isBlank() ? fallback : raw.strip();
+        return new ToolAction("FINAL_ANSWER", "", "", Map.of(), "", answer);
     }
 
     private void validate(ToolAction action) {
@@ -527,6 +564,19 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         String value = raw == null ? "" : raw.trim();
         if (value.startsWith("```")) {
             value = value.replaceFirst("^```[a-zA-Z]*", "").replaceFirst("```$", "").trim();
+        }
+        return value;
+    }
+
+    private String extractJsonPayload(String raw) {
+        String value = stripFences(raw);
+        if (value.startsWith("{")) {
+            return value;
+        }
+        int start = value.indexOf('{');
+        int end = value.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            return value.substring(start, end + 1);
         }
         return value;
     }
