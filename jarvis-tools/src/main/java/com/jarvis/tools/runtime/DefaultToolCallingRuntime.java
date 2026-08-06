@@ -78,7 +78,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     @Override
     public ToolCallingResult execute(ToolCallingRequest request) {
         ToolIntent intent = intentDetector.detect(request.userMessage());
-        if (!properties.isEnabled() || intent == ToolIntent.NO_TOOL) {
+        if (!properties.isEnabled()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
         }
 
@@ -106,22 +106,52 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING", "Asking LLM for next tool action",
                         null, step, Map.of("decisionOwner", "LLM"));
                 ToolAction action = normalizeAction(nextAction(request, intent, observation, step));
+                if (isNoTool(action)) {
+                    steps.add(new ToolRuntimeStep(step, "NO_TOOL", "", "", "DECLINED", null));
+                    saveDebug(request, intent, steps, "NO_TOOL", errors);
+                    publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "NO_TOOL",
+                            "LLM decided no tool is needed", null, step, Map.of("decisionOwner", "LLM"));
+                    return new ToolCallingResult(false, "", steps, results);
+                }
                 if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
-                    if (step == 1 && results.isEmpty() && requiresToolAttempt(intent)) {
-                        LOGGER.info("[TOOL_LOOP] firstAction=FINAL_ANSWER retryingWithExplicitToolSchema intent={}", intent);
-                        action = normalizeAction(retryToolAction(request, intent, action.answer(), step));
+                    if (step == 1 && results.isEmpty() && intent == ToolIntent.NO_TOOL) {
+                        LOGGER.info("[TOOL_LOOP] firstAction=FINAL_ANSWER retryingContextualToolDecision intent={}", intent);
+                        action = normalizeAction(retryContextualToolDecision(request, action.answer(), step));
+                        if (isNoTool(action) || "FINAL_ANSWER".equalsIgnoreCase(action.action())) {
+                            steps.add(new ToolRuntimeStep(step, isNoTool(action) ? "NO_TOOL" : "FINAL_ANSWER",
+                                    "", "", "DECLINED", null));
+                            saveDebug(request, intent, steps, "NO_TOOL", errors);
+                            publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "NO_TOOL",
+                                    "LLM decided no tool is needed", null, step, Map.of("decisionOwner", "LLM"));
+                            return new ToolCallingResult(false, "", steps, results);
+                        }
+                    }
+                    if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
+                        if (step == 1 && results.isEmpty() && requiresToolAttempt(intent)) {
+                            LOGGER.info("[TOOL_LOOP] firstAction=FINAL_ANSWER retryingWithExplicitToolSchema intent={}", intent);
+                            action = normalizeAction(retryToolAction(request, intent, action.answer(), step));
+                            if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
+                                steps.add(new ToolRuntimeStep(step, "FINAL_ANSWER", "", "", "FINISHED", null));
+                                saveDebug(request, intent, steps, "FINISHED_WITHOUT_TOOL", errors);
+                                publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED_WITHOUT_TOOL",
+                                        "LLM declined to use a tool", null, step, Map.of("decisionOwner", "LLM"));
+                                return new ToolCallingResult(true, action.answer(), steps, results);
+                            }
+                        }
                         if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
                             steps.add(new ToolRuntimeStep(step, "FINAL_ANSWER", "", "", "FINISHED", null));
-                            saveDebug(request, intent, steps, "FINISHED_WITHOUT_TOOL", errors);
-                            publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED_WITHOUT_TOOL",
-                                    "LLM declined to use a tool", null, step, Map.of("decisionOwner", "LLM"));
+                            saveDebug(request, intent, steps, "FINISHED", errors);
+                            publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished", null, step, Map.of());
                             return new ToolCallingResult(true, action.answer(), steps, results);
                         }
                     }
-                    steps.add(new ToolRuntimeStep(step, "FINAL_ANSWER", "", "", "FINISHED", null));
-                    saveDebug(request, intent, steps, "FINISHED", errors);
-                    publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished", null, step, Map.of());
-                    return new ToolCallingResult(true, action.answer(), steps, results);
+                }
+                if (isNoTool(action)) {
+                    steps.add(new ToolRuntimeStep(step, "NO_TOOL", "", "", "DECLINED", null));
+                    saveDebug(request, intent, steps, "NO_TOOL", errors);
+                    publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "NO_TOOL",
+                            "LLM decided no tool is needed", null, step, Map.of("decisionOwner", "LLM"));
+                    return new ToolCallingResult(false, "", steps, results);
                 }
 
                 publish(request, CognitiveEventType.TOOL_CALL_PROPOSED, "PROPOSED", "LLM proposed tool call", null, step,
@@ -261,6 +291,17 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         }
     }
 
+    private ToolAction retryContextualToolDecision(ToolCallingRequest request, String previousAnswer, int step) {
+        String raw = selectProvider(request).chat(request.brain(), contextualDecisionRetryPrompt(request, previousAnswer, step),
+                AIJobType.BACKGROUND).response();
+        try {
+            return parse(raw);
+        } catch (RuntimeException exception) {
+            LOGGER.warn("[TOOL_LOOP] contextual decision retry JSON invalid step={} raw={}", step, abbreviate(raw));
+            return noToolAction();
+        }
+    }
+
     private ToolAction retryInvalidToolAction(
             ToolCallingRequest request,
             ToolIntent intent,
@@ -290,6 +331,9 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             if ("FINAL_ANSWER".equalsIgnoreCase(action)) {
                 return new ToolAction("FINAL_ANSWER", "", "", Map.of(), "", text(node, "answer"));
             }
+            if ("NO_TOOL".equalsIgnoreCase(action) || "NONE".equalsIgnoreCase(action)) {
+                return noToolAction();
+            }
             if (!"TOOL_CALL".equalsIgnoreCase(action)) {
                 throw new ToolException("Unsupported tool loop action: " + action);
             }
@@ -303,6 +347,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private ToolAction plainTextFinalAnswer(String raw, String fallback) {
         String answer = raw == null || raw.isBlank() ? fallback : raw.strip();
         return new ToolAction("FINAL_ANSWER", "", "", Map.of(), "", answer);
+    }
+
+    private ToolAction noToolAction() {
+        return new ToolAction("NO_TOOL", "", "", Map.of(), "", "");
     }
 
     private void validate(ToolAction action) {
@@ -338,6 +386,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 action.reason(),
                 action.answer()
         );
+    }
+
+    private boolean isNoTool(ToolAction action) {
+        return "NO_TOOL".equalsIgnoreCase(action.action()) || "NONE".equalsIgnoreCase(action.action());
     }
 
     private boolean isTerminalWrite(String operation) {
@@ -403,6 +455,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         return request.basePrompt()
                 + "\n\n" + toolRegistry.promptSection()
                 + "\n\nTOOL ACTION JSON EXAMPLES\n"
+                + "No tool needed:\n"
+                + "{\"action\":\"NO_TOOL\",\"reason\":\"The user is only chatting and no tool is useful.\"}\n"
                 + "Create a knowledge document:\n"
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"CREATE_DOCUMENT\",\"arguments\":{\"path\":\"People/Kuba.md\",\"content\":\"# Kuba\\n\\n## Urodziny\\n\\n6 czerwca\\n\"},\"reason\":\"User asked to save a birthday fact.\"}\n"
                 + "Update an existing document:\n"
@@ -410,12 +464,16 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "Search knowledge:\n"
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"Kuba urodziny\"},\"reason\":\"Need to inspect existing knowledge before answering.\"}\n"
                 + "\n\nDetected tool intent: " + intent
+                + "\nThis detected intent is only a weak hint from Java. You own the final tool decision."
                 + "\nUser request:\n" + request.userMessage()
                 + "\n\nPrevious tool observation:\n" + observation
                 + "\n\nStep: " + step
+                + "\nYou are not writing the normal assistant answer in this stage."
+                + "\nUse NO_TOOL when no tool should be used and the normal model answer should continue."
+                + "\nIf recent conversation context shows the assistant proposed a knowledge update and the latest user confirms it, call KnowledgeTool instead of answering with text."
                 + "\nThe LLM is the only component allowed to decide semantic knowledge writes."
                 + "\nJava will only validate and execute your structured TOOL_CALL."
-                + "\nReturn JSON only. Choose TOOL_CALL or FINAL_ANSWER.";
+                + "\nReturn JSON only. Choose TOOL_CALL, NO_TOOL, or FINAL_ANSWER only after tool observations.";
     }
 
     private String repairPrompt(String raw) {
@@ -423,7 +481,20 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"...\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"CREATE_DOCUMENT\",\"arguments\":{\"path\":\"...\",\"content\":\"...\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"UPDATE_DOCUMENT\",\"arguments\":{\"path\":\"...\",\"instruction\":\"...\",\"text\":\"...\"},\"reason\":\"...\"} "
+                + "or {\"action\":\"NO_TOOL\",\"reason\":\"...\"} "
                 + "or {\"action\":\"FINAL_ANSWER\",\"answer\":\"...\"}.\nMalformed:\n" + abbreviate(raw);
+    }
+
+    private String contextualDecisionRetryPrompt(ToolCallingRequest request, String previousAnswer, int step) {
+        return request.basePrompt()
+                + "\n\n" + toolRegistry.promptSection()
+                + "\n\nYou returned a normal answer during the tool-decision stage:\n" + safe(previousAnswer)
+                + "\n\nRe-evaluate using the full recent conversation context and the latest user message."
+                + "\nIf the latest user message confirms a previous assistant proposal to create, update, append, move, rename, or delete knowledge, return the exact TOOL_CALL now."
+                + "\nIf no tool is useful, return {\"action\":\"NO_TOOL\",\"reason\":\"...\"}."
+                + "\nDo not write the user-facing answer here."
+                + "\nJava must not choose destination, content, or operation for you."
+                + "\nReturn JSON only. Step: " + step;
     }
 
     private String retryPrompt(ToolCallingRequest request, ToolIntent intent, String previousAnswer, int step) {
@@ -436,7 +507,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "\nFor a new saved fact, CREATE_DOCUMENT is supported. You must decide path and markdown content."
                 + "\nExample JSON only:\n"
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"CREATE_DOCUMENT\",\"arguments\":{\"path\":\"People/Kuba.md\",\"content\":\"# Kuba\\n\\n## Urodziny\\n\\n6 czerwca\\n\"},\"reason\":\"User asked to save a birthday fact.\"}"
-                + "\nIf a tool is truly inappropriate, return FINAL_ANSWER. Step: " + step;
+                + "\nIf a tool is truly inappropriate, return NO_TOOL. Step: " + step;
     }
 
     private String retryInvalidPrompt(
