@@ -71,10 +71,24 @@ public class ResponseValidationStage implements PipelineStage {
         }
         ValidationOutcome validation = validateAndCorrect(context);
         PipelineContext responseContext = validation.context();
-        memoryService.addMessage(
+        ConversationMessage assistantMessage = ConversationMessage.chat(
                 responseContext.conversationId(),
-                new ConversationMessage(MessageRole.ASSISTANT, responseContext.response(), Instant.now())
+                responseContext.requestId(),
+                MessageRole.ASSISTANT,
+                responseContext.response(),
+                Instant.now()
         );
+        memoryService.addMessage(responseContext.conversationId(), assistantMessage);
+        cognitiveEventBus.publish(CognitiveEventType.CONVERSATION_ASSISTANT_RESPONSE_PERSISTED,
+                "PERSISTED", "Assistant response persisted", null, Map.of(
+                        "conversationId", responseContext.conversationId(),
+                        "requestId", responseContext.requestId(),
+                        "messageId", assistantMessage.id().toString(),
+                        "role", assistantMessage.role().name()
+                ));
+        org.slf4j.LoggerFactory.getLogger(ResponseValidationStage.class).info(
+                "[JARVIS][CONVERSATION] ASSISTANT_RESPONSE_PERSISTED conversationId={} requestId={} messageId={}",
+                responseContext.conversationId(), responseContext.requestId(), assistantMessage.id());
         publishGrounding(responseContext, validation);
         var finishedEvent = responseContext.generationFinishedEvent();
         cognitiveEventBus.publish(CognitiveEventType.REQUEST_FINISHED, "FINISHED", "Request finished", null, Map.ofEntries(

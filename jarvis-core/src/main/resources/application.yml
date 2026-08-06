@@ -1,4 +1,4 @@
-spring:
+﻿spring:
   application:
     name: jarvis
 
@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.3.0"
+  version: "2.3.1"
   ai:
     identity-file: file:config/jarvis.md
   diagnostics:
@@ -60,6 +60,10 @@ jarvis:
     history:
       enabled: true
       max-messages: 30
+      max-characters: 30000
+      include-tool-results: true
+      include-system-events: false
+      include-thinking: false
 
 brains:
   FAST:

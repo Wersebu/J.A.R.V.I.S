@@ -1,6 +1,8 @@
 package com.jarvis.memory.sqlite;
 
 import com.jarvis.common.memory.ConversationMessage;
+import com.jarvis.common.memory.ConversationMessageStatus;
+import com.jarvis.common.memory.ConversationMessageType;
 import com.jarvis.common.memory.MessageRole;
 import com.jarvis.memory.cognitive.MemoryProperties;
 import com.jarvis.memory.cognitive.WorkingMemoryStore;
@@ -39,14 +41,20 @@ public class SQLiteWorkingMemoryStore implements WorkingMemoryStore {
     public void addMessage(String conversationId, ConversationMessage message) {
         try (Connection connection = connectionFactory.openConnection();
              PreparedStatement insert = connection.prepareStatement("""
-                     INSERT INTO working_memory (id, conversation_id, role, content, created_at)
-                     VALUES (?, ?, ?, ?, ?)
+                     INSERT OR IGNORE INTO working_memory
+                     (id, conversation_id, request_id, role, content, created_at, sequence_number, message_type, status)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                      """)) {
-            insert.setString(1, UUID.randomUUID().toString());
+            long sequenceNumber = message.sequenceNumber() > 0L ? message.sequenceNumber() : nextSequence(connection, conversationId);
+            insert.setString(1, message.id().toString());
             insert.setString(2, conversationId);
-            insert.setString(3, message.role().name());
-            insert.setString(4, message.content());
-            insert.setString(5, message.createdAt().toString());
+            insert.setString(3, message.requestId());
+            insert.setString(4, message.role().name());
+            insert.setString(5, message.content());
+            insert.setString(6, message.createdAt().toString());
+            insert.setLong(7, sequenceNumber);
+            insert.setString(8, message.messageType().name());
+            insert.setString(9, message.status().name());
             insert.executeUpdate();
             trimConversation(connection, conversationId);
         } catch (SQLException exception) {
@@ -59,10 +67,11 @@ public class SQLiteWorkingMemoryStore implements WorkingMemoryStore {
         List<ConversationMessage> messages = new ArrayList<>();
         try (Connection connection = connectionFactory.openConnection();
              PreparedStatement statement = connection.prepareStatement("""
-                     SELECT role, content, created_at
+                     SELECT id, conversation_id, request_id, role, content, created_at, sequence_number, message_type, status
                      FROM working_memory
                      WHERE conversation_id = ?
-                     ORDER BY datetime(created_at) DESC
+                       AND status = 'FINAL'
+                     ORDER BY sequence_number DESC, datetime(created_at) DESC
                      LIMIT ?
                      """)) {
             statement.setString(1, conversationId);
@@ -70,9 +79,15 @@ public class SQLiteWorkingMemoryStore implements WorkingMemoryStore {
             try (ResultSet resultSet = statement.executeQuery()) {
                 while (resultSet.next()) {
                     messages.add(new ConversationMessage(
+                            UUID.fromString(resultSet.getString("id")),
+                            resultSet.getString("conversation_id"),
+                            resultSet.getString("request_id"),
                             MessageRole.valueOf(resultSet.getString("role")),
                             resultSet.getString("content"),
-                            Instant.parse(resultSet.getString("created_at"))
+                            Instant.parse(resultSet.getString("created_at")),
+                            resultSet.getLong("sequence_number"),
+                            parseType(resultSet.getString("message_type")),
+                            parseStatus(resultSet.getString("status"))
                     ));
                 }
             }
@@ -89,7 +104,7 @@ public class SQLiteWorkingMemoryStore implements WorkingMemoryStore {
                   AND id NOT IN (
                     SELECT id FROM working_memory
                     WHERE conversation_id = ?
-                    ORDER BY datetime(created_at) DESC
+                    ORDER BY sequence_number DESC, datetime(created_at) DESC
                     LIMIT ?
                   )
                 """)) {
@@ -97,6 +112,59 @@ public class SQLiteWorkingMemoryStore implements WorkingMemoryStore {
             statement.setString(2, conversationId);
             statement.setInt(3, properties.workingHistoryLength());
             statement.executeUpdate();
+        }
+    }
+
+    @Override
+    public int deleteConversation(String conversationId) {
+        try (Connection connection = connectionFactory.openConnection();
+             PreparedStatement statement = connection.prepareStatement("DELETE FROM working_memory WHERE conversation_id = ?")) {
+            statement.setString(1, conversationId);
+            return statement.executeUpdate();
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Could not delete conversation history", exception);
+        }
+    }
+
+    @Override
+    public int countMessages(String conversationId) {
+        try (Connection connection = connectionFactory.openConnection();
+             PreparedStatement statement = connection.prepareStatement("SELECT COUNT(*) FROM working_memory WHERE conversation_id = ?")) {
+            statement.setString(1, conversationId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? resultSet.getInt(1) : 0;
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Could not count conversation history", exception);
+        }
+    }
+
+    private long nextSequence(Connection connection, String conversationId) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                SELECT COALESCE(MAX(sequence_number), 0) + 1
+                FROM working_memory
+                WHERE conversation_id = ?
+                """)) {
+            statement.setString(1, conversationId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() ? resultSet.getLong(1) : 1L;
+            }
+        }
+    }
+
+    private ConversationMessageType parseType(String value) {
+        try {
+            return value == null ? ConversationMessageType.CHAT : ConversationMessageType.valueOf(value);
+        } catch (IllegalArgumentException exception) {
+            return ConversationMessageType.CHAT;
+        }
+    }
+
+    private ConversationMessageStatus parseStatus(String value) {
+        try {
+            return value == null ? ConversationMessageStatus.FINAL : ConversationMessageStatus.valueOf(value);
+        } catch (IllegalArgumentException exception) {
+            return ConversationMessageStatus.FINAL;
         }
     }
 }

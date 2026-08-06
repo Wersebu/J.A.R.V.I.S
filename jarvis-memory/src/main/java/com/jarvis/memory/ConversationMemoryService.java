@@ -24,4 +24,24 @@ public interface ConversationMemoryService {
      * @return immutable conversation history snapshot
      */
     List<ConversationMessage> getMessages(String conversationId);
+
+    /**
+     * Deletes all conversation history for a conversation.
+     *
+     * @param conversationId stable conversation identifier
+     * @return deleted rows
+     */
+    default int deleteConversation(String conversationId) {
+        return 0;
+    }
+
+    /**
+     * Counts stored messages for a conversation.
+     *
+     * @param conversationId stable conversation identifier
+     * @return message count
+     */
+    default int countMessages(String conversationId) {
+        return getMessages(conversationId).size();
+    }
 }

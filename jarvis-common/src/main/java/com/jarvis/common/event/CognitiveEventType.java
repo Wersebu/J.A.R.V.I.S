@@ -26,6 +26,18 @@ public enum CognitiveEventType {
     MEMORY_USED,
     /** No relevant memory was found. */
     MEMORY_NOT_FOUND,
+    /** Conversation context loading started. */
+    CONVERSATION_CONTEXT_LOAD_STARTED,
+    /** Conversation context was loaded. */
+    CONVERSATION_CONTEXT_LOADED,
+    /** Conversation context has no previous messages. */
+    CONVERSATION_CONTEXT_EMPTY,
+    /** Conversation user message was persisted. */
+    CONVERSATION_MESSAGE_PERSISTED,
+    /** Conversation assistant response was persisted. */
+    CONVERSATION_ASSISTANT_RESPONSE_PERSISTED,
+    /** Conversation context loading failed. */
+    CONVERSATION_CONTEXT_ERROR,
     /** Prompt builder injected memory into the final prompt. */
     PROMPT_MEMORY_INJECTED,
     /** Background memory job was queued. */

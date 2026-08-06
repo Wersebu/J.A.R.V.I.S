@@ -24,4 +24,24 @@ public interface WorkingMemoryStore {
      * @return recent messages
      */
     List<ConversationMessage> getRecentMessages(String conversationId);
+
+    /**
+     * Deletes messages for a conversation.
+     *
+     * @param conversationId stable conversation identifier
+     * @return deleted rows
+     */
+    default int deleteConversation(String conversationId) {
+        return 0;
+    }
+
+    /**
+     * Counts messages for a conversation.
+     *
+     * @param conversationId stable conversation identifier
+     * @return message count
+     */
+    default int countMessages(String conversationId) {
+        return getRecentMessages(conversationId).size();
+    }
 }

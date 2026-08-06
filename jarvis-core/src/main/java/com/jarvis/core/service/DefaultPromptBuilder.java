@@ -86,12 +86,16 @@ public class DefaultPromptBuilder implements PromptBuilder {
         String knowledge = knowledgeBlock(context);
         String userPrompt = userPrompt(request);
         String finalPrompt = systemPrompt + groundingPolicy + sourceManifest + conversationPrompt + knowledge + userPrompt;
+        long conversationMessages = countSources(sources, GroundingSourceType.CONVERSATION);
         LOGGER.info("[JARVIS] Prompt size={} conversationContextItems={} knowledgeSources={} charactersInjected={} estimatedTokens={}",
                 finalPrompt.length(),
-                countSources(sources, GroundingSourceType.CONVERSATION),
+                conversationMessages,
                 context.sourceCount(),
                 context.totalCharacters(),
                 finalPrompt.length() / 4);
+        LOGGER.info("[JARVIS][PROMPT_BUILDER] conversationMessagesInjected={} knowledgeDocumentsInjected={} currentMessageDuplicated=false semanticMemoryInjected=false backgroundMemoryAgentEnabled=false",
+                conversationMessages,
+                context.sourceCount());
         return finalPrompt;
     }
 
@@ -127,9 +131,9 @@ public class DefaultPromptBuilder implements PromptBuilder {
         StringBuilder builder = new StringBuilder();
         for (GroundingSource source : conversation) {
             builder.append(source.title())
-                    .append(": ")
+                    .append(":\n")
                     .append(source.contentPreview())
-                    .append('\n');
+                    .append("\n\n");
         }
         return """
                 === CONVERSATION CONTEXT ===
@@ -194,8 +198,6 @@ public class DefaultPromptBuilder implements PromptBuilder {
         builder.append("=== AVAILABLE SOURCES ===\n\n");
         appendSources(builder, "Knowledge sources", promptContext, GroundingSourceType.KNOWLEDGE);
         appendSources(builder, "Tool results", promptContext, GroundingSourceType.TOOL);
-        appendSources(builder, "Conversation evidence", promptContext, GroundingSourceType.CONVERSATION);
-        appendSources(builder, "Current user message", promptContext, GroundingSourceType.USER_MESSAGE);
         builder.append("=== END SOURCES ===\n\n");
         if (!promptContext.hasMemory()
                 && !promptContext.hasKnowledge()
@@ -288,8 +290,11 @@ public class DefaultPromptBuilder implements PromptBuilder {
 
     private String userPrompt(ChatRequest request) {
         return """
-                User message:
+                === CURRENT USER MESSAGE ===
+
                 %s
+
+                === END CURRENT USER MESSAGE ===
                 """.formatted(request.message());
     }
 

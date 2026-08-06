@@ -5,6 +5,11 @@ package com.jarvis.common.memory;
  */
 public enum MessageRole {
     /**
+     * System-authored conversation note.
+     */
+    SYSTEM,
+
+    /**
      * Message created by the end user.
      */
     USER,
@@ -12,5 +17,15 @@ public enum MessageRole {
     /**
      * Message created by Jarvis.
      */
-    ASSISTANT
+    ASSISTANT,
+
+    /**
+     * Tool call message.
+     */
+    TOOL,
+
+    /**
+     * Tool result message.
+     */
+    TOOL_RESULT
 }

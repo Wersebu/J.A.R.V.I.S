@@ -39,10 +39,23 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                     CREATE TABLE IF NOT EXISTS working_memory (
                         id TEXT PRIMARY KEY,
                         conversation_id TEXT NOT NULL,
+                        request_id TEXT NOT NULL DEFAULT '',
                         role TEXT NOT NULL,
                         content TEXT NOT NULL,
-                        created_at TEXT NOT NULL
+                        created_at TEXT NOT NULL,
+                        sequence_number INTEGER NOT NULL DEFAULT 0,
+                        message_type TEXT NOT NULL DEFAULT 'CHAT',
+                        status TEXT NOT NULL DEFAULT 'FINAL'
                     )
+                    """);
+            addColumnIfMissing(statement, "working_memory", "request_id", "TEXT NOT NULL DEFAULT ''");
+            addColumnIfMissing(statement, "working_memory", "sequence_number", "INTEGER NOT NULL DEFAULT 0");
+            addColumnIfMissing(statement, "working_memory", "message_type", "TEXT NOT NULL DEFAULT 'CHAT'");
+            addColumnIfMissing(statement, "working_memory", "status", "TEXT NOT NULL DEFAULT 'FINAL'");
+            statement.executeUpdate("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_working_memory_request_role_type
+                    ON working_memory(request_id, role, message_type)
+                    WHERE request_id <> ''
                     """);
             statement.executeUpdate("""
                     CREATE TABLE IF NOT EXISTS semantic_memory (

@@ -21,7 +21,7 @@ import java.util.List;
 @Service
 public class DefaultPromptContextFactory implements PromptContextFactory {
 
-    private static final int PREVIEW_LIMIT = 180;
+    private static final int PREVIEW_LIMIT = 4_000;
 
     private final PersonalQueryDetector personalQueryDetector;
 

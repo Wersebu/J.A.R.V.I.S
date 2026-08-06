@@ -32,4 +32,14 @@ public class SQLiteConversationMemoryService implements ConversationMemoryServic
     public List<ConversationMessage> getMessages(String conversationId) {
         return workingMemoryStore.getRecentMessages(conversationId);
     }
+
+    @Override
+    public int deleteConversation(String conversationId) {
+        return workingMemoryStore.deleteConversation(conversationId);
+    }
+
+    @Override
+    public int countMessages(String conversationId) {
+        return workingMemoryStore.countMessages(conversationId);
+    }
 }
