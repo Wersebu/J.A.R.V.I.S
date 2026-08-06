@@ -107,6 +107,17 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                         null, step, Map.of("decisionOwner", "LLM"));
                 ToolAction action = normalizeAction(nextAction(request, intent, observation, step));
                 if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
+                    if (step == 1 && results.isEmpty() && requiresToolAttempt(intent)) {
+                        LOGGER.info("[TOOL_LOOP] firstAction=FINAL_ANSWER retryingWithExplicitToolSchema intent={}", intent);
+                        action = normalizeAction(retryToolAction(request, intent, action.answer(), step));
+                        if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
+                            steps.add(new ToolRuntimeStep(step, "FINAL_ANSWER", "", "", "FINISHED", null));
+                            saveDebug(request, intent, steps, "FINISHED_WITHOUT_TOOL", errors);
+                            publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED_WITHOUT_TOOL",
+                                    "LLM declined to use a tool", null, step, Map.of("decisionOwner", "LLM"));
+                            return new ToolCallingResult(true, action.answer(), steps, results);
+                        }
+                    }
                     steps.add(new ToolRuntimeStep(step, "FINAL_ANSWER", "", "", "FINISHED", null));
                     saveDebug(request, intent, steps, "FINISHED", errors);
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished", null, step, Map.of());
@@ -115,7 +126,14 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
 
                 publish(request, CognitiveEventType.TOOL_CALL_PROPOSED, "PROPOSED", "LLM proposed tool call", null, step,
                         Map.of("tool", action.tool(), "operation", action.operation(), "reason", safe(action.reason())));
-                validate(action);
+                try {
+                    validate(action);
+                } catch (ToolException exception) {
+                    errors.add(exception.getMessage());
+                    LOGGER.warn("[TOOL_LOOP] invalid tool action step={} error={}", step, exception.getMessage());
+                    action = normalizeAction(retryInvalidToolAction(request, intent, action, exception.getMessage(), step));
+                    validate(action);
+                }
                 publish(request, CognitiveEventType.TOOL_CALL_VALIDATED, "VALIDATED", "Tool call validated", null, step,
                         Map.of("tool", action.tool(), "operation", action.operation()));
 
@@ -209,6 +227,23 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             String repaired = selectProvider(request).chat(request.brain(), repairPrompt(raw), AIJobType.BACKGROUND).response();
             return parse(repaired);
         }
+    }
+
+    private ToolAction retryToolAction(ToolCallingRequest request, ToolIntent intent, String previousAnswer, int step) {
+        String raw = selectProvider(request).chat(request.brain(), retryPrompt(request, intent, previousAnswer, step), AIJobType.BACKGROUND).response();
+        return parse(raw);
+    }
+
+    private ToolAction retryInvalidToolAction(
+            ToolCallingRequest request,
+            ToolIntent intent,
+            ToolAction invalidAction,
+            String validationError,
+            int step
+    ) {
+        String prompt = retryInvalidPrompt(request, intent, invalidAction, validationError, step);
+        String raw = selectProvider(request).chat(request.brain(), prompt, AIJobType.BACKGROUND).response();
+        return parse(raw);
     }
 
     private ToolAction parse(String raw) {
@@ -310,6 +345,13 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private String prompt(ToolCallingRequest request, ToolIntent intent, String observation, int step) {
         return request.basePrompt()
                 + "\n\n" + toolRegistry.promptSection()
+                + "\n\nTOOL ACTION JSON EXAMPLES\n"
+                + "Create a knowledge document:\n"
+                + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"CREATE_DOCUMENT\",\"arguments\":{\"path\":\"People/Kuba.md\",\"content\":\"# Kuba\\n\\n## Urodziny\\n\\n6 czerwca\\n\"},\"reason\":\"User asked to save a birthday fact.\"}\n"
+                + "Update an existing document:\n"
+                + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"UPDATE_DOCUMENT\",\"arguments\":{\"path\":\"People/Kuba.md\",\"instruction\":\"SET_SECTION:Urodziny\",\"text\":\"6 czerwca\"},\"reason\":\"User asked to update the birthday section.\"}\n"
+                + "Search knowledge:\n"
+                + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"Kuba urodziny\"},\"reason\":\"Need to inspect existing knowledge before answering.\"}\n"
                 + "\n\nDetected tool intent: " + intent
                 + "\nUser request:\n" + request.userMessage()
                 + "\n\nPrevious tool observation:\n" + observation
@@ -322,7 +364,49 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private String repairPrompt(String raw) {
         return "Repair this malformed tool action into valid JSON only. It must be either "
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"...\"},\"reason\":\"...\"} "
+                + "or {\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"CREATE_DOCUMENT\",\"arguments\":{\"path\":\"...\",\"content\":\"...\"},\"reason\":\"...\"} "
+                + "or {\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"UPDATE_DOCUMENT\",\"arguments\":{\"path\":\"...\",\"instruction\":\"...\",\"text\":\"...\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"FINAL_ANSWER\",\"answer\":\"...\"}.\nMalformed:\n" + abbreviate(raw);
+    }
+
+    private String retryPrompt(ToolCallingRequest request, ToolIntent intent, String previousAnswer, int step) {
+        return request.basePrompt()
+                + "\n\n" + toolRegistry.promptSection()
+                + "\n\nThe previous response did not use a tool:\n" + safe(previousAnswer)
+                + "\n\nThe user request is:\n" + request.userMessage()
+                + "\n\nDetected intent: " + intent
+                + "\nIf the user asks to save/create/update knowledge and provided enough information, return a TOOL_CALL."
+                + "\nFor a new saved fact, CREATE_DOCUMENT is supported. You must decide path and markdown content."
+                + "\nExample JSON only:\n"
+                + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"CREATE_DOCUMENT\",\"arguments\":{\"path\":\"People/Kuba.md\",\"content\":\"# Kuba\\n\\n## Urodziny\\n\\n6 czerwca\\n\"},\"reason\":\"User asked to save a birthday fact.\"}"
+                + "\nIf a tool is truly inappropriate, return FINAL_ANSWER. Step: " + step;
+    }
+
+    private String retryInvalidPrompt(
+            ToolCallingRequest request,
+            ToolIntent intent,
+            ToolAction invalidAction,
+            String validationError,
+            int step
+    ) {
+        return request.basePrompt()
+                + "\n\n" + toolRegistry.promptSection()
+                + "\n\nYour previous tool action was invalid."
+                + "\nValidation error: " + validationError
+                + "\nInvalid operation: " + invalidAction.operation()
+                + "\nUser request:\n" + request.userMessage()
+                + "\nDetected intent: " + intent
+                + "\nReturn corrected JSON only. Use one of the supported knowledge operations listed above."
+                + "\nFor saving new knowledge, use CREATE_DOCUMENT with path and content. Step: " + step;
+    }
+
+    private boolean requiresToolAttempt(ToolIntent intent) {
+        return intent == ToolIntent.CREATE_DOCUMENT
+                || intent == ToolIntent.SAVE_KNOWLEDGE
+                || intent == ToolIntent.UPDATE_DOCUMENT
+                || intent == ToolIntent.APPEND_DOCUMENT
+                || intent == ToolIntent.DELETE_KNOWLEDGE
+                || intent == ToolIntent.ORGANIZE_KNOWLEDGE;
     }
 
     private String observation(ToolResult result) {

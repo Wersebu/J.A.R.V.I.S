@@ -37,6 +37,9 @@ public class DefaultToolRegistry implements ToolRegistry {
                 .collect(Collectors.joining("\n\n"))
                 + "\n\nRules:\n"
                 + "- Use tools when the user explicitly asks to save, update, create, read, search or organize knowledge.\n"
+                + "- The knowledge tool DOES support writing. For saving a new fact, use CREATE_DOCUMENT with explicit path and content.\n"
+                + "- For CREATE_DOCUMENT, the model must decide the logical path and complete markdown content.\n"
+                + "- For UPDATE_DOCUMENT, the model must decide the target path and exact update instruction.\n"
                 + "- Return either one valid TOOL_CALL action or a FINAL_ANSWER action.\n"
                 + "- Return JSON only during the tool loop. No markdown fences.\n"
                 + "- Do not claim that a tool was used unless ToolManager returned success.\n"
