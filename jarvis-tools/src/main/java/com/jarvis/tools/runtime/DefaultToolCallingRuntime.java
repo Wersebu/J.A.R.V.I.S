@@ -125,7 +125,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 }
 
                 publish(request, CognitiveEventType.TOOL_CALL_PROPOSED, "PROPOSED", "LLM proposed tool call", null, step,
-                        Map.of("tool", action.tool(), "operation", action.operation(), "reason", safe(action.reason())));
+                        actionMetadata(action));
                 try {
                     validate(action);
                 } catch (ToolException exception) {
@@ -135,7 +135,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                     validate(action);
                 }
                 publish(request, CognitiveEventType.TOOL_CALL_VALIDATED, "VALIDATED", "Tool call validated", null, step,
-                        Map.of("tool", action.tool(), "operation", action.operation()));
+                        actionMetadata(action));
 
                 ToolRequest toolRequest = new ToolRequest(
                         action.tool(),
@@ -148,7 +148,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 );
 
                 publish(request, CognitiveEventType.TOOL_EXECUTION_STARTED, "EXECUTING", "Tool execution started",
-                        targetNode(action), step, Map.of("tool", action.tool(), "operation", action.operation()));
+                        targetNode(action), step, actionMetadata(action));
                 LOGGER.info("[TOOL_CALL] tool={} operation={} step={}", action.tool(), action.operation(), step);
                 ToolResult result = toolManager.execute(toolRequest);
                 results.add(result);
@@ -164,7 +164,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 if (result.requiresApproval()) {
                     publish(request, CognitiveEventType.TOOL_APPROVAL_REQUIRED, "WAITING_APPROVAL",
                             "Tool call requires approval", targetNode(action), step, resultMetadata(result));
-                    String answer = draftAnswer(action, result);
+                    String answer = generateFinalAnswer(request, action, result, true);
                     saveDebug(request, intent, steps, "WAITING_APPROVAL", errors);
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "WAITING_APPROVAL", "Tool loop waiting for approval",
                             targetNode(action), step, resultMetadata(result));
@@ -186,7 +186,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 publish(request, CognitiveEventType.TOOL_VERIFICATION_FINISHED, "VERIFIED", "Tool result verified",
                         targetNode(action), step, Map.of("operation", action.operation(), "success", result.success()));
                 if (result.success() && isTerminalWrite(action.operation())) {
-                    String answer = finalToolAnswer(action, result);
+                    String answer = generateFinalAnswer(request, action, result, false);
                     saveDebug(request, intent, steps, "FINISHED", errors);
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished",
                             targetNode(action), step, resultMetadata(result));
@@ -315,31 +315,51 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 || "MOVE_FOLDER".equalsIgnoreCase(operation);
     }
 
-    private String finalToolAnswer(ToolAction action, ToolResult result) {
-        String path = String.valueOf(result.data().getOrDefault("path", action.arguments().getOrDefault("path", "")));
-        String operation = action.operation();
-        if ("CREATE_DOCUMENT".equalsIgnoreCase(operation)) {
-            return path.isBlank()
-                    ? "Utworzylem nowy dokument wiedzy i zapisalem informacje."
-                    : "Utworzylem nowy dokument wiedzy: " + path + ".";
-        }
-        if ("APPEND_DOCUMENT".equalsIgnoreCase(operation) || "UPDATE_DOCUMENT".equalsIgnoreCase(operation)) {
-            return path.isBlank()
-                    ? "Zaktualizowalem dokument wiedzy."
-                    : "Zaktualizowalem dokument wiedzy: " + path + ".";
-        }
-        if ("DELETE_DOCUMENT".equalsIgnoreCase(operation)) {
-            return path.isBlank() ? "Usunalem dokument wiedzy." : "Usunalem dokument wiedzy: " + path + ".";
-        }
-        return result.message().isBlank() ? "Wykonalem operacje narzedziowa." : result.message();
+    private String generateFinalAnswer(ToolCallingRequest request, ToolAction action, ToolResult result, boolean waitingApproval) {
+        publish(request, CognitiveEventType.FINAL_ANSWER_GENERATION_STARTED, "STARTED", "LLM final answer generation started",
+                targetNode(action), 0, Map.of("tool", action.tool(), "operation", action.operation()));
+        String prompt = finalAnswerPrompt(request, action, result, waitingApproval);
+        String answer = selectProvider(request).chat(request.brain(), prompt, AIJobType.BACKGROUND).response();
+        publish(request, CognitiveEventType.FINAL_ANSWER_GENERATION_FINISHED, "FINISHED", "LLM final answer generation finished",
+                targetNode(action), 0, Map.of("tool", action.tool(), "operation", action.operation(), "characters", answer.length()));
+        return answer == null || answer.isBlank() ? fallbackFinalAnswer(action, result, waitingApproval) : answer.strip();
     }
 
-    private String draftAnswer(ToolAction action, ToolResult result) {
+    private String finalAnswerPrompt(ToolCallingRequest request, ToolAction action, ToolResult result, boolean waitingApproval) {
+        return request.basePrompt()
+                + "\n\nYou just used a tool. Now write the final user-facing answer."
+                + "\nDo not reveal hidden chain-of-thought. You may briefly mention what was done."
+                + "\nIf approval is required, clearly tell the user that a draft is waiting for approval."
+                + "\nKeep the answer concise and natural, in the user's language."
+                + "\n\nUser request:\n" + request.userMessage()
+                + "\n\nTool call chosen by you:\n" + toolActionJson(action)
+                + "\n\nTool result:\n" + observation(result)
+                + "\n\nApproval required: " + waitingApproval
+                + "\nReturn plain text only.";
+    }
+
+    private String fallbackFinalAnswer(ToolAction action, ToolResult result, boolean waitingApproval) {
         String path = String.valueOf(result.data().getOrDefault("path", action.arguments().getOrDefault("path", "")));
-        String target = path.isBlank() ? "zmiany w wiedzy" : path;
-        String draftId = result.draftId();
-        return "Przygotowalem szkic: " + target + ". Zatwierdz go w panelu, aby zapisac zmiany."
-                + (draftId.isBlank() ? "" : " Draft: " + draftId + ".");
+        if (waitingApproval) {
+            return "Przygotowalem szkic zmiany" + (path.isBlank() ? "" : " w " + path) + ". Czeka na zatwierdzenie.";
+        }
+        if (path.isBlank()) {
+            return result.message().isBlank() ? "Wykonalem operacje narzedziowa." : result.message();
+        }
+        return "Gotowe. Operacja zostala wykonana dla: " + path + ".";
+    }
+
+    private String toolActionJson(ToolAction action) {
+        try {
+            return objectMapper.writeValueAsString(Map.of(
+                    "tool", action.tool(),
+                    "operation", action.operation(),
+                    "arguments", action.arguments(),
+                    "reason", safe(action.reason())
+            ));
+        } catch (JsonProcessingException exception) {
+            return action.operation();
+        }
     }
 
     private String prompt(ToolCallingRequest request, ToolIntent intent, String observation, int step) {
@@ -435,6 +455,30 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         values.put("draftId", result.draftId());
         values.put("targetNodeIds", result.targetNodeIds());
         values.put("message", result.message());
+        return values;
+    }
+
+    private Map<String, Object> actionMetadata(ToolAction action) {
+        Map<String, Object> values = new HashMap<>();
+        values.put("tool", action.tool());
+        values.put("operation", action.operation());
+        values.put("reason", safe(action.reason()));
+        values.put("arguments", action.arguments());
+        Object path = action.arguments().get("path");
+        Object query = action.arguments().get("query");
+        Object content = action.arguments().get("content");
+        Object text = action.arguments().get("text");
+        if (path != null) {
+            values.put("path", String.valueOf(path));
+            values.put("targetPath", String.valueOf(path));
+        }
+        if (query != null) {
+            values.put("query", String.valueOf(query));
+        }
+        String preview = content == null ? String.valueOf(text == null ? "" : text) : String.valueOf(content);
+        if (!preview.isBlank()) {
+            values.put("contentPreview", abbreviate(preview));
+        }
         return values;
     }
 
