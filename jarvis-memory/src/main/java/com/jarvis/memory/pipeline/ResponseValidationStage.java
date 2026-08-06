@@ -98,6 +98,9 @@ public class ResponseValidationStage implements PipelineStage {
     }
 
     private ValidationOutcome validateAndCorrect(PipelineContext context) {
+        if (Boolean.TRUE.equals(context.metadata().get("toolCallingHandled"))) {
+            return new ValidationOutcome(context, GroundedValidationResult.success(), false);
+        }
         GroundedValidationResult first = groundedResponseValidator.validate(context.response(), context.promptContext());
         if (first.valid()) {
             return new ValidationOutcome(context, first, false);

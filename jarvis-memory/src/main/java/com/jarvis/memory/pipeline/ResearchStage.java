@@ -30,6 +30,9 @@ public class ResearchStage implements PipelineStage {
 
     @Override
     public PipelineContext execute(PipelineContext context) {
+        if (context.response() != null && !context.response().isBlank()) {
+            return context;
+        }
         if (context.effectiveKnowledgeMode() != KnowledgeMode.RESEARCH) {
             return context;
         }

@@ -48,7 +48,7 @@ public class ToolCallingStage implements PipelineStage {
             return context;
         }
         String answer = result.finalAnswer() == null || result.finalAnswer().isBlank()
-                ? "Zakończyłem pracę z narzędziami."
+                ? "Zakonczylem prace z narzedziami."
                 : result.finalAnswer();
         context.modelEventSink().publish(TokenEvent.create(context.conversationId(), answer));
         GenerationFinishedEvent finished = GenerationFinishedEvent.create(

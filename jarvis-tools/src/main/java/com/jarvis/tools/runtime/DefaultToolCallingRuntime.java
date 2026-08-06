@@ -105,6 +105,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
 
                 publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING", "Selecting tool action", null, step, Map.of());
                 ToolAction action = nextAction(request, intent, observation, step, errors);
+                action = normalizeAction(request, intent, action);
                 if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
                     if (step == 1 && results.isEmpty()) {
                         LOGGER.info("[TOOL_LOOP] firstAction=FINAL_ANSWER ignoredForExplicitIntent intent={}", intent);
@@ -175,6 +176,13 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                         targetNode(action), step, Map.of("operation", action.operation()));
                 publish(request, CognitiveEventType.TOOL_VERIFICATION_FINISHED, "VERIFIED", "Tool result verified",
                         targetNode(action), step, Map.of("operation", action.operation(), "success", result.success()));
+                if (result.success() && isTerminalWrite(action.operation())) {
+                    String answer = finalToolAnswer(action, result);
+                    saveDebug(request, intent, steps, "FINISHED", errors);
+                    publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished",
+                            targetNode(action), step, resultMetadata(result));
+                    return new ToolCallingResult(true, answer, steps, results);
+                }
             }
             String finalAnswer = errors.isEmpty()
                     ? "Wykonałem dostępne operacje narzędziowe i zakończyłem pracę."
@@ -221,6 +229,11 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         try {
             JsonNode node = objectMapper.readTree(stripFences(raw));
             String action = text(node, "action");
+            if (action.isBlank() && !text(node, "name").isBlank()) {
+                String name = text(node, "name");
+                Map<String, Object> arguments = objectMapper.convertValue(node.path("arguments"), MAP_TYPE);
+                return new ToolAction("TOOL_CALL", "knowledge", name, arguments, text(node, "reason"), "");
+            }
             if ("FINAL_ANSWER".equalsIgnoreCase(action)) {
                 return new ToolAction("FINAL_ANSWER", "", "", Map.of(), "", text(node, "answer"));
             }
@@ -263,7 +276,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             String path = inferDocumentPath(message);
             return new ToolAction("TOOL_CALL", "knowledge", "CREATE_DOCUMENT", Map.of(
                     "path", path,
-                    "content", "# " + titleFromPath(path) + "\n\n" + message
+                    "content", formatKnowledgeDocument(path, message)
             ), "Fallback document creation for explicit knowledge write request.", "");
         }
         return new ToolAction("TOOL_CALL", "knowledge", "PLAN_KNOWLEDGE_UPDATE", Map.of("query", message, "content", message),
@@ -288,7 +301,142 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             fileName = fileName + ".md";
         }
         String folderName = folder.isBlank() ? "Inbox" : slug(folder);
+        if (folder.isBlank() && looksLikeHardware(message)) {
+            folderName = "Hardware";
+            fileName = "local-pc.md";
+        }
         return capitalize(folderName) + "/" + fileName;
+    }
+
+    private ToolAction normalizeAction(ToolCallingRequest request, ToolIntent intent, ToolAction action) {
+        if (!"TOOL_CALL".equalsIgnoreCase(action.action()) || !"knowledge".equalsIgnoreCase(action.tool())) {
+            return action;
+        }
+        Map<String, Object> arguments = new HashMap<>(action.arguments());
+        String operation = action.operation();
+        if ((intent == ToolIntent.CREATE_DOCUMENT || intent == ToolIntent.SAVE_KNOWLEDGE)
+                && ("CREATE_DOCUMENT".equalsIgnoreCase(operation) || "APPEND_DOCUMENT".equalsIgnoreCase(operation))) {
+            String path = String.valueOf(arguments.getOrDefault("path", "")).replace('\\', '/');
+            if (path.isBlank() || !path.contains("/") || path.equalsIgnoreCase("pc_specs.txt")) {
+                path = inferDocumentPath(request.userMessage());
+                arguments.put("path", path);
+            }
+            Object content = arguments.get("content");
+            Object text = arguments.get("text");
+            if (content == null || looksLikeRawCommand(String.valueOf(content))
+                    || ("CREATE_DOCUMENT".equalsIgnoreCase(operation) && looksLikeHardware(request.userMessage()))) {
+                arguments.put("content", formatKnowledgeDocument(path, request.userMessage()));
+            }
+            if (text != null && looksLikeRawCommand(String.valueOf(text))) {
+                arguments.put("text", extractKnowledgeFacts(request.userMessage()));
+            }
+        }
+        return new ToolAction(action.action(), action.tool(), operation.toUpperCase(Locale.ROOT), arguments, action.reason(), action.answer());
+    }
+
+    private boolean isTerminalWrite(String operation) {
+        return "CREATE_DOCUMENT".equalsIgnoreCase(operation)
+                || "UPDATE_DOCUMENT".equalsIgnoreCase(operation)
+                || "APPEND_DOCUMENT".equalsIgnoreCase(operation)
+                || "DELETE_DOCUMENT".equalsIgnoreCase(operation)
+                || "MOVE_DOCUMENT".equalsIgnoreCase(operation)
+                || "RENAME_DOCUMENT".equalsIgnoreCase(operation)
+                || "CREATE_FOLDER".equalsIgnoreCase(operation)
+                || "DELETE_FOLDER".equalsIgnoreCase(operation)
+                || "MOVE_FOLDER".equalsIgnoreCase(operation);
+    }
+
+    private String finalToolAnswer(ToolAction action, ToolResult result) {
+        String path = String.valueOf(result.data().getOrDefault("path", action.arguments().getOrDefault("path", "")));
+        String operation = action.operation();
+        if ("CREATE_DOCUMENT".equalsIgnoreCase(operation)) {
+            return path.isBlank()
+                    ? "Utworzylem nowy dokument wiedzy i zapisalem informacje."
+                    : "Utworzylem nowy dokument wiedzy: " + path + ".";
+        }
+        if ("APPEND_DOCUMENT".equalsIgnoreCase(operation) || "UPDATE_DOCUMENT".equalsIgnoreCase(operation)) {
+            return path.isBlank()
+                    ? "Zaktualizowalem dokument wiedzy."
+                    : "Zaktualizowalem dokument wiedzy: " + path + ".";
+        }
+        if ("DELETE_DOCUMENT".equalsIgnoreCase(operation)) {
+            return path.isBlank() ? "Usunalem dokument wiedzy." : "Usunalem dokument wiedzy: " + path + ".";
+        }
+        return result.message().isBlank() ? "Wykonalem operacje narzedziowa." : result.message();
+    }
+
+    private boolean looksLikeRawCommand(String value) {
+        String normalized = normalize(value);
+        return normalized.contains("zapisz")
+                || normalized.contains("utworz")
+                || normalized.contains("stworz")
+                || normalized.contains("jako plik")
+                || normalized.contains("nowy plik");
+    }
+
+    private boolean looksLikeHardware(String message) {
+        String normalized = normalize(message);
+        return normalized.contains(" pc")
+                || normalized.contains("komputer")
+                || normalized.contains("gpu")
+                || normalized.contains("rtx")
+                || normalized.contains("ram")
+                || normalized.contains("procesor")
+                || normalized.contains("cpu");
+    }
+
+    private String formatKnowledgeDocument(String path, String message) {
+        String facts = extractKnowledgeFacts(message);
+        List<String> parts = splitFacts(facts);
+        StringBuilder builder = new StringBuilder("# ").append(titleFromPath(path)).append("\n\n");
+        if (looksLikeHardware(message)) {
+            builder.append("## Hardware\n\n");
+            for (String part : parts) {
+                builder.append("- ").append(hardwareFact(part)).append('\n');
+            }
+            return builder.toString().trim() + "\n";
+        }
+        for (String part : parts) {
+            builder.append("- ").append(part).append('\n');
+        }
+        return builder.toString().trim() + "\n";
+    }
+
+    private String extractKnowledgeFacts(String message) {
+        String value = message == null ? "" : message.trim();
+        int question = value.lastIndexOf('?');
+        if (question >= 0 && question < value.length() - 1) {
+            value = value.substring(question + 1).trim();
+        } else {
+            int colon = value.lastIndexOf(':');
+            if (colon >= 0 && colon < value.length() - 1) {
+                value = value.substring(colon + 1).trim();
+            }
+        }
+        value = value.replaceAll("(?i)^to\\s+", "").trim();
+        return value.isBlank() ? message : value;
+    }
+
+    private List<String> splitFacts(String facts) {
+        return java.util.Arrays.stream((facts == null ? "" : facts).split("\\s*[+,;\\n]\\s*"))
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .toList();
+    }
+
+    private String hardwareFact(String value) {
+        String normalized = normalize(value);
+        if (normalized.contains("rtx") || normalized.contains("gtx") || normalized.contains("gpu") || normalized.contains("aorus")) {
+            return "GPU: " + value;
+        }
+        if (normalized.contains("ram") || normalized.matches(".*\\b\\d+\\s*gb\\b.*")) {
+            return "RAM: " + value;
+        }
+        if (normalized.contains("i5") || normalized.contains("i7") || normalized.contains("ryzen")
+                || normalized.contains("intel") || normalized.contains("cpu") || normalized.contains("procesor")) {
+            return "CPU: " + value.replaceAll("(?i)i5\\s*10\\s*600k|i510600k", "i5-10600K");
+        }
+        return value;
     }
 
     private String wordAfter(String value, String marker) {
