@@ -139,10 +139,6 @@ public class DefaultResearchEngine implements ResearchEngine {
                     context.addAction(action);
                 }
                 execute(type, action, context);
-                if (completionValidator.canAnswer(context) && context.hasReadContent()) {
-                    transition(context, ResearchState.READY_TO_ANSWER);
-                    break;
-                }
             }
         } catch (RuntimeException exception) {
             context.addError(exception.getMessage());
@@ -164,7 +160,7 @@ public class DefaultResearchEngine implements ResearchEngine {
         StringBuilder responseBuilder = new StringBuilder();
         GenerationFinishedHolder finishedHolder = new GenerationFinishedHolder();
         String finalPrompt = finalPrompt(pipeline, context);
-        selectProvider(pipeline).stream(pipeline.conversationId(), pipeline.brain(), finalPrompt, AIJobType.CHAT, event -> {
+        selectProvider(pipeline).stream(pipeline.conversationId(), finalAnswerBrain(pipeline), finalPrompt, AIJobType.CHAT, event -> {
             if (event instanceof TokenEvent tokenEvent) {
                 responseBuilder.append(tokenEvent.text());
             }
@@ -173,7 +169,14 @@ public class DefaultResearchEngine implements ResearchEngine {
             }
             pipeline.modelEventSink().publish(event);
         });
-        context.setFinalAnswer(responseBuilder.toString());
+        String finalAnswer = responseBuilder.toString().strip();
+        if (finalAnswer.isBlank()) {
+            finalAnswer = fallbackFinalAnswer(context);
+            context.addError("Final answer model returned no answer tokens");
+            LOGGER.warn("[RESEARCH][requestId={}] EMPTY_FINAL_ANSWER using fallback", context.requestId());
+            publishFallbackAnswer(context, finalAnswer);
+        }
+        context.setFinalAnswer(finalAnswer);
         transition(context, ResearchState.FINISHED);
 
         long durationMs = (System.nanoTime() - startedNano) / 1_000_000;
@@ -193,7 +196,7 @@ public class DefaultResearchEngine implements ResearchEngine {
         LOGGER.info("[RESEARCH][requestId={}] FINISHED steps={} searches={} documentsRead={} durationMs={}",
                 context.requestId(), context.stepNumber(), context.searchCount(), context.documentReadCount(), durationMs);
         return pipeline.withPrompt(finalPrompt)
-                .withResponse(responseBuilder.toString(), finishedHolder.event)
+                .withResponse(finalAnswer, finishedHolder.event)
                 .withMetadata("researchSteps", context.stepNumber())
                 .withMetadata("usedDocumentIds", List.copyOf(context.usedDocumentIds()))
                 .withMetadata("grounded", context.hasReadContent());
@@ -488,6 +491,7 @@ public class DefaultResearchEngine implements ResearchEngine {
     private String finalPrompt(PipelineContext pipeline, ResearchContext context) {
         return """
                 You are J.A.R.V.I.S.
+                Produce a visible final answer. Do not return only hidden reasoning.
                 Answer the user directly using only the research observations below.
                 If the requested fact is present in the content, state it plainly.
                 If it is not present after research, say you could not find it.
@@ -511,6 +515,41 @@ public class DefaultResearchEngine implements ResearchEngine {
                 context.usedDocumentIds(),
                 pipeline.request().message()
         );
+    }
+
+    private com.jarvis.common.ai.Brain finalAnswerBrain(PipelineContext pipeline) {
+        return pipeline.brain().withRoutingMetadata("Research final answer", 0L, com.jarvis.common.ai.ReasoningLevel.LOW);
+    }
+
+    private String fallbackFinalAnswer(ResearchContext context) {
+        if (!context.hasReadContent()) {
+            return "Nie znalazłem tej informacji w dostępnej wiedzy.";
+        }
+        return """
+                Nie udało mi się wygenerować odpowiedzi końcowej z modelu, ale odczytałem powiązane źródła.
+                Sprawdzone dokumenty: %s
+                """.formatted(String.join(", ", context.usedDocumentIds())).strip();
+    }
+
+    private void publishFallbackAnswer(ResearchContext context, String answer) {
+        publish(CognitiveEventType.ANSWER_STARTED, "ANSWERING", "Fallback answer started", null, context, Map.of(
+                "fallback", true
+        ));
+        publish(CognitiveEventType.ANSWER_TOKEN, "TOKEN", "Fallback answer token", null, context, Map.of(
+                "text", answer,
+                "index", 1,
+                "fallback", true
+        ));
+        publish(CognitiveEventType.TOKEN, "TOKEN", "Fallback token", null, context, Map.of(
+                "text", answer,
+                "index", 1,
+                "fallback", true
+        ));
+        publish(CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Fallback answer finished", null, context, Map.of(
+                "characters", answer.length(),
+                "tokens", 1,
+                "fallback", true
+        ));
     }
 
     private String conversationContext(PipelineContext pipeline) {
@@ -610,12 +649,36 @@ public class DefaultResearchEngine implements ResearchEngine {
     }
 
     private int score(KnowledgeDocument document, List<String> tokens) {
+        String fileName = fileName(document.relativePath());
         return tokens.stream().mapToInt(token ->
-                occurrences(document.title(), token) * 120
+                exact(document.title(), token) * 220
+                        + exact(fileName, token) * 220
+                        + occurrences(document.title(), token) * 120
+                        + occurrences(fileName, token) * 110
                         + occurrences(document.category(), token) * 70
                         + occurrences(document.relativePath(), token) * 70
                         + occurrences(document.preview(), token) * 25
         ).sum();
+    }
+
+    private int exact(String value, String token) {
+        if (value == null || token == null) {
+            return 0;
+        }
+        String normalized = value.toLowerCase(Locale.ROOT)
+                .replace(".md", "")
+                .replaceAll("[^\\p{L}\\p{N}]+", " ")
+                .strip();
+        return normalized.equals(token.toLowerCase(Locale.ROOT)) ? 1 : 0;
+    }
+
+    private String fileName(String relativePath) {
+        if (relativePath == null || relativePath.isBlank()) {
+            return "";
+        }
+        String normalized = relativePath.replace('\\', '/');
+        int index = normalized.lastIndexOf('/');
+        return index < 0 ? normalized : normalized.substring(index + 1);
     }
 
     private int occurrences(String value, String token) {

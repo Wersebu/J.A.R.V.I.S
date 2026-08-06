@@ -34,12 +34,18 @@ public class ResearchCompletionValidator {
         String lower = query.toLowerCase(java.util.Locale.ROOT);
         return lower.contains("what is")
                 || lower.contains("what's")
+                || lower.contains("when")
                 || lower.contains("jaki")
                 || lower.contains("jaka")
-                || lower.contains("jaką")
+                || lower.contains("jak")
+                || lower.contains("kiedy")
                 || lower.contains("ile")
                 || lower.contains("codename")
                 || lower.contains("kodowa")
-                || lower.contains("nazwa");
+                || lower.contains("nazwa")
+                || lower.contains("data")
+                || lower.contains("date")
+                || lower.contains("urodzin")
+                || lower.contains("birthday");
     }
 }
