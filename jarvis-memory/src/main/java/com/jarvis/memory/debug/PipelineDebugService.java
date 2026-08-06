@@ -20,12 +20,12 @@ public class PipelineDebugService {
      * @param context pipeline context
      */
     public void update(PipelineContext context) {
-        boolean memoryInjected = context.prompt() != null && context.prompt().contains("COGNITIVE MEMORY");
+        boolean conversationContextInjected = context.prompt() != null && context.prompt().contains("CONVERSATION CONTEXT");
         latest = new PipelineDebugSnapshot(
                 context.conversationId(),
                 context.metrics().keySet().stream().toList(),
                 context.memoryContext().memories(),
-                memoryInjected ? context.memoryContext().memories() : java.util.List.of(),
+                conversationContextInjected ? context.memoryContext().memories() : java.util.List.of(),
                 context.knowledgeContext().sources(),
                 Map.of(
                         "promptCharacters", context.prompt() == null ? 0 : context.prompt().length(),

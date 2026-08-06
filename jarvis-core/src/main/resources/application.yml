@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.2.3"
+  version: "2.3.0"
   ai:
     identity-file: file:config/jarvis.md
   diagnostics:
@@ -39,15 +39,27 @@ jarvis:
     knowledge-context-characters-per-document: 1500
   memory:
     database-path: ./data/jarvis-memory.db
-    working-history-length: 20
+    working-history-length: 30
+    semantic-sql:
+      enabled: false
+    background-agent:
+      enabled: false
+    legacy:
+      retrieval-enabled: false
+      writes-enabled: false
+      keep-tables: true
     embedding:
       model: nomic-embed-text
     background:
-      enabled: true
+      enabled: false
       executor-threads: 1
       queue-capacity: 100
       chat-priority: true
       skip-when-queue-full: false
+  conversation:
+    history:
+      enabled: true
+      max-messages: 30
 
 brains:
   FAST:
@@ -72,3 +84,5 @@ knowledge:
     write-mode: AUTO_DRAFT
     history-directory: .history
     drafts-directory: .drafts
+  persistence:
+    mode: EXPLICIT_ONLY

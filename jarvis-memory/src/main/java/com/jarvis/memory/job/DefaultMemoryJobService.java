@@ -61,8 +61,9 @@ public class DefaultMemoryJobService implements MemoryJobService {
 
     @Override
     public boolean submit(com.jarvis.memory.pipeline.PipelineContext context) {
-        if (!properties.background().enabled()) {
-            LOGGER.info("[JARVIS][MEMORY][sourceRequestId={}] JOB_SKIPPED disabled=true", context.requestId());
+        if (!properties.background().enabled() || !properties.backgroundAgent().enabled()) {
+            LOGGER.info("[JARVIS][MEMORY][sourceRequestId={}] JOB_SKIPPED backgroundEnabled={} backgroundAgentEnabled={} durableMemory=KNOWLEDGE_FILES",
+                    context.requestId(), properties.background().enabled(), properties.backgroundAgent().enabled());
             return false;
         }
         MemoryJob job = new MemoryJob(

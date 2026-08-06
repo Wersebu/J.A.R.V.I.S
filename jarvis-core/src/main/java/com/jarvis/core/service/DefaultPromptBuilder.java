@@ -82,15 +82,15 @@ public class DefaultPromptBuilder implements PromptBuilder {
         String systemPrompt = systemPrompt();
         String groundingPolicy = groundingPolicy(sources);
         String sourceManifest = sourceManifest(sources);
-        String memoryPrompt = memoryBlock(memory);
+        String conversationPrompt = conversationBlock(sources);
         String knowledge = knowledgeBlock(context);
         String userPrompt = userPrompt(request);
-        String finalPrompt = systemPrompt + groundingPolicy + sourceManifest + memoryPrompt + knowledge + userPrompt;
-        LOGGER.info("[JARVIS] Prompt size={} memoryItems={} knowledgeSources={} charactersInjected={} estimatedTokens={}",
+        String finalPrompt = systemPrompt + groundingPolicy + sourceManifest + conversationPrompt + knowledge + userPrompt;
+        LOGGER.info("[JARVIS] Prompt size={} conversationContextItems={} knowledgeSources={} charactersInjected={} estimatedTokens={}",
                 finalPrompt.length(),
-                memory.memoryCount(),
+                countSources(sources, GroundingSourceType.CONVERSATION),
                 context.sourceCount(),
-                context.totalCharacters() + memory.totalCharacters(),
+                context.totalCharacters(),
                 finalPrompt.length() / 4);
         return finalPrompt;
     }
@@ -117,21 +117,34 @@ public class DefaultPromptBuilder implements PromptBuilder {
         return new PromptDebugResult(systemPrompt, knowledge, userPrompt, finalPrompt);
     }
 
-    private String memoryBlock(CognitiveMemoryContext memoryContext) {
-        if (memoryContext.isEmpty()) {
+    private String conversationBlock(PromptContext promptContext) {
+        var conversation = promptContext.groundingSources().stream()
+                .filter(source -> source.type() == GroundingSourceType.CONVERSATION)
+                .toList();
+        if (conversation.isEmpty()) {
             return "";
         }
+        StringBuilder builder = new StringBuilder();
+        for (GroundingSource source : conversation) {
+            builder.append(source.title())
+                    .append(": ")
+                    .append(source.contentPreview())
+                    .append('\n');
+        }
         return """
-                COGNITIVE MEMORY
+                === CONVERSATION CONTEXT ===
 
-                The following information comes from J.A.R.V.I.S. memory, not from the knowledge library.
+                The following messages are recent working conversation context.
+                This is not durable long-term memory.
 
-                Use it as remembered user context when it is relevant.
+                Use it only for continuity inside the current conversation.
 
                 ----------------------------------------
 
                 %s
-                """.formatted(memoryContext.context());
+                === END CONVERSATION CONTEXT ===
+
+                """.formatted(builder);
     }
 
     private String groundingPolicy(PromptContext promptContext) {
@@ -144,7 +157,7 @@ public class DefaultPromptBuilder implements PromptBuilder {
                 When answering questions about Damian, his hardware, devices, projects,
                 preferences, work, history or personal environment:
 
-                1. Use only facts explicitly present in the supplied MEMORY, KNOWLEDGE,
+                1. Use only facts explicitly present in the supplied KNOWLEDGE,
                    CONVERSATION, TOOL RESULTS or current USER MESSAGE.
                 2. Never guess missing specifications.
                 3. Never provide example specifications as if they belong to Damian.
@@ -157,6 +170,9 @@ public class DefaultPromptBuilder implements PromptBuilder {
                 7. If only one component is known, mention only that component.
                    Do not infer the rest of the system.
                 8. Prefer uncertainty over invention.
+                9. The Knowledge Workspace is the only authoritative long-term memory.
+                   Do not rely on legacy SQLite semantic memory.
+                   When asked to remember information permanently, use KnowledgeTool.
 
                 Response mode: GROUNDED_PERSONAL
                 Personal topic: %s
@@ -176,7 +192,6 @@ public class DefaultPromptBuilder implements PromptBuilder {
     private String sourceManifest(PromptContext promptContext) {
         StringBuilder builder = new StringBuilder();
         builder.append("=== AVAILABLE SOURCES ===\n\n");
-        appendSources(builder, "Memory sources", promptContext, GroundingSourceType.MEMORY);
         appendSources(builder, "Knowledge sources", promptContext, GroundingSourceType.KNOWLEDGE);
         appendSources(builder, "Tool results", promptContext, GroundingSourceType.TOOL);
         appendSources(builder, "Conversation evidence", promptContext, GroundingSourceType.CONVERSATION);
@@ -219,6 +234,11 @@ public class DefaultPromptBuilder implements PromptBuilder {
         return """
                 AI identity:
                 %s
+
+                Long-term memory policy:
+                The Knowledge Workspace is the only authoritative long-term memory.
+                Do not rely on legacy SQLite semantic memory.
+                When asked to remember information permanently, use KnowledgeTool.
 
                 Current date: %s
                 Current time: %s
@@ -280,5 +300,11 @@ public class DefaultPromptBuilder implements PromptBuilder {
             LOGGER.error("[JARVIS] Failed to load AI identity from {}", identityResource, exception);
             return "";
         }
+    }
+
+    private long countSources(PromptContext promptContext, GroundingSourceType type) {
+        return promptContext.groundingSources().stream()
+                .filter(source -> source.type() == type)
+                .count();
     }
 }

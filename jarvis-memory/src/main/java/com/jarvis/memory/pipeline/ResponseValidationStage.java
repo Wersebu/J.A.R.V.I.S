@@ -91,8 +91,8 @@ public class ResponseValidationStage implements PipelineStage {
                 Map.entry("reason", responseContext.executionPlan().reason()),
                 Map.entry("confidence", responseContext.executionPlan().confidence())
         ));
-        memoryJobService.submit(responseContext);
-        return responseContext.withMetadata("memoryJobSubmitted", true)
+        boolean memoryJobSubmitted = memoryJobService.submit(responseContext);
+        return responseContext.withMetadata("memoryJobSubmitted", memoryJobSubmitted)
                 .withMetadata("grounded", validation.finalResult().valid())
                 .withMetadata("groundingRegenerated", validation.regenerated());
     }

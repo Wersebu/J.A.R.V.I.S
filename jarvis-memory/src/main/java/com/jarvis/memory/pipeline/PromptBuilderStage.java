@@ -57,7 +57,7 @@ public class PromptBuilderStage implements PipelineStage {
         }
         cognitiveEventBus.publish(CognitiveEventType.PROMPT_BUILD_STARTED, "BUILDING", "Building prompt", null, Map.of(
                 "documentsUsed", context.knowledgeContext().sourceCount(),
-                "memoriesUsed", context.memoryContext().memoryCount()
+                "conversationMessages", context.conversation().size()
         ));
         Instant startedAt = Instant.now();
         PromptContext promptContext = promptContextFactory.create(
@@ -73,15 +73,8 @@ public class PromptBuilderStage implements PipelineStage {
                 promptContext
         );
         long durationMs = Duration.between(startedAt, Instant.now()).toMillis();
-        boolean containsMemory = prompt.contains("COGNITIVE MEMORY");
-        if (containsMemory) {
-            cognitiveEventBus.publish(CognitiveEventType.PROMPT_MEMORY_INJECTED, "INJECTED", "Prompt contains memory section", null, Map.of(
-                    "memories", context.memoryContext().memoryCount(),
-                    "memoryCharacters", context.memoryContext().totalCharacters()
-            ));
-        }
-        LOGGER.info("[JARVIS] Prompt built characters={} estimatedTokens={} memories={} documents={}",
-                prompt.length(), prompt.length() / 4, context.memoryContext().memoryCount(), context.knowledgeContext().sourceCount());
+        LOGGER.info("[JARVIS] Prompt built characters={} estimatedTokens={} conversationMessages={} documents={}",
+                prompt.length(), prompt.length() / 4, context.conversation().size(), context.knowledgeContext().sourceCount());
         cognitiveEventBus.publish(CognitiveEventType.PROMPT_BUILD_FINISHED, "FINISHED", "Prompt built", null, Map.of(
                 "promptBuildTimeMs", durationMs,
                 "promptCharacters", prompt.length(),

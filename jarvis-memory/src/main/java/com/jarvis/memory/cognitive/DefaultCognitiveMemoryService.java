@@ -54,6 +54,7 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
     private final MemoryReranker memoryReranker;
     private final MemoryProfileBuilder profileBuilder;
     private final EmbeddingMemoryEngine embeddingMemoryEngine;
+    private final MemoryProperties memoryProperties;
 
     /**
      * Creates the default cognitive memory service.
@@ -74,7 +75,8 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
             MemoryScorer memoryScorer,
             MemoryReranker memoryReranker,
             MemoryProfileBuilder profileBuilder,
-            EmbeddingMemoryEngine embeddingMemoryEngine
+            EmbeddingMemoryEngine embeddingMemoryEngine,
+            MemoryProperties memoryProperties
     ) {
         this.semanticStore = semanticStore;
         this.episodicStore = episodicStore;
@@ -86,6 +88,9 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
         this.memoryReranker = memoryReranker;
         this.profileBuilder = profileBuilder;
         this.embeddingMemoryEngine = embeddingMemoryEngine;
+        this.memoryProperties = memoryProperties == null
+                ? new MemoryProperties(null, 20, null, null, null, null)
+                : memoryProperties;
     }
 
     /**
@@ -112,12 +117,16 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
                 new TokenMemoryScorer(new DefaultMemoryQueryNormalizer()),
                 new NoOpMemoryReranker(),
                 new StructuredMemoryProfileBuilder(),
-                null
+                null,
+                new MemoryProperties(null, 20, null, null, null, null)
         );
     }
 
     @Override
     public List<MemoryRecord> listAll() {
+        if (!memoryProperties.legacy().retrievalEnabled()) {
+            return List.of();
+        }
         List<MemoryRecord> memories = new ArrayList<>();
         semanticStore.listAll().forEach(record -> memories.add(toMemory(record)));
         episodicStore.listAll().forEach(record -> memories.add(toMemory(record)));
@@ -129,6 +138,9 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
 
     @Override
     public MemorySearchResult search(String query) {
+        if (!memoryProperties.legacy().retrievalEnabled()) {
+            return new MemorySearchResult(query, 0L, List.of());
+        }
         if (embeddingMemoryEngine != null) {
             try {
                 return embeddingSearch(query);
@@ -291,6 +303,11 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
 
     @Override
     public List<MemoryMutation> updateFromConversation(String conversationId, String userMessage, String assistantResponse) {
+        if (!memoryProperties.legacy().writesEnabled()) {
+            LOGGER.info("[JARVIS] Legacy semantic memory update skipped conversationId={} reason=legacy-writes-disabled durableMemory=KNOWLEDGE_FILES",
+                    conversationId);
+            return List.of();
+        }
         List<MemoryMutation> mutations = new ArrayList<>();
         for (MemoryCandidate candidate : classifier.classify(userMessage)) {
             switch (candidate.type()) {
@@ -307,6 +324,10 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
 
     @Override
     public int reindex() {
+        if (!memoryProperties.legacy().retrievalEnabled()) {
+            LOGGER.info("[JARVIS] Legacy memory reindex skipped reason=legacy-retrieval-disabled");
+            return 0;
+        }
         int count = listAll().size();
         LOGGER.info("[JARVIS] Memory reindex completed indexedMemories={}", count);
         return count;
@@ -314,6 +335,9 @@ public class DefaultCognitiveMemoryService implements CognitiveMemoryService {
 
     @Override
     public boolean delete(UUID id) {
+        if (!memoryProperties.legacy().writesEnabled()) {
+            return false;
+        }
         return semanticStore.delete(id) || episodicStore.delete(id) || proceduralStore.delete(id);
     }
 

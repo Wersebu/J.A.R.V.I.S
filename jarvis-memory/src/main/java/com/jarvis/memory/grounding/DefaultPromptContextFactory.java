@@ -41,17 +41,9 @@ public class DefaultPromptContextFactory implements PromptContextFactory {
             KnowledgeContext knowledgeContext,
             List<ConversationMessage> conversation
     ) {
-        CognitiveMemoryContext memory = memoryContext == null ? CognitiveMemoryContext.empty() : memoryContext;
         KnowledgeContext knowledge = knowledgeContext == null ? KnowledgeContext.empty() : knowledgeContext;
         List<ConversationMessage> history = conversation == null ? List.of() : List.copyOf(conversation);
         List<GroundingSource> sources = new ArrayList<>();
-        memory.memories().forEach(record -> sources.add(new GroundingSource(
-                GroundingSourceType.MEMORY,
-                record.id().toString(),
-                record.title(),
-                preview(record.content()),
-                record.confidence()
-        )));
         knowledge.sources().forEach(source -> sources.add(new GroundingSource(
                 GroundingSourceType.KNOWLEDGE,
                 source.documentId().toString(),
@@ -60,7 +52,6 @@ public class DefaultPromptContextFactory implements PromptContextFactory {
                 1.0
         )));
         history.stream()
-                .skip(Math.max(0, history.size() - 4))
                 .forEach(message -> sources.add(new GroundingSource(
                         GroundingSourceType.CONVERSATION,
                         message.createdAt() == null ? "conversation" : message.createdAt().toString(),
@@ -80,7 +71,7 @@ public class DefaultPromptContextFactory implements PromptContextFactory {
         PersonalQueryAnalysis analysis = personalQueryDetector.analyze(userMessage);
         ResponseMode responseMode = analysis.personalQuery() ? ResponseMode.GROUNDED_PERSONAL : ResponseMode.STANDARD;
         return new PromptContext(
-                !memory.isEmpty(),
+                false,
                 knowledge.sourceCount() > 0,
                 !history.isEmpty(),
                 false,
