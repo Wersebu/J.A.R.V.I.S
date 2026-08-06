@@ -11,14 +11,11 @@ import com.jarvis.common.prompt.PromptBuilder;
 import com.jarvis.common.prompt.PromptContext;
 import com.jarvis.common.prompt.PromptDebugResult;
 import com.jarvis.common.prompt.ResponseMode;
+import com.jarvis.common.prompt.SystemPromptService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -34,21 +31,21 @@ public class DefaultPromptBuilder implements PromptBuilder {
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultPromptBuilder.class);
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
 
-    private final Resource identityResource;
+    private final SystemPromptService systemPromptService;
     private final CognitiveEventBus cognitiveEventBus;
     private final Clock clock;
 
     /**
      * Creates the default prompt builder.
      *
-     * @param identityResource identity markdown resource
+     * @param systemPromptService system prompt service
      * @param cognitiveEventBus cognitive event bus
      */
     public DefaultPromptBuilder(
-            @Value("${jarvis.ai.identity-file}") Resource identityResource,
+            SystemPromptService systemPromptService,
             CognitiveEventBus cognitiveEventBus
     ) {
-        this.identityResource = identityResource;
+        this.systemPromptService = systemPromptService;
         this.cognitiveEventBus = cognitiveEventBus;
         this.clock = Clock.systemDefaultZone();
     }
@@ -245,7 +242,7 @@ public class DefaultPromptBuilder implements PromptBuilder {
                 Current date: %s
                 Current time: %s
 
-                """.formatted(loadIdentity(), LocalDate.now(clock), LocalTime.now(clock).format(TIME_FORMATTER));
+                """.formatted(systemPromptService.load(), LocalDate.now(clock), LocalTime.now(clock).format(TIME_FORMATTER));
     }
 
     private String knowledgeBlock(KnowledgeContext knowledgeContext) {
@@ -296,15 +293,6 @@ public class DefaultPromptBuilder implements PromptBuilder {
 
                 === END CURRENT USER MESSAGE ===
                 """.formatted(request.message());
-    }
-
-    private String loadIdentity() {
-        try {
-            return identityResource.getContentAsString(StandardCharsets.UTF_8).trim();
-        } catch (IOException exception) {
-            LOGGER.error("[JARVIS] Failed to load AI identity from {}", identityResource, exception);
-            return "";
-        }
     }
 
     private long countSources(PromptContext promptContext, GroundingSourceType type) {
