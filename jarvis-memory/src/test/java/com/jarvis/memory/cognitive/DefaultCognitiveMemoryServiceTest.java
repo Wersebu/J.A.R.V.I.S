@@ -1,6 +1,11 @@
 package com.jarvis.memory.cognitive;
 
 import org.junit.jupiter.api.Test;
+import com.jarvis.memory.retrieval.DefaultMemoryQueryNormalizer;
+import com.jarvis.memory.retrieval.IndexedMemoryCandidateRetriever;
+import com.jarvis.memory.retrieval.NoOpMemoryReranker;
+import com.jarvis.memory.retrieval.StructuredMemoryProfileBuilder;
+import com.jarvis.memory.retrieval.TokenMemoryScorer;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -60,11 +65,26 @@ class DefaultCognitiveMemoryServiceTest {
     }
 
     private DefaultCognitiveMemoryService service(InMemorySemanticStore semanticStore) {
+        DefaultMemoryQueryNormalizer normalizer = new DefaultMemoryQueryNormalizer();
         return new DefaultCognitiveMemoryService(
                 semanticStore,
                 new InMemoryEpisodicStore(),
                 new InMemoryProceduralStore(),
-                new DeterministicMemoryClassifier()
+                new DeterministicMemoryClassifier(),
+                normalizer,
+                new IndexedMemoryCandidateRetriever(normalizer),
+                new TokenMemoryScorer(normalizer),
+                new NoOpMemoryReranker(),
+                new StructuredMemoryProfileBuilder(),
+                null,
+                new MemoryProperties(
+                        "test",
+                        20,
+                        new MemoryProperties.SemanticSql(true),
+                        new MemoryProperties.BackgroundAgent(false),
+                        new MemoryProperties.Legacy(true, true, true),
+                        new MemoryProperties.Background(false, 1, 100, true, false)
+                )
         );
     }
 
