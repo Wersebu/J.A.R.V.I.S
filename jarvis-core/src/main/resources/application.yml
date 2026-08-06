@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.2.1"
+  version: "2.2.3"
   ai:
     identity-file: file:config/jarvis.md
   diagnostics:
@@ -23,16 +23,6 @@ jarvis:
     approval:
       resume-tool-loop-after-approval: true
       generate-final-answer: true
-  knowledge:
-    filing:
-      enabled: true
-      use-ai-planner: true
-      category-confidence-threshold: 0.70
-      inbox-fallback-enabled: true
-      inspect-tree-before-write: true
-      search-before-create: true
-      update-existing-document: true
-      raw-message-storage: false
   thinking:
     stream-to-clients: true
     persist: false

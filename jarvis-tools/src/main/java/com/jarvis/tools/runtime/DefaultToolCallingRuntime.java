@@ -30,11 +30,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
-import java.text.Normalizer;
 
 /**
- * Default native LLM tool-calling runtime.
+ * Default native LLM-owned tool-calling runtime.
  */
 @Service
 public class DefaultToolCallingRuntime implements ToolCallingRuntime {
@@ -42,6 +40,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultToolCallingRuntime.class);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
+    private static final String AI_UNAVAILABLE_WRITE_MESSAGE =
+            "Nie moge teraz przeanalizowac i zapisac tej informacji, poniewaz model AI jest niedostepny.";
 
     private final List<AIProvider> aiProviders;
     private final ToolManager toolManager;
@@ -94,7 +94,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
 
         LOGGER.info("[TOOL_LOOP] requestId={} intent={} mode={}", request.requestId(), intent, request.knowledgeMode());
         publish(request, CognitiveEventType.TOOL_LOOP_STARTED, "STARTED", "Tool loop started", null, 0,
-                Map.of("intent", intent.name(), "mode", request.knowledgeMode().name()));
+                Map.of("intent", intent.name(), "mode", request.knowledgeMode().name(), "decisionOwner", "LLM"));
 
         try {
             for (int step = 1; step <= maxCalls; step++) {
@@ -103,25 +103,17 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                     break;
                 }
 
-                publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING", "Selecting tool action", null, step, Map.of());
-                ToolAction action = shouldUseDeterministicAction(request, intent, step)
-                        ? fallbackAction(request, intent, step)
-                        : nextAction(request, intent, observation, step, errors);
-                action = normalizeAction(request, intent, action);
+                publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING", "Asking LLM for next tool action",
+                        null, step, Map.of("decisionOwner", "LLM"));
+                ToolAction action = normalizeAction(nextAction(request, intent, observation, step));
                 if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
-                    if (step == 1 && results.isEmpty()) {
-                        LOGGER.info("[TOOL_LOOP] firstAction=FINAL_ANSWER ignoredForExplicitIntent intent={}", intent);
-                        errors.add("Model attempted FINAL_ANSWER before using a tool for explicit intent.");
-                        action = fallbackAction(request, intent, step);
-                    } else {
-                        steps.add(new ToolRuntimeStep(step, "FINAL_ANSWER", "", "", "FINISHED", null));
-                        saveDebug(request, intent, steps, "FINISHED", errors);
-                        publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished", null, step, Map.of());
-                        return new ToolCallingResult(true, action.answer(), steps, results);
-                    }
+                    steps.add(new ToolRuntimeStep(step, "FINAL_ANSWER", "", "", "FINISHED", null));
+                    saveDebug(request, intent, steps, "FINISHED", errors);
+                    publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished", null, step, Map.of());
+                    return new ToolCallingResult(true, action.answer(), steps, results);
                 }
 
-                publish(request, CognitiveEventType.TOOL_CALL_PROPOSED, "PROPOSED", "Tool call proposed", null, step,
+                publish(request, CognitiveEventType.TOOL_CALL_PROPOSED, "PROPOSED", "LLM proposed tool call", null, step,
                         Map.of("tool", action.tool(), "operation", action.operation(), "reason", safe(action.reason())));
                 validate(action);
                 publish(request, CognitiveEventType.TOOL_CALL_VALIDATED, "VALIDATED", "Tool call validated", null, step,
@@ -133,7 +125,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                         request.conversationId(),
                         request.requestId(),
                         action.reason(),
-                        "Native tool loop step " + step,
+                        "Native LLM tool loop step " + step,
                         action.arguments()
                 );
 
@@ -154,6 +146,11 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 if (result.requiresApproval()) {
                     publish(request, CognitiveEventType.TOOL_APPROVAL_REQUIRED, "WAITING_APPROVAL",
                             "Tool call requires approval", targetNode(action), step, resultMetadata(result));
+                    String answer = draftAnswer(action, result);
+                    saveDebug(request, intent, steps, "WAITING_APPROVAL", errors);
+                    publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "WAITING_APPROVAL", "Tool loop waiting for approval",
+                            targetNode(action), step, resultMetadata(result));
+                    return new ToolCallingResult(true, answer, steps, results);
                 }
                 if (!result.success()) {
                     failures++;
@@ -165,15 +162,6 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                     failures = 0;
                 }
                 observation = observation(result);
-
-                if (result.requiresApproval()) {
-                    String answer = "Utworzyłem szkic zmiany i czeka on na zatwierdzenie.";
-                    answer = draftAnswer(action, result);
-                    saveDebug(request, intent, steps, "WAITING_APPROVAL", errors);
-                    publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "WAITING_APPROVAL", "Tool loop waiting for approval",
-                            targetNode(action), step, resultMetadata(result));
-                    return new ToolCallingResult(true, answer, steps, results);
-                }
 
                 publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "VERIFYING", "Verifying tool result",
                         targetNode(action), step, Map.of("operation", action.operation()));
@@ -188,12 +176,19 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 }
             }
             String finalAnswer = errors.isEmpty()
-                    ? "Wykonałem dostępne operacje narzędziowe i zakończyłem pracę."
-                    : "Nie mogłem bezpiecznie dokończyć pracy narzędziowej: " + String.join("; ", errors);
+                    ? "Zakonczylem prace narzedziowa bez dodatkowych operacji."
+                    : "Nie moglem bezpiecznie dokonczyc pracy narzedziowej: " + String.join("; ", errors);
             saveDebug(request, intent, steps, errors.isEmpty() ? "FINISHED" : "FAILED", errors);
             publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, errors.isEmpty() ? "FINISHED" : "FAILED",
                     "Tool loop finished", null, steps.size(), Map.of("errors", errors));
             return new ToolCallingResult(true, finalAnswer, steps, results);
+        } catch (AIProviderException exception) {
+            errors.add(exception.getMessage() == null ? "AI provider unavailable" : exception.getMessage());
+            saveDebug(request, intent, steps, "AI_UNAVAILABLE", errors);
+            publish(request, CognitiveEventType.TOOL_LOOP_ERROR, "AI_UNAVAILABLE", "AI provider unavailable", null,
+                    steps.size(), Map.of("error", safe(exception.getMessage()), "noWritePerformed", true));
+            LOGGER.warn("[TOOL_LOOP] AI provider unavailable; no tool write performed requestId={}", request.requestId());
+            return new ToolCallingResult(true, AI_UNAVAILABLE_WRITE_MESSAGE, steps, results);
         } catch (RuntimeException exception) {
             errors.add(exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage());
             saveDebug(request, intent, steps, "FAILED", errors);
@@ -204,27 +199,15 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         }
     }
 
-    private ToolAction nextAction(
-            ToolCallingRequest request,
-            ToolIntent intent,
-            String observation,
-            int step,
-            List<String> errors
-    ) {
+    private ToolAction nextAction(ToolCallingRequest request, ToolIntent intent, String observation, int step) {
         String prompt = prompt(request, intent, observation, step);
         String raw = selectProvider(request).chat(request.brain(), prompt, AIJobType.BACKGROUND).response();
         try {
             return parse(raw);
         } catch (RuntimeException exception) {
-            errors.add("Invalid action JSON: " + abbreviate(raw));
             LOGGER.warn("[TOOL_LOOP] invalid action JSON step={} raw={}", step, abbreviate(raw));
             String repaired = selectProvider(request).chat(request.brain(), repairPrompt(raw), AIJobType.BACKGROUND).response();
-            try {
-                return parse(repaired);
-            } catch (RuntimeException repairException) {
-                errors.add("Repair failed: " + abbreviate(repaired));
-                return fallbackAction(request, intent, step);
-            }
+            return parse(repaired);
         }
     }
 
@@ -266,92 +249,23 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         }
     }
 
-    private ToolAction fallbackAction(ToolCallingRequest request, ToolIntent intent, int step) {
-        if (step > 1) {
-            return new ToolAction("FINAL_ANSWER", "", "", Map.of(), "", "Zakończyłem pracę narzędziową.");
-        }
-        String message = request.userMessage();
-        if (intent == ToolIntent.READ_DOCUMENT || intent == ToolIntent.SEARCH_KNOWLEDGE) {
-            return new ToolAction("TOOL_CALL", "knowledge", "SEARCH_CONTENT", Map.of("query", message),
-                    "Fallback search for explicit knowledge request.", "");
-        }
-        if (intent == ToolIntent.CREATE_DOCUMENT || intent == ToolIntent.SAVE_KNOWLEDGE) {
-            String path = inferDocumentPath(message);
-            return new ToolAction("TOOL_CALL", "knowledge", "CREATE_DOCUMENT", Map.of(
-                    "path", path,
-                    "content", formatKnowledgeDocument(path, message),
-                    "sourceMessage", message
-            ), "Fallback document creation for explicit knowledge write request.", "");
-        }
-        return new ToolAction("TOOL_CALL", "knowledge", "PLAN_KNOWLEDGE_UPDATE", Map.of("query", message, "content", message, "sourceMessage", message),
-                "Fallback plan for explicit knowledge write request.", "");
-    }
-
-    private boolean shouldUseDeterministicAction(ToolCallingRequest request, ToolIntent intent, int step) {
-        if (step != 1) {
-            return false;
-        }
-        if (intent != ToolIntent.CREATE_DOCUMENT && intent != ToolIntent.SAVE_KNOWLEDGE) {
-            return false;
-        }
-        String normalized = normalize(request.userMessage());
-        return normalized.contains("plik")
-                || normalized.contains("dokument")
-                || normalized.contains("zapisz")
-                || normalized.contains("utworz")
-                || normalized.contains("stworz");
-    }
-
-    private String inferDocumentPath(String message) {
-        String normalized = normalize(message);
-        String folder = wordAfter(normalized, "folderze");
-        if (folder.isBlank()) {
-            folder = wordAfter(normalized, "folder");
-        }
-        String name = wordsAfter(normalized, "nazwie", 3);
-        if (name.isBlank()) {
-            name = wordsAfter(normalized, "name", 3);
-        }
-        if (name.isBlank()) {
-            name = "KnowledgeNote";
-        }
-        String fileName = slug(name);
-        if (!fileName.endsWith(".md")) {
-            fileName = fileName + ".md";
-        }
-        String folderName = folder.isBlank() ? "Inbox" : slug(folder);
-        if (folder.isBlank() && looksLikeHardware(message)) {
-            folderName = "Hardware";
-            fileName = "local-pc.md";
-        }
-        return capitalize(folderName) + "/" + fileName;
-    }
-
-    private ToolAction normalizeAction(ToolCallingRequest request, ToolIntent intent, ToolAction action) {
-        if (!"TOOL_CALL".equalsIgnoreCase(action.action()) || !"knowledge".equalsIgnoreCase(action.tool())) {
+    private ToolAction normalizeAction(ToolAction action) {
+        if (!"TOOL_CALL".equalsIgnoreCase(action.action())) {
             return action;
         }
         Map<String, Object> arguments = new HashMap<>(action.arguments());
-        String operation = action.operation();
-        if ((intent == ToolIntent.CREATE_DOCUMENT || intent == ToolIntent.SAVE_KNOWLEDGE)
-                && ("CREATE_DOCUMENT".equalsIgnoreCase(operation) || "APPEND_DOCUMENT".equalsIgnoreCase(operation))) {
-            String path = String.valueOf(arguments.getOrDefault("path", "")).replace('\\', '/');
-            if (path.isBlank() || !path.contains("/") || path.equalsIgnoreCase("pc_specs.txt")) {
-                path = inferDocumentPath(request.userMessage());
-                arguments.put("path", path);
-            }
-            arguments.put("sourceMessage", request.userMessage());
-            Object content = arguments.get("content");
-            Object text = arguments.get("text");
-            if (content == null || looksLikeRawCommand(String.valueOf(content))
-                    || ("CREATE_DOCUMENT".equalsIgnoreCase(operation) && looksLikeHardware(request.userMessage()))) {
-                arguments.put("content", formatKnowledgeDocument(path, request.userMessage()));
-            }
-            if (text != null && looksLikeRawCommand(String.valueOf(text))) {
-                arguments.put("text", extractKnowledgeFacts(request.userMessage()));
-            }
+        Object path = arguments.get("path");
+        if (path != null) {
+            arguments.put("path", String.valueOf(path).replace('\\', '/'));
         }
-        return new ToolAction(action.action(), action.tool(), operation.toUpperCase(Locale.ROOT), arguments, action.reason(), action.answer());
+        return new ToolAction(
+                action.action(),
+                action.tool(),
+                action.operation().toUpperCase(Locale.ROOT),
+                arguments,
+                action.reason(),
+                action.answer()
+        );
     }
 
     private boolean isTerminalWrite(String operation) {
@@ -393,140 +307,6 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + (draftId.isBlank() ? "" : " Draft: " + draftId + ".");
     }
 
-    private boolean looksLikeRawCommand(String value) {
-        String normalized = normalize(value);
-        return normalized.contains("zapisz")
-                || normalized.contains("utworz")
-                || normalized.contains("stworz")
-                || normalized.contains("jako plik")
-                || normalized.contains("nowy plik");
-    }
-
-    private boolean looksLikeHardware(String message) {
-        String normalized = normalize(message);
-        return normalized.contains(" pc")
-                || normalized.contains("komputer")
-                || normalized.contains("gpu")
-                || normalized.contains("rtx")
-                || normalized.contains("ram")
-                || normalized.contains("procesor")
-                || normalized.contains("cpu");
-    }
-
-    private String formatKnowledgeDocument(String path, String message) {
-        String facts = extractKnowledgeFacts(message);
-        List<String> parts = splitFacts(facts);
-        StringBuilder builder = new StringBuilder("# ").append(titleFromPath(path)).append("\n\n");
-        if (looksLikeHardware(message)) {
-            builder.append("## Hardware\n\n");
-            for (String part : parts) {
-                builder.append("- ").append(hardwareFact(part)).append('\n');
-            }
-            return builder.toString().trim() + "\n";
-        }
-        for (String part : parts) {
-            builder.append("- ").append(part).append('\n');
-        }
-        return builder.toString().trim() + "\n";
-    }
-
-    private String extractKnowledgeFacts(String message) {
-        String value = message == null ? "" : message.trim();
-        int question = value.lastIndexOf('?');
-        if (question >= 0 && question < value.length() - 1) {
-            value = value.substring(question + 1).trim();
-        } else {
-            int colon = value.lastIndexOf(':');
-            if (colon >= 0 && colon < value.length() - 1) {
-                value = value.substring(colon + 1).trim();
-            }
-        }
-        value = value.replaceAll("(?i)^to\\s+", "").trim();
-        return value.isBlank() ? message : value;
-    }
-
-    private List<String> splitFacts(String facts) {
-        return java.util.Arrays.stream((facts == null ? "" : facts).split("\\s*[+,;\\n]\\s*"))
-                .map(String::trim)
-                .filter(value -> !value.isBlank())
-                .toList();
-    }
-
-    private String hardwareFact(String value) {
-        String normalized = normalize(value);
-        if (normalized.contains("rtx") || normalized.contains("gtx") || normalized.contains("gpu") || normalized.contains("aorus")) {
-            return "GPU: " + value;
-        }
-        if (normalized.contains("ram") || normalized.matches(".*\\b\\d+\\s*gb\\b.*")) {
-            return "RAM: " + value;
-        }
-        if (normalized.contains("i5") || normalized.contains("i7") || normalized.contains("ryzen")
-                || normalized.contains("intel") || normalized.contains("cpu") || normalized.contains("procesor")) {
-            return "CPU: " + value.replaceAll("(?i)i5\\s*10\\s*600k|i510600k", "i5-10600K");
-        }
-        return value;
-    }
-
-    private String wordAfter(String value, String marker) {
-        String[] tokens = value.split("\\s+");
-        for (int index = 0; index < tokens.length - 1; index++) {
-            if (tokens[index].equals(marker)) {
-                return tokens[index + 1];
-            }
-        }
-        return "";
-    }
-
-    private String wordsAfter(String value, String marker, int limit) {
-        String[] tokens = value.split("\\s+");
-        for (int index = 0; index < tokens.length - 1; index++) {
-            if (tokens[index].equals(marker)) {
-                StringBuilder builder = new StringBuilder();
-                for (int cursor = index + 1; cursor < tokens.length && cursor <= index + limit; cursor++) {
-                    if (isStopToken(tokens[cursor])) {
-                        break;
-                    }
-                    if (!builder.isEmpty()) {
-                        builder.append('-');
-                    }
-                    builder.append(tokens[cursor]);
-                }
-                return builder.toString();
-            }
-        }
-        return "";
-    }
-
-    private boolean isStopToken(String token) {
-        return token.equals("i") || token.equals("oraz") || token.equals("w") || token.equals("do");
-    }
-
-    private String slug(String value) {
-        String slug = value == null ? "" : value.replaceAll("[^a-zA-Z0-9._-]+", "-")
-                .replaceAll("-+", "-")
-                .replaceAll("^-|-$", "");
-        return slug.isBlank() ? "KnowledgeNote" : slug;
-    }
-
-    private String titleFromPath(String path) {
-        int slash = path.lastIndexOf('/');
-        String file = slash >= 0 ? path.substring(slash + 1) : path;
-        return file.replaceFirst("\\.md$", "").replace('-', ' ');
-    }
-
-    private String capitalize(String value) {
-        if (value == null || value.isBlank()) {
-            return "Inbox";
-        }
-        return value.substring(0, 1).toUpperCase(Locale.ROOT) + value.substring(1);
-    }
-
-    private String normalize(String message) {
-        String value = message == null ? "" : message.toLowerCase(Locale.ROOT);
-        return Normalizer.normalize(value, Normalizer.Form.NFD)
-                .replaceAll("\\p{M}", "");
-    }
-
     private String prompt(ToolCallingRequest request, ToolIntent intent, String observation, int step) {
         return request.basePrompt()
                 + "\n\n" + toolRegistry.promptSection()
@@ -534,6 +314,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "\nUser request:\n" + request.userMessage()
                 + "\n\nPrevious tool observation:\n" + observation
                 + "\n\nStep: " + step
+                + "\nThe LLM is the only component allowed to decide semantic knowledge writes."
+                + "\nJava will only validate and execute your structured TOOL_CALL."
                 + "\nReturn JSON only. Choose TOOL_CALL or FINAL_ANSWER.";
     }
 
@@ -572,13 +354,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         return values;
     }
 
-    private void saveDebug(
-            ToolCallingRequest request,
-            ToolIntent intent,
-            List<ToolRuntimeStep> steps,
-            String status,
-            List<String> errors
-    ) {
+    private void saveDebug(ToolCallingRequest request, ToolIntent intent, List<ToolRuntimeStep> steps, String status, List<String> errors) {
         debugService.save(new ToolRuntimeSnapshot(request.requestId(), request.conversationId(), intent, steps, status, errors));
     }
 
