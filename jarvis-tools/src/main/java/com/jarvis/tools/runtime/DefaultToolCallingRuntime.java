@@ -279,10 +279,11 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             String path = inferDocumentPath(message);
             return new ToolAction("TOOL_CALL", "knowledge", "CREATE_DOCUMENT", Map.of(
                     "path", path,
-                    "content", formatKnowledgeDocument(path, message)
+                    "content", formatKnowledgeDocument(path, message),
+                    "sourceMessage", message
             ), "Fallback document creation for explicit knowledge write request.", "");
         }
-        return new ToolAction("TOOL_CALL", "knowledge", "PLAN_KNOWLEDGE_UPDATE", Map.of("query", message, "content", message),
+        return new ToolAction("TOOL_CALL", "knowledge", "PLAN_KNOWLEDGE_UPDATE", Map.of("query", message, "content", message, "sourceMessage", message),
                 "Fallback plan for explicit knowledge write request.", "");
     }
 
@@ -339,6 +340,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 path = inferDocumentPath(request.userMessage());
                 arguments.put("path", path);
             }
+            arguments.put("sourceMessage", request.userMessage());
             Object content = arguments.get("content");
             Object text = arguments.get("text");
             if (content == null || looksLikeRawCommand(String.valueOf(content))

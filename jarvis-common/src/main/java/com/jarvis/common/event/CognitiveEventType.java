@@ -225,5 +225,35 @@ public enum CognitiveEventType {
     /** Native tool loop failed. */
     TOOL_LOOP_ERROR,
     /** Knowledge draft was created and waits for approval. */
-    KNOWLEDGE_DRAFT_CREATED
+    KNOWLEDGE_DRAFT_CREATED,
+    /** Knowledge extraction started. */
+    KNOWLEDGE_EXTRACTION_STARTED,
+    /** Knowledge extraction finished. */
+    KNOWLEDGE_EXTRACTION_FINISHED,
+    /** Knowledge tree inspection started. */
+    KNOWLEDGE_TREE_INSPECTION_STARTED,
+    /** Knowledge tree inspection finished. */
+    KNOWLEDGE_TREE_INSPECTION_FINISHED,
+    /** Knowledge destination was planned. */
+    KNOWLEDGE_DESTINATION_PLANNED,
+    /** Duplicate knowledge was found. */
+    KNOWLEDGE_DUPLICATE_FOUND,
+    /** Conflicting knowledge was found. */
+    KNOWLEDGE_CONFLICT_FOUND,
+    /** Knowledge draft was approved. */
+    KNOWLEDGE_DRAFT_APPROVED,
+    /** Knowledge draft was rejected. */
+    KNOWLEDGE_DRAFT_REJECTED,
+    /** Knowledge write started. */
+    KNOWLEDGE_WRITE_STARTED,
+    /** Knowledge write finished. */
+    KNOWLEDGE_WRITE_FINISHED,
+    /** Knowledge write was verified. */
+    KNOWLEDGE_WRITE_VERIFIED,
+    /** Tool loop resumed after approval. */
+    TOOL_LOOP_RESUMED,
+    /** Final answer generation started. */
+    FINAL_ANSWER_GENERATION_STARTED,
+    /** Final answer generation finished. */
+    FINAL_ANSWER_GENERATION_FINISHED
 }

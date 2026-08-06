@@ -308,6 +308,12 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
         try {
             draft.write().apply();
             refreshAfterChange(draft.eventType(), draft.message(), draft.nodeId(), draft.path(), draft.data());
+            cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_DRAFT_APPROVED, "APPROVED",
+                    "Knowledge draft approved", draft.nodeId(), eventData(draft.path(), Map.of(
+                            "draftId", draftId,
+                            "approved", true,
+                            "targetPath", draft.path()
+                    )));
             return result("knowledge.approveDraft", true, false, "Draft approved", draft.nodeId(), draft.path(),
                     Map.of("draftId", draftId, "approved", true));
         } catch (IOException exception) {
@@ -318,6 +324,14 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     @Override
     public KnowledgeToolResult rejectDraft(String draftId) {
         PendingDraft removed = pendingDrafts.remove(draftId);
+        if (removed != null) {
+            cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_DRAFT_REJECTED, "REJECTED",
+                    "Knowledge draft rejected", removed.nodeId(), eventData(removed.path(), Map.of(
+                            "draftId", draftId,
+                            "rejected", true,
+                            "targetPath", removed.path()
+                    )));
+        }
         return result("knowledge.rejectDraft", false, false,
                 removed == null ? "Draft not found" : "Draft rejected",
                 removed == null ? null : removed.nodeId(),
@@ -375,8 +389,12 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
             return result(tool, false, true, "Draft created. No filesystem changes applied.", nodeId, path, draftData);
         }
         try {
+            cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_WRITE_STARTED, "STARTED",
+                    "Knowledge write started", nodeId, eventData(path, data));
             write.apply();
             refreshAfterChange(eventType, message, nodeId, path, data);
+            cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_WRITE_FINISHED, "FINISHED",
+                    "Knowledge write finished", nodeId, eventData(path, data));
             return result(tool, true, false, message, nodeId, path, data);
         } catch (IOException exception) {
             throw new KnowledgeException("Knowledge workspace operation failed: " + tool + " path=" + path, exception);
@@ -745,6 +763,10 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
         String safeInstruction = instruction == null ? "" : instruction;
         String safeText = text == null ? "" : text;
         String lowerInstruction = safeInstruction.toLowerCase(Locale.ROOT);
+        if (lowerInstruction.startsWith("set_section:")) {
+            String section = safeInstruction.substring("SET_SECTION:".length()).trim();
+            return setSection(safeCurrent, section.isBlank() ? "Informacje" : section, safeText);
+        }
         if ((lowerInstruction.contains("remove") || lowerInstruction.contains("delete") || lowerInstruction.contains("usun"))
                 && !safeText.isBlank()) {
             return removeLinesContaining(safeCurrent, safeText);
@@ -760,6 +782,46 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
             builder.append("- Change: ").append(safeText).append(System.lineSeparator());
         }
         builder.append("- Updated: ").append(Instant.now()).append(System.lineSeparator());
+        return builder.toString();
+    }
+
+    private String setSection(String current, String section, String text) {
+        String safeCurrent = current == null ? "" : current.stripTrailing();
+        String safeText = text == null ? "" : text.strip();
+        String header = "## " + section;
+        String replacement = header + System.lineSeparator() + System.lineSeparator() + safeText;
+        if (safeCurrent.isBlank()) {
+            return replacement + System.lineSeparator();
+        }
+        String[] lines = safeCurrent.split("\\R", -1);
+        StringBuilder builder = new StringBuilder();
+        boolean replaced = false;
+        for (int index = 0; index < lines.length; index++) {
+            String line = lines[index];
+            if (line.trim().equalsIgnoreCase(header)) {
+                if (!builder.isEmpty() && builder.charAt(builder.length() - 1) != '\n') {
+                    builder.append(System.lineSeparator());
+                }
+                builder.append(replacement).append(System.lineSeparator());
+                replaced = true;
+                index++;
+                while (index < lines.length && !lines[index].startsWith("## ")) {
+                    index++;
+                }
+                index--;
+                continue;
+            }
+            builder.append(line);
+            if (index < lines.length - 1) {
+                builder.append(System.lineSeparator());
+            }
+        }
+        if (!replaced) {
+            if (!builder.isEmpty()) {
+                builder.append(System.lineSeparator()).append(System.lineSeparator());
+            }
+            builder.append(replacement).append(System.lineSeparator());
+        }
         return builder.toString();
     }
 
