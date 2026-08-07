@@ -3,12 +3,15 @@ package com.jarvis.ollama;
 import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.diagnostics.InferenceDiagnostics;
 import com.jarvis.common.diagnostics.InferenceDiagnosticsContext;
+import com.jarvis.common.event.CognitiveEventBus;
+import com.jarvis.common.event.CognitiveEventType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -21,6 +24,7 @@ public class OllamaRequestCoordinator {
     private static final long MEMORY_AGENT_PRIORITY_GRACE_MS = 200L;
 
     private final boolean chatPriority;
+    private final CognitiveEventBus cognitiveEventBus;
     private AIJobType activeJob;
     private int waitingChatJobs;
 
@@ -29,8 +33,12 @@ public class OllamaRequestCoordinator {
      *
      * @param chatPriority whether chat requests have priority over memory jobs
      */
-    public OllamaRequestCoordinator(@Value("${jarvis.memory.background.chat-priority:true}") boolean chatPriority) {
+    public OllamaRequestCoordinator(
+            @Value("${jarvis.memory.background.chat-priority:true}") boolean chatPriority,
+            CognitiveEventBus cognitiveEventBus
+    ) {
         this.chatPriority = chatPriority;
+        this.cognitiveEventBus = cognitiveEventBus;
     }
 
     /**
@@ -51,6 +59,16 @@ public class OllamaRequestCoordinator {
             }
             LOGGER.info("[JARVIS][requestId={}][OLLAMA] QUEUE_STARTED jobType={} activeJob={}",
                     requestId, jobType, activeAtQueue == null ? "NONE" : activeAtQueue);
+            if (jobType == AIJobType.CHAT) {
+                cognitiveEventBus.publish(CognitiveEventType.EXECUTION_TRACE, "STARTED", "Ollama queue wait started", null, Map.of(
+                        "stage", "OLLAMA_QUEUE_WAIT",
+                        "phase", "STARTED",
+                        "durationMs", 0,
+                        "queuePosition", activeAtQueue == null ? 0 : 1,
+                        "activeJob", activeAtQueue == null ? "NONE" : activeAtQueue.name(),
+                        "severity", "GREEN"
+                ));
+            }
             if (chatPriority && jobType == AIJobType.MEMORY_AGENT && activeJob == null && waitingChatJobs == 0) {
                 LOGGER.info("[JARVIS][requestId={}][OLLAMA] WAITING_FOR_OLLAMA_PRIORITY graceMs={}",
                         requestId, MEMORY_AGENT_PRIORITY_GRACE_MS);
@@ -79,7 +97,38 @@ public class OllamaRequestCoordinator {
         }
         LOGGER.info("[JARVIS][requestId={}][OLLAMA] QUEUE_ACQUIRED waitMs={} activeJobAtQueue={}",
                 requestId, waitMs, activeAtQueue == null ? "NONE" : activeAtQueue);
+        if (jobType == AIJobType.CHAT) {
+            cognitiveEventBus.publish(CognitiveEventType.EXECUTION_TRACE, "FINISHED", "Ollama queue acquired", null, Map.of(
+                    "stage", "OLLAMA_QUEUE_WAIT",
+                    "phase", "FINISHED",
+                    "durationMs", waitMs,
+                    "queuePosition", activeAtQueue == null ? 0 : 1,
+                    "activeJob", activeAtQueue == null ? "NONE" : activeAtQueue.name(),
+                    "severity", severity(waitMs)
+            ));
+            if (waitMs > 500L) {
+                cognitiveEventBus.publish(CognitiveEventType.EXECUTION_BOTTLENECK, "MEDIUM", "Potential Bottleneck", null, Map.of(
+                        "stage", "OLLAMA_QUEUE_WAIT",
+                        "durationMs", waitMs,
+                        "reason", "Waiting for local model",
+                        "severity", waitMs > 5_000L ? "HIGH" : "MEDIUM"
+                ));
+            }
+        }
         return new Permit(this, jobType, queuedAt, Instant.now(), waitMs, activeAtQueue);
+    }
+
+    private String severity(long durationMs) {
+        if (durationMs < 20L) {
+            return "GREEN";
+        }
+        if (durationMs < 100L) {
+            return "YELLOW";
+        }
+        if (durationMs < 500L) {
+            return "ORANGE";
+        }
+        return "RED";
     }
 
     private boolean shouldPostpone(AIJobType jobType) {

@@ -159,6 +159,15 @@ public class OllamaProvider implements AIProvider {
                 long requestStartedNano = System.nanoTime();
                 LOGGER.info("[JARVIS][requestId={}][OLLAMA] HTTP_CALL_STARTED model={} reasoning={}",
                         requestId, brain.model(), brain.reasoningLevel());
+                publishCognitive(jobType, CognitiveEventType.EXECUTION_TRACE, "STARTED", "Ollama HTTP request started",
+                        "model:" + brain.model(), Map.of(
+                                "stage", "OLLAMA_HTTP_CONNECT",
+                                "phase", "STARTED",
+                                "durationMs", 0,
+                                "model", brain.model(),
+                                "endpoint", endpoint,
+                                "severity", "GREEN"
+                        ));
                 HttpResponse<InputStream> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
                 long ollamaRequestLatencyMs = nanosToMillis(System.nanoTime() - requestStartedNano);
                 if (diagnostics != null) {
@@ -166,6 +175,25 @@ public class OllamaProvider implements AIProvider {
                 }
                 LOGGER.info("[JARVIS][requestId={}][OLLAMA] RESPONSE_HEADERS_RECEIVED elapsedMs={}",
                         requestId, ollamaRequestLatencyMs);
+                publishCognitive(jobType, CognitiveEventType.EXECUTION_TRACE, "FINISHED", "Ollama response headers received",
+                        "model:" + brain.model(), Map.of(
+                                "stage", "OLLAMA_HTTP_CONNECT",
+                                "phase", "FINISHED",
+                                "durationMs", ollamaRequestLatencyMs,
+                                "model", brain.model(),
+                                "httpStatus", httpResponse.statusCode(),
+                                "severity", severity(ollamaRequestLatencyMs)
+                        ));
+                if (ollamaRequestLatencyMs > 500L) {
+                    publishCognitive(jobType, CognitiveEventType.EXECUTION_BOTTLENECK,
+                            ollamaRequestLatencyMs > 5_000L ? "HIGH" : "MEDIUM",
+                            "Potential Bottleneck", "model:" + brain.model(), Map.of(
+                                    "stage", "OLLAMA_HTTP_CONNECT",
+                                    "durationMs", ollamaRequestLatencyMs,
+                                    "reason", "Waiting for local model",
+                                    "severity", ollamaRequestLatencyMs > 5_000L ? "HIGH" : "MEDIUM"
+                            ));
+                }
 
                 if (httpResponse.statusCode() < 200 || httpResponse.statusCode() >= 300) {
                     LOGGER.error("[JARVIS][requestId={}][OLLAMA] HTTP_ERROR status={}", requestId, httpResponse.statusCode());
@@ -396,6 +424,19 @@ public class OllamaProvider implements AIProvider {
 
     private long nanosToMillis(long nanos) {
         return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(nanos);
+    }
+
+    private String severity(long durationMs) {
+        if (durationMs < 20L) {
+            return "GREEN";
+        }
+        if (durationMs < 100L) {
+            return "YELLOW";
+        }
+        if (durationMs < 500L) {
+            return "ORANGE";
+        }
+        return "RED";
     }
 
     private void diagnostics(java.util.function.Consumer<InferenceDiagnostics> consumer) {

@@ -1,6 +1,7 @@
 package com.jarvis.core.event;
 
 import com.jarvis.common.ai.BrainType;
+import com.jarvis.common.diagnostics.ExecutionTracer;
 import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
@@ -20,6 +21,16 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultCognitiveEventBus.class);
     private static final ThreadLocal<RequestScope> REQUEST_SCOPE = new ThreadLocal<>();
+    private final ExecutionTracer executionTracer;
+
+    /**
+     * Creates the event bus.
+     *
+     * @param executionTracer execution tracer
+     */
+    public DefaultCognitiveEventBus(ExecutionTracer executionTracer) {
+        this.executionTracer = executionTracer;
+    }
 
     /**
      * Starts a request-scoped event stream.
@@ -31,6 +42,7 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
     @Override
     public void startRequest(String requestId, String conversationId, Consumer<CognitiveEvent> sink) {
         REQUEST_SCOPE.set(new RequestScope(requestId, conversationId, sink == null ? event -> { } : sink, null, null));
+        executionTracer.start(requestId, conversationId, sink);
     }
 
     /**
@@ -38,6 +50,7 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
      */
     @Override
     public void finishRequest() {
+        executionTracer.finish();
         REQUEST_SCOPE.remove();
     }
 
@@ -70,7 +83,7 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
         if (scope == null) {
             return;
         }
-        scope.sink().accept(new CognitiveEvent(
+        CognitiveEvent cognitiveEvent = new CognitiveEvent(
                 scope.requestId(),
                 scope.conversationId(),
                 Instant.now(),
@@ -81,7 +94,9 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
                 scope.model(),
                 nodeId,
                 metadata
-        ));
+        );
+        scope.sink().accept(cognitiveEvent);
+        executionTracer.record(event, status, message, scope.brain(), scope.model(), nodeId, metadata);
     }
 
     @Override

@@ -4,6 +4,12 @@ package com.jarvis.common.event;
  * Unified cognitive event types emitted by the J.A.R.V.I.S. processing pipeline.
  */
 public enum CognitiveEventType {
+    /** Request execution trace step. */
+    EXECUTION_TRACE,
+    /** Request execution trace summary. */
+    EXECUTION_TRACE_SUMMARY,
+    /** Potential request performance bottleneck. */
+    EXECUTION_BOTTLENECK,
     /** Cognitive pipeline started. */
     PIPELINE_STARTED,
     /** Pipeline stage started. */
