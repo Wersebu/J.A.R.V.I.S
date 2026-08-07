@@ -14,10 +14,10 @@ import java.time.Instant;
 import java.util.Map;
 
 /**
- * Executes native tool-calling before ordinary final model streaming.
+ * Executes native tool-calling after the main model requested an external capability.
  */
 @Service
-@Order(84)
+@Order(92)
 public class ToolCallingStage implements PipelineStage {
 
     private final ToolCallingRuntime toolCallingRuntime;
@@ -41,20 +41,27 @@ public class ToolCallingStage implements PipelineStage {
         if (context.response() != null && !context.response().isBlank()) {
             return context;
         }
+        if (!"TOOL_REQUEST".equals(String.valueOf(context.metadata().getOrDefault("mainModelAction", "")))) {
+            return context;
+        }
         ToolCallingResult result = toolCallingRuntime.execute(new ToolCallingRequest(
                 context.requestId(),
                 context.conversationId(),
                 context.request().message(),
+                String.valueOf(context.metadata().getOrDefault("toolGoal", "")),
+                String.valueOf(context.metadata().getOrDefault("toolReason", "")),
                 toolBasePrompt(context),
                 context.brain(),
                 context.effectiveKnowledgeMode()
         ));
+        String answer;
         if (!result.handled()) {
-            return context;
+            answer = "Nie wykonalem narzedzia, poniewaz tool runtime nie zwrocil bezpiecznej akcji do wykonania.";
+        } else {
+            answer = result.finalAnswer() == null || result.finalAnswer().isBlank()
+                    ? "Zakonczylem prace z narzedziami."
+                    : result.finalAnswer();
         }
-        String answer = result.finalAnswer() == null || result.finalAnswer().isBlank()
-                ? "Zakonczylem prace z narzedziami."
-                : result.finalAnswer();
         publishAnswer(context, answer);
         GenerationFinishedEvent finished = GenerationFinishedEvent.create(
                 context.conversationId(),
@@ -98,10 +105,12 @@ public class ToolCallingStage implements PipelineStage {
     }
 
     private String toolBasePrompt(PipelineContext context) {
-        if (context.prompt() != null && !context.prompt().isBlank()) {
-            return context.prompt();
-        }
         StringBuilder builder = new StringBuilder();
+        if (context.prompt() != null && !context.prompt().isBlank()) {
+            builder.append(context.prompt());
+            appendMainModelToolRequest(context, builder);
+            return builder.toString();
+        }
         builder.append("""
                 You are J.A.R.V.I.S.
 
@@ -133,7 +142,30 @@ public class ToolCallingStage implements PipelineStage {
         builder.append("=== CURRENT USER MESSAGE ===\n\n")
                 .append(context.request().message())
                 .append("\n\n=== END CURRENT USER MESSAGE ===\n");
+        String goal = String.valueOf(context.metadata().getOrDefault("toolGoal", ""));
+        String reason = String.valueOf(context.metadata().getOrDefault("toolReason", ""));
+        if (!goal.isBlank()) {
+            appendMainModelToolRequest(goal, reason, builder);
+        }
         return builder.toString();
+    }
+
+    private void appendMainModelToolRequest(PipelineContext context, StringBuilder builder) {
+        String goal = String.valueOf(context.metadata().getOrDefault("toolGoal", ""));
+        String reason = String.valueOf(context.metadata().getOrDefault("toolReason", ""));
+        if (!goal.isBlank()) {
+            appendMainModelToolRequest(goal, reason, builder);
+        }
+    }
+
+    private void appendMainModelToolRequest(String goal, String reason, StringBuilder builder) {
+        builder.append("\n=== MAIN MODEL TOOL REQUEST ===\n\n")
+                .append("Goal:\n")
+                .append(goal)
+                .append("\n\nReason summary:\n")
+                .append(reason)
+                .append("\n\nThe main model requested an external capability. Now choose the concrete tool calls safely.\n")
+                .append("=== END MAIN MODEL TOOL REQUEST ===\n");
     }
 
     private void publish(PipelineContext context, CognitiveEventType event, String status, String message, Map<String, Object> metadata) {

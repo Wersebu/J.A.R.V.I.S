@@ -152,6 +152,10 @@ public enum CognitiveEventType {
     PROMPT_BUILD_FINISHED,
     /** Model request started. */
     MODEL_REQUEST_STARTED,
+    /** Main model action decision started. */
+    MAIN_MODEL_REQUEST,
+    /** Main model action decision was parsed. */
+    MAIN_MODEL_ACTION,
     /** Backend is waiting for the first model token. */
     WAITING_FIRST_TOKEN,
     /** First model token was received. */

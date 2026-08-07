@@ -260,6 +260,8 @@ public class DefaultExecutionTracer implements ExecutionTracer {
             }
             case PROMPT_BUILD_STARTED -> start("PROMPT_BUILD");
             case PROMPT_BUILD_FINISHED -> finish("PROMPT_BUILD");
+            case MAIN_MODEL_REQUEST -> start("MAIN_MODEL_REQUEST");
+            case MAIN_MODEL_ACTION -> finish("MAIN_MODEL_REQUEST");
             case MODEL_REQUEST_STARTED -> instant("PROMPT_READY");
             case WAITING_FIRST_TOKEN -> start("OLLAMA_FIRST_TOKEN_WAIT");
             case THINKING_STARTED -> {
@@ -368,6 +370,9 @@ public class DefaultExecutionTracer implements ExecutionTracer {
         }
         if (stage.contains("TOOL")) {
             return "Tool Calling";
+        }
+        if (stage.contains("MAIN_MODEL")) {
+            return "Main Model";
         }
         if (stage.contains("PROMPT")) {
             return "Prompt Build";

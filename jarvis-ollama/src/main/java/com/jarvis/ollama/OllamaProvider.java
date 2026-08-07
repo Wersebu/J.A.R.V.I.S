@@ -410,7 +410,16 @@ public class OllamaProvider implements AIProvider {
             String nodeId,
             Map<String, Object> metadata
     ) {
-        if (jobType == AIJobType.CHAT) {
+        if (jobType == AIJobType.CHAT || jobType == AIJobType.MAIN_MODEL) {
+            if (jobType == AIJobType.MAIN_MODEL
+                    && (event == CognitiveEventType.ANSWER_STARTED
+                    || event == CognitiveEventType.ANSWER_TOKEN
+                    || event == CognitiveEventType.TOKEN
+                    || event == CognitiveEventType.ANSWER_FINISHED
+                    || event == CognitiveEventType.STREAMING_STARTED
+                    || event == CognitiveEventType.STREAMING_FINISHED)) {
+                return;
+            }
             cognitiveEventBus.publish(event, status, message, nodeId, metadata);
         }
     }

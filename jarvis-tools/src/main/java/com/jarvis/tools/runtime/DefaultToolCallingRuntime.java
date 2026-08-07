@@ -465,6 +465,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"Kuba urodziny\"},\"reason\":\"Need to inspect existing knowledge before answering.\"}\n"
                 + "\n\nDetected tool intent: " + intent
                 + "\nThis detected intent is only a weak hint from Java. You own the final tool decision."
+                + "\nMain model tool goal:\n" + safe(request.goal())
+                + "\nMain model reason summary:\n" + safe(request.reason())
                 + "\nUser request:\n" + request.userMessage()
                 + "\n\nPrevious tool observation:\n" + observation
                 + "\n\nStep: " + step
