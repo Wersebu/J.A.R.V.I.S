@@ -52,20 +52,26 @@ public class OllamaRequestCoordinator {
         long queuedNano = System.nanoTime();
         Instant queuedAt = Instant.now();
         AIJobType activeAtQueue;
+        int pendingJobs;
         synchronized (this) {
             activeAtQueue = activeJob;
-            if (jobType == AIJobType.CHAT) {
+            pendingJobs = waitingChatJobs + (activeAtQueue == null ? 0 : 1);
+            if (isInteractive(jobType)) {
                 waitingChatJobs++;
             }
-            LOGGER.info("[JARVIS][requestId={}][OLLAMA] QUEUE_STARTED jobType={} activeJob={}",
-                    requestId, jobType, activeAtQueue == null ? "NONE" : activeAtQueue);
-            if (jobType == AIJobType.CHAT) {
+            LOGGER.info("[JARVIS][requestId={}][OLLAMA_QUEUE] jobType={} queuedAt={} activeJob={} pendingJobs={}",
+                    requestId, jobType, queuedAt, activeAtQueue == null ? "NONE" : activeAtQueue, pendingJobs);
+            if (isInteractive(jobType)) {
                 cognitiveEventBus.publish(CognitiveEventType.EXECUTION_TRACE, "STARTED", "Ollama queue wait started", null, Map.of(
                         "stage", "OLLAMA_QUEUE_WAIT",
                         "phase", "STARTED",
                         "durationMs", 0,
+                        "jobType", jobType.name(),
+                        "queuedAt", queuedAt.toString(),
                         "queuePosition", activeAtQueue == null ? 0 : 1,
+                        "activeJobAtQueueTime", activeAtQueue == null ? "NONE" : activeAtQueue.name(),
                         "activeJob", activeAtQueue == null ? "NONE" : activeAtQueue.name(),
+                        "pendingJobs", pendingJobs,
                         "severity", "GREEN"
                 ));
             }
@@ -75,7 +81,7 @@ public class OllamaRequestCoordinator {
                 waitQuietly(MEMORY_AGENT_PRIORITY_GRACE_MS);
             }
             while (activeJob != null || shouldPostpone(jobType)) {
-                if (jobType == AIJobType.CHAT && activeJob == AIJobType.MEMORY_AGENT) {
+                if (isInteractive(jobType) && activeJob == AIJobType.MEMORY_AGENT) {
                     LOGGER.info("[JARVIS][requestId={}][OLLAMA] CHAT_WAITING_BEHIND_MEMORY_AGENT", requestId);
                 }
                 if (jobType == AIJobType.MEMORY_AGENT && waitingChatJobs > 0) {
@@ -83,7 +89,7 @@ public class OllamaRequestCoordinator {
                 }
                 waitQuietly();
             }
-            if (jobType == AIJobType.CHAT) {
+            if (isInteractive(jobType)) {
                 waitingChatJobs--;
             }
             activeJob = jobType;
@@ -95,27 +101,35 @@ public class OllamaRequestCoordinator {
             diagnostics.setRequestWaitedForAnotherOllamaJob(activeAtQueue != null);
             diagnostics.setOllamaJobTypeBlockingRequest(activeAtQueue == null ? null : activeAtQueue.name());
         }
-        LOGGER.info("[JARVIS][requestId={}][OLLAMA] QUEUE_ACQUIRED waitMs={} activeJobAtQueue={}",
-                requestId, waitMs, activeAtQueue == null ? "NONE" : activeAtQueue);
-        if (jobType == AIJobType.CHAT) {
-            cognitiveEventBus.publish(CognitiveEventType.EXECUTION_TRACE, "FINISHED", "Ollama queue acquired", null, Map.of(
-                    "stage", "OLLAMA_QUEUE_WAIT",
-                    "phase", "FINISHED",
-                    "durationMs", waitMs,
-                    "queuePosition", activeAtQueue == null ? 0 : 1,
-                    "activeJob", activeAtQueue == null ? "NONE" : activeAtQueue.name(),
-                    "severity", severity(waitMs)
+        Instant startedAt = Instant.now();
+        LOGGER.info("[JARVIS][requestId={}][OLLAMA_QUEUE] jobType={} startedAt={} waitMs={} activeJobAtQueue={} pendingJobs={}",
+                requestId, jobType, startedAt, waitMs, activeAtQueue == null ? "NONE" : activeAtQueue, pendingJobs);
+        if (isInteractive(jobType)) {
+            cognitiveEventBus.publish(CognitiveEventType.EXECUTION_TRACE, "FINISHED", "Ollama queue acquired", null, Map.ofEntries(
+                    Map.entry("stage", "OLLAMA_QUEUE_WAIT"),
+                    Map.entry("phase", "FINISHED"),
+                    Map.entry("durationMs", waitMs),
+                    Map.entry("jobType", jobType.name()),
+                    Map.entry("queuedAt", queuedAt.toString()),
+                    Map.entry("startedAt", startedAt.toString()),
+                    Map.entry("queueWaitMs", waitMs),
+                    Map.entry("queuePosition", activeAtQueue == null ? 0 : 1),
+                    Map.entry("activeJobAtQueueTime", activeAtQueue == null ? "NONE" : activeAtQueue.name()),
+                    Map.entry("activeJob", activeAtQueue == null ? "NONE" : activeAtQueue.name()),
+                    Map.entry("pendingJobs", pendingJobs),
+                    Map.entry("severity", severity(waitMs))
             ));
             if (waitMs > 500L) {
                 cognitiveEventBus.publish(CognitiveEventType.EXECUTION_BOTTLENECK, "MEDIUM", "Potential Bottleneck", null, Map.of(
                         "stage", "OLLAMA_QUEUE_WAIT",
                         "durationMs", waitMs,
+                        "type", "QUEUE_WAIT",
                         "reason", "Waiting for local model",
                         "severity", waitMs > 5_000L ? "HIGH" : "MEDIUM"
                 ));
             }
         }
-        return new Permit(this, jobType, queuedAt, Instant.now(), waitMs, activeAtQueue);
+        return new Permit(this, jobType, queuedAt, startedAt, waitMs, activeAtQueue, pendingJobs);
     }
 
     private String severity(long durationMs) {
@@ -133,6 +147,10 @@ public class OllamaRequestCoordinator {
 
     private boolean shouldPostpone(AIJobType jobType) {
         return chatPriority && jobType == AIJobType.MEMORY_AGENT && waitingChatJobs > 0;
+    }
+
+    private boolean isInteractive(AIJobType jobType) {
+        return jobType == AIJobType.CHAT || jobType == AIJobType.MAIN_MODEL;
     }
 
     private void waitQuietly() {
@@ -169,7 +187,8 @@ public class OllamaRequestCoordinator {
             Instant queuedAt,
             Instant startedAt,
             long queueWaitMs,
-            AIJobType activeJobAtQueueTime
+            AIJobType activeJobAtQueueTime,
+            int pendingJobs
     ) implements AutoCloseable {
 
         @Override

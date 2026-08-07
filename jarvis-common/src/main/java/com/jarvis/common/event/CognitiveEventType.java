@@ -152,6 +152,8 @@ public enum CognitiveEventType {
     PROMPT_BUILD_FINISHED,
     /** Model request started. */
     MODEL_REQUEST_STARTED,
+    /** Native Ollama metrics are available. */
+    OLLAMA_METRICS,
     /** Main model action decision started. */
     MAIN_MODEL_REQUEST,
     /** Main model action decision was parsed. */

@@ -8,6 +8,8 @@ import com.jarvis.common.ai.Brain;
 import com.jarvis.common.dto.ChatResponse;
 import com.jarvis.common.diagnostics.InferenceDiagnostics;
 import com.jarvis.common.diagnostics.InferenceDiagnosticsContext;
+import com.jarvis.common.diagnostics.OllamaBottleneckType;
+import com.jarvis.common.diagnostics.OllamaInferenceMetrics;
 import com.jarvis.common.event.ChatEventSink;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
@@ -32,7 +34,9 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Ollama implementation of the provider-independent AI provider contract.
@@ -161,7 +165,7 @@ public class OllamaProvider implements AIProvider {
                         requestId, brain.model(), brain.reasoningLevel());
                 publishCognitive(jobType, CognitiveEventType.EXECUTION_TRACE, "STARTED", "Ollama HTTP request started",
                         "model:" + brain.model(), Map.of(
-                                "stage", "OLLAMA_HTTP_CONNECT",
+                                "stage", "OLLAMA_RESPONSE_HEADERS_WAIT",
                                 "phase", "STARTED",
                                 "durationMs", 0,
                                 "model", brain.model(),
@@ -177,7 +181,7 @@ public class OllamaProvider implements AIProvider {
                         requestId, ollamaRequestLatencyMs);
                 publishCognitive(jobType, CognitiveEventType.EXECUTION_TRACE, "FINISHED", "Ollama response headers received",
                         "model:" + brain.model(), Map.of(
-                                "stage", "OLLAMA_HTTP_CONNECT",
+                                "stage", "OLLAMA_RESPONSE_HEADERS_WAIT",
                                 "phase", "FINISHED",
                                 "durationMs", ollamaRequestLatencyMs,
                                 "model", brain.model(),
@@ -188,9 +192,10 @@ public class OllamaProvider implements AIProvider {
                     publishCognitive(jobType, CognitiveEventType.EXECUTION_BOTTLENECK,
                             ollamaRequestLatencyMs > 5_000L ? "HIGH" : "MEDIUM",
                             "Potential Bottleneck", "model:" + brain.model(), Map.of(
-                                    "stage", "OLLAMA_HTTP_CONNECT",
+                                    "stage", "OLLAMA_RESPONSE_HEADERS_WAIT",
                                     "durationMs", ollamaRequestLatencyMs,
-                                    "reason", "Waiting for local model",
+                                    "type", "TRANSPORT",
+                                    "reason", "Waiting for Ollama response headers; this may include model scheduling, loading, prompt evaluation and transport",
                                     "severity", ollamaRequestLatencyMs > 5_000L ? "HIGH" : "MEDIUM"
                             ));
                 }
@@ -206,7 +211,7 @@ public class OllamaProvider implements AIProvider {
                         "requestLatencyMs", ollamaRequestLatencyMs,
                         "reasoningLevel", brain.reasoningLevel().name()
                 ));
-                streamResponse(conversationId, brain, httpResponse.body(), startedAt, startedNano, jobType, eventSink);
+                streamResponse(conversationId, brain, httpResponse.body(), startedAt, startedNano, ollamaRequestLatencyMs, jobType, eventSink);
             }
         } catch (JsonProcessingException exception) {
             LOGGER.error("[JARVIS] Ollama JSON error", exception);
@@ -240,6 +245,7 @@ public class OllamaProvider implements AIProvider {
             InputStream inputStream,
             Instant startedAt,
             long startedNano,
+            long requestStartToHeadersMs,
             AIJobType jobType,
             ChatEventSink eventSink
     ) throws IOException {
@@ -249,6 +255,8 @@ public class OllamaProvider implements AIProvider {
         long firstThinkingNano = 0L;
         long lastThinkingNano = 0L;
         long firstAnswerNano = 0L;
+        long firstThinkingTokenMs = 0L;
+        long firstAnswerTokenMs = 0L;
         OllamaGenerateResponse finalResponse = null;
         int thinkingChunks = 0;
         int answerChunks = 0;
@@ -274,6 +282,7 @@ public class OllamaProvider implements AIProvider {
                         thinkingStarted = true;
                         firstThinkingNano = System.nanoTime();
                         long elapsedMs = nanosToMillis(firstThinkingNano - startedNano);
+                        firstThinkingTokenMs = elapsedMs;
                         diagnostics(d -> d.setFirstThinkingTokenMs(elapsedMs));
                         publishCognitive(jobType, CognitiveEventType.FIRST_TOKEN_RECEIVED, "RECEIVED", "First model output received", "model:" + brain.model(), Map.of(
                                 "latencyMs", elapsedMs,
@@ -315,6 +324,7 @@ public class OllamaProvider implements AIProvider {
                         answerStarted = true;
                         firstAnswerNano = System.nanoTime();
                         long firstTokenLatencyMs = nanosToMillis(firstAnswerNano - startedNano);
+                        firstAnswerTokenMs = firstTokenLatencyMs;
                         diagnostics(d -> d.setFirstAnswerTokenMs(firstTokenLatencyMs));
                         LOGGER.info("[JARVIS][requestId={}][OLLAMA] FIRST_ANSWER_TOKEN elapsedMs={}",
                                 diagnosticsRequestId(), firstTokenLatencyMs);
@@ -376,6 +386,14 @@ public class OllamaProvider implements AIProvider {
         Integer completionTokens = finalResponse == null ? null : finalResponse.evalCount();
         Integer promptTokens = finalResponse == null ? null : finalResponse.promptEvalCount();
         Double tokensPerSecond = tokensPerSecond(completionTokens, generationTimeMs);
+        OllamaInferenceMetrics metrics = buildMetrics(
+                brain,
+                finalResponse,
+                requestStartToHeadersMs,
+                firstThinkingTokenMs,
+                firstAnswerTokenMs
+        );
+        publishMetrics(jobType, brain, metrics, generationTimeMs);
 
         LOGGER.info(
                 "[JARVIS] Generation time: {} ms, tokens: {}, tokens per second: {}",
@@ -432,7 +450,7 @@ public class OllamaProvider implements AIProvider {
     }
 
     private long nanosToMillis(long nanos) {
-        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(nanos);
+        return TimeUnit.NANOSECONDS.toMillis(nanos);
     }
 
     private String severity(long durationMs) {
@@ -472,7 +490,13 @@ public class OllamaProvider implements AIProvider {
         if (response == null || response.evalCount() == null && response.promptEvalCount() == null) {
             return "unavailable";
         }
-        return "prompt=%s, completion=%s".formatted(response.promptEvalCount(), response.evalCount());
+        return "prompt=%s, completion=%s, loadMs=%s, promptEvalMs=%s, evalMs=%s".formatted(
+                response.promptEvalCount(),
+                response.evalCount(),
+                nsToMs(response.loadDuration()),
+                nsToMs(response.promptEvalDuration()),
+                nsToMs(response.evalDuration())
+        );
     }
 
     private Double tokensPerSecond(Integer completionTokens, long generationTimeMs) {
@@ -480,5 +504,242 @@ public class OllamaProvider implements AIProvider {
             return null;
         }
         return completionTokens / (generationTimeMs / 1000.0d);
+    }
+
+    private OllamaInferenceMetrics buildMetrics(
+            Brain brain,
+            OllamaGenerateResponse response,
+            long requestStartToHeadersMs,
+            long firstThinkingTokenMs,
+            long firstAnswerTokenMs
+    ) {
+        long totalDurationMs = nsToMs(response == null ? null : response.totalDuration());
+        long loadDurationMs = nsToMs(response == null ? null : response.loadDuration());
+        long promptEvalCount = response == null || response.promptEvalCount() == null ? 0L : response.promptEvalCount();
+        long promptEvalDurationMs = nsToMs(response == null ? null : response.promptEvalDuration());
+        long evalCount = response == null || response.evalCount() == null ? 0L : response.evalCount();
+        long evalDurationMs = nsToMs(response == null ? null : response.evalDuration());
+        long queueWaitMs = diagnosticsValue(InferenceDiagnostics::getOllamaPermitQueueWaitMs);
+        OllamaBottleneckType bottleneck = classifyBottleneck(
+                totalDurationMs,
+                loadDurationMs,
+                promptEvalDurationMs,
+                evalDurationMs,
+                queueWaitMs,
+                requestStartToHeadersMs
+        );
+        return new OllamaInferenceMetrics(
+                brain.model(),
+                totalDurationMs,
+                loadDurationMs,
+                promptEvalCount,
+                promptEvalDurationMs,
+                evalCount,
+                evalDurationMs,
+                tokensPerSecond(promptEvalCount, promptEvalDurationMs),
+                tokensPerSecond(evalCount, evalDurationMs),
+                requestStartToHeadersMs,
+                firstThinkingTokenMs,
+                firstAnswerTokenMs,
+                response != null && response.loadDuration() != null && loadDurationMs < 1_000L,
+                bottleneck
+        );
+    }
+
+    private void publishMetrics(AIJobType jobType, Brain brain, OllamaInferenceMetrics metrics, long requestTotalMs) {
+        InferenceDiagnostics activeDiagnostics = InferenceDiagnosticsContext.current();
+        diagnostics(d -> {
+            d.setOllamaMetrics(metrics);
+            d.setActualPromptTokens(Math.toIntExact(Math.min(Integer.MAX_VALUE, metrics.promptEvalCount())));
+            d.setModelWasAlreadyLoaded(metrics.modelLikelyWarm());
+        });
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("model", metrics.model());
+        metadata.put("reasoningLevel", brain.reasoningLevel().name());
+        metadata.put("totalDurationMs", metrics.totalDurationMs());
+        metadata.put("requestTotalMs", requestTotalMs);
+        metadata.put("loadDurationMs", metrics.loadDurationMs());
+        metadata.put("promptEvalCount", metrics.promptEvalCount());
+        metadata.put("promptEvalDurationMs", metrics.promptEvalDurationMs());
+        metadata.put("evalCount", metrics.evalCount());
+        metadata.put("evalDurationMs", metrics.evalDurationMs());
+        metadata.put("promptTokensPerSecond", metrics.promptTokensPerSecond());
+        metadata.put("generationTokensPerSecond", metrics.generationTokensPerSecond());
+        metadata.put("requestStartToHeadersMs", metrics.requestStartToHeadersMs());
+        metadata.put("firstThinkingTokenMs", metrics.firstThinkingTokenMs());
+        metadata.put("firstAnswerTokenMs", metrics.firstAnswerTokenMs());
+        metadata.put("modelLikelyWarm", metrics.modelLikelyWarm());
+        metadata.put("bottleneck", metrics.bottleneck().name());
+        if (activeDiagnostics != null) {
+            appendPromptMetrics(metadata, activeDiagnostics, metrics);
+        }
+        publishCognitive(jobType, CognitiveEventType.OLLAMA_METRICS, "MEASURED", "Native Ollama metrics captured",
+                "model:" + brain.model(), metadata);
+        publishNativeTrace(jobType, brain, "OLLAMA_MODEL_LOAD", metrics.loadDurationMs());
+        publishNativeTrace(jobType, brain, "OLLAMA_PROMPT_EVAL", metrics.promptEvalDurationMs());
+        publishNativeTrace(jobType, brain, "OLLAMA_GENERATION", metrics.evalDurationMs());
+        publishClassifiedBottleneck(jobType, brain, metrics, requestTotalMs);
+        LOGGER.info(
+                "[OLLAMA_METRICS] requestId={} model={} loadMs={} promptEvalTokens={} promptEvalMs={} promptTokPerSec={} evalTokens={} evalMs={} generationTokPerSec={} totalMs={}",
+                diagnosticsRequestId(),
+                metrics.model(),
+                metrics.loadDurationMs(),
+                metrics.promptEvalCount(),
+                metrics.promptEvalDurationMs(),
+                "%.2f".formatted(metrics.promptTokensPerSecond()),
+                metrics.evalCount(),
+                metrics.evalDurationMs(),
+                "%.2f".formatted(metrics.generationTokensPerSecond()),
+                metrics.totalDurationMs()
+        );
+        LOGGER.info("[MODEL_BOTTLENECK] requestId={} type={} shareOfTotal={}%",
+                diagnosticsRequestId(), metrics.bottleneck(), "%.1f".formatted(bottleneckShare(metrics) * 100.0d));
+    }
+
+    private void appendPromptMetrics(Map<String, Object> metadata, InferenceDiagnostics diagnostics, OllamaInferenceMetrics metrics) {
+        metadata.put("systemPromptChars", value(diagnostics.getSystemPromptChars()));
+        metadata.put("conversationContextChars", value(diagnostics.getConversationContextChars()));
+        metadata.put("knowledgeContextChars", value(diagnostics.getKnowledgeContextChars()));
+        metadata.put("toolCapabilityChars", value(diagnostics.getToolCapabilityChars()));
+        metadata.put("currentUserMessageChars", value(diagnostics.getCurrentUserMessageChars()));
+        metadata.put("totalPromptChars", value(diagnostics.getTotalPromptChars()));
+        metadata.put("estimatedPromptTokens", value(diagnostics.getEstimatedPromptTokens()));
+        metadata.put("actualPromptTokens", metrics.promptEvalCount());
+        LOGGER.info(
+                "[PROMPT_METRICS] requestId={} systemChars={} conversationChars={} knowledgeChars={} toolChars={} userChars={} totalChars={} estimatedPromptTokens={} actualPromptTokens={}",
+                diagnosticsRequestId(),
+                value(diagnostics.getSystemPromptChars()),
+                value(diagnostics.getConversationContextChars()),
+                value(diagnostics.getKnowledgeContextChars()),
+                value(diagnostics.getToolCapabilityChars()),
+                value(diagnostics.getCurrentUserMessageChars()),
+                value(diagnostics.getTotalPromptChars()),
+                value(diagnostics.getEstimatedPromptTokens()),
+                metrics.promptEvalCount()
+        );
+    }
+
+    private int value(Integer value) {
+        return value == null ? 0 : value;
+    }
+
+    private void publishNativeTrace(AIJobType jobType, Brain brain, String stage, long durationMs) {
+        if (durationMs <= 0L) {
+            return;
+        }
+        publishCognitive(jobType, CognitiveEventType.EXECUTION_TRACE, "FINISHED", stage + " measured by Ollama",
+                "model:" + brain.model(), Map.of(
+                        "stage", stage,
+                        "phase", "FINISHED",
+                        "durationMs", durationMs,
+                        "model", brain.model(),
+                        "nativeMetric", true,
+                        "severity", severity(durationMs)
+                ));
+    }
+
+    private void publishClassifiedBottleneck(AIJobType jobType, Brain brain, OllamaInferenceMetrics metrics, long requestTotalMs) {
+        if (metrics.bottleneck() == OllamaBottleneckType.UNKNOWN) {
+            return;
+        }
+        String stage = switch (metrics.bottleneck()) {
+            case MODEL_LOAD -> "OLLAMA_MODEL_LOAD";
+            case PROMPT_EVALUATION -> "OLLAMA_PROMPT_EVAL";
+            case QUEUE_WAIT -> "OLLAMA_QUEUE_WAIT";
+            case GENERATION -> "OLLAMA_GENERATION";
+            case TRANSPORT -> "OLLAMA_RESPONSE_HEADERS_WAIT";
+            case UNKNOWN -> "OLLAMA_UNKNOWN";
+        };
+        long durationMs = switch (metrics.bottleneck()) {
+            case MODEL_LOAD -> metrics.loadDurationMs();
+            case PROMPT_EVALUATION -> metrics.promptEvalDurationMs();
+            case GENERATION -> metrics.evalDurationMs();
+            case TRANSPORT -> metrics.requestStartToHeadersMs();
+            case QUEUE_WAIT -> diagnosticsValue(InferenceDiagnostics::getOllamaPermitQueueWaitMs);
+            case UNKNOWN -> 0L;
+        };
+        if (durationMs <= 500L) {
+            return;
+        }
+        publishCognitive(jobType, CognitiveEventType.EXECUTION_BOTTLENECK,
+                durationMs > 5_000L ? "HIGH" : "MEDIUM",
+                "Potential Bottleneck", "model:" + brain.model(), Map.of(
+                        "stage", stage,
+                        "type", metrics.bottleneck().name(),
+                        "durationMs", durationMs,
+                        "shareOfTotal", bottleneckShare(metrics),
+                        "requestTotalMs", requestTotalMs,
+                        "reason", reason(metrics.bottleneck()),
+                        "severity", durationMs > 5_000L ? "HIGH" : "MEDIUM"
+                ));
+    }
+
+    private OllamaBottleneckType classifyBottleneck(
+            long totalDurationMs,
+            long loadDurationMs,
+            long promptEvalDurationMs,
+            long evalDurationMs,
+            long queueWaitMs,
+            long headersWaitMs
+    ) {
+        long modelTime = totalDurationMs > 0L ? totalDurationMs : Math.max(headersWaitMs, loadDurationMs + promptEvalDurationMs + evalDurationMs);
+        long requestTime = Math.max(modelTime, headersWaitMs + evalDurationMs);
+        if (requestTime > 0L && queueWaitMs / (double) requestTime > 0.40d) {
+            return OllamaBottleneckType.QUEUE_WAIT;
+        }
+        if (modelTime <= 0L) {
+            return headersWaitMs > 500L ? OllamaBottleneckType.TRANSPORT : OllamaBottleneckType.UNKNOWN;
+        }
+        if (loadDurationMs / (double) modelTime > 0.40d) {
+            return OllamaBottleneckType.MODEL_LOAD;
+        }
+        if (promptEvalDurationMs / (double) modelTime > 0.40d) {
+            return OllamaBottleneckType.PROMPT_EVALUATION;
+        }
+        if (evalDurationMs / (double) modelTime > 0.50d) {
+            return OllamaBottleneckType.GENERATION;
+        }
+        return headersWaitMs > 500L && totalDurationMs <= 0L ? OllamaBottleneckType.TRANSPORT : OllamaBottleneckType.UNKNOWN;
+    }
+
+    private String reason(OllamaBottleneckType type) {
+        return switch (type) {
+            case MODEL_LOAD -> "Ollama spent most measured model time loading the model";
+            case PROMPT_EVALUATION -> "Ollama spent most measured model time evaluating the prompt";
+            case QUEUE_WAIT -> "Request waited behind another Ollama job";
+            case GENERATION -> "Ollama spent most measured model time generating tokens";
+            case TRANSPORT -> "Client waited for response headers; native model breakdown was insufficient";
+            case UNKNOWN -> "Metrics do not support a clear conclusion";
+        };
+    }
+
+    private double bottleneckShare(OllamaInferenceMetrics metrics) {
+        long total = metrics.totalDurationMs() <= 0L ? 1L : metrics.totalDurationMs();
+        return switch (metrics.bottleneck()) {
+            case MODEL_LOAD -> metrics.loadDurationMs() / (double) total;
+            case PROMPT_EVALUATION -> metrics.promptEvalDurationMs() / (double) total;
+            case GENERATION -> metrics.evalDurationMs() / (double) total;
+            case TRANSPORT -> metrics.requestStartToHeadersMs() / (double) Math.max(1L, metrics.requestStartToHeadersMs() + metrics.evalDurationMs());
+            case QUEUE_WAIT -> diagnosticsValue(InferenceDiagnostics::getOllamaPermitQueueWaitMs)
+                    / (double) Math.max(1L, metrics.requestStartToHeadersMs() + metrics.evalDurationMs());
+            case UNKNOWN -> 0.0d;
+        };
+    }
+
+    private long diagnosticsValue(java.util.function.Function<InferenceDiagnostics, Long> reader) {
+        InferenceDiagnostics diagnostics = InferenceDiagnosticsContext.current();
+        Long value = diagnostics == null ? null : reader.apply(diagnostics);
+        return value == null ? 0L : value;
+    }
+
+    private long nsToMs(Long nanos) {
+        return nanos == null ? 0L : nanosToMillis(nanos);
+    }
+
+    private double tokensPerSecond(long tokens, long durationMs) {
+        if (tokens <= 0L || durationMs <= 0L) {
+            return 0.0d;
+        }
+        return tokens / (durationMs / 1000.0d);
     }
 }

@@ -4,6 +4,8 @@ import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.AIProviderException;
 import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.event.ChatEventType;
+import com.jarvis.common.diagnostics.InferenceDiagnostics;
+import com.jarvis.common.diagnostics.InferenceDiagnosticsContext;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
@@ -55,6 +57,7 @@ public class ModelExecutionStage implements PipelineStage {
             return context;
         }
         String mainPrompt = toolTriggerStrategy.buildMainModelPrompt(context);
+        recordPromptMetrics(context, mainPrompt);
         cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_REQUEST, "REQUESTING", "Main model action request started", null, Map.of(
                 "model", context.model(),
                 "reasoningLevel", context.brain().reasoningLevel().name()
@@ -174,6 +177,51 @@ public class ModelExecutionStage implements PipelineStage {
 
     private void publish(CognitiveEventType event, String status, String message, Map<String, Object> metadata) {
         cognitiveEventBus.publish(event, status, message, null, metadata);
+    }
+
+    private void recordPromptMetrics(PipelineContext context, String mainPrompt) {
+        int totalPromptChars = safeLength(mainPrompt);
+        int basePromptChars = safeLength(context.prompt());
+        int toolCapabilityChars = Math.max(0, totalPromptChars - basePromptChars);
+        int conversationChars = context.conversation().stream()
+                .mapToInt(message -> safeLength(message.content()))
+                .sum();
+        int knowledgeChars = context.knowledgeContext().totalCharacters();
+        int userChars = safeLength(context.request().message());
+        int systemChars = Math.max(0, basePromptChars - conversationChars - knowledgeChars - userChars);
+        int estimatedTokens = Math.max(1, totalPromptChars / 4);
+        InferenceDiagnostics diagnostics = InferenceDiagnosticsContext.current();
+        if (diagnostics != null) {
+            diagnostics.setSystemPromptChars(systemChars);
+            diagnostics.setConversationContextChars(conversationChars);
+            diagnostics.setKnowledgeContextChars(knowledgeChars);
+            diagnostics.setToolCapabilityChars(toolCapabilityChars);
+            diagnostics.setCurrentUserMessageChars(userChars);
+            diagnostics.setTotalPromptChars(totalPromptChars);
+            diagnostics.setPromptCharacters(totalPromptChars);
+            diagnostics.setEstimatedPromptTokens(estimatedTokens);
+        }
+        cognitiveEventBus.publish(CognitiveEventType.EXECUTION_TRACE, "FINISHED", "Prompt size diagnostics", null, Map.ofEntries(
+                Map.entry("stage", "PROMPT_SIZE_DIAGNOSTICS"),
+                Map.entry("phase", "FINISHED"),
+                Map.entry("durationMs", 0),
+                Map.entry("systemPromptChars", systemChars),
+                Map.entry("conversationContextChars", conversationChars),
+                Map.entry("knowledgeContextChars", knowledgeChars),
+                Map.entry("toolCapabilityChars", toolCapabilityChars),
+                Map.entry("currentUserMessageChars", userChars),
+                Map.entry("totalPromptChars", totalPromptChars),
+                Map.entry("estimatedPromptTokens", estimatedTokens),
+                Map.entry("model", context.model()),
+                Map.entry("severity", "GREEN")
+        ));
+        org.slf4j.LoggerFactory.getLogger(ModelExecutionStage.class).info(
+                "[PROMPT_METRICS] requestId={} systemChars={} conversationChars={} knowledgeChars={} toolChars={} userChars={} totalChars={} estimatedPromptTokens={}",
+                context.requestId(), systemChars, conversationChars, knowledgeChars, toolCapabilityChars, userChars, totalPromptChars, estimatedTokens);
+    }
+
+    private int safeLength(String value) {
+        return value == null ? 0 : value.length();
     }
 
     private AIProvider selectProvider(PipelineContext context) {

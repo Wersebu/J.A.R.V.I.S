@@ -26,6 +26,13 @@ public class InferenceDiagnostics {
     private Long promptBuildMs;
     private Integer promptCharacters;
     private Integer estimatedPromptTokens;
+    private Integer systemPromptChars;
+    private Integer conversationContextChars;
+    private Integer knowledgeContextChars;
+    private Integer toolCapabilityChars;
+    private Integer currentUserMessageChars;
+    private Integer totalPromptChars;
+    private Integer actualPromptTokens;
     private Integer memoryItemsInjected;
     private Integer knowledgeDocumentsInjected;
     private Long ollamaPermitQueueWaitMs;
@@ -48,6 +55,7 @@ public class InferenceDiagnostics {
     private Boolean modelWasAlreadyLoaded;
     private Boolean requestWaitedForAnotherOllamaJob;
     private String ollamaJobTypeBlockingRequest;
+    private OllamaInferenceMetrics ollamaMetrics;
 
     /**
      * Creates diagnostics for one request.
@@ -193,6 +201,62 @@ public class InferenceDiagnostics {
         this.estimatedPromptTokens = estimatedPromptTokens;
     }
 
+    public Integer getSystemPromptChars() {
+        return systemPromptChars;
+    }
+
+    public void setSystemPromptChars(Integer systemPromptChars) {
+        this.systemPromptChars = systemPromptChars;
+    }
+
+    public Integer getConversationContextChars() {
+        return conversationContextChars;
+    }
+
+    public void setConversationContextChars(Integer conversationContextChars) {
+        this.conversationContextChars = conversationContextChars;
+    }
+
+    public Integer getKnowledgeContextChars() {
+        return knowledgeContextChars;
+    }
+
+    public void setKnowledgeContextChars(Integer knowledgeContextChars) {
+        this.knowledgeContextChars = knowledgeContextChars;
+    }
+
+    public Integer getToolCapabilityChars() {
+        return toolCapabilityChars;
+    }
+
+    public void setToolCapabilityChars(Integer toolCapabilityChars) {
+        this.toolCapabilityChars = toolCapabilityChars;
+    }
+
+    public Integer getCurrentUserMessageChars() {
+        return currentUserMessageChars;
+    }
+
+    public void setCurrentUserMessageChars(Integer currentUserMessageChars) {
+        this.currentUserMessageChars = currentUserMessageChars;
+    }
+
+    public Integer getTotalPromptChars() {
+        return totalPromptChars;
+    }
+
+    public void setTotalPromptChars(Integer totalPromptChars) {
+        this.totalPromptChars = totalPromptChars;
+    }
+
+    public Integer getActualPromptTokens() {
+        return actualPromptTokens;
+    }
+
+    public void setActualPromptTokens(Integer actualPromptTokens) {
+        this.actualPromptTokens = actualPromptTokens;
+    }
+
     public Integer getMemoryItemsInjected() {
         return memoryItemsInjected;
     }
@@ -333,6 +397,10 @@ public class InferenceDiagnostics {
         return modelWasAlreadyLoaded;
     }
 
+    public void setModelWasAlreadyLoaded(Boolean modelWasAlreadyLoaded) {
+        this.modelWasAlreadyLoaded = modelWasAlreadyLoaded;
+    }
+
     public Boolean getRequestWaitedForAnotherOllamaJob() {
         return requestWaitedForAnotherOllamaJob;
     }
@@ -347,5 +415,13 @@ public class InferenceDiagnostics {
 
     public void setOllamaJobTypeBlockingRequest(String ollamaJobTypeBlockingRequest) {
         this.ollamaJobTypeBlockingRequest = ollamaJobTypeBlockingRequest;
+    }
+
+    public OllamaInferenceMetrics getOllamaMetrics() {
+        return ollamaMetrics;
+    }
+
+    public void setOllamaMetrics(OllamaInferenceMetrics ollamaMetrics) {
+        this.ollamaMetrics = ollamaMetrics;
     }
 }
