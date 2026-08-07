@@ -254,17 +254,21 @@ public class DefaultExecutionTracer implements ExecutionTracer {
             case TOOL_CALL_PROPOSED, TOOL_CALL_VALIDATED -> finish("TOOL_SELECTION");
             case TOOL_EXECUTION_STARTED, TOOL_STARTED -> start("TOOL_EXECUTION");
             case TOOL_EXECUTION_FINISHED, TOOL_FINISHED, TOOL_RESULT_RECEIVED -> finish("TOOL_EXECUTION");
+            case TOOL_LOOP_FINISHED -> {
+                finishImplicit("TOOL_SELECTION", event);
+                yield finish("TOOL_DISCOVERY");
+            }
             case PROMPT_BUILD_STARTED -> start("PROMPT_BUILD");
             case PROMPT_BUILD_FINISHED -> finish("PROMPT_BUILD");
             case MODEL_REQUEST_STARTED -> instant("PROMPT_READY");
             case WAITING_FIRST_TOKEN -> start("OLLAMA_FIRST_TOKEN_WAIT");
             case THINKING_STARTED -> {
-                finishImplicit("OLLAMA_FIRST_TOKEN_WAIT");
+                finishImplicit("OLLAMA_FIRST_TOKEN_WAIT", event);
                 yield start("THINKING_STREAM");
             }
             case THINKING_FINISHED -> finish("THINKING_STREAM");
             case ANSWER_STARTED -> {
-                finishImplicit("OLLAMA_FIRST_TOKEN_WAIT");
+                finishImplicit("OLLAMA_FIRST_TOKEN_WAIT", event);
                 yield start("ANSWER_STREAM");
             }
             case ANSWER_FINISHED, STREAMING_FINISHED -> finish("ANSWER_STREAM");
@@ -276,10 +280,10 @@ public class DefaultExecutionTracer implements ExecutionTracer {
         };
     }
 
-    private TraceAction finishImplicit(String stage) {
+    private TraceAction finishImplicit(String stage, CognitiveEventType sourceEvent) {
         TraceScope scope = TRACE_SCOPE.get();
         if (scope != null && scope.starts().containsKey(stage)) {
-            finishStep(scope, stage, CognitiveEventType.FIRST_TOKEN_RECEIVED, "FINISHED",
+            finishStep(scope, stage, sourceEvent, "FINISHED",
                     stage, null, null, null, Map.of());
         }
         return null;
