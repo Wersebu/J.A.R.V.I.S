@@ -148,6 +148,7 @@ User
   -> local SearXNG JSON API
   -> ToolResult
   -> LLM final answer
+  -> ANSWER_SOURCES event with trusted source metadata
   -> User
 ```
 
@@ -158,6 +159,10 @@ The native tool is named `web` and exposes:
 ```
 
 The model receives normalized search results only: title, URL, short snippet, and source. Core does not pass raw SearXNG JSON, HTML, ads, or full pages into the context window.
+
+Answer sources are attached by Core, not by the LLM. After a successful `web.SEARCH_WEB` call, Core extracts trusted source metadata from the executed `ToolResult`, validates that each URL uses only `http` or `https`, removes duplicate URLs and duplicate display domains, and emits an `ANSWER_SOURCES` cognitive event. The default UI limit is five sources. If SearXNG returns no usable results, no sources section is shown.
+
+Windows renders these sources as compact clickable chips under the assistant response. The client never displays raw long URLs in the chat body, and it performs its own second URL safety check before opening a source in the default browser. Unsafe schemes such as `file:`, `javascript:`, `cmd:`, or `powershell:` are ignored.
 
 Configuration:
 
@@ -178,7 +183,7 @@ The default SearXNG port is `8888` because J.A.R.V.I.S. Core uses `8080` for its
 Start SearXNG on Ubuntu:
 
 ```bash
-cd /opt/jarvis/SERVER/deploy/searxng
+cd /opt/jarvis/deploy/searxng
 docker compose up -d
 ```
 

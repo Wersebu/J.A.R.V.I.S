@@ -182,6 +182,8 @@ public enum CognitiveEventType {
     ANSWER_TOKEN,
     /** Final answer stream finished. */
     ANSWER_FINISHED,
+    /** Trusted answer sources are available for the current answer. */
+    ANSWER_SOURCES,
     /** Grounding diagnostics for the final response. */
     RESPONSE_GROUNDING,
     /** Streaming started. */

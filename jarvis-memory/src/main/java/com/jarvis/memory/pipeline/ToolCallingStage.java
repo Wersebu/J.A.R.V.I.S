@@ -29,6 +29,7 @@ public class ToolCallingStage implements PipelineStage {
     private final ToolCallingRuntime toolCallingRuntime;
     private final List<AIProvider> aiProviders;
     private final MainModelActionParser actionParser;
+    private final WebAnswerSourceExtractor sourceExtractor;
 
     /**
      * Creates the tool-calling stage.
@@ -43,6 +44,7 @@ public class ToolCallingStage implements PipelineStage {
         this.toolCallingRuntime = toolCallingRuntime;
         this.aiProviders = List.copyOf(aiProviders);
         this.actionParser = actionParser;
+        this.sourceExtractor = new WebAnswerSourceExtractor();
     }
 
     @Override
@@ -74,6 +76,7 @@ public class ToolCallingStage implements PipelineStage {
                     "Nie wykonalem narzedzia, poniewaz tool runtime nie zwrocil bezpiecznej akcji do wykonania.",
                     "tool-unhandled");
         } else {
+            publishAnswerSources(context, result);
             answer = streamToolFinalAnswer(context, result);
         }
         GenerationFinishedEvent finished = GenerationFinishedEvent.create(context.conversationId(), 0, context.brain().type(),
@@ -273,6 +276,8 @@ public class ToolCallingStage implements PipelineStage {
                 + "\n\nYou just completed the tool workflow. Now write the final user-facing answer."
                 + "\nDo not reveal hidden chain-of-thought. You may briefly mention what was done."
                 + "\nIf approval is required, clearly tell the user that a draft is waiting for approval."
+                + "\nIf WebSearchTool results are present, answer only from those observations."
+                + "\nDo not invent, rewrite, or append source URLs. Core attaches verified source links separately."
                 + "\nKeep the answer concise, natural, and in the user's language."
                 + "\nReturn plain text only."
                 + "\n\nUser request:\n" + context.request().message()
@@ -295,6 +300,19 @@ public class ToolCallingStage implements PipelineStage {
             builder.append("- No concrete tool result was produced.\n");
         }
         return builder.toString();
+    }
+
+    private void publishAnswerSources(PipelineContext context, ToolCallingResult result) {
+        List<Map<String, Object>> sources = sourceExtractor.extract(result);
+        if (sources.isEmpty()) {
+            return;
+        }
+        publish(context, CognitiveEventType.ANSWER_SOURCES, "READY", "Trusted answer sources ready", Map.of(
+                "sources", sources,
+                "count", sources.size(),
+                "source", "web-search-tool",
+                "limit", WebAnswerSourceExtractor.DEFAULT_LIMIT
+        ));
     }
 
     private String fallbackToolAnswer(ToolCallingResult result) {

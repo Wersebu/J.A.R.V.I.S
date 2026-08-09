@@ -69,6 +69,7 @@ public class EventController {
                 schema(CognitiveEventType.ANSWER_STARTED, "Final answer started.", "model", "timeToFirstAnswerTokenMs"),
                 schema(CognitiveEventType.ANSWER_TOKEN, "Final answer fragment.", "text", "index"),
                 schema(CognitiveEventType.ANSWER_FINISHED, "Final answer finished.", "durationMs", "characters", "tokens"),
+                schema(CognitiveEventType.ANSWER_SOURCES, "Trusted answer sources collected from executed tools.", "sources", "count", "source"),
                 schema(CognitiveEventType.RESPONSE_GROUNDING, "Response grounding diagnostics.", "personalQuery", "grounded", "memorySourcesUsed", "knowledgeSourcesUsed", "toolSourcesUsed", "unsupportedClaimDetected", "regenerated"),
                 schema(CognitiveEventType.STREAMING_STARTED, "Streaming started.", "model"),
                 schema(CognitiveEventType.TOKEN, "Generated token.", "text", "index"),
@@ -167,6 +168,10 @@ public class EventController {
             case ANSWER_STARTED -> Map.of("model", "gpt-oss:20b", "timeToFirstAnswerTokenMs", 9217);
             case ANSWER_TOKEN -> Map.of("text", "Final answer", "index", 1);
             case ANSWER_FINISHED -> Map.of("durationMs", 4670, "characters", 700, "tokens", 128);
+            case ANSWER_SOURCES -> Map.of("count", 2, "source", "web-search-tool", "sources", List.of(
+                    Map.of("title", "Silver Price Chart", "domain", "tradingview.com", "url", "https://www.tradingview.com/symbols/SILVER/"),
+                    Map.of("title", "Silver Price", "domain", "kitco.com", "url", "https://www.kitco.com/charts/silver")
+            ));
             case RESPONSE_GROUNDING -> Map.of("personalQuery", true, "grounded", true, "memorySourcesUsed", 1, "knowledgeSourcesUsed", 0, "toolSourcesUsed", 0, "unsupportedClaimDetected", false, "regenerated", false);
             case REQUEST_FINISHED -> Map.of("generationTimeMs", 1400, "retrievalTimeMs", 4, "contextBuildTimeMs", 3, "promptBuildTimeMs", 2, "documentsUsed", 2, "tokensGenerated", 64, "estimatedPromptTokens", 800);
             case TOKEN -> Map.of("text", "Hello", "index", 1);
