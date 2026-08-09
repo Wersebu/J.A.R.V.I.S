@@ -18,6 +18,7 @@ import com.jarvis.common.event.ErrorEvent;
 import com.jarvis.common.event.GenerationFinishedEvent;
 import com.jarvis.common.event.StatusChangedEvent;
 import com.jarvis.common.event.ThinkingEvent;
+import com.jarvis.common.event.ThinkingTokenEvent;
 import com.jarvis.common.event.TokenEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -100,12 +101,17 @@ public class OllamaProvider implements AIProvider {
     @Override
     public ChatResponse chat(Brain brain, String prompt, AIJobType jobType) {
         StringBuilder responseBuilder = new StringBuilder();
+        StringBuilder thinkingBuilder = new StringBuilder();
         stream("", brain, prompt, jobType, event -> {
             if (event instanceof TokenEvent tokenEvent) {
                 responseBuilder.append(tokenEvent.text());
             }
+            if (event instanceof ThinkingTokenEvent thinkingTokenEvent) {
+                thinkingBuilder.append(thinkingTokenEvent.text());
+            }
         });
-        return new ChatResponse(responseBuilder.toString());
+        String response = responseBuilder.toString();
+        return new ChatResponse(response.isBlank() ? thinkingBuilder.toString() : response);
     }
 
     /**
@@ -302,6 +308,7 @@ public class OllamaProvider implements AIProvider {
                             "text", thinking,
                             "index", thinkingChunks
                     ));
+                    eventSink.publish(ThinkingTokenEvent.create(conversationId, thinking));
                 }
 
                 String token = response.response();

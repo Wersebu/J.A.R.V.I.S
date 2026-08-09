@@ -8,6 +8,7 @@ import com.jarvis.common.diagnostics.InferenceDiagnosticsContext;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
+import com.jarvis.common.event.ThinkingTokenEvent;
 import com.jarvis.common.event.TokenEvent;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
@@ -66,10 +67,11 @@ public class ModelExecutionStage implements PipelineStage {
         selectProvider(context).stream(context.conversationId(), context.brain(), mainPrompt, AIJobType.MAIN_MODEL, event -> {
             if (event instanceof TokenEvent tokenEvent) {
                 StreamingStructuredResponseParser.ParserUpdate update = streamingParser.accept(tokenEvent.text());
-                update.detectedType().ifPresent(type -> handleDetectedType(context, type, streamState));
-                if (update.streamedText() != null && !update.streamedText().isEmpty()) {
-                    streamAnswerChunk(context, update.streamedText(), streamState);
-                }
+                handleParserUpdate(context, update, streamState, true);
+            }
+            if (event instanceof ThinkingTokenEvent thinkingTokenEvent) {
+                StreamingStructuredResponseParser.ParserUpdate update = streamingParser.accept(thinkingTokenEvent.text());
+                handleParserUpdate(context, update, streamState, false);
             }
             if (event instanceof GenerationFinishedEvent finishedEvent) {
                 streamState.finishedEvent = finishedEvent;
@@ -90,6 +92,18 @@ public class ModelExecutionStage implements PipelineStage {
                     .withMetadata("toolContext", action.context())
                     .withMetadata("mainModelDurationMs", durationMs);
         };
+    }
+
+    private void handleParserUpdate(
+            PipelineContext context,
+            StreamingStructuredResponseParser.ParserUpdate update,
+            StreamState streamState,
+            boolean streamUserFacingText
+    ) {
+        update.detectedType().ifPresent(type -> handleDetectedType(context, type, streamState, streamUserFacingText));
+        if (streamUserFacingText && update.streamedText() != null && !update.streamedText().isEmpty()) {
+            streamAnswerChunk(context, update.streamedText(), streamState);
+        }
     }
 
     private MainModelAction parseAction(PipelineContext context, StreamingStructuredResponseParser streamingParser) {
@@ -194,7 +208,12 @@ public class ModelExecutionStage implements PipelineStage {
                 """.formatted(raw == null ? "" : raw);
     }
 
-    private void handleDetectedType(PipelineContext context, MainModelActionType type, StreamState streamState) {
+    private void handleDetectedType(
+            PipelineContext context,
+            MainModelActionType type,
+            StreamState streamState,
+            boolean streamUserFacingText
+    ) {
         cognitiveEventBus.publish(CognitiveEventType.STRUCTURED_RESPONSE_DETECTED, type.name(),
                 "Structured response type detected", null, Map.of(
                         "type", type.name(),
@@ -204,11 +223,15 @@ public class ModelExecutionStage implements PipelineStage {
         if (type == MainModelActionType.FINAL_ANSWER) {
             cognitiveEventBus.publish(CognitiveEventType.ANSWER_STREAM_STARTED, "STARTED",
                     "Structured answer stream started", null, Map.of("type", type.name(), "model", context.model()));
-            startAnswerStream(context, streamState);
+            if (streamUserFacingText) {
+                startAnswerStream(context, streamState);
+            }
         } else if (type == MainModelActionType.CLARIFICATION) {
             cognitiveEventBus.publish(CognitiveEventType.QUESTION_STREAM_STARTED, "STARTED",
                     "Structured clarification stream started", null, Map.of("type", type.name(), "model", context.model()));
-            startAnswerStream(context, streamState);
+            if (streamUserFacingText) {
+                startAnswerStream(context, streamState);
+            }
         } else if (type == MainModelActionType.TOOL_REQUEST) {
             cognitiveEventBus.publish(CognitiveEventType.TOOL_REQUEST_DETECTED, "DETECTED",
                     "Structured tool request detected", null, Map.of("type", type.name(), "model", context.model()));
