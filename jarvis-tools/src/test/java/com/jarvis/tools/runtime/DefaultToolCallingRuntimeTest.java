@@ -270,7 +270,7 @@ class DefaultToolCallingRuntimeTest {
 
         assertThat(result.handled()).isTrue();
         assertThat(executions).hasValue(1);
-        assertThat(modelCalls).hasValue(1);
+        assertThat(modelCalls).hasValue(0);
         assertThat(executed.get().operation()).isEqualTo("READ_WEB_PAGE");
         assertThat(String.valueOf(executed.get().arguments().get("url"))).startsWith("https://www.olx.pl/d/oferta/");
     }

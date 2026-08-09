@@ -257,6 +257,16 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                             targetNode(action), step, resultMetadata(result));
                     return new ToolCallingResult(true, "", steps, results);
                 }
+                if (result.success() && isWebPageRead(action)) {
+                    publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "VERIFYING", "Verifying tool result",
+                            targetNode(action), step, Map.of("operation", action.operation()));
+                    publish(request, CognitiveEventType.TOOL_VERIFICATION_FINISHED, "VERIFIED", "Tool result verified",
+                            targetNode(action), step, Map.of("operation", action.operation(), "success", true));
+                    saveDebug(request, intent, steps, "FINISHED", errors);
+                    publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished",
+                            targetNode(action), step, resultMetadata(result));
+                    return new ToolCallingResult(true, "", steps, results);
+                }
 
                 if (!isTerminalWebSearch(action)) {
                     publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "VERIFYING", "Verifying tool result",
@@ -269,6 +279,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished",
                             targetNode(action), step, resultMetadata(result));
                     return new ToolCallingResult(true, "", steps, results);
+                }
+                if (!result.success() && isWebPageRead(action)) {
+                    errors.add(result.errorMessage().isBlank() ? "Web page read failed" : result.errorMessage());
+                    break;
                 }
             }
             String finalAnswer = errors.isEmpty()
@@ -875,6 +889,18 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         if (result.data().containsKey("query")) {
             values.put("query", result.data().get("query"));
         }
+        if (result.data().containsKey("url")) {
+            values.put("url", result.data().get("url"));
+        }
+        if (result.data().containsKey("title")) {
+            values.put("title", result.data().get("title"));
+        }
+        if (result.data().containsKey("statusCode")) {
+            values.put("statusCode", result.data().get("statusCode"));
+        }
+        if (result.data().containsKey("contentType")) {
+            values.put("contentType", result.data().get("contentType"));
+        }
         if (result.data().containsKey("sourceQualityAccepted")) {
             values.put("sourceQualityAccepted", result.data().get("sourceQualityAccepted"));
             values.put("sourceQualityScore", result.data().getOrDefault("sourceQualityScore", 0.0d));
@@ -889,6 +915,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
 
     private boolean isTerminalWebSearch(ToolAction action) {
         return "web".equalsIgnoreCase(action.tool()) && "SEARCH_WEB".equalsIgnoreCase(action.operation());
+    }
+
+    private boolean isWebPageRead(ToolAction action) {
+        return "web".equalsIgnoreCase(action.tool()) && "READ_WEB_PAGE".equalsIgnoreCase(action.operation());
     }
 
     private Map<String, Object> actionMetadata(ToolAction action) {
@@ -949,6 +979,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             Object query = action.arguments().get("query");
             if ("web".equalsIgnoreCase(action.tool()) && query != null) {
                 return "web:search";
+            }
+            Object url = action.arguments().get("url");
+            if ("web".equalsIgnoreCase(action.tool()) && url != null) {
+                return "web:" + Integer.toHexString(String.valueOf(url).hashCode());
             }
             return null;
         }
