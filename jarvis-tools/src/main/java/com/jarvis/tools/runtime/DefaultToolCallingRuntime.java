@@ -51,6 +51,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private final CognitiveEventBus cognitiveEventBus;
     private final ToolRuntimeDebugService debugService;
     private final ObjectMapper objectMapper;
+    private final WebSearchQualityEvaluator webSearchQualityEvaluator;
 
     /**
      * Creates the runtime.
@@ -73,6 +74,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         this.cognitiveEventBus = cognitiveEventBus;
         this.debugService = debugService;
         this.objectMapper = objectMapper;
+        this.webSearchQualityEvaluator = new WebSearchQualityEvaluator();
     }
 
     @Override
@@ -89,6 +91,9 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         int maxCalls = request.knowledgeMode() == KnowledgeMode.RESEARCH
                 ? properties.maxCallsResearch()
                 : properties.maxCallsFast();
+        if (intent == ToolIntent.SEARCH_WEB) {
+            maxCalls = Math.max(maxCalls, 4);
+        }
         int failures = 0;
         String observation = "";
 
@@ -207,6 +212,9 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                         targetNode(action), step, actionMetadata(action));
                 LOGGER.info("[TOOL_CALL] tool={} operation={} step={}", action.tool(), action.operation(), step);
                 ToolResult result = toolManager.execute(toolRequest);
+                if (isTerminalWebSearch(action)) {
+                    result = enrichWebSearchQuality(request, result, step);
+                }
                 results.add(result);
                 steps.add(new ToolRuntimeStep(step, "TOOL_CALL", action.tool(), action.operation(),
                         result.success() ? "OK" : "FAILED", result));
@@ -240,17 +248,19 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 }
                 observation = observation(result);
 
-                if (result.success() && isTerminalWebSearch(action)) {
+                if (result.success() && isTerminalWebSearch(action) && webSearchAccepted(result)) {
                     saveDebug(request, intent, steps, "FINISHED", errors);
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished",
                             targetNode(action), step, resultMetadata(result));
                     return new ToolCallingResult(true, "", steps, results);
                 }
 
-                publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "VERIFYING", "Verifying tool result",
-                        targetNode(action), step, Map.of("operation", action.operation()));
-                publish(request, CognitiveEventType.TOOL_VERIFICATION_FINISHED, "VERIFIED", "Tool result verified",
-                        targetNode(action), step, Map.of("operation", action.operation(), "success", result.success()));
+                if (!isTerminalWebSearch(action)) {
+                    publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "VERIFYING", "Verifying tool result",
+                            targetNode(action), step, Map.of("operation", action.operation()));
+                    publish(request, CognitiveEventType.TOOL_VERIFICATION_FINISHED, "VERIFIED", "Tool result verified",
+                            targetNode(action), step, Map.of("operation", action.operation(), "success", result.success()));
+                }
                 if (result.success() && isTerminalWrite(action.operation())) {
                     saveDebug(request, intent, steps, "FINISHED", errors);
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished",
@@ -383,6 +393,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         String query = request.userMessage() == null || request.userMessage().isBlank()
                 ? request.goal()
                 : request.userMessage();
+        String goal = safe(request.goal());
+        if (query != null && !goal.isBlank() && !query.toLowerCase(Locale.ROOT).contains(goal.toLowerCase(Locale.ROOT))) {
+            query = query + " " + goal;
+        }
         return new ToolAction("TOOL_CALL", "web", "SEARCH_WEB", Map.of(
                 "query", query == null ? "" : query.strip(),
                 "maxResults", 5
@@ -524,6 +538,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "\nYou are not writing the normal assistant answer in this stage."
                 + "\nUse NO_TOOL when no tool should be used and the normal model answer should continue."
                 + "\nIf recent conversation context shows the assistant proposed a knowledge update and the latest user confirms it, call KnowledgeTool instead of answering with text."
+                + "\nFor web search, inspect previous observations. If sourceQualityAccepted=false, change the query and search again."
+                + "\nYou may perform multiple web searches when results are weak, irrelevant, or from the wrong domain."
+                + "\nFor requested sites/domains, include them in the query, e.g. site:allegro.pl RTX 4060 Ti."
+                + "\nOnly return FINAL_ANSWER when observations contain enough relevant evidence, or when you honestly cannot find it after attempts."
                 + "\nThe LLM is the only component allowed to decide semantic knowledge writes."
                 + "\nJava will only validate and execute your structured TOOL_CALL."
                 + "\nReturn JSON only. Choose TOOL_CALL, NO_TOOL, or FINAL_ANSWER only after tool observations.";
@@ -611,6 +629,49 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         }
     }
 
+    private ToolResult enrichWebSearchQuality(ToolCallingRequest request, ToolResult result, int step) {
+        WebSearchQualityReport report = webSearchQualityEvaluator.evaluate(request, result);
+        Map<String, Object> data = new HashMap<>(result.data());
+        data.put("sourceQualityAccepted", report.accepted());
+        data.put("sourceQualityScore", report.score());
+        data.put("sourceQualityReason", report.reason());
+        data.put("acceptedResults", report.acceptedResults());
+        publish(request,
+                report.accepted() ? CognitiveEventType.TOOL_VERIFICATION_FINISHED : CognitiveEventType.TOOL_VERIFICATION_STARTED,
+                report.accepted() ? "VERIFIED" : "RETRY_NEEDED",
+                report.accepted() ? "Web search quality accepted" : "Web search quality rejected",
+                "web:search",
+                step,
+                Map.of(
+                        "tool", result.tool(),
+                        "operation", result.operation(),
+                        "sourceQualityAccepted", report.accepted(),
+                        "sourceQualityScore", report.score(),
+                        "sourceQualityReason", report.reason(),
+                        "acceptedResults", report.acceptedResults().size()
+                ));
+        return new ToolResult(
+                result.success(),
+                result.tool(),
+                result.operation(),
+                result.requestId(),
+                result.conversationId(),
+                result.changed(),
+                result.targetNodeIds(),
+                result.message(),
+                data,
+                result.errorCode(),
+                result.errorMessage(),
+                result.requiresApproval(),
+                result.draftId()
+        );
+    }
+
+    private boolean webSearchAccepted(ToolResult result) {
+        Object accepted = result.data().get("sourceQualityAccepted");
+        return !(accepted instanceof Boolean value) || value;
+    }
+
     private Map<String, Object> resultMetadata(ToolResult result) {
         Map<String, Object> values = new HashMap<>();
         values.put("tool", result.tool());
@@ -628,6 +689,11 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         }
         if (result.data().containsKey("query")) {
             values.put("query", result.data().get("query"));
+        }
+        if (result.data().containsKey("sourceQualityAccepted")) {
+            values.put("sourceQualityAccepted", result.data().get("sourceQualityAccepted"));
+            values.put("sourceQualityScore", result.data().getOrDefault("sourceQualityScore", 0.0d));
+            values.put("sourceQualityReason", result.data().getOrDefault("sourceQualityReason", ""));
         }
         return values;
     }

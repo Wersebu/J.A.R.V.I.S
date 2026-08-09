@@ -84,6 +84,31 @@ class WebAnswerSourceExtractorTest {
     }
 
     @Test
+    void returnsNoSourcesWhenWebQualityWasRejected() {
+        ToolResult rejected = new ToolResult(
+                true,
+                "web",
+                "SEARCH_WEB",
+                "request-1",
+                "conversation-1",
+                false,
+                List.of(),
+                "ok",
+                Map.of(
+                        "sourceQualityAccepted", false,
+                        "results", List.of(Map.of("title", "Bad", "url", "https://bad.example"))
+                ),
+                "",
+                "",
+                false,
+                ""
+        );
+        ToolCallingResult result = new ToolCallingResult(true, "", List.of(), List.of(rejected));
+
+        assertThat(extractor.extract(result)).isEmpty();
+    }
+
+    @Test
     void limitsSourceCount() {
         ToolCallingResult result = webResult(List.of(
                 Map.of("title", "One", "url", "https://one.example/a"),

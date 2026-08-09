@@ -49,7 +49,12 @@ public class WebAnswerSourceExtractor {
             if (!isWebSearchResult(toolResult)) {
                 continue;
             }
-            Object results = toolResult.data().get("results");
+            if (Boolean.FALSE.equals(toolResult.data().get("sourceQualityAccepted"))) {
+                continue;
+            }
+            Object results = toolResult.data().containsKey("acceptedResults")
+                    ? toolResult.data().get("acceptedResults")
+                    : toolResult.data().get("results");
             if (!(results instanceof List<?> list)) {
                 continue;
             }

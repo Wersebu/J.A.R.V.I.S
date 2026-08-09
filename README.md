@@ -160,6 +160,8 @@ The native tool is named `web` and exposes:
 
 The model receives normalized search results only: title, URL, short snippet, and source. Core does not pass raw SearXNG JSON, HTML, ads, or full pages into the context window.
 
+Web search is iterative. After every `web.SEARCH_WEB` call, Core evaluates source quality before allowing the tool loop to finish. If results are weak, irrelevant, or from the wrong domain, the tool observation is marked with `sourceQualityAccepted=false`; the model receives that observation and may change the query, search a specific site, or try again within the configured tool-call budget. Only accepted results are exposed as answer sources.
+
 Answer sources are attached by Core, not by the LLM. After a successful `web.SEARCH_WEB` call, Core extracts trusted source metadata from the executed `ToolResult`, validates that each URL uses only `http` or `https`, removes duplicate URLs and duplicate display domains, and emits an `ANSWER_SOURCES` cognitive event. The default UI limit is five sources. If SearXNG returns no usable results, no sources section is shown.
 
 Windows renders these sources as compact clickable chips under the assistant response. The client never displays raw long URLs in the chat body, and it performs its own second URL safety check before opening a source in the default browser. Unsafe schemes such as `file:`, `javascript:`, `cmd:`, or `powershell:` are ignored.

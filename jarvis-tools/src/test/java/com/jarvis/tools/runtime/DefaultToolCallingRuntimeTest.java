@@ -70,7 +70,7 @@ class DefaultToolCallingRuntimeTest {
         assertThat(executed.get()).isNotNull();
         assertThat(executed.get().toolName()).isEqualTo("web");
         assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
-        assertThat(executed.get().arguments()).containsEntry("query", "sprawdz kurs Dolara na pln");
+        assertThat(String.valueOf(executed.get().arguments().get("query"))).contains("sprawdz kurs Dolara na pln");
         assertThat(executions).hasValue(1);
     }
 
@@ -109,7 +109,54 @@ class DefaultToolCallingRuntimeTest {
         assertThat(executed.get()).isNotNull();
         assertThat(executed.get().toolName()).isEqualTo("web");
         assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
-        assertThat(executed.get().arguments()).containsEntry("query", "siemka po ile sa karty rtx 4070ti uzywane?");
+        assertThat(String.valueOf(executed.get().arguments().get("query"))).contains("siemka po ile sa karty rtx 4070ti uzywane?");
+    }
+
+    @Test
+    void retriesWebSearchWhenResultsAreIrrelevant() {
+        AtomicReference<ToolRequest> executed = new AtomicReference<>();
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger modelCalls = new AtomicInteger();
+        DefaultToolCallingRuntime runtime = new DefaultToolCallingRuntime(
+                List.of(new StubProvider("""
+                        {"action":"TOOL_CALL","tool":"web","operation":"SEARCH_WEB","arguments":{"query":"site:allegro.pl RTX 4060 Ti karta graficzna","maxResults":5},"reason":"Previous results were irrelevant, search the requested marketplace directly."}
+                        """, modelCalls)),
+                new StubToolManager(executed, executions) {
+                    @Override
+                    public ToolResult execute(ToolRequest request) {
+                        executed.set(request);
+                        int call = executions.incrementAndGet();
+                        if (call == 1) {
+                            return webResult(request, "Instagram cats", "https://instagram.com/p/not-a-gpu", "not about the requested GPU");
+                        }
+                        return webResult(request, "Allegro RTX 4060 Ti", "https://allegro.pl/oferta/rtx-4060-ti", "RTX 4060 Ti karta graficzna");
+                    }
+                },
+                webRegistry(),
+                query -> ToolIntent.SEARCH_WEB,
+                new ToolRuntimeProperties(true, 4, 4, 1, 30),
+                new NoopCognitiveEventBus(),
+                new ToolRuntimeDebugService(),
+                new ObjectMapper()
+        );
+
+        ToolCallingResult result = runtime.execute(new ToolCallingRequest(
+                "request-3",
+                "conversation-1",
+                "daj link do konkretnej karty 4060ti z allegro",
+                "Search for a current Allegro listing of a used RTX 4060 Ti graphics card and provide the URL.",
+                "The user needs a concrete marketplace listing.",
+                "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(executions).hasValue(2);
+        assertThat(modelCalls).hasValue(1);
+        assertThat(result.results().getFirst().data()).containsEntry("sourceQualityAccepted", false);
+        assertThat(result.results().get(1).data()).containsEntry("sourceQualityAccepted", true);
+        assertThat(executed.get().arguments()).containsEntry("query", "site:allegro.pl RTX 4060 Ti karta graficzna");
     }
 
     private ToolRegistry webRegistry() {
@@ -168,7 +215,7 @@ class DefaultToolCallingRuntimeTest {
         }
     }
 
-    private static final class StubToolManager implements ToolManager {
+    private static class StubToolManager implements ToolManager {
 
         private final AtomicReference<ToolRequest> executed;
         private final AtomicInteger executions;
@@ -192,8 +239,22 @@ class DefaultToolCallingRuntimeTest {
         public ToolResult execute(ToolRequest request) {
             executed.set(request);
             executions.incrementAndGet();
+            String query = String.valueOf(request.arguments().get("query"));
+            return webResult(request, query, "https://example.com/result", query);
+        }
+
+        protected ToolResult webResult(ToolRequest request, String title, String url, String snippet) {
+            String query = String.valueOf(request.arguments().get("query"));
             return new ToolResult(true, "web", "SEARCH_WEB", request.requestId(), request.conversationId(), false,
-                    List.of("web:search"), "Found USD PLN rate", Map.of("query", request.arguments().get("query")),
+                    List.of("web:search"), "Found USD PLN rate", Map.of(
+                    "query", query,
+                    "results", List.of(Map.of(
+                            "title", title,
+                            "url", url,
+                            "snippet", snippet,
+                            "source", "Example"
+                    ))
+            ),
                     "", "", false, "");
         }
     }
