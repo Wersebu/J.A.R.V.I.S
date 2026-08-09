@@ -50,6 +50,70 @@ class HttpWebPageReaderTest {
         assertThat(content.text()).contains("RTX 4060 Ti");
         assertThat(content.text()).contains("Cena: 1299 PLN");
         assertThat(content.text()).doesNotContain("alert");
+        assertThat(content.statusCode()).isEqualTo(200);
+        assertThat(content.contentType()).contains("text/html");
+    }
+
+    @Test
+    void extractsOfferDetailsFromJsonLdBeforeRemovingScripts() throws IOException {
+        startServer("""
+                <html>
+                  <head>
+                    <title>Offer page</title>
+                    <script type="application/ld+json">
+                      {
+                        "@type": "Product",
+                        "name": "Gigabyte RTX 4060 Ti Eagle 8 GB",
+                        "description": "Used graphics card",
+                        "offers": {
+                          "@type": "Offer",
+                          "price": "1199",
+                          "priceCurrency": "PLN",
+                          "availability": "https://schema.org/InStock"
+                        }
+                      }
+                    </script>
+                  </head>
+                  <body><div>JavaScript required</div></body>
+                </html>
+                """);
+        TestableReader reader = new TestableReader(defaultProperties());
+
+        WebPageContent content = reader.read(baseUrl());
+
+        assertThat(content.text()).contains("Structured data type: Product");
+        assertThat(content.text()).contains("Structured data name: Gigabyte RTX 4060 Ti Eagle 8 GB");
+        assertThat(content.text()).contains("Structured data offer price: 1199");
+        assertThat(content.text()).contains("Structured data offer currency: PLN");
+    }
+
+    @Test
+    void extractsMetaAndEmbeddedPriceHintsFromRenderedShellPages() throws IOException {
+        startServer("""
+                <html>
+                  <head>
+                    <title>OLX shell</title>
+                    <meta property="og:title" content="Gigabyte RTX 4060 Ti Eagle 8 GB - OLX">
+                    <meta property="og:description" content="Cena: 1250 zł. Używana karta graficzna.">
+                  </head>
+                  <body>
+                    <script>
+                      window.__APP_STATE__ = {"title":"Gigabyte RTX 4060 Ti Eagle 8 GB","regularPrice":{"value":1250,"currencyCode":"PLN"}};
+                    </script>
+                    <main></main>
+                  </body>
+                </html>
+                """);
+        TestableReader reader = new TestableReader(defaultProperties());
+
+        WebPageContent content = reader.read(baseUrl());
+
+        assertThat(content.text()).contains("Meta title: Gigabyte RTX 4060 Ti Eagle 8 GB - OLX");
+        assertThat(content.text()).contains("Meta description: Cena: 1250 zł");
+        assertThat(content.text()).contains("Embedded page data:");
+        assertThat(content.text()).contains("Gigabyte RTX 4060 Ti Eagle 8 GB");
+        assertThat(content.text()).contains("1250");
+        assertThat(content.text()).contains("PLN");
     }
 
     private WebSearchProperties defaultProperties() {

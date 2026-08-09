@@ -1,5 +1,7 @@
 package com.jarvis.tools.web;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -10,7 +12,10 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashSet;
 import java.util.Locale;
+import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -21,9 +26,18 @@ import java.util.regex.Pattern;
 public class HttpWebPageReader implements WebPageReader {
 
     private static final Pattern TITLE_PATTERN = Pattern.compile("(?is)<title[^>]*>(.*?)</title>");
+    private static final Pattern JSON_LD_PATTERN = Pattern.compile(
+            "(?is)<script[^>]+type\\s*=\\s*['\"]application/ld\\+json['\"][^>]*>(.*?)</script>");
+    private static final Pattern PRICE_PATTERN = Pattern.compile(
+            "(?is)\"(?:price|regularPrice|displayPrice|amount|value)\"\\s*:\\s*(?:\"([^\"]{1,80})\"|([0-9][0-9 .,\u00a0]{0,24}))");
+    private static final Pattern CURRENCY_PATTERN = Pattern.compile(
+            "(?is)\"(?:priceCurrency|currency|currencyCode)\"\\s*:\\s*\"([A-Z]{3}|zł|PLN)\"");
+    private static final Pattern EMBEDDED_TITLE_PATTERN = Pattern.compile(
+            "(?is)\"(?:title|name)\"\\s*:\\s*\"([^\"{}]{3,180})\"");
 
     private final WebSearchProperties properties;
     private final HttpClient httpClient;
+    private final ObjectMapper objectMapper;
 
     /**
      * Creates the reader.
@@ -32,6 +46,7 @@ public class HttpWebPageReader implements WebPageReader {
      */
     public HttpWebPageReader(WebSearchProperties properties) {
         this.properties = properties;
+        this.objectMapper = new ObjectMapper();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(properties.connectTimeout())
                 .followRedirects(HttpClient.Redirect.NORMAL)
@@ -44,8 +59,10 @@ public class HttpWebPageReader implements WebPageReader {
         long started = System.nanoTime();
         HttpRequest request = HttpRequest.newBuilder(uri)
                 .timeout(properties.readTimeout())
-                .header("Accept", "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.1")
-                .header("User-Agent", "Jarvis-WebSearchTool/2.5")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.1")
+                .header("Accept-Language", "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7")
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        + "(KHTML, like Gecko) Chrome/126.0 Safari/537.36 Jarvis-WebSearchTool/2.5")
                 .GET()
                 .build();
         try {
@@ -55,12 +72,14 @@ public class HttpWebPageReader implements WebPageReader {
                 throw new WebSearchException("Web page returned HTTP " + response.statusCode());
             }
             String body = response.body() == null ? "" : response.body();
+            String contentType = response.headers().firstValue("content-type").orElse("");
             String title = decode(extractTitle(body));
-            String text = normalizeText(body);
+            String text = normalizeText(enrichWithStructuredData(body));
             int max = properties.pageMaxLength();
             boolean truncated = text.length() > max;
             String returned = truncated ? text.substring(0, max).strip() : text;
-            return new WebPageContent(uri.toString(), title, returned, returned.length(), truncated, durationMs);
+            return new WebPageContent(uri.toString(), title, returned, returned.length(), truncated, durationMs,
+                    response.statusCode(), contentType);
         } catch (IOException exception) {
             throw new WebSearchException("Web page request failed for " + uri + ": " + exception.getClass().getSimpleName(), exception);
         } catch (InterruptedException exception) {
@@ -123,6 +142,138 @@ public class HttpWebPageReader implements WebPageReader {
                 .replaceAll(" *\\n+ *", "\n")
                 .replaceAll(" {2,}", " ")
                 .strip();
+    }
+
+    private String enrichWithStructuredData(String html) {
+        String value = html == null ? "" : html;
+        StringBuilder builder = new StringBuilder();
+        appendLine(builder, "Page title", extractTitle(value));
+        appendLine(builder, "Meta title", meta(value, "og:title").orElse(""));
+        appendLine(builder, "Meta description", meta(value, "description").or(() -> meta(value, "og:description")).orElse(""));
+        appendStructuredJsonLd(builder, value);
+        appendEmbeddedOfferHints(builder, value);
+        if (!builder.isEmpty()) {
+            builder.append("\n--- Visible page text ---\n");
+        }
+        builder.append(value);
+        return builder.toString();
+    }
+
+    private Optional<String> meta(String html, String name) {
+        String escaped = Pattern.quote(name);
+        Pattern pattern = Pattern.compile("(?is)<meta[^>]+(?:name|property)\\s*=\\s*['\"]" + escaped
+                + "['\"][^>]+content\\s*=\\s*['\"]([^'\"]{1,1000})['\"][^>]*>");
+        Matcher matcher = pattern.matcher(html == null ? "" : html);
+        return matcher.find() ? Optional.of(decode(matcher.group(1)).strip()) : Optional.empty();
+    }
+
+    private void appendStructuredJsonLd(StringBuilder builder, String html) {
+        Matcher matcher = JSON_LD_PATTERN.matcher(html == null ? "" : html);
+        int count = 0;
+        while (matcher.find() && count < 5) {
+            String json = decode(matcher.group(1)).strip();
+            if (json.isBlank()) {
+                continue;
+            }
+            try {
+                JsonNode root = objectMapper.readTree(json);
+                collectJsonLdFacts(root, builder, "Structured data");
+                count++;
+            } catch (IOException ignored) {
+                appendLine(builder, "Structured data", json.length() > 800 ? json.substring(0, 800) : json);
+                count++;
+            }
+        }
+    }
+
+    private void collectJsonLdFacts(JsonNode node, StringBuilder builder, String prefix) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return;
+        }
+        if (node.isArray()) {
+            int index = 1;
+            for (JsonNode child : node) {
+                collectJsonLdFacts(child, builder, prefix + " " + index++);
+            }
+            return;
+        }
+        if (!node.isObject()) {
+            return;
+        }
+        appendLine(builder, prefix + " type", node.path("@type").asText(""));
+        appendLine(builder, prefix + " name", node.path("name").asText(""));
+        appendLine(builder, prefix + " description", node.path("description").asText(""));
+        appendLine(builder, prefix + " url", node.path("url").asText(""));
+        JsonNode offers = node.path("offers");
+        if (!offers.isMissingNode()) {
+            collectOfferFacts(offers, builder, prefix + " offer");
+        }
+        JsonNode graph = node.path("@graph");
+        if (!graph.isMissingNode()) {
+            collectJsonLdFacts(graph, builder, prefix + " graph");
+        }
+    }
+
+    private void collectOfferFacts(JsonNode offers, StringBuilder builder, String prefix) {
+        if (offers.isArray()) {
+            int index = 1;
+            for (JsonNode offer : offers) {
+                collectOfferFacts(offer, builder, prefix + " " + index++);
+            }
+            return;
+        }
+        if (!offers.isObject()) {
+            return;
+        }
+        appendLine(builder, prefix + " price", offers.path("price").asText(""));
+        appendLine(builder, prefix + " currency", offers.path("priceCurrency").asText(""));
+        appendLine(builder, prefix + " availability", offers.path("availability").asText(""));
+        appendLine(builder, prefix + " url", offers.path("url").asText(""));
+    }
+
+    private void appendEmbeddedOfferHints(StringBuilder builder, String html) {
+        String value = html == null ? "" : html;
+        Set<String> titles = new LinkedHashSet<>();
+        collectMatches(EMBEDDED_TITLE_PATTERN, value, titles, 4);
+        Set<String> prices = new LinkedHashSet<>();
+        Matcher priceMatcher = PRICE_PATTERN.matcher(value);
+        while (priceMatcher.find() && prices.size() < 8) {
+            String price = priceMatcher.group(1) == null ? priceMatcher.group(2) : priceMatcher.group(1);
+            if (price != null && !price.isBlank()) {
+                prices.add(decode(price).strip());
+            }
+        }
+        Set<String> currencies = new LinkedHashSet<>();
+        collectMatches(CURRENCY_PATTERN, value, currencies, 4);
+        if (!titles.isEmpty() || !prices.isEmpty() || !currencies.isEmpty()) {
+            builder.append("Embedded page data:\n");
+            if (!titles.isEmpty()) {
+                builder.append("Titles: ").append(String.join(" | ", titles)).append("\n");
+            }
+            if (!prices.isEmpty()) {
+                builder.append("Prices: ").append(String.join(" | ", prices)).append("\n");
+            }
+            if (!currencies.isEmpty()) {
+                builder.append("Currencies: ").append(String.join(" | ", currencies)).append("\n");
+            }
+        }
+    }
+
+    private void collectMatches(Pattern pattern, String value, Set<String> target, int limit) {
+        Matcher matcher = pattern.matcher(value == null ? "" : value);
+        while (matcher.find() && target.size() < limit) {
+            String match = matcher.group(1);
+            if (match != null && !match.isBlank()) {
+                target.add(decode(match).strip());
+            }
+        }
+    }
+
+    private void appendLine(StringBuilder builder, String label, String value) {
+        String clean = decode(value).replaceAll("\\s+", " ").strip();
+        if (!clean.isBlank()) {
+            builder.append(label).append(": ").append(clean).append("\n");
+        }
     }
 
     private String extractTitle(String html) {

@@ -148,14 +148,18 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
                     "content", content.text(),
                     "characters", content.characters(),
                     "truncated", content.truncated(),
-                    "durationMs", content.durationMs()
+                    "durationMs", content.durationMs(),
+                    "statusCode", content.statusCode(),
+                    "contentType", content.contentType()
             );
             publish(request, CognitiveEventType.DOCUMENT_READ, "READ", "Web page read", nodeId(content.url()),
                     Map.of("tool", TOOL_NAME, "operation", operation, "url", content.url(), "title", content.title(),
-                            "characters", content.characters(), "truncated", content.truncated()));
+                            "characters", content.characters(), "truncated", content.truncated(),
+                            "statusCode", content.statusCode(), "contentType", content.contentType()));
             publish(request, CognitiveEventType.DOCUMENT_READ_FINISHED, "FINISHED", "Web page read finished", nodeId(content.url()),
                     Map.of("tool", TOOL_NAME, "operation", operation, "url", content.url(), "title", content.title(),
-                            "characters", content.characters(), "durationMs", content.durationMs()));
+                            "characters", content.characters(), "durationMs", content.durationMs(),
+                            "statusCode", content.statusCode(), "contentType", content.contentType()));
             publish(request, CognitiveEventType.TOOL_FINISHED, "FINISHED", "WebSearchTool finished", nodeId(content.url()),
                     Map.of("tool", TOOL_NAME, "operation", operation, "success", true, "url", content.url()));
             LOGGER.info("[WEB_PAGE_READ] characters={} duration={}ms", content.characters(), content.durationMs());
