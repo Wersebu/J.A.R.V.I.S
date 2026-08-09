@@ -70,7 +70,7 @@ class DefaultToolCallingRuntimeTest {
         assertThat(executed.get()).isNotNull();
         assertThat(executed.get().toolName()).isEqualTo("web");
         assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).contains("sprawdz kurs Dolara na pln");
+        assertThat(String.valueOf(executed.get().arguments().get("query"))).contains("USD to PLN");
         assertThat(executions).hasValue(1);
     }
 
@@ -109,7 +109,9 @@ class DefaultToolCallingRuntimeTest {
         assertThat(executed.get()).isNotNull();
         assertThat(executed.get().toolName()).isEqualTo("web");
         assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).contains("siemka po ile sa karty rtx 4070ti uzywane?");
+        assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("RTX 4070 ti");
+        assertThat(String.valueOf(executed.get().arguments().get("query"))).contains("Allegro");
+        assertThat(String.valueOf(executed.get().arguments().get("query"))).doesNotContain("siemka");
     }
 
     @Test
@@ -157,6 +159,73 @@ class DefaultToolCallingRuntimeTest {
         assertThat(result.results().getFirst().data()).containsEntry("sourceQualityAccepted", false);
         assertThat(result.results().get(1).data()).containsEntry("sourceQualityAccepted", true);
         assertThat(executed.get().arguments()).containsEntry("query", "site:allegro.pl RTX 4060 Ti karta graficzna");
+    }
+
+    @Test
+    void readsAcceptedWebResultWhenRepeatedEnvelopeFollowsWeakSnippets() {
+        AtomicReference<ToolRequest> executed = new AtomicReference<>();
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger modelCalls = new AtomicInteger();
+        DefaultToolCallingRuntime runtime = new DefaultToolCallingRuntime(
+                List.of(new SequentialStubProvider(modelCalls,
+                        """
+                        {
+                          "type": "TOOL_REQUEST",
+                          "goal": "Search the live web for current used RTX 4060 Ti 16GB prices.",
+                          "reason": "Need current prices from external sources."
+                        }
+                        """,
+                        """
+                        {
+                          "type": "TOOL_REQUEST",
+                          "goal": "Search the live web for current used RTX 4060 Ti 16GB prices.",
+                          "reason": "Need current prices from external sources."
+                        }
+                        """,
+                        "{\"action\":\"FINAL_ANSWER\",\"answer\":\"Enough evidence was found.\"}"
+                )),
+                new StubToolManager(executed, executions) {
+                    @Override
+                    public ToolResult execute(ToolRequest request) {
+                        executed.set(request);
+                        int call = executions.incrementAndGet();
+                        if (call == 1) {
+                            return webResult(request, "Allegro RTX 4060 Ti 16GB", "https://allegro.pl/oferta/rtx-4060-ti",
+                                    "NVIDIA GeForce RTX 4060 Ti 16GB karta graficzna");
+                        }
+                        assertThat(request.operation()).isEqualTo("READ_WEB_PAGE");
+                        return new ToolResult(true, "web", "READ_WEB_PAGE", request.requestId(), request.conversationId(), false,
+                                List.of("web:page"), "Read page", Map.of(
+                                "url", request.arguments().get("url"),
+                                "title", "Allegro RTX 4060 Ti 16GB",
+                                "content", "RTX 4060 Ti 16GB cena 1299 PLN",
+                                "characters", 33
+                        ), "", "", false, "");
+                    }
+                },
+                webRegistry(),
+                query -> ToolIntent.SEARCH_WEB,
+                new ToolRuntimeProperties(true, 4, 4, 1, 30),
+                new NoopCognitiveEventBus(),
+                new ToolRuntimeDebugService(),
+                new ObjectMapper()
+        );
+
+        ToolCallingResult result = runtime.execute(new ToolCallingRequest(
+                "request-4",
+                "conversation-1",
+                "sprawdz ceny z rynku wtornego dla rtx 4060ti 16 gb",
+                "Search the live web for current used Nvidia GeForce RTX 4060 Ti GPUs with 16 GB VRAM and retrieve current market prices.",
+                "The user needs current secondary market pricing.",
+                "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(executions).hasValue(2);
+        assertThat(executed.get().operation()).isEqualTo("READ_WEB_PAGE");
+        assertThat(executed.get().arguments()).containsEntry("url", "https://allegro.pl/oferta/rtx-4060-ti");
     }
 
     private ToolRegistry webRegistry() {
@@ -215,6 +284,42 @@ class DefaultToolCallingRuntimeTest {
 
         @Override
         public void stream(String conversationId, Brain brain, String prompt, ChatEventSink eventSink) {
+        }
+    }
+
+    private static final class SequentialStubProvider implements com.jarvis.common.ai.AIProvider {
+
+        private final AtomicInteger calls;
+        private final List<String> responses;
+
+        private SequentialStubProvider(AtomicInteger calls, String... responses) {
+            this.calls = calls;
+            this.responses = List.of(responses);
+        }
+
+        @Override
+        public String provider() {
+            return "stub";
+        }
+
+        @Override
+        public ChatResponse chat(Brain brain, String prompt) {
+            return next();
+        }
+
+        @Override
+        public ChatResponse chat(Brain brain, String prompt, AIJobType jobType) {
+            return next();
+        }
+
+        @Override
+        public void stream(String conversationId, Brain brain, String prompt, ChatEventSink eventSink) {
+        }
+
+        private ChatResponse next() {
+            int index = calls.getAndIncrement();
+            String response = responses.get(Math.min(index, responses.size() - 1));
+            return new ChatResponse(response);
         }
     }
 

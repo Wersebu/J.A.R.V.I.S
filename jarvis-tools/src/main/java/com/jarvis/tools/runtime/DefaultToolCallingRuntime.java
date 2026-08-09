@@ -27,9 +27,13 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Default native LLM-owned tool-calling runtime.
@@ -304,7 +308,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 return parse(repaired);
             } catch (RuntimeException repairException) {
                 LOGGER.warn("[TOOL_LOOP] action JSON repair failed step={} repaired={}", step, abbreviate(repaired));
-                return fallbackAfterInvalidToolJson(request, intent, raw,
+                return fallbackAfterInvalidToolJson(request, intent, observation, raw,
                         "I could not convert the model response into a safe tool action.");
             }
         }
@@ -316,7 +320,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             return parse(raw);
         } catch (RuntimeException exception) {
             LOGGER.warn("[TOOL_LOOP] retry action JSON invalid step={} raw={}", step, abbreviate(raw));
-            return fallbackAfterInvalidToolJson(request, intent, raw,
+            return fallbackAfterInvalidToolJson(request, intent, "", raw,
                     "Nie moglem bezpiecznie przygotowac poprawnego wywolania narzedzia.");
         }
     }
@@ -345,7 +349,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             return parse(raw);
         } catch (RuntimeException exception) {
             LOGGER.warn("[TOOL_LOOP] invalid-action retry JSON invalid step={} raw={}", step, abbreviate(raw));
-            return fallbackAfterInvalidToolJson(request, intent, raw,
+            return fallbackAfterInvalidToolJson(request, intent, "", raw,
                     "Nie moglem bezpiecznie przygotowac poprawionego wywolania narzedzia.");
         }
     }
@@ -379,28 +383,173 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         }
     }
 
-    private ToolAction fallbackAfterInvalidToolJson(ToolCallingRequest request, ToolIntent intent, String raw, String fallback) {
+    private ToolAction fallbackAfterInvalidToolJson(
+            ToolCallingRequest request,
+            ToolIntent intent,
+            String observation,
+            String raw,
+            String fallback
+    ) {
         if (intent == ToolIntent.SEARCH_WEB && looksLikeToolRequestEnvelope(raw)) {
+            ToolAction readAction = readAcceptedWebResultAction(observation);
+            if (readAction != null) {
+                LOGGER.warn("[TOOL_LOOP] coercing repeated TOOL_REQUEST envelope into web.READ_WEB_PAGE requestId={}",
+                        request.requestId());
+                return readAction;
+            }
             LOGGER.warn("[TOOL_LOOP] coercing repeated TOOL_REQUEST envelope into web.SEARCH_WEB requestId={}",
                     request.requestId());
             return webSearchAction(request,
-                    "Main model requested current external information but returned the main action envelope again.");
+                    "Main model requested current external information but returned the main action envelope again.",
+                    raw);
         }
         return safePlainTextFinalAnswer(raw, fallback);
     }
 
     private ToolAction webSearchAction(ToolCallingRequest request, String reason) {
-        String query = request.userMessage() == null || request.userMessage().isBlank()
-                ? request.goal()
-                : request.userMessage();
-        String goal = safe(request.goal());
-        if (query != null && !goal.isBlank() && !query.toLowerCase(Locale.ROOT).contains(goal.toLowerCase(Locale.ROOT))) {
-            query = query + " " + goal;
-        }
+        return webSearchAction(request, reason, "");
+    }
+
+    private ToolAction webSearchAction(ToolCallingRequest request, String reason, String rawEnvelope) {
+        String query = webSearchQuery(request, rawEnvelope);
         return new ToolAction("TOOL_CALL", "web", "SEARCH_WEB", Map.of(
-                "query", query == null ? "" : query.strip(),
+                "query", query,
                 "maxResults", 5
         ), reason, "");
+    }
+
+    private ToolAction readAcceptedWebResultAction(String observation) {
+        String url = firstAcceptedWebUrl(observation);
+        if (url.isBlank()) {
+            return null;
+        }
+        return new ToolAction("TOOL_CALL", "web", "READ_WEB_PAGE", Map.of(
+                "url", url
+        ), "Search snippets were relevant but incomplete, so the best result page must be read.", "");
+    }
+
+    private String webSearchQuery(ToolCallingRequest request, String rawEnvelope) {
+        String envelopeGoal = toolRequestEnvelopeGoal(rawEnvelope);
+        String source = !envelopeGoal.isBlank() ? envelopeGoal : safe(request.goal());
+        if (source.isBlank()) {
+            source = safe(request.userMessage());
+        }
+        String text = (source + " " + safe(request.userMessage())).strip();
+        String entityQuery = entityFocusedSearchQuery(text);
+        if (!entityQuery.isBlank()) {
+            return entityQuery;
+        }
+        String cleaned = cleanupSearchQuery(source);
+        if (cleaned.isBlank()) {
+            cleaned = cleanupSearchQuery(request.userMessage());
+        }
+        return cleaned.isBlank() ? safe(request.userMessage()).strip() : cleaned;
+    }
+
+    private String entityFocusedSearchQuery(String text) {
+        String normalized = safe(text).replace('-', ' ');
+        Set<String> parts = new LinkedHashSet<>();
+        Matcher gpu = Pattern.compile("(?i)\\b(rtx|gtx|rx)\\s*(\\d{3,4})\\s*(ti|super|xt)?\\b").matcher(normalized);
+        while (gpu.find()) {
+            addQueryPart(parts, (gpu.group(1) + " " + gpu.group(2) + " " + safe(gpu.group(3))).strip().replaceAll("\\s+", " "));
+        }
+        Matcher memory = Pattern.compile("(?i)\\b(\\d{1,3})\\s*(gb|gib)\\b").matcher(normalized);
+        while (memory.find()) {
+            addQueryPart(parts, memory.group(1) + "GB");
+        }
+        String lower = normalizeAscii(text);
+        if (!parts.isEmpty()) {
+            if (lower.matches(".*\\b(cena|ceny|koszt|kosztuje|price|prices|market)\\b.*")) {
+                addQueryPart(parts, "cena");
+            }
+            if (lower.matches(".*\\b(uzywan|used|wtorn|secondary|marketplace)\\w*\\b.*")) {
+                addQueryPart(parts, "uzywana");
+            }
+            if (lower.matches(".*\\b(polska|poland|pln|allegro|olx|ebay)\\b.*")) {
+                addQueryPart(parts, "Polska");
+            }
+            if (lower.contains("allegro")) {
+                addQueryPart(parts, "Allegro");
+            }
+            if (lower.contains("olx")) {
+                addQueryPart(parts, "OLX");
+            }
+            if (parts.stream().noneMatch(part -> part.equalsIgnoreCase("Allegro") || part.equalsIgnoreCase("OLX"))
+                    && lower.matches(".*\\b(uzywan|used|wtorn|secondary|marketplace|cena|ceny|price|prices)\\w*\\b.*")) {
+                addQueryPart(parts, "Allegro");
+                addQueryPart(parts, "OLX");
+            }
+            return String.join(" ", parts);
+        }
+        return "";
+    }
+
+    private void addQueryPart(Set<String> parts, String value) {
+        String candidate = safe(value).strip();
+        if (candidate.isBlank()) {
+            return;
+        }
+        String normalizedCandidate = normalizeAscii(candidate).replaceAll("\\s+", " ");
+        boolean exists = parts.stream()
+                .map(part -> normalizeAscii(part).replaceAll("\\s+", " "))
+                .anyMatch(normalizedCandidate::equals);
+        if (!exists) {
+            parts.add(candidate);
+        }
+    }
+
+    private String cleanupSearchQuery(String value) {
+        String query = safe(value)
+                .replaceAll("(?i)\\b(search|retrieve|find|look up|provide|get)\\b", " ")
+                .replaceAll("(?i)\\b(the live web|live web|web|internet)\\b", " ")
+                .replaceAll("(?i)\\b(siema|siemka|hej|czesc|ponownie|prosze)\\b", " ")
+                .replaceAll("(?i)\\b(czy teraz|jestes w stanie|mi jakas|podac)\\b", " ")
+                .replaceAll("[\"'{}\\[\\]():;,?!.]+", " ")
+                .replaceAll("\\s+", " ")
+                .strip();
+        return query.length() <= 160 ? query : query.substring(0, 160).strip();
+    }
+
+    private String toolRequestEnvelopeGoal(String raw) {
+        if (!looksLikeToolRequestEnvelope(raw)) {
+            return "";
+        }
+        try {
+            JsonNode node = objectMapper.readTree(extractJsonPayload(raw));
+            return text(node, "goal");
+        } catch (JsonProcessingException | RuntimeException exception) {
+            return "";
+        }
+    }
+
+    private String firstAcceptedWebUrl(String observation) {
+        if (observation == null || observation.isBlank()) {
+            return "";
+        }
+        try {
+            JsonNode root = objectMapper.readTree(extractJsonPayload(observation));
+            JsonNode data = root.path("data");
+            String acceptedUrl = firstUrl(data.path("acceptedResults"));
+            if (!acceptedUrl.isBlank()) {
+                return acceptedUrl;
+            }
+            return firstUrl(data.path("results"));
+        } catch (JsonProcessingException | RuntimeException exception) {
+            return "";
+        }
+    }
+
+    private String firstUrl(JsonNode results) {
+        if (!results.isArray()) {
+            return "";
+        }
+        for (JsonNode item : results) {
+            String url = text(item, "url");
+            if (url.startsWith("http://") || url.startsWith("https://")) {
+                return url;
+            }
+        }
+        return "";
     }
 
     private ToolAction safePlainTextFinalAnswer(String raw, String fallback) {
@@ -818,6 +967,12 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private String abbreviate(String value) {
         String safe = value == null ? "" : value.replace('\n', ' ');
         return safe.length() <= 600 ? safe : safe.substring(0, 600);
+    }
+
+    private String normalizeAscii(String value) {
+        return java.text.Normalizer.normalize(safe(value), java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "")
+                .toLowerCase(Locale.ROOT);
     }
 
     private String safe(String value) {
