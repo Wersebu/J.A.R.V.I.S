@@ -74,6 +74,44 @@ class DefaultToolCallingRuntimeTest {
         assertThat(executions).hasValue(1);
     }
 
+    @Test
+    void mapsMainModelWebRequestWithoutSecondModelSelectionCall() {
+        AtomicReference<ToolRequest> executed = new AtomicReference<>();
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger modelCalls = new AtomicInteger();
+        DefaultToolCallingRuntime runtime = new DefaultToolCallingRuntime(
+                List.of(new StubProvider("""
+                        {"action":"NO_TOOL","reason":"Should not be asked during direct web mapping."}
+                        """, modelCalls)),
+                new StubToolManager(executed, executions),
+                webRegistry(),
+                query -> ToolIntent.SEARCH_WEB,
+                new ToolRuntimeProperties(true, 2, 2, 1, 30),
+                new NoopCognitiveEventBus(),
+                new ToolRuntimeDebugService(),
+                new ObjectMapper()
+        );
+
+        ToolCallingResult result = runtime.execute(new ToolCallingRequest(
+                "request-2",
+                "conversation-1",
+                "siemka po ile sa karty rtx 4070ti uzywane?",
+                "Search the web for the current market price of NVIDIA GeForce RTX 4070 Ti graphics cards.",
+                "The user needs current used-market pricing.",
+                "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(modelCalls).hasValue(0);
+        assertThat(executions).hasValue(1);
+        assertThat(executed.get()).isNotNull();
+        assertThat(executed.get().toolName()).isEqualTo("web");
+        assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
+        assertThat(executed.get().arguments()).containsEntry("query", "siemka po ile sa karty rtx 4070ti uzywane?");
+    }
+
     private ToolRegistry webRegistry() {
         ToolDefinition definition = new ToolDefinition("web", "Web search", List.of(
                 new ToolOperationDefinition("SEARCH_WEB", "Search web", List.of(
@@ -97,9 +135,15 @@ class DefaultToolCallingRuntimeTest {
     private static final class StubProvider implements com.jarvis.common.ai.AIProvider {
 
         private final String response;
+        private final AtomicInteger calls;
 
         private StubProvider(String response) {
+            this(response, new AtomicInteger());
+        }
+
+        private StubProvider(String response, AtomicInteger calls) {
             this.response = response;
+            this.calls = calls;
         }
 
         @Override
@@ -109,11 +153,13 @@ class DefaultToolCallingRuntimeTest {
 
         @Override
         public ChatResponse chat(Brain brain, String prompt) {
+            calls.incrementAndGet();
             return new ChatResponse(response);
         }
 
         @Override
         public ChatResponse chat(Brain brain, String prompt, AIJobType jobType) {
+            calls.incrementAndGet();
             return new ChatResponse(response);
         }
 

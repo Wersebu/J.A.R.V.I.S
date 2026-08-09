@@ -103,9 +103,18 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                     break;
                 }
 
-                publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING", "Asking LLM for next tool action",
-                        null, step, Map.of("decisionOwner", "LLM"));
-                ToolAction action = normalizeAction(nextAction(request, intent, observation, step));
+                ToolAction action;
+                if (step == 1 && results.isEmpty() && intent == ToolIntent.SEARCH_WEB) {
+                    publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING",
+                            "Mapping main model web request to WebSearchTool", "web:search", step,
+                            Map.of("decisionOwner", "MAIN_MODEL", "tool", "web", "operation", "SEARCH_WEB"));
+                    action = webSearchAction(request,
+                            "Main model requested current external information. WebSearchTool is the configured read-only web capability.");
+                } else {
+                    publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING", "Asking LLM for next tool action",
+                            null, step, Map.of("decisionOwner", "LLM"));
+                    action = normalizeAction(nextAction(request, intent, observation, step));
+                }
                 if (isNoTool(action)) {
                     steps.add(new ToolRuntimeStep(step, "NO_TOOL", "", "", "DECLINED", null));
                     saveDebug(request, intent, steps, "NO_TOOL", errors);
@@ -362,21 +371,22 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
 
     private ToolAction fallbackAfterInvalidToolJson(ToolCallingRequest request, ToolIntent intent, String raw, String fallback) {
         if (intent == ToolIntent.SEARCH_WEB && looksLikeToolRequestEnvelope(raw)) {
-            return webSearchFallback(request, raw);
+            LOGGER.warn("[TOOL_LOOP] coercing repeated TOOL_REQUEST envelope into web.SEARCH_WEB requestId={}",
+                    request.requestId());
+            return webSearchAction(request,
+                    "Main model requested current external information but returned the main action envelope again.");
         }
         return safePlainTextFinalAnswer(raw, fallback);
     }
 
-    private ToolAction webSearchFallback(ToolCallingRequest request, String raw) {
-        LOGGER.warn("[TOOL_LOOP] coercing repeated TOOL_REQUEST envelope into web.SEARCH_WEB requestId={}",
-                request.requestId());
+    private ToolAction webSearchAction(ToolCallingRequest request, String reason) {
         String query = request.userMessage() == null || request.userMessage().isBlank()
                 ? request.goal()
                 : request.userMessage();
         return new ToolAction("TOOL_CALL", "web", "SEARCH_WEB", Map.of(
                 "query", query == null ? "" : query.strip(),
                 "maxResults", 5
-        ), "Main model requested current external information but returned the main action envelope again.", "");
+        ), reason, "");
     }
 
     private ToolAction safePlainTextFinalAnswer(String raw, String fallback) {
