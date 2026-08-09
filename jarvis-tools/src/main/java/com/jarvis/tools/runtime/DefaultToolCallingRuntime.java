@@ -114,11 +114,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
 
                 ToolAction action;
                 if (step == 1 && results.isEmpty() && intent == ToolIntent.SEARCH_WEB) {
+                    action = initialWebAction(request);
                     publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING",
-                            "Mapping main model web request to WebSearchTool", "web:search", step,
-                            Map.of("decisionOwner", "MAIN_MODEL", "tool", "web", "operation", "SEARCH_WEB"));
-                    action = webSearchAction(request,
-                            "Main model requested current external information. WebSearchTool is the configured read-only web capability.");
+                            "Mapping main model web request to WebSearchTool", targetNode(action), step,
+                            Map.of("decisionOwner", "MAIN_MODEL", "tool", "web", "operation", action.operation()));
                 } else {
                     publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING", "Asking LLM for next tool action",
                             null, step, Map.of("decisionOwner", "LLM"));
@@ -390,7 +389,14 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             String raw,
             String fallback
     ) {
-        if (intent == ToolIntent.SEARCH_WEB && looksLikeToolRequestEnvelope(raw)) {
+        if (intent == ToolIntent.SEARCH_WEB && shouldCoerceWebToolRequest(raw)) {
+            ToolAction rawUrlAction = readUrlAction(firstHttpUrl(raw),
+                    "Model requested browsing a specific URL; WebSearchTool reads pages through READ_WEB_PAGE.");
+            if (rawUrlAction != null) {
+                LOGGER.warn("[TOOL_LOOP] coercing browse request into web.READ_WEB_PAGE from raw URL requestId={}",
+                        request.requestId());
+                return rawUrlAction;
+            }
             ToolAction readAction = readAcceptedWebResultAction(observation);
             if (readAction != null) {
                 LOGGER.warn("[TOOL_LOOP] coercing repeated TOOL_REQUEST envelope into web.READ_WEB_PAGE requestId={}",
@@ -404,6 +410,16 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                     raw);
         }
         return safePlainTextFinalAnswer(raw, fallback);
+    }
+
+    private ToolAction initialWebAction(ToolCallingRequest request) {
+        ToolAction urlAction = readUrlAction(firstHttpUrl(safe(request.goal()) + " " + safe(request.userMessage())),
+                "Main model requested current information from a specific URL. WebSearchTool reads the page directly.");
+        if (urlAction != null) {
+            return urlAction;
+        }
+        return webSearchAction(request,
+                "Main model requested current external information. WebSearchTool is the configured read-only web capability.");
     }
 
     private ToolAction webSearchAction(ToolCallingRequest request, String reason) {
@@ -420,12 +436,16 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
 
     private ToolAction readAcceptedWebResultAction(String observation) {
         String url = firstAcceptedWebUrl(observation);
+        return readUrlAction(url, "Search snippets were relevant but incomplete, so the best result page must be read.");
+    }
+
+    private ToolAction readUrlAction(String url, String reason) {
         if (url.isBlank()) {
             return null;
         }
         return new ToolAction("TOOL_CALL", "web", "READ_WEB_PAGE", Map.of(
                 "url", url
-        ), "Search snippets were relevant but incomplete, so the best result page must be read.", "");
+        ), reason, "");
     }
 
     private String webSearchQuery(ToolCallingRequest request, String rawEnvelope) {
@@ -550,6 +570,16 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             }
         }
         return "";
+    }
+
+    private String firstHttpUrl(String value) {
+        Matcher matcher = Pattern.compile("https?://[^\\s\"'<>)}\\]]+").matcher(safe(value));
+        if (!matcher.find()) {
+            return "";
+        }
+        return matcher.group()
+                .replaceAll("[.,;!?]+$", "")
+                .strip();
     }
 
     private ToolAction safePlainTextFinalAnswer(String raw, String fallback) {
@@ -954,6 +984,19 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private boolean looksLikeToolRequestEnvelope(String raw) {
         String value = raw == null ? "" : raw;
         return value.contains("\"type\"") && value.contains("\"TOOL_REQUEST\"");
+    }
+
+    private boolean shouldCoerceWebToolRequest(String raw) {
+        String value = normalizeAscii(raw);
+        return looksLikeToolRequestEnvelope(raw)
+                || value.contains("tool_request")
+                || value.contains("web_browse")
+                || value.contains("web browse")
+                || value.contains("browse tool")
+                || value.contains("open the url")
+                || value.contains("read the url")
+                || value.contains("retrieve page")
+                || value.contains("fetch price from");
     }
 
     private boolean looksLikeStructuredEnvelope(String raw) {

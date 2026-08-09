@@ -228,6 +228,108 @@ class DefaultToolCallingRuntimeTest {
         assertThat(executed.get().arguments()).containsEntry("url", "https://allegro.pl/oferta/rtx-4060-ti");
     }
 
+    @Test
+    void readsUrlDirectlyWhenUserProvidesSpecificWebPage() {
+        AtomicReference<ToolRequest> executed = new AtomicReference<>();
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger modelCalls = new AtomicInteger();
+        DefaultToolCallingRuntime runtime = new DefaultToolCallingRuntime(
+                List.of(new StubProvider("{\"action\":\"FINAL_ANSWER\",\"answer\":\"Done\"}", modelCalls)),
+                new StubToolManager(executed, executions) {
+                    @Override
+                    public ToolResult execute(ToolRequest request) {
+                        executed.set(request);
+                        executions.incrementAndGet();
+                        return new ToolResult(true, "web", "READ_WEB_PAGE", request.requestId(), request.conversationId(), false,
+                                List.of("web:page"), "Read page", Map.of(
+                                "url", request.arguments().get("url"),
+                                "title", "OLX RTX 4060 Ti",
+                                "content", "RTX 4060 Ti cena 1200 zl",
+                                "characters", 25
+                        ), "", "", false, "");
+                    }
+                },
+                webRegistry(),
+                query -> ToolIntent.SEARCH_WEB,
+                new ToolRuntimeProperties(true, 4, 4, 1, 30),
+                new NoopCognitiveEventBus(),
+                new ToolRuntimeDebugService(),
+                new ObjectMapper()
+        );
+
+        ToolCallingResult result = runtime.execute(new ToolCallingRequest(
+                "request-5",
+                "conversation-1",
+                "ile to kosztuje? https://www.olx.pl/d/oferta/gigabyte-rtx-4060-ti-eagle-8-gb-CID99-ID1bAbQf.html?search_reason=search%7Corganic",
+                "Retrieve the current price of the card listed at https://www.olx.pl/d/oferta/gigabyte-rtx-4060-ti-eagle-8-gb-CID99-ID1bAbQf.html?search_reason=search%7Corganic",
+                "Need price from OLX link.",
+                "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(executions).hasValue(1);
+        assertThat(modelCalls).hasValue(1);
+        assertThat(executed.get().operation()).isEqualTo("READ_WEB_PAGE");
+        assertThat(String.valueOf(executed.get().arguments().get("url"))).startsWith("https://www.olx.pl/d/oferta/");
+    }
+
+    @Test
+    void readsBestSearchResultWhenModelMentionsWebBrowseWithoutJson() {
+        AtomicReference<ToolRequest> executed = new AtomicReference<>();
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger modelCalls = new AtomicInteger();
+        DefaultToolCallingRuntime runtime = new DefaultToolCallingRuntime(
+                List.of(new SequentialStubProvider(modelCalls,
+                        "Need to retrieve page. Use web_browse tool. So output TOOL_REQUEST for browsing the specific URL.",
+                        "Repair failed: use web_browse.",
+                        "{\"action\":\"FINAL_ANSWER\",\"answer\":\"Done\"}"
+                )),
+                new StubToolManager(executed, executions) {
+                    @Override
+                    public ToolResult execute(ToolRequest request) {
+                        executed.set(request);
+                        int call = executions.incrementAndGet();
+                        if (call == 1) {
+                            return webResult(request, "rtx 4060 ti 8gb - OLX", "https://www.olx.pl/d/oferta/rtx-4060-ti",
+                                    "rtx 4060 ti 8gb karta graficzna");
+                        }
+                        assertThat(request.operation()).isEqualTo("READ_WEB_PAGE");
+                        return new ToolResult(true, "web", "READ_WEB_PAGE", request.requestId(), request.conversationId(), false,
+                                List.of("web:page"), "Read page", Map.of(
+                                "url", request.arguments().get("url"),
+                                "title", "OLX RTX 4060 Ti",
+                                "content", "RTX 4060 Ti cena 1200 zl",
+                                "characters", 25
+                        ), "", "", false, "");
+                    }
+                },
+                webRegistry(),
+                query -> ToolIntent.SEARCH_WEB,
+                new ToolRuntimeProperties(true, 4, 4, 1, 30),
+                new NoopCognitiveEventBus(),
+                new ToolRuntimeDebugService(),
+                new ObjectMapper()
+        );
+
+        ToolCallingResult result = runtime.execute(new ToolCallingRequest(
+                "request-6",
+                "conversation-1",
+                "podaj cene rtx 4060ti z olx",
+                "Search OLX for used RTX 4060 Ti listings and retrieve the price.",
+                "Need current marketplace price.",
+                "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(executions).hasValue(2);
+        assertThat(executed.get().operation()).isEqualTo("READ_WEB_PAGE");
+        assertThat(executed.get().arguments()).containsEntry("url", "https://www.olx.pl/d/oferta/rtx-4060-ti");
+    }
+
     private ToolRegistry webRegistry() {
         ToolDefinition definition = new ToolDefinition("web", "Web search", List.of(
                 new ToolOperationDefinition("SEARCH_WEB", "Search web", List.of(
