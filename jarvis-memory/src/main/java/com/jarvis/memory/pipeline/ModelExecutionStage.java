@@ -75,7 +75,7 @@ public class ModelExecutionStage implements PipelineStage {
                 streamState.finishedEvent = finishedEvent;
             }
         });
-        MainModelAction action = parseAction(context, streamingParser.raw());
+        MainModelAction action = parseAction(context, streamingParser);
         long durationMs = (System.nanoTime() - startedNano) / 1_000_000L;
         publishMainModelAction(context, action, durationMs);
         return switch (action.type()) {
@@ -92,10 +92,15 @@ public class ModelExecutionStage implements PipelineStage {
         };
     }
 
-    private MainModelAction parseAction(PipelineContext context, String raw) {
+    private MainModelAction parseAction(PipelineContext context, StreamingStructuredResponseParser streamingParser) {
+        String raw = streamingParser.raw();
         try {
             return actionParser.parse(raw);
         } catch (MainModelActionParsingException first) {
+            MainModelAction streamedAction = actionFromStreamedValue(streamingParser);
+            if (streamedAction != null) {
+                return streamedAction;
+            }
             if (!looksLikeStructuredAction(raw)) {
                 return safeFinalAnswerFromRaw(raw, first.getMessage());
             }
@@ -122,6 +127,20 @@ public class ModelExecutionStage implements PipelineStage {
                 return safeFallbackAnswer("Nie moge teraz bezpiecznie przygotowac odpowiedzi, bo model nie zwrocil poprawnej tresci. Sprobuj ponownie.");
             }
         }
+    }
+
+    private MainModelAction actionFromStreamedValue(StreamingStructuredResponseParser streamingParser) {
+        String streamed = streamingParser.streamedValue();
+        if (streamed == null || streamed.isBlank()) {
+            return null;
+        }
+        return streamingParser.detectedType()
+                .map(type -> switch (type) {
+                    case FINAL_ANSWER -> actionParser.finalAnswer(streamed);
+                    case CLARIFICATION -> new MainModelAction(MainModelActionType.CLARIFICATION, "", "", "", streamed.strip(), Map.of());
+                    case TOOL_REQUEST -> null;
+                })
+                .orElse(null);
     }
 
     private MainModelAction safeFinalAnswerFromRaw(String raw, String error) {

@@ -21,7 +21,7 @@ public class TemporaryWorkspaceProperties {
     private long maxTotalSizeBytes = 200L * 1024L * 1024L;
     private int maxFilesPerWorkspace = 20;
     private long minimumFreeDiskSpaceBytes = 512L * 1024L * 1024L;
-    private int promptMaxCharacters = 60_000;
+    private int promptMaxCharacters = 24_000;
 
     /**
      * Returns workspace root.

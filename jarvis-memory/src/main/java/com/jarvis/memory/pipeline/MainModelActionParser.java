@@ -39,9 +39,9 @@ public class MainModelActionParser {
             JsonNode node = objectMapper.readTree(extractJson(raw));
             MainModelActionType type = MainModelActionType.valueOf(text(node, "type"));
             return switch (type) {
-                case FINAL_ANSWER -> finalAnswer(text(node, "answer"));
+                case FINAL_ANSWER -> finalAnswer(firstText(node, "answer", "response", "content", "message"));
                 case TOOL_REQUEST -> toolRequest(text(node, "goal"), text(node, "reason"), context(node));
-                case CLARIFICATION -> clarification(text(node, "question"));
+                case CLARIFICATION -> clarification(firstText(node, "question", "answer", "message", "content"));
             };
         } catch (IllegalArgumentException | JsonProcessingException exception) {
             throw new MainModelActionParsingException("Invalid main model action JSON", exception);
@@ -86,6 +86,16 @@ public class MainModelActionParser {
     private String text(JsonNode node, String field) {
         JsonNode value = node.path(field);
         return value.isMissingNode() || value.isNull() ? "" : value.asText("").strip();
+    }
+
+    private String firstText(JsonNode node, String... fields) {
+        for (String field : fields) {
+            String value = text(node, field);
+            if (!value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
     }
 
     private String extractJson(String raw) {

@@ -140,7 +140,7 @@ jarvis:
     max-total-size-bytes: 209715200
     max-files-per-workspace: 20
     minimum-free-disk-space-bytes: 536870912
-    prompt-max-characters: 60000
+    prompt-max-characters: 24000
 ```
 
 Knowledge defaults:

@@ -1,6 +1,7 @@
 package com.jarvis.memory.pipeline;
 
 import java.util.Optional;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -16,7 +17,7 @@ public class StreamingStructuredResponseParser {
     private final StringBuilder raw;
     private final StringBuilder streamedValue;
     private MainModelActionType detectedType;
-    private String streamField;
+    private List<String> streamFields;
     private int streamValueStart;
     private int streamedUntil;
     private boolean streamClosed;
@@ -84,19 +85,19 @@ public class StreamingStructuredResponseParser {
         }
         detectedType = MainModelActionType.valueOf(matcher.group(1));
         if (detectedType == MainModelActionType.FINAL_ANSWER) {
-            streamField = "answer";
+            streamFields = List.of("answer", "response", "content", "message");
         } else if (detectedType == MainModelActionType.CLARIFICATION) {
-            streamField = "question";
+            streamFields = List.of("question", "answer", "message", "content");
         }
         return Optional.of(detectedType);
     }
 
     private String streamAvailableValue() {
-        if (streamField == null || streamClosed) {
+        if (streamFields == null || streamClosed) {
             return "";
         }
         if (streamValueStart < 0) {
-            streamValueStart = findStringValueStart(streamField);
+            streamValueStart = findFirstStringValueStart(streamFields);
             if (streamValueStart < 0) {
                 return "";
             }
@@ -118,6 +119,17 @@ public class StreamingStructuredResponseParser {
         String decoded = decodeJsonStringFragment(chunk);
         streamedValue.append(decoded);
         return decoded;
+    }
+
+    private int findFirstStringValueStart(List<String> fields) {
+        int firstStart = -1;
+        for (String field : fields) {
+            int start = findStringValueStart(field);
+            if (start >= 0 && (firstStart < 0 || start < firstStart)) {
+                firstStart = start;
+            }
+        }
+        return firstStart;
     }
 
     private int findStringValueStart(String field) {

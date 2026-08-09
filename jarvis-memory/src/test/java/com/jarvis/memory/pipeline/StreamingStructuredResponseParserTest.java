@@ -33,6 +33,17 @@ class StreamingStructuredResponseParserTest {
     }
 
     @Test
+    void streamsFinalAnswerFromResponseAlias() {
+        StreamingStructuredResponseParser parser = new StreamingStructuredResponseParser();
+
+        StreamingStructuredResponseParser.ParserUpdate update = parser.accept("{\"type\":\"FINAL_ANSWER\",\"response\":\"Alias dziala");
+
+        assertThat(update.detectedType()).contains(MainModelActionType.FINAL_ANSWER);
+        assertThat(update.streamedText()).isEqualTo("Alias dziala");
+        assertThat(parser.streamedValue()).isEqualTo("Alias dziala");
+    }
+
+    @Test
     void detectsToolRequestWithoutStreamingJson() {
         StreamingStructuredResponseParser parser = new StreamingStructuredResponseParser();
 
