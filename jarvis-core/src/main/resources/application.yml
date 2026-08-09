@@ -29,6 +29,7 @@ jarvis:
     default-max-results: 5
     hard-max-results: 10
     snippet-max-length: 320
+    page-max-length: 8000
     connect-timeout: 2s
     read-timeout: 8s
   thinking:

@@ -109,6 +109,38 @@ class WebAnswerSourceExtractorTest {
     }
 
     @Test
+    void extractsSourceFromReadWebPageResult() {
+        ToolResult page = new ToolResult(
+                true,
+                "web",
+                "READ_WEB_PAGE",
+                "request-1",
+                "conversation-1",
+                false,
+                List.of(),
+                "ok",
+                Map.of(
+                        "title", "RTX 4060 Ti offer",
+                        "url", "https://allegro.pl/oferta/rtx-4060-ti",
+                        "content", "Cena 1299 PLN"
+                ),
+                "",
+                "",
+                false,
+                ""
+        );
+        ToolCallingResult result = new ToolCallingResult(true, "", List.of(), List.of(page));
+
+        assertThat(extractor.extract(result))
+                .singleElement()
+                .satisfies(source -> {
+                    assertThat(source.get("title")).isEqualTo("RTX 4060 Ti offer");
+                    assertThat(source.get("url")).isEqualTo("https://allegro.pl/oferta/rtx-4060-ti");
+                    assertThat(source.get("domain")).isEqualTo("allegro.pl");
+                });
+    }
+
+    @Test
     void limitsSourceCount() {
         ToolCallingResult result = webResult(List.of(
                 Map.of("title", "One", "url", "https://one.example/a"),

@@ -164,6 +164,9 @@ class DefaultToolCallingRuntimeTest {
                 new ToolOperationDefinition("SEARCH_WEB", "Search web", List.of(
                         new ToolArgumentDefinition("query", "string", true, "Search query"),
                         new ToolArgumentDefinition("maxResults", "integer", false, "Maximum results")
+                ), false, ToolSafetyLevel.READ),
+                new ToolOperationDefinition("READ_WEB_PAGE", "Read web page", List.of(
+                        new ToolArgumentDefinition("url", "string", true, "URL")
                 ), false, ToolSafetyLevel.READ)
         ));
         return new ToolRegistry() {
@@ -240,7 +243,7 @@ class DefaultToolCallingRuntimeTest {
             executed.set(request);
             executions.incrementAndGet();
             String query = String.valueOf(request.arguments().get("query"));
-            return webResult(request, query, "https://example.com/result", query);
+            return webResult(request, query, "https://example.com/result", query + " cena 1299 PLN");
         }
 
         protected ToolResult webResult(ToolRequest request, String title, String url, String snippet) {

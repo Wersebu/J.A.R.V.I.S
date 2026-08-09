@@ -158,9 +158,17 @@ The native tool is named `web` and exposes:
 {"action":"TOOL_CALL","tool":"web","operation":"SEARCH_WEB","arguments":{"query":"RTX 4060 Ti 16GB cena Polska","maxResults":5},"reason":"The user asked for current internet information."}
 ```
 
+When a search result snippet does not contain enough evidence, the model may open a result page:
+
+```json
+{"action":"TOOL_CALL","tool":"web","operation":"READ_WEB_PAGE","arguments":{"url":"https://example.com/result"},"reason":"Search result snippets did not contain the needed price/details."}
+```
+
 The model receives normalized search results only: title, URL, short snippet, and source. Core does not pass raw SearXNG JSON, HTML, ads, or full pages into the context window.
 
 Web search is iterative. After every `web.SEARCH_WEB` call, Core evaluates source quality before allowing the tool loop to finish. If results are weak, irrelevant, or from the wrong domain, the tool observation is marked with `sourceQualityAccepted=false`; the model receives that observation and may change the query, search a specific site, or try again within the configured tool-call budget. Only accepted results are exposed as answer sources.
+
+`READ_WEB_PAGE` fetches only public `http`/`https` URLs, blocks private/local addresses, strips scripts/styles/HTML, normalizes visible text, and truncates it before passing it back as a tool observation.
 
 Answer sources are attached by Core, not by the LLM. After a successful `web.SEARCH_WEB` call, Core extracts trusted source metadata from the executed `ToolResult`, validates that each URL uses only `http` or `https`, removes duplicate URLs and duplicate display domains, and emits an `ANSWER_SOURCES` cognitive event. The default UI limit is five sources. If SearXNG returns no usable results, no sources section is shown.
 
@@ -176,6 +184,7 @@ jarvis:
     default-max-results: 5
     hard-max-results: 10
     snippet-max-length: 320
+    page-max-length: 8000
     connect-timeout: 2s
     read-timeout: 8s
 ```

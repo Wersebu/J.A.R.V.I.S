@@ -55,7 +55,7 @@ class SearxngWebSearchClientTest {
 
     @Test
     void failsWhenSearxngIsUnavailable() {
-        WebSearchProperties properties = new WebSearchProperties(true, "http://127.0.0.1:1", 5, 10, 320,
+        WebSearchProperties properties = new WebSearchProperties(true, "http://127.0.0.1:1", 5, 10, 320, 8000,
                 Duration.ofMillis(100), Duration.ofMillis(100));
 
         assertThatThrownBy(() -> client(properties).search("RTX", 5))
@@ -73,7 +73,7 @@ class SearxngWebSearchClientTest {
                 Thread.currentThread().interrupt();
             }
         });
-        WebSearchProperties properties = new WebSearchProperties(true, baseUrl(), 5, 10, 320,
+        WebSearchProperties properties = new WebSearchProperties(true, baseUrl(), 5, 10, 320, 8000,
                 Duration.ofMillis(100), Duration.ofMillis(100));
 
         assertThatThrownBy(() -> client(properties).search("slow", 5))
@@ -99,7 +99,7 @@ class SearxngWebSearchClientTest {
                   {"title":"C","url":"https://example.com/c","content":"C"}
                 ]}
                 """);
-        WebSearchProperties properties = new WebSearchProperties(true, baseUrl(), 5, 2, 320,
+        WebSearchProperties properties = new WebSearchProperties(true, baseUrl(), 5, 2, 320, 8000,
                 Duration.ofSeconds(1), Duration.ofSeconds(1));
 
         WebSearchResponse response = client(properties).search("many", 50);
@@ -114,7 +114,7 @@ class SearxngWebSearchClientTest {
                   {"title":"Long","url":"https://docs.example.com/article","content":"abcdefghijk"}
                 ]}
                 """);
-        WebSearchProperties properties = new WebSearchProperties(true, baseUrl(), 5, 10, 5,
+        WebSearchProperties properties = new WebSearchProperties(true, baseUrl(), 5, 10, 5, 8000,
                 Duration.ofSeconds(1), Duration.ofSeconds(1));
 
         WebSearchResponse response = client(properties).search("long", 5);
@@ -128,7 +128,7 @@ class SearxngWebSearchClientTest {
     }
 
     private WebSearchProperties defaultProperties() {
-        return new WebSearchProperties(true, baseUrl(), 5, 10, 320,
+        return new WebSearchProperties(true, baseUrl(), 5, 10, 320, 8000,
                 Duration.ofSeconds(1), Duration.ofSeconds(1));
     }
 

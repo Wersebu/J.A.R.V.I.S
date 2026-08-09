@@ -43,10 +43,13 @@ public class WebSearchQualityEvaluator {
         }
 
         String query = text(result.data().get("query"));
-        Set<String> terms = importantTerms(request.userMessage() + " " + request.goal() + " " + query);
-        Set<String> desiredDomains = desiredDomains(request.userMessage() + " " + request.goal() + " " + query);
+        String intentText = request.userMessage() + " " + request.goal() + " " + query;
+        Set<String> terms = importantTerms(intentText);
+        Set<String> desiredDomains = desiredDomains(intentText);
+        boolean requiresSpecificValue = requiresSpecificValue(intentText);
 
         double bestScore = 0.0d;
+        boolean valueFound = false;
         List<Map<String, Object>> accepted = new ArrayList<>();
         for (Object item : list) {
             if (!(item instanceof Map<?, ?> map)) {
@@ -60,6 +63,7 @@ public class WebSearchQualityEvaluator {
             String haystack = normalize(text(map.get("title")) + " " + text(map.get("snippet")) + " " + text(map.get("source")) + " " + domain);
             double score = score(terms, desiredDomains, domain, haystack);
             bestScore = Math.max(bestScore, score);
+            valueFound = valueFound || containsSpecificValue(haystack);
             if (score >= ACCEPTANCE_THRESHOLD) {
                 accepted.add(Map.of(
                         "title", text(map.get("title")),
@@ -72,10 +76,15 @@ public class WebSearchQualityEvaluator {
             }
         }
 
-        boolean acceptedEnough = !accepted.isEmpty();
-        String reason = acceptedEnough
-                ? "Relevant web results found."
-                : "Search results did not match the requested entities/domains well enough.";
+        boolean acceptedEnough = !accepted.isEmpty() && (!requiresSpecificValue || valueFound);
+        String reason;
+        if (acceptedEnough) {
+            reason = "Relevant web results found.";
+        } else if (!accepted.isEmpty() && requiresSpecificValue) {
+            reason = "Relevant result links found, but snippets did not contain the requested numeric value. Read result pages or search again.";
+        } else {
+            reason = "Search results did not match the requested entities/domains well enough.";
+        }
         return new WebSearchQualityReport(acceptedEnough, bestScore, reason, accepted);
     }
 
@@ -145,6 +154,16 @@ public class WebSearchQualityEvaluator {
                 && !STOP_WORDS.contains(token)
                 && !token.matches(".*\\d.*")
                 && !Set.of("price", "cena", "kurs", "market", "listing", "source", "strona").contains(token);
+    }
+
+    private boolean requiresSpecificValue(String text) {
+        String normalized = normalize(text);
+        return normalized.matches(".*\\b(cena|ceny|koszt|kosztuje|kurs|notowania|price|prices|rate|market)\\b.*");
+    }
+
+    private boolean containsSpecificValue(String text) {
+        return text.matches(".*\\b\\d+[\\d., ]*\\s*(zl|pln|usd|eur|gbp|\\$|€)\\b.*")
+                || text.matches(".*\\b(\\$|€)\\s*\\d+[\\d., ]*.*");
     }
 
     private String domain(String url) {

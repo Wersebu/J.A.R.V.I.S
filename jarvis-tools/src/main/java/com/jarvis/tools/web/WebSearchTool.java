@@ -30,8 +30,10 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
     private static final Logger LOGGER = LoggerFactory.getLogger(WebSearchTool.class);
     private static final String TOOL_NAME = "web";
     private static final String SEARCH_WEB = "SEARCH_WEB";
+    private static final String READ_WEB_PAGE = "READ_WEB_PAGE";
 
     private final WebSearchClient webSearchClient;
+    private final WebPageReader webPageReader;
     private final WebSearchProperties properties;
     private final CognitiveEventBus cognitiveEventBus;
 
@@ -39,15 +41,18 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
      * Creates the web search tool.
      *
      * @param webSearchClient search client
+     * @param webPageReader web page reader
      * @param properties web search properties
      * @param cognitiveEventBus event bus
      */
     public WebSearchTool(
             WebSearchClient webSearchClient,
+            WebPageReader webPageReader,
             WebSearchProperties properties,
             CognitiveEventBus cognitiveEventBus
     ) {
         this.webSearchClient = webSearchClient;
+        this.webPageReader = webPageReader;
         this.properties = properties;
         this.cognitiveEventBus = cognitiveEventBus;
     }
@@ -67,13 +72,18 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
         return new ToolDefinition(TOOL_NAME, getDescription(), List.of(
                 operation(SEARCH_WEB, "Search current internet information using local SearXNG. Use this for current prices, recent facts, news, releases, or external sources.", false, ToolSafetyLevel.READ,
                         arg("query", true, "Search query sent to SearXNG."),
-                        arg("maxResults", false, "Maximum normalized results to return."))
+                        arg("maxResults", false, "Maximum normalized results to return.")),
+                operation(READ_WEB_PAGE, "Fetch and read normalized visible text from a public http/https search result URL. Use after SEARCH_WEB when snippets do not contain enough detail, prices, facts, or source evidence.", false, ToolSafetyLevel.READ,
+                        arg("url", true, "Public http/https URL returned by web search."))
         ));
     }
 
     @Override
     public ToolResult execute(ToolRequest request) {
         String operation = operation(request);
+        if (READ_WEB_PAGE.equals(operation)) {
+            return readWebPage(request, operation);
+        }
         String query = arg(request, "query");
         int maxResults = intArg(request, "maxResults");
         int effectiveMaxResults = properties.cappedMaxResults(maxResults);
@@ -122,6 +132,55 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
         }
     }
 
+    private ToolResult readWebPage(ToolRequest request, String operation) {
+        String url = arg(request, "url");
+        long started = System.nanoTime();
+        LOGGER.info("[WEB_PAGE_READ] url={}", url);
+        publish(request, CognitiveEventType.TOOL_STARTED, "STARTED", "WebSearchTool started", "web:page",
+                Map.of("tool", TOOL_NAME, "operation", operation, "url", url));
+        publish(request, CognitiveEventType.DOCUMENT_READ_STARTED, "READING", "Web page read started", "web:page",
+                Map.of("tool", TOOL_NAME, "operation", operation, "url", url));
+        try {
+            WebPageContent content = webPageReader.read(url);
+            Map<String, Object> data = Map.of(
+                    "url", content.url(),
+                    "title", content.title(),
+                    "content", content.text(),
+                    "characters", content.characters(),
+                    "truncated", content.truncated(),
+                    "durationMs", content.durationMs()
+            );
+            publish(request, CognitiveEventType.DOCUMENT_READ, "READ", "Web page read", nodeId(content.url()),
+                    Map.of("tool", TOOL_NAME, "operation", operation, "url", content.url(), "title", content.title(),
+                            "characters", content.characters(), "truncated", content.truncated()));
+            publish(request, CognitiveEventType.DOCUMENT_READ_FINISHED, "FINISHED", "Web page read finished", nodeId(content.url()),
+                    Map.of("tool", TOOL_NAME, "operation", operation, "url", content.url(), "title", content.title(),
+                            "characters", content.characters(), "durationMs", content.durationMs()));
+            publish(request, CognitiveEventType.TOOL_FINISHED, "FINISHED", "WebSearchTool finished", nodeId(content.url()),
+                    Map.of("tool", TOOL_NAME, "operation", operation, "success", true, "url", content.url()));
+            LOGGER.info("[WEB_PAGE_READ] characters={} duration={}ms", content.characters(), content.durationMs());
+            return new ToolResult(true, TOOL_NAME, operation, request.requestId(), request.conversationId(), false,
+                    List.of(nodeId(content.url())), "Web page read finished", data, "", "", false, "");
+        } catch (WebSearchException exception) {
+            long durationMs = (System.nanoTime() - started) / 1_000_000L;
+            Map<String, Object> data = Map.of(
+                    "url", url,
+                    "durationMs", durationMs,
+                    "errorCode", "WEB_PAGE_READ_FAILED",
+                    "errorMessage", exception.getMessage()
+            );
+            publish(request, CognitiveEventType.DOCUMENT_READ_FINISHED, "FAILED", "Web page read failed", "web:page",
+                    Map.of("tool", TOOL_NAME, "operation", operation, "url", url, "durationMs", durationMs,
+                            "error", exception.getMessage()));
+            publish(request, CognitiveEventType.TOOL_FINISHED, "FAILED", "WebSearchTool failed", "web:page",
+                    Map.of("tool", TOOL_NAME, "operation", operation, "success", false, "url", url,
+                            "error", exception.getMessage()));
+            LOGGER.warn("[WEB_PAGE_READ] FAILED url={} duration={}ms error={}", url, durationMs, exception.getMessage());
+            return new ToolResult(false, TOOL_NAME, operation, request.requestId(), request.conversationId(), false,
+                    List.of(), "Web page read failed", data, "WEB_PAGE_READ_FAILED", exception.getMessage(), false, "");
+        }
+    }
+
     private ToolOperationDefinition operation(
             String name,
             String description,
@@ -141,7 +200,7 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
             throw new ToolException("Tool request is required");
         }
         String operation = request.operation() == null ? "" : request.operation().trim().toUpperCase(Locale.ROOT);
-        if (!SEARCH_WEB.equals(operation)) {
+        if (!SEARCH_WEB.equals(operation) && !READ_WEB_PAGE.equals(operation)) {
             throw new ToolException("Unsupported web operation: " + request.operation());
         }
         return operation;
@@ -184,6 +243,10 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
 
     private String nodeId(WebSearchResult result) {
         return "web:" + Integer.toHexString(result.url().hashCode());
+    }
+
+    private String nodeId(String url) {
+        return "web:" + Integer.toHexString(safe(url).hashCode());
     }
 
     private String arg(ToolRequest request, String name) {

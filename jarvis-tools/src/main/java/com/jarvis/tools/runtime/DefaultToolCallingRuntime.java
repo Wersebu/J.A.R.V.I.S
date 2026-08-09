@@ -92,7 +92,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 ? properties.maxCallsResearch()
                 : properties.maxCallsFast();
         if (intent == ToolIntent.SEARCH_WEB) {
-            maxCalls = Math.max(maxCalls, 4);
+            maxCalls = Math.max(maxCalls, 8);
         }
         int failures = 0;
         String observation = "";
@@ -528,6 +528,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"Kuba urodziny\"},\"reason\":\"Need to inspect existing knowledge before answering.\"}\n"
                 + "Search the web through local SearXNG:\n"
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"SEARCH_WEB\",\"arguments\":{\"query\":\"RTX 4060 Ti 16GB cena Polska\",\"maxResults\":5},\"reason\":\"The user asked for current internet information.\"}\n"
+                + "Read a web search result page:\n"
+                + "{\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"READ_WEB_PAGE\",\"arguments\":{\"url\":\"https://example.com/result\"},\"reason\":\"Search result snippets did not contain the needed price/details.\"}\n"
                 + "\n\nDetected tool intent: " + intent
                 + "\nThis detected intent is only a weak hint from Java. You own the final tool decision."
                 + "\nMain model tool goal:\n" + safe(request.goal())
@@ -539,7 +541,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "\nUse NO_TOOL when no tool should be used and the normal model answer should continue."
                 + "\nIf recent conversation context shows the assistant proposed a knowledge update and the latest user confirms it, call KnowledgeTool instead of answering with text."
                 + "\nFor web search, inspect previous observations. If sourceQualityAccepted=false, change the query and search again."
+                + "\nIf sourceQualityAccepted=false but acceptedResults contains relevant URLs, use web.READ_WEB_PAGE on the best result URLs before asking the user for clarification."
+                + "\nUse READ_WEB_PAGE when search snippets do not contain prices, dates, exact values, or enough evidence."
                 + "\nYou may perform multiple web searches when results are weak, irrelevant, or from the wrong domain."
+                + "\nYou may read multiple web pages when comparing offers or looking for a concrete listing."
                 + "\nFor requested sites/domains, include them in the query, e.g. site:allegro.pl RTX 4060 Ti."
                 + "\nOnly return FINAL_ANSWER when observations contain enough relevant evidence, or when you honestly cannot find it after attempts."
                 + "\nThe LLM is the only component allowed to decide semantic knowledge writes."
@@ -551,6 +556,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         return "Repair this malformed tool action into valid JSON only. It must be either "
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"...\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"SEARCH_WEB\",\"arguments\":{\"query\":\"...\",\"maxResults\":5},\"reason\":\"...\"} "
+                + "or {\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"READ_WEB_PAGE\",\"arguments\":{\"url\":\"https://...\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"CREATE_DOCUMENT\",\"arguments\":{\"path\":\"...\",\"content\":\"...\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"UPDATE_DOCUMENT\",\"arguments\":{\"path\":\"...\",\"instruction\":\"...\",\"text\":\"...\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"NO_TOOL\",\"reason\":\"...\"} "

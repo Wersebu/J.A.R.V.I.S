@@ -52,6 +52,16 @@ public class WebAnswerSourceExtractor {
             if (Boolean.FALSE.equals(toolResult.data().get("sourceQualityAccepted"))) {
                 continue;
             }
+            if ("READ_WEB_PAGE".equalsIgnoreCase(toolResult.operation())) {
+                SourceCandidate readPage = readPageCandidate(toolResult);
+                if (readPage != null) {
+                    addSource(readPage, sources, seenUrls, seenDomains);
+                    if (sources.size() >= limit) {
+                        return List.copyOf(sources);
+                    }
+                }
+                continue;
+            }
             Object results = toolResult.data().containsKey("acceptedResults")
                     ? toolResult.data().get("acceptedResults")
                     : toolResult.data().get("results");
@@ -60,19 +70,9 @@ public class WebAnswerSourceExtractor {
             }
             for (Object item : list) {
                 SourceCandidate candidate = candidate(item);
-                if (candidate == null || !isSafeHttpUrl(candidate.url())) {
+                if (candidate == null || !addSource(candidate, sources, seenUrls, seenDomains)) {
                     continue;
                 }
-                String normalizedUrl = normalizeUrl(candidate.url());
-                String normalizedDomain = candidate.domain().toLowerCase(Locale.ROOT);
-                if (!seenUrls.add(normalizedUrl) || !seenDomains.add(normalizedDomain)) {
-                    continue;
-                }
-                sources.add(Map.of(
-                        "title", candidate.title(),
-                        "domain", candidate.domain(),
-                        "url", candidate.url()
-                ));
                 if (sources.size() >= limit) {
                     return List.copyOf(sources);
                 }
@@ -123,7 +123,43 @@ public class WebAnswerSourceExtractor {
         return toolResult != null
                 && toolResult.success()
                 && "web".equalsIgnoreCase(toolResult.tool())
-                && "SEARCH_WEB".equalsIgnoreCase(toolResult.operation());
+                && ("SEARCH_WEB".equalsIgnoreCase(toolResult.operation())
+                || "READ_WEB_PAGE".equalsIgnoreCase(toolResult.operation()));
+    }
+
+    private boolean addSource(
+            SourceCandidate candidate,
+            List<Map<String, Object>> sources,
+            Set<String> seenUrls,
+            Set<String> seenDomains
+    ) {
+        if (!isSafeHttpUrl(candidate.url())) {
+            return false;
+        }
+        String normalizedUrl = normalizeUrl(candidate.url());
+        String normalizedDomain = candidate.domain().toLowerCase(Locale.ROOT);
+        if (!seenUrls.add(normalizedUrl) || !seenDomains.add(normalizedDomain)) {
+            return false;
+        }
+        sources.add(Map.of(
+                "title", candidate.title(),
+                "domain", candidate.domain(),
+                "url", candidate.url()
+        ));
+        return true;
+    }
+
+    private SourceCandidate readPageCandidate(ToolResult toolResult) {
+        String url = text(toolResult.data().get("url"));
+        String domain = domain(url);
+        if (domain.isBlank()) {
+            return null;
+        }
+        String title = text(toolResult.data().get("title"));
+        if (title.isBlank()) {
+            title = domain;
+        }
+        return new SourceCandidate(title, url, domain);
     }
 
     private SourceCandidate candidate(Object item) {

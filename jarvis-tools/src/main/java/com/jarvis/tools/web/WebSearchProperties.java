@@ -12,6 +12,7 @@ import java.time.Duration;
  * @param defaultMaxResults default result limit
  * @param hardMaxResults absolute result cap
  * @param snippetMaxLength maximum snippet length passed back to the model
+ * @param pageMaxLength maximum fetched web page text length passed back to the model
  * @param connectTimeout connection timeout
  * @param readTimeout request/read timeout
  */
@@ -22,6 +23,7 @@ public record WebSearchProperties(
         int defaultMaxResults,
         int hardMaxResults,
         int snippetMaxLength,
+        int pageMaxLength,
         Duration connectTimeout,
         Duration readTimeout
 ) {
@@ -35,6 +37,7 @@ public record WebSearchProperties(
         defaultMaxResults = defaultMaxResults > 0 ? defaultMaxResults : 5;
         hardMaxResults = hardMaxResults > 0 ? hardMaxResults : 10;
         snippetMaxLength = snippetMaxLength > 0 ? snippetMaxLength : 320;
+        pageMaxLength = pageMaxLength > 0 ? pageMaxLength : 8000;
         connectTimeout = connectTimeout == null || connectTimeout.isNegative() || connectTimeout.isZero()
                 ? Duration.ofSeconds(2)
                 : connectTimeout;
