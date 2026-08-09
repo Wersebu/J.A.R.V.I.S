@@ -408,8 +408,16 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
     }
 
     private String sanitizeFileName(String original) {
-        String candidate = original == null || original.isBlank() ? "attachment.txt" : Path.of(original).getFileName().toString();
-        String sanitized = candidate.replace('\\', '_').replace('/', '_').replaceAll("[\\p{Cntrl}]", "_").strip();
+        String candidate = original == null || original.isBlank() ? "attachment.txt" : original.replace('\\', '/');
+        int separator = candidate.lastIndexOf('/');
+        if (separator >= 0) {
+            candidate = candidate.substring(separator + 1);
+        }
+        String sanitized = candidate.replace('\\', '_')
+                .replace('/', '_')
+                .replaceAll("[\\p{Cntrl}]", "_")
+                .replace("..", "_")
+                .strip();
         return sanitized.isBlank() ? "attachment.txt" : sanitized;
     }
 
