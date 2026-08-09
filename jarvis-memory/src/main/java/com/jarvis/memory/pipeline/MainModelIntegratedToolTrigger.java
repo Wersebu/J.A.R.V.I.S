@@ -33,7 +33,7 @@ public class MainModelIntegratedToolTrigger implements ToolTriggerStrategy {
                 + "- executing approved actions.\n\n"
                 + "Return exactly one JSON object and no user-facing prose outside JSON.\n"
                 + "Allowed types: FINAL_ANSWER, TOOL_REQUEST, CLARIFICATION.\n\n"
-                + "Advisory detected tool intent from Core: " + detectedIntent + "\n"
+                + "Core advisory signal: " + detectedIntent + "\n"
                 + advisoryRule(detectedIntent)
                 + "\n"
                 + "Rules:\n"
@@ -54,11 +54,11 @@ public class MainModelIntegratedToolTrigger implements ToolTriggerStrategy {
 
     private String advisoryRule(ToolIntent detectedIntent) {
         if (detectedIntent == ToolIntent.SEARCH_WEB) {
-            return "The user request appears to require live external/web data. You MUST return TOOL_REQUEST unless the live result is already explicitly supplied in the prompt.";
+            return "This request may require live external/web data. You own the final decision: return TOOL_REQUEST only when live data is truly needed and is not already supplied in the prompt.";
         }
         if (detectedIntent == ToolIntent.NO_TOOL) {
-            return "No tool-specific intent was detected. Use your judgment with the rules below.";
+            return "No tool-specific signal was detected. You still own the final decision and may request a tool if the task requires one.";
         }
-        return "The user request appears to involve a native tool. Prefer TOOL_REQUEST when the operation is needed to satisfy the request.";
+        return "A native tool may be relevant. You own the final decision: return TOOL_REQUEST only when the operation is needed to satisfy the request.";
     }
 }

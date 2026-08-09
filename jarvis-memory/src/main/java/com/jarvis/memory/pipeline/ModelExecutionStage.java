@@ -9,8 +9,6 @@ import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
 import com.jarvis.common.event.TokenEvent;
-import com.jarvis.tools.runtime.ToolIntent;
-import com.jarvis.tools.runtime.ToolIntentDetector;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
@@ -28,7 +26,6 @@ public class ModelExecutionStage implements PipelineStage {
     private final ToolTriggerStrategy toolTriggerStrategy;
     private final MainModelActionParser actionParser;
     private final CognitiveEventBus cognitiveEventBus;
-    private final ToolIntentDetector toolIntentDetector;
 
     /**
      * Creates the model execution stage.
@@ -39,14 +36,12 @@ public class ModelExecutionStage implements PipelineStage {
             List<AIProvider> aiProviders,
             ToolTriggerStrategy toolTriggerStrategy,
             MainModelActionParser actionParser,
-            CognitiveEventBus cognitiveEventBus,
-            ToolIntentDetector toolIntentDetector
+            CognitiveEventBus cognitiveEventBus
     ) {
         this.aiProviders = List.copyOf(aiProviders);
         this.toolTriggerStrategy = toolTriggerStrategy;
         this.actionParser = actionParser;
         this.cognitiveEventBus = cognitiveEventBus;
-        this.toolIntentDetector = toolIntentDetector;
     }
 
     @Override
@@ -58,10 +53,6 @@ public class ModelExecutionStage implements PipelineStage {
     public PipelineContext execute(PipelineContext context) {
         if (context.response() != null && !context.response().isBlank()) {
             return context;
-        }
-        ToolIntent detectedIntent = toolIntentDetector.detect(context.request().message());
-        if (detectedIntent == ToolIntent.NO_TOOL) {
-            return executeDirectAnswer(context);
         }
         String mainPrompt = toolTriggerStrategy.buildMainModelPrompt(context);
         recordPromptMetrics(context, mainPrompt);
@@ -99,32 +90,6 @@ public class ModelExecutionStage implements PipelineStage {
                     .withMetadata("toolContext", action.context())
                     .withMetadata("mainModelDurationMs", durationMs);
         };
-    }
-
-    private PipelineContext executeDirectAnswer(PipelineContext context) {
-        recordPromptMetrics(context, context.prompt());
-        cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "DIRECT_ANSWER",
-                "No tool intent detected; streaming direct model answer", null, Map.of(
-                        "action", "DIRECT_ANSWER",
-                        "model", context.model(),
-                        "reasoningLevel", context.brain().reasoningLevel().name()
-                ));
-        StringBuilder response = new StringBuilder();
-        DirectStreamState streamState = new DirectStreamState();
-        selectProvider(context).stream(context.conversationId(), context.brain(), context.prompt(), AIJobType.CHAT, event -> {
-            if (event instanceof TokenEvent tokenEvent) {
-                response.append(tokenEvent.text());
-            }
-            if (event instanceof GenerationFinishedEvent finishedEvent) {
-                streamState.finishedEvent = finishedEvent;
-            }
-        });
-        GenerationFinishedEvent finished = streamState.finishedEvent == null
-                ? GenerationFinishedEvent.create(context.conversationId(), 0, context.brain().type(), context.model(),
-                null, Math.max(1, response.length() / 4), null)
-                : streamState.finishedEvent;
-        return context.withResponse(response.toString(), finished)
-                .withMetadata("mainModelAction", "DIRECT_ANSWER");
     }
 
     private MainModelAction parseAction(PipelineContext context, String raw) {
@@ -370,9 +335,5 @@ public class ModelExecutionStage implements PipelineStage {
         private int answerChunks;
         private int answerCharacters;
         private long answerStartedNano;
-    }
-
-    private static final class DirectStreamState {
-        private GenerationFinishedEvent finishedEvent;
     }
 }
