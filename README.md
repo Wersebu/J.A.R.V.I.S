@@ -2,7 +2,7 @@
 
 Jarvis is a long-term AI operating system backend foundation.
 
-Version `2.5.0` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE/WebSocket streaming, Knowledge Workspace, Cognitive Memory, native tool calling, SearXNG-backed Web Search, and a unified Cognitive Event Bus.
+Version `2.6.0` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE/WebSocket streaming, Knowledge Workspace, Cognitive Memory, native tool calling, SearXNG-backed Web Search, temporary chat attachments, and a unified Cognitive Event Bus.
 
 ## Modules
 
@@ -32,7 +32,7 @@ curl http://localhost:8080/api/health
 Expected response:
 
 ```json
-{"status":"online","version":"2.5.0"}
+{"status":"online","version":"2.6.0"}
 ```
 
 ## Chat v0.2
@@ -126,6 +126,22 @@ brains:
 ```
 
 The AI identity is loaded from `config/jarvis.md`.
+
+Temporary workspace defaults:
+
+```yaml
+jarvis:
+  workspace:
+    root: ./temp-workspaces
+    ttl: 60m
+    cleanup-interval: 5m
+    max-file-size-bytes: 2097152
+    max-workspace-size-bytes: 20971520
+    max-total-size-bytes: 209715200
+    max-files-per-workspace: 20
+    minimum-free-disk-space-bytes: 536870912
+    prompt-max-characters: 60000
+```
 
 Knowledge defaults:
 
@@ -227,3 +243,69 @@ Diagnostics:
 ```
 
 If SearXNG is unavailable, `WebSearchTool` returns a failed `ToolResult` with `errorCode=WEB_SEARCH_FAILED`. It never invents web results and never allows the model to change the configured SearXNG base URL.
+
+## File Workspace & Attachments v2.6
+
+Temporary attachments are not Knowledge. They are uploaded into isolated workspaces under `temp-workspaces/<workspace-id>/input`, passed to the prompt as bounded data context, and removed by TTL cleanup unless a future explicit export/persistent-save flow copies them elsewhere.
+
+Core exposes:
+
+```bash
+curl -X POST "http://localhost:8080/api/v1/workspaces?conversationId=default"
+curl -X POST "http://localhost:8080/api/v1/workspaces/<workspace-id>/attachments" \
+  -F "files=@Example.java" \
+  -F "files=@application.yml"
+curl http://localhost:8080/api/v1/workspaces/<workspace-id>
+curl -X DELETE http://localhost:8080/api/v1/workspaces/<workspace-id>
+```
+
+Chat requests may include attachment references:
+
+```json
+{
+  "conversationId": "default",
+  "message": "Co robi ten plik?",
+  "attachments": [
+    {"workspaceId": "<workspace-id>", "attachmentId": "<attachment-id>"}
+  ]
+}
+```
+
+Supported v2.6 text/code formats are `.txt`, `.md`, `.log`, `.csv`, `.java`, `.py`, `.js`, `.ts`, `.html`, `.css`, `.json`, `.xml`, `.yml`, `.yaml`, `.properties`, `.sql`, `.sh`, and `.ps1`. Unsupported binary files are rejected before prompt construction.
+
+Security rules:
+
+- Core never exposes filesystem paths to the model.
+- User file names are metadata only; internal stored names use safe IDs.
+- Path traversal, absolute paths, and duplicate names cannot overwrite files outside the workspace.
+- Upload writes are atomic and incomplete `.partial` files are not registered as attachments.
+- Cleanup runs on startup and periodically; TTL is based on `lastAccessAt`, refreshed only by real workspace operations.
+- Workspace storage limits and minimum free disk thresholds are configurable.
+
+Prompt injection format:
+
+```text
+=== TEMPORARY ATTACHMENTS ===
+
+ATTACHMENT
+Name: Example.java
+Type: java
+
+<content>
+
+END ATTACHMENT
+
+=== END TEMPORARY ATTACHMENTS ===
+```
+
+Attachment content is treated strictly as user data. Text inside uploaded files is never treated as system instructions.
+
+The Windows client supports multi-select file picker, drag-and-drop, pre-send attachment chips, removing individual files before send, upload status through normal request state, and attachment metadata shown in chat history.
+
+Future archive/document work should use the same temporary workspace boundaries:
+
+```text
+input/archive.zip -> extracted/project/ -> output/project-fixed.zip
+```
+
+Archive extraction must later protect against Zip Slip, absolute paths, symbolic links, decompression bombs, excessive file counts, and writing outside `workspace/extracted/`. PDF, DOCX, XLSX, PPTX, OCR, Vision, and archive parsers are intentionally not implemented in v2.6.

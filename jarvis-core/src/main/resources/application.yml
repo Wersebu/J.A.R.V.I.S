@@ -6,7 +6,17 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.5.0"
+  version: "2.6.0"
+  workspace:
+    root: ./temp-workspaces
+    ttl: 60m
+    cleanup-interval: 5m
+    max-file-size-bytes: 2097152
+    max-workspace-size-bytes: 20971520
+    max-total-size-bytes: 209715200
+    max-files-per-workspace: 20
+    minimum-free-disk-space-bytes: 536870912
+    prompt-max-characters: 60000
   ai:
     identity-file: file:config/jarvis.md
   diagnostics:

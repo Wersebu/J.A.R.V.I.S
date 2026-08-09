@@ -73,13 +73,20 @@ public class PipelineContextFactory {
                 "requestId", requestId,
                 "conversationId", conversationId,
                 "serverReceivedAt", serverReceivedAt.toString(),
-                "messageLength", request.message() == null ? 0 : request.message().length()
+                "messageLength", request.message() == null ? 0 : request.message().length(),
+                "attachments", request.attachments().size()
         ));
         ChatEventSink modelEventSink = event -> { };
         return PipelineContext.initial(
                 conversationId,
                 requestId,
-                new ChatRequest(conversationId, request.message(), request.clientRequestTimestamp(), request.knowledgeMode()),
+                new ChatRequest(
+                        conversationId,
+                        request.message(),
+                        request.clientRequestTimestamp(),
+                        request.knowledgeMode(),
+                        request.attachments()
+                ),
                 modelEventSink,
                 eventSink
         );
