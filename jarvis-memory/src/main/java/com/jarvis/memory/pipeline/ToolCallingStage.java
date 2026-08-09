@@ -1,9 +1,14 @@
 package com.jarvis.memory.pipeline;
 
+import com.jarvis.common.ai.AIJobType;
+import com.jarvis.common.ai.AIProvider;
+import com.jarvis.common.ai.AIProviderException;
 import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
+import com.jarvis.common.event.TokenEvent;
 import com.jarvis.common.memory.ConversationMessage;
+import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.runtime.ToolCallingRequest;
 import com.jarvis.tools.runtime.ToolCallingResult;
 import com.jarvis.tools.runtime.ToolCallingRuntime;
@@ -11,6 +16,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -21,14 +27,16 @@ import java.util.Map;
 public class ToolCallingStage implements PipelineStage {
 
     private final ToolCallingRuntime toolCallingRuntime;
+    private final List<AIProvider> aiProviders;
 
     /**
      * Creates the tool-calling stage.
      *
      * @param toolCallingRuntime native tool-calling runtime
      */
-    public ToolCallingStage(ToolCallingRuntime toolCallingRuntime) {
+    public ToolCallingStage(ToolCallingRuntime toolCallingRuntime, List<AIProvider> aiProviders) {
         this.toolCallingRuntime = toolCallingRuntime;
+        this.aiProviders = List.copyOf(aiProviders);
     }
 
     @Override
@@ -56,52 +64,121 @@ public class ToolCallingStage implements PipelineStage {
         ));
         String answer;
         if (!result.handled()) {
-            answer = "Nie wykonalem narzedzia, poniewaz tool runtime nie zwrocil bezpiecznej akcji do wykonania.";
+            answer = streamGuidedAnswer(context,
+                    "Nie wykonalem narzedzia, poniewaz tool runtime nie zwrocil bezpiecznej akcji do wykonania.",
+                    "tool-unhandled");
         } else {
-            answer = result.finalAnswer() == null || result.finalAnswer().isBlank()
-                    ? "Zakonczylem prace z narzedziami."
-                    : result.finalAnswer();
+            answer = streamToolFinalAnswer(context, result);
         }
-        publishAnswer(context, answer);
-        GenerationFinishedEvent finished = GenerationFinishedEvent.create(
-                context.conversationId(),
-                0,
-                context.brain().type(),
-                context.model(),
-                null,
-                null,
-                null
-        );
-        context.modelEventSink().publish(finished);
+        GenerationFinishedEvent finished = GenerationFinishedEvent.create(context.conversationId(), 0, context.brain().type(),
+                context.model(), null, Math.max(1, answer.length() / 4), null);
         return context.withResponse(answer, finished)
                 .withMetadata("toolCallingHandled", true)
                 .withMetadata("toolCallingSteps", result.steps().size());
     }
 
-    private void publishAnswer(PipelineContext context, String answer) {
-        publish(context, CognitiveEventType.ANSWER_STARTED, "ANSWERING", "Tool answer started", Map.of(
+    private String streamToolFinalAnswer(PipelineContext context, ToolCallingResult result) {
+        if (result.results().isEmpty() && result.finalAnswer() != null && !result.finalAnswer().isBlank()) {
+            return publishBufferedFallback(context, result.finalAnswer(), "tool-fallback");
+        }
+        String prompt = toolFinalAnswerPrompt(context, result);
+        String fallback = fallbackToolAnswer(result);
+        try {
+            return streamPrompt(context, prompt, fallback);
+        } catch (AIProviderException exception) {
+            return publishBufferedFallback(context, fallback, "tool-fallback");
+        }
+    }
+
+    private String streamGuidedAnswer(PipelineContext context, String guidance, String source) {
+        String prompt = toolBasePrompt(context)
+                + "\n\nWrite a concise user-facing answer in the user's language."
+                + "\nReturn plain text only."
+                + "\n\nAnswer guidance:\n" + guidance;
+        try {
+            return streamPrompt(context, prompt, guidance);
+        } catch (AIProviderException exception) {
+            return publishBufferedFallback(context, guidance, source);
+        }
+    }
+
+    private String streamPrompt(PipelineContext context, String prompt, String fallback) {
+        StringBuilder answer = new StringBuilder();
+        selectProvider(context).stream(context.conversationId(), context.brain(), prompt, AIJobType.CHAT, event -> {
+            if (event instanceof TokenEvent tokenEvent) {
+                answer.append(tokenEvent.text());
+            }
+            context.modelEventSink().publish(event);
+        });
+        return answer.isEmpty() ? fallback : answer.toString();
+    }
+
+    private String publishBufferedFallback(PipelineContext context, String answer, String source) {
+        publish(context, CognitiveEventType.ANSWER_STARTED, "ANSWERING", "Fallback answer started", Map.of(
                 "model", context.model(),
-                "source", "tool"
+                "source", source
         ));
         publish(context, CognitiveEventType.ANSWER_TOKEN, "TOKEN", answer, Map.of(
                 "text", answer,
                 "index", 1,
-                "source", "tool"
+                "source", source
         ));
-        publish(context, CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Tool answer finished", Map.of(
+        publish(context, CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Fallback answer finished", Map.of(
                 "durationMs", 0,
                 "characters", answer.length(),
                 "tokens", Math.max(1, answer.length() / 4),
-                "source", "tool"
+                "source", source
         ));
-        publish(context, CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Tool response finished", Map.of(
+        publish(context, CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Fallback streaming finished", Map.of(
                 "generationTimeMs", 0,
                 "promptTokens", 0,
                 "completionTokens", Math.max(1, answer.length() / 4),
                 "tokensStreamed", 1,
                 "tokensPerSecond", 0.0d,
-                "source", "tool"
+                "source", source
         ));
+        return answer;
+    }
+
+    private String toolFinalAnswerPrompt(PipelineContext context, ToolCallingResult result) {
+        return toolBasePrompt(context)
+                + "\n\nYou just completed the tool workflow. Now write the final user-facing answer."
+                + "\nDo not reveal hidden chain-of-thought. You may briefly mention what was done."
+                + "\nIf approval is required, clearly tell the user that a draft is waiting for approval."
+                + "\nKeep the answer concise, natural, and in the user's language."
+                + "\nReturn plain text only."
+                + "\n\nUser request:\n" + context.request().message()
+                + "\n\nTool observations:\n" + toolObservations(result)
+                + "\n\nExisting final answer guidance:\n" + safe(result.finalAnswer());
+    }
+
+    private String toolObservations(ToolCallingResult result) {
+        StringBuilder builder = new StringBuilder();
+        for (ToolResult toolResult : result.results()) {
+            builder.append("- Tool: ").append(toolResult.tool())
+                    .append(", operation: ").append(toolResult.operation())
+                    .append(", success: ").append(toolResult.success())
+                    .append(", approvalRequired: ").append(toolResult.requiresApproval())
+                    .append(", message: ").append(toolResult.message())
+                    .append(", data: ").append(toolResult.data())
+                    .append("\n");
+        }
+        if (builder.isEmpty()) {
+            builder.append("- No concrete tool result was produced.\n");
+        }
+        return builder.toString();
+    }
+
+    private String fallbackToolAnswer(ToolCallingResult result) {
+        if (result.finalAnswer() != null && !result.finalAnswer().isBlank()) {
+            return result.finalAnswer();
+        }
+        return result.results().stream()
+                .findFirst()
+                .map(toolResult -> toolResult.requiresApproval()
+                        ? "Przygotowalem szkic zmiany. Czeka na zatwierdzenie."
+                        : toolResult.message().isBlank() ? "Zakonczylem prace z narzedziami." : toolResult.message())
+                .orElse("Zakonczylem prace z narzedziami.");
     }
 
     private String toolBasePrompt(PipelineContext context) {
@@ -182,4 +259,16 @@ public class ToolCallingStage implements PipelineStage {
                 metadata
         ));
     }
+
+    private AIProvider selectProvider(PipelineContext context) {
+        return aiProviders.stream()
+                .filter(provider -> provider.provider().equalsIgnoreCase(context.brain().provider()))
+                .findFirst()
+                .orElseThrow(() -> new AIProviderException("AI provider is not available: " + context.brain().provider()));
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value;
+    }
+
 }

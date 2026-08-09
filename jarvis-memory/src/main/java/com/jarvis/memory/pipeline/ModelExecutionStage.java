@@ -3,13 +3,11 @@ package com.jarvis.memory.pipeline;
 import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.AIProviderException;
 import com.jarvis.common.ai.AIJobType;
-import com.jarvis.common.event.ChatEventType;
 import com.jarvis.common.diagnostics.InferenceDiagnostics;
 import com.jarvis.common.diagnostics.InferenceDiagnosticsContext;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
-import com.jarvis.common.event.StatusChangedEvent;
 import com.jarvis.common.event.TokenEvent;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
@@ -63,23 +61,27 @@ public class ModelExecutionStage implements PipelineStage {
                 "reasoningLevel", context.brain().reasoningLevel().name()
         ));
         long startedNano = System.nanoTime();
-        StringBuilder envelopeBuilder = new StringBuilder();
-        GenerationFinishedHolder finishedHolder = new GenerationFinishedHolder();
+        StreamingStructuredResponseParser streamingParser = new StreamingStructuredResponseParser();
+        StreamState streamState = new StreamState();
         selectProvider(context).stream(context.conversationId(), context.brain(), mainPrompt, AIJobType.MAIN_MODEL, event -> {
             if (event instanceof TokenEvent tokenEvent) {
-                envelopeBuilder.append(tokenEvent.text());
+                StreamingStructuredResponseParser.ParserUpdate update = streamingParser.accept(tokenEvent.text());
+                update.detectedType().ifPresent(type -> handleDetectedType(context, type, streamState));
+                if (update.streamedText() != null && !update.streamedText().isEmpty()) {
+                    streamAnswerChunk(context, update.streamedText(), streamState);
+                }
             }
             if (event instanceof GenerationFinishedEvent finishedEvent) {
-                finishedHolder.event = finishedEvent;
+                streamState.finishedEvent = finishedEvent;
             }
         });
-        MainModelAction action = parseAction(context, envelopeBuilder.toString());
+        MainModelAction action = parseAction(context, streamingParser.raw());
         long durationMs = (System.nanoTime() - startedNano) / 1_000_000L;
         publishMainModelAction(context, action, durationMs);
         return switch (action.type()) {
-            case FINAL_ANSWER -> publishUserFacingResponse(context, action.answer(), finishedHolder.event)
+            case FINAL_ANSWER -> finishStreamedUserFacingResponse(context, streamedOrParsed(streamingParser, action.answer()), streamState)
                     .withMetadata("mainModelAction", action.type().name());
-            case CLARIFICATION -> publishUserFacingResponse(context, action.question(), finishedHolder.event)
+            case CLARIFICATION -> finishStreamedUserFacingResponse(context, streamedOrParsed(streamingParser, action.question()), streamState)
                     .withMetadata("mainModelAction", action.type().name());
             case TOOL_REQUEST -> context
                     .withMetadata("mainModelAction", action.type().name())
@@ -122,45 +124,93 @@ public class ModelExecutionStage implements PipelineStage {
                 """.formatted(raw == null ? "" : raw);
     }
 
-    private PipelineContext publishUserFacingResponse(
-            PipelineContext context,
-            String answer,
-            GenerationFinishedEvent mainFinishedEvent
-    ) {
-        publish(CognitiveEventType.ANSWER_STARTED, "ANSWERING", "Answer started", Map.of(
+    private void handleDetectedType(PipelineContext context, MainModelActionType type, StreamState streamState) {
+        cognitiveEventBus.publish(CognitiveEventType.STRUCTURED_RESPONSE_DETECTED, type.name(),
+                "Structured response type detected", null, Map.of(
+                        "type", type.name(),
+                        "model", context.model(),
+                        "reasoningLevel", context.brain().reasoningLevel().name()
+                ));
+        if (type == MainModelActionType.FINAL_ANSWER) {
+            cognitiveEventBus.publish(CognitiveEventType.ANSWER_STREAM_STARTED, "STARTED",
+                    "Structured answer stream started", null, Map.of("type", type.name(), "model", context.model()));
+            startAnswerStream(context, streamState);
+        } else if (type == MainModelActionType.CLARIFICATION) {
+            cognitiveEventBus.publish(CognitiveEventType.QUESTION_STREAM_STARTED, "STARTED",
+                    "Structured clarification stream started", null, Map.of("type", type.name(), "model", context.model()));
+            startAnswerStream(context, streamState);
+        } else if (type == MainModelActionType.TOOL_REQUEST) {
+            cognitiveEventBus.publish(CognitiveEventType.TOOL_REQUEST_DETECTED, "DETECTED",
+                    "Structured tool request detected", null, Map.of("type", type.name(), "model", context.model()));
+        }
+    }
+
+    private void startAnswerStream(PipelineContext context, StreamState streamState) {
+        if (streamState.answerStarted) {
+            return;
+        }
+        streamState.answerStarted = true;
+        streamState.answerStartedNano = System.nanoTime();
+        cognitiveEventBus.publish(CognitiveEventType.ANSWER_STARTED, "ANSWERING", "Answer started", null, Map.of(
                 "model", context.model(),
-                "source", "main-model"
+                "source", "structured-main-model"
         ));
-        publish(CognitiveEventType.ANSWER_TOKEN, "TOKEN", answer, Map.of(
-                "text", answer,
-                "index", 1,
-                "source", "main-model"
+        cognitiveEventBus.publish(CognitiveEventType.STREAMING_STARTED, "STREAMING", "Streaming started", null, Map.of(
+                "model", context.model(),
+                "source", "structured-main-model"
         ));
-        publish(CognitiveEventType.TOKEN, "TOKEN", answer, Map.of(
-                "text", answer,
-                "index", 1,
-                "source", "main-model"
+    }
+
+    private void streamAnswerChunk(PipelineContext context, String chunk, StreamState streamState) {
+        if (chunk == null || chunk.isEmpty()) {
+            return;
+        }
+        startAnswerStream(context, streamState);
+        streamState.answerChunks++;
+        streamState.answerCharacters += chunk.length();
+        streamState.answer.append(chunk);
+        cognitiveEventBus.publish(CognitiveEventType.ANSWER_TOKEN, "TOKEN", chunk, null, Map.of(
+                "text", chunk,
+                "index", streamState.answerChunks,
+                "source", "structured-main-model"
         ));
-        publish(CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Answer finished", Map.of(
-                "durationMs", 0,
-                "characters", answer.length(),
-                "tokens", Math.max(1, answer.length() / 4),
-                "source", "main-model"
+        cognitiveEventBus.publish(CognitiveEventType.TOKEN, "TOKEN", chunk, null, Map.of(
+                "text", chunk,
+                "index", streamState.answerChunks,
+                "source", "structured-main-model"
         ));
-        publish(CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Streaming finished", Map.of(
-                "generationTimeMs", mainFinishedEvent == null ? 0 : mainFinishedEvent.generationTimeMs(),
-                "promptTokens", mainFinishedEvent == null || mainFinishedEvent.promptTokens() == null ? 0 : mainFinishedEvent.promptTokens(),
-                "completionTokens", mainFinishedEvent == null || mainFinishedEvent.completionTokens() == null ? Math.max(1, answer.length() / 4) : mainFinishedEvent.completionTokens(),
-                "tokensStreamed", 1,
-                "tokensPerSecond", mainFinishedEvent == null || mainFinishedEvent.tokensPerSecond() == null ? 0.0d : mainFinishedEvent.tokensPerSecond(),
-                "source", "main-model"
+    }
+
+    private PipelineContext finishStreamedUserFacingResponse(PipelineContext context, String response, StreamState streamState) {
+        if (!streamState.answerStarted && response != null && !response.isBlank()) {
+            streamAnswerChunk(context, response, streamState);
+        }
+        long durationMs = streamState.answerStartedNano == 0L ? 0L : (System.nanoTime() - streamState.answerStartedNano) / 1_000_000L;
+        cognitiveEventBus.publish(CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Answer finished", null, Map.of(
+                "durationMs", durationMs,
+                "characters", response == null ? 0 : response.length(),
+                "tokens", Math.max(1, (response == null ? 0 : response.length()) / 4),
+                "source", "structured-main-model"
         ));
-        GenerationFinishedEvent finished = mainFinishedEvent == null
+        cognitiveEventBus.publish(CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Streaming finished", null, Map.of(
+                "generationTimeMs", streamState.finishedEvent == null ? 0 : streamState.finishedEvent.generationTimeMs(),
+                "promptTokens", streamState.finishedEvent == null || streamState.finishedEvent.promptTokens() == null ? 0 : streamState.finishedEvent.promptTokens(),
+                "completionTokens", streamState.finishedEvent == null || streamState.finishedEvent.completionTokens() == null
+                        ? Math.max(1, (response == null ? 0 : response.length()) / 4)
+                        : streamState.finishedEvent.completionTokens(),
+                "tokensStreamed", Math.max(1, streamState.answerChunks),
+                "tokensPerSecond", streamState.finishedEvent == null || streamState.finishedEvent.tokensPerSecond() == null ? 0.0d : streamState.finishedEvent.tokensPerSecond(),
+                "source", "structured-main-model"
+        ));
+        GenerationFinishedEvent finished = streamState.finishedEvent == null
                 ? GenerationFinishedEvent.create(context.conversationId(), 0, context.brain().type(), context.model(),
-                null, Math.max(1, answer.length() / 4), null)
-                : mainFinishedEvent;
-        context.modelEventSink().publish(StatusChangedEvent.create(ChatEventType.IDLE, context.conversationId(), "IDLE"));
-        return context.withResponse(answer, finished);
+                null, Math.max(1, (response == null ? 0 : response.length()) / 4), null)
+                : streamState.finishedEvent;
+        return context.withResponse(response == null ? "" : response, finished);
+    }
+
+    private String streamedOrParsed(StreamingStructuredResponseParser parser, String parsed) {
+        return parser.streamedValue().isBlank() ? parsed : parser.streamedValue();
     }
 
     private void publishMainModelAction(PipelineContext context, MainModelAction action, long durationMs) {
@@ -173,10 +223,6 @@ public class ModelExecutionStage implements PipelineStage {
                         "model", context.model(),
                         "reasoningLevel", context.brain().reasoningLevel().name()
                 ));
-    }
-
-    private void publish(CognitiveEventType event, String status, String message, Map<String, Object> metadata) {
-        cognitiveEventBus.publish(event, status, message, null, metadata);
     }
 
     private void recordPromptMetrics(PipelineContext context, String mainPrompt) {
@@ -231,7 +277,12 @@ public class ModelExecutionStage implements PipelineStage {
                 .orElseThrow(() -> new AIProviderException("AI provider is not available: " + context.brain().provider()));
     }
 
-    private static final class GenerationFinishedHolder {
-        private GenerationFinishedEvent event;
+    private static final class StreamState {
+        private final StringBuilder answer = new StringBuilder();
+        private GenerationFinishedEvent finishedEvent;
+        private boolean answerStarted;
+        private int answerChunks;
+        private int answerCharacters;
+        private long answerStartedNano;
     }
 }

@@ -2,7 +2,7 @@
 
 Jarvis is a long-term AI operating system backend foundation.
 
-Version `0.8` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE token streaming, a metadata-only knowledge engine foundation, keyword retrieval over indexed metadata, structured context building, Knowledge Injection into prompts, and a unified Cognitive Event Bus.
+Version `2.5.0` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE/WebSocket streaming, Knowledge Workspace, Cognitive Memory, native tool calling, SearXNG-backed Web Search, and a unified Cognitive Event Bus.
 
 ## Modules
 
@@ -14,7 +14,7 @@ Version `0.8` provides a headless Spring Boot backend for Ubuntu Server 24.04 LT
 - `jarvis-memory` - in-memory conversation history with replaceable interfaces.
 - `jarvis-ollama` - Ollama implementation hidden behind the provider-independent AI contract.
 - `jarvis-planner` - planning contracts for future planning engines.
-- `jarvis-tools` - tool execution framework contracts.
+- `jarvis-tools` - native tool execution framework, KnowledgeTool, and WebSearchTool.
 - `jarvis-plugin-sdk` - plugin extension contracts for future external JAR plugins.
 
 ## Run
@@ -32,7 +32,7 @@ curl http://localhost:8080/api/health
 Expected response:
 
 ```json
-{"status":"online","version":"0.8"}
+{"status":"online","version":"2.5.0"}
 ```
 
 ## Chat v0.2
@@ -135,3 +135,79 @@ knowledge:
   watch: true
   preview-length: 500
 ```
+
+## Web Search v2.5
+
+J.A.R.V.I.S. can search current web information through a local self-hosted SearXNG instance. The model does not call SearXNG directly. The flow is:
+
+```text
+User
+  -> LLM MAIN_MODEL_ACTION TOOL_REQUEST
+  -> Core ToolCallingRuntime
+  -> WebSearchTool
+  -> local SearXNG JSON API
+  -> ToolResult
+  -> LLM final answer
+  -> User
+```
+
+The native tool is named `web` and exposes:
+
+```json
+{"action":"TOOL_CALL","tool":"web","operation":"SEARCH_WEB","arguments":{"query":"RTX 4060 Ti 16GB cena Polska","maxResults":5},"reason":"The user asked for current internet information."}
+```
+
+The model receives normalized search results only: title, URL, short snippet, and source. Core does not pass raw SearXNG JSON, HTML, ads, or full pages into the context window.
+
+Configuration:
+
+```yaml
+jarvis:
+  web-search:
+    enabled: true
+    base-url: http://127.0.0.1:8888
+    default-max-results: 5
+    hard-max-results: 10
+    snippet-max-length: 320
+    connect-timeout: 2s
+    read-timeout: 8s
+```
+
+The default SearXNG port is `8888` because J.A.R.V.I.S. Core uses `8080` for its own API. If Core is moved to another port, `jarvis.web-search.base-url` and the compose port mapping can be changed to `http://127.0.0.1:8080`.
+
+Start SearXNG on Ubuntu:
+
+```bash
+cd /opt/jarvis/SERVER/deploy/searxng
+docker compose up -d
+```
+
+Stop or restart:
+
+```bash
+docker compose down
+docker compose restart
+```
+
+Check status:
+
+```bash
+docker compose ps
+curl "http://127.0.0.1:8888/search?q=jarvis&format=json"
+```
+
+Manual test search:
+
+```bash
+curl "http://127.0.0.1:8888/search?q=RTX%204060%20Ti%2016GB%20cena%20Polska&format=json"
+```
+
+Diagnostics:
+
+```text
+[WEB_SEARCH] query="RTX 4060 Ti 16GB cena Polska"
+[WEB_SEARCH] results=5
+[WEB_SEARCH] duration=XXXms
+```
+
+If SearXNG is unavailable, `WebSearchTool` returns a failed `ToolResult` with `errorCode=WEB_SEARCH_FAILED`. It never invents web results and never allows the model to change the configured SearXNG base URL.

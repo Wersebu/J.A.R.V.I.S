@@ -343,17 +343,19 @@ public class OllamaProvider implements AIProvider {
                         LOGGER.info("[JARVIS][requestId={}][OLLAMA] TIME_TO_FIRST_TOKEN elapsedMs={}",
                                 diagnosticsRequestId(), firstTokenLatencyMs);
                     }
-                    answerChunks++;
-                    answerCharacters += token.length();
-                    publishCognitive(jobType, CognitiveEventType.ANSWER_TOKEN, "TOKEN", token, "model:" + brain.model(), Map.of(
-                            "text", token,
-                            "index", answerChunks
-                    ));
-                    publishCognitive(jobType, CognitiveEventType.TOKEN, "TOKEN", token, "model:" + brain.model(), Map.of(
-                            "text", token,
-                            "index", answerChunks
-                    ));
-                    eventSink.publish(TokenEvent.create(conversationId, token));
+                    for (String chunk : responseChunks(token)) {
+                        answerChunks++;
+                        answerCharacters += chunk.length();
+                        publishCognitive(jobType, CognitiveEventType.ANSWER_TOKEN, "TOKEN", chunk, "model:" + brain.model(), Map.of(
+                                "text", chunk,
+                                "index", answerChunks
+                        ));
+                        publishCognitive(jobType, CognitiveEventType.TOKEN, "TOKEN", chunk, "model:" + brain.model(), Map.of(
+                                "text", chunk,
+                                "index", answerChunks
+                        ));
+                        eventSink.publish(TokenEvent.create(conversationId, chunk));
+                    }
                 }
             }
         }
@@ -451,6 +453,21 @@ public class OllamaProvider implements AIProvider {
 
     private long nanosToMillis(long nanos) {
         return TimeUnit.NANOSECONDS.toMillis(nanos);
+    }
+
+    private java.util.List<String> responseChunks(String token) {
+        if (token == null || token.isEmpty()) {
+            return java.util.List.of();
+        }
+        if (token.length() <= 8 || token.isBlank()) {
+            return java.util.List.of(token);
+        }
+        java.util.List<String> chunks = new java.util.ArrayList<>();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("\\S+\\s*|\\s+").matcher(token);
+        while (matcher.find()) {
+            chunks.add(matcher.group());
+        }
+        return chunks.isEmpty() ? java.util.List.of(token) : chunks;
     }
 
     private String severity(long durationMs) {

@@ -211,14 +211,17 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 if (result.requiresApproval()) {
                     publish(request, CognitiveEventType.TOOL_APPROVAL_REQUIRED, "WAITING_APPROVAL",
                             "Tool call requires approval", targetNode(action), step, resultMetadata(result));
-                    String answer = generateFinalAnswer(request, action, result, true);
                     saveDebug(request, intent, steps, "WAITING_APPROVAL", errors);
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "WAITING_APPROVAL", "Tool loop waiting for approval",
                             targetNode(action), step, resultMetadata(result));
-                    return new ToolCallingResult(true, answer, steps, results);
+                    return new ToolCallingResult(true, "", steps, results);
                 }
                 if (!result.success()) {
                     failures++;
+                    if (isTerminalFailedSearch(action)) {
+                        errors.add(result.errorMessage().isBlank() ? "Web search failed" : result.errorMessage());
+                        break;
+                    }
                     if (failures >= properties.maxConsecutiveFailures()) {
                         errors.add(result.errorMessage().isBlank() ? "Tool execution failed" : result.errorMessage());
                         break;
@@ -233,11 +236,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 publish(request, CognitiveEventType.TOOL_VERIFICATION_FINISHED, "VERIFIED", "Tool result verified",
                         targetNode(action), step, Map.of("operation", action.operation(), "success", result.success()));
                 if (result.success() && isTerminalWrite(action.operation())) {
-                    String answer = generateFinalAnswer(request, action, result, false);
                     saveDebug(request, intent, steps, "FINISHED", errors);
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished",
                             targetNode(action), step, resultMetadata(result));
-                    return new ToolCallingResult(true, answer, steps, results);
+                    return new ToolCallingResult(true, "", steps, results);
                 }
             }
             String finalAnswer = errors.isEmpty()
@@ -463,6 +465,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"UPDATE_DOCUMENT\",\"arguments\":{\"path\":\"People/Kuba.md\",\"instruction\":\"SET_SECTION:Urodziny\",\"text\":\"6 czerwca\"},\"reason\":\"User asked to update the birthday section.\"}\n"
                 + "Search knowledge:\n"
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"Kuba urodziny\"},\"reason\":\"Need to inspect existing knowledge before answering.\"}\n"
+                + "Search the web through local SearXNG:\n"
+                + "{\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"SEARCH_WEB\",\"arguments\":{\"query\":\"RTX 4060 Ti 16GB cena Polska\",\"maxResults\":5},\"reason\":\"The user asked for current internet information.\"}\n"
                 + "\n\nDetected tool intent: " + intent
                 + "\nThis detected intent is only a weak hint from Java. You own the final tool decision."
                 + "\nMain model tool goal:\n" + safe(request.goal())
@@ -481,6 +485,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private String repairPrompt(String raw) {
         return "Repair this malformed tool action into valid JSON only. It must be either "
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"...\"},\"reason\":\"...\"} "
+                + "or {\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"SEARCH_WEB\",\"arguments\":{\"query\":\"...\",\"maxResults\":5},\"reason\":\"...\"} "
                 + "or {\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"CREATE_DOCUMENT\",\"arguments\":{\"path\":\"...\",\"content\":\"...\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"UPDATE_DOCUMENT\",\"arguments\":{\"path\":\"...\",\"instruction\":\"...\",\"text\":\"...\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"NO_TOOL\",\"reason\":\"...\"} "
@@ -506,6 +511,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "\n\nThe user request is:\n" + request.userMessage()
                 + "\n\nDetected intent: " + intent
                 + "\nIf the user asks to save/create/update knowledge and provided enough information, return a TOOL_CALL."
+                + "\nIf the user asks for current web information, prices, news, releases, or external source-backed data, return web.SEARCH_WEB."
                 + "\nFor a new saved fact, CREATE_DOCUMENT is supported. You must decide path and markdown content."
                 + "\nExample JSON only:\n"
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"CREATE_DOCUMENT\",\"arguments\":{\"path\":\"People/Kuba.md\",\"content\":\"# Kuba\\n\\n## Urodziny\\n\\n6 czerwca\\n\"},\"reason\":\"User asked to save a birthday fact.\"}"
@@ -526,7 +532,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "\nInvalid operation: " + invalidAction.operation()
                 + "\nUser request:\n" + request.userMessage()
                 + "\nDetected intent: " + intent
-                + "\nReturn corrected JSON only. Use one of the supported knowledge operations listed above."
+                + "\nReturn corrected JSON only. Use one of the supported operations listed above."
                 + "\nFor saving new knowledge, use CREATE_DOCUMENT with path and content. Step: " + step;
     }
 
@@ -536,7 +542,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 || intent == ToolIntent.UPDATE_DOCUMENT
                 || intent == ToolIntent.APPEND_DOCUMENT
                 || intent == ToolIntent.DELETE_KNOWLEDGE
-                || intent == ToolIntent.ORGANIZE_KNOWLEDGE;
+                || intent == ToolIntent.ORGANIZE_KNOWLEDGE
+                || intent == ToolIntent.SEARCH_WEB;
     }
 
     private String observation(ToolResult result) {
@@ -548,6 +555,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                     "requiresApproval", result.requiresApproval(),
                     "draftId", result.draftId(),
                     "message", result.message(),
+                    "errorCode", result.errorCode(),
+                    "errorMessage", result.errorMessage(),
                     "data", result.data()
             ));
         } catch (JsonProcessingException exception) {
@@ -565,7 +574,19 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         values.put("draftId", result.draftId());
         values.put("targetNodeIds", result.targetNodeIds());
         values.put("message", result.message());
+        values.put("errorCode", result.errorCode());
+        values.put("errorMessage", result.errorMessage());
+        if (result.data().containsKey("baseUrl")) {
+            values.put("baseUrl", result.data().get("baseUrl"));
+        }
+        if (result.data().containsKey("query")) {
+            values.put("query", result.data().get("query"));
+        }
         return values;
+    }
+
+    private boolean isTerminalFailedSearch(ToolAction action) {
+        return "web".equalsIgnoreCase(action.tool()) && "SEARCH_WEB".equalsIgnoreCase(action.operation());
     }
 
     private Map<String, Object> actionMetadata(ToolAction action) {
@@ -623,6 +644,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private String targetNode(ToolAction action) {
         Object path = action.arguments().get("path");
         if (path == null) {
+            Object query = action.arguments().get("query");
+            if ("web".equalsIgnoreCase(action.tool()) && query != null) {
+                return "web:search";
+            }
             return null;
         }
         return "knowledge-document:" + String.valueOf(path).replace('\\', '/');

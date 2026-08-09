@@ -59,6 +59,10 @@ public class EventController {
                 schema(CognitiveEventType.MODEL_REQUEST_STARTED, "Model request started.", "model", "endpoint", "provider"),
                 schema(CognitiveEventType.WAITING_FIRST_TOKEN, "Waiting for first token.", "model", "requestLatencyMs"),
                 schema(CognitiveEventType.FIRST_TOKEN_RECEIVED, "First token received.", "latencyMs", "model"),
+                schema(CognitiveEventType.STRUCTURED_RESPONSE_DETECTED, "Structured main model response type was detected.", "type", "model", "reasoningLevel"),
+                schema(CognitiveEventType.ANSWER_STREAM_STARTED, "Structured final answer stream started.", "type", "model"),
+                schema(CognitiveEventType.QUESTION_STREAM_STARTED, "Structured clarification stream started.", "type", "model"),
+                schema(CognitiveEventType.TOOL_REQUEST_DETECTED, "Structured tool request was detected.", "type", "model"),
                 schema(CognitiveEventType.THINKING_STARTED, "Native model thinking started.", "model", "reasoningLevel"),
                 schema(CognitiveEventType.THINKING_TOKEN, "Native model thinking fragment.", "text", "index"),
                 schema(CognitiveEventType.THINKING_FINISHED, "Native model thinking finished.", "durationMs", "chunks", "characters"),
@@ -129,7 +133,8 @@ public class EventController {
             case BRAIN_SELECTED -> "brain:REASONING";
             case MODEL_REQUEST_STARTED, WAITING_FIRST_TOKEN, FIRST_TOKEN_RECEIVED, THINKING_STARTED, THINKING_TOKEN,
                     THINKING_FINISHED, ANSWER_STARTED, ANSWER_TOKEN, ANSWER_FINISHED, STREAMING_STARTED, TOKEN,
-                    STREAMING_FINISHED -> "model:gpt-oss:20b";
+                    STREAMING_FINISHED, STRUCTURED_RESPONSE_DETECTED, ANSWER_STREAM_STARTED, QUESTION_STREAM_STARTED,
+                    TOOL_REQUEST_DETECTED -> "model:gpt-oss:20b";
             case RESPONSE_GROUNDING -> "grounding:response";
             case MEMORY_JOB_QUEUED, MEMORY_AGENT_STARTED, MEMORY_AGENT_DECISION, MEMORY_AGENT_FINISHED, MEMORY_AGENT_ERROR -> "memory:agent";
             case MEMORY_CANDIDATE_FOUND, MEMORY_INJECTED, MEMORY_USED, MEMORY_CREATED, MEMORY_UPDATED, MEMORY_DELETED ->
@@ -152,6 +157,10 @@ public class EventController {
             case MEMORY_CREATED -> Map.of("content", "User owns RTX3060", "category", "DEVICE", "priority", "HIGH");
             case MEMORY_UPDATED -> Map.of("oldContent", "User owns RTX3060", "newContent", "User owns RTX5090");
             case FIRST_TOKEN_RECEIVED -> Map.of("latencyMs", 420);
+            case STRUCTURED_RESPONSE_DETECTED -> Map.of("type", "FINAL_ANSWER", "model", "gpt-oss:20b", "reasoningLevel", "LOW");
+            case ANSWER_STREAM_STARTED -> Map.of("type", "FINAL_ANSWER", "model", "gpt-oss:20b");
+            case QUESTION_STREAM_STARTED -> Map.of("type", "CLARIFICATION", "model", "gpt-oss:20b");
+            case TOOL_REQUEST_DETECTED -> Map.of("type", "TOOL_REQUEST", "model", "gpt-oss:20b");
             case THINKING_STARTED -> Map.of("model", "gpt-oss:20b", "reasoningLevel", "HIGH");
             case THINKING_TOKEN -> Map.of("text", "Analyzing context...", "index", 1);
             case THINKING_FINISHED -> Map.of("durationMs", 8400, "chunks", 32, "characters", 1200);

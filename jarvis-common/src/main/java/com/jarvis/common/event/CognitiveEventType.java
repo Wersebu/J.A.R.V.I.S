@@ -158,6 +158,14 @@ public enum CognitiveEventType {
     MAIN_MODEL_REQUEST,
     /** Main model action decision was parsed. */
     MAIN_MODEL_ACTION,
+    /** Structured main-model response type was detected while streaming. */
+    STRUCTURED_RESPONSE_DETECTED,
+    /** Structured final answer field started streaming. */
+    ANSWER_STREAM_STARTED,
+    /** Structured clarification question field started streaming. */
+    QUESTION_STREAM_STARTED,
+    /** Structured tool request was detected while streaming. */
+    TOOL_REQUEST_DETECTED,
     /** Backend is waiting for the first model token. */
     WAITING_FIRST_TOKEN,
     /** First model token was received. */
