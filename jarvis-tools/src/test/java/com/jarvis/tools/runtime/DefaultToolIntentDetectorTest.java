@@ -22,4 +22,16 @@ class DefaultToolIntentDetectorTest {
         assertThat(detector.detect("ile kosztuje RTX 3060 12GB na rynku wtornym?"))
                 .isEqualTo(ToolIntent.SEARCH_WEB);
     }
+
+    @Test
+    void detectsCasualUsedGpuPriceQuestionAsWebSearch() {
+        assertThat(detector.detect("a po ile chodzi uzywany rtx 4070ti 16 gb"))
+                .isEqualTo(ToolIntent.SEARCH_WEB);
+    }
+
+    @Test
+    void detectsShortPriceFollowUpAsWebSearch() {
+        assertThat(detector.detect("no ceny"))
+                .isEqualTo(ToolIntent.SEARCH_WEB);
+    }
 }

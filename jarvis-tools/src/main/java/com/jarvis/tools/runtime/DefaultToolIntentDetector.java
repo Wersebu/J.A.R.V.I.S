@@ -33,7 +33,7 @@ public class DefaultToolIntentDetector implements ToolIntentDetector {
             return ToolIntent.READ_DOCUMENT;
         }
         if (containsAny(value, "internet", "w internecie", "web", "online", "aktualn", "cena", "ceny", "kurs", "notowan",
-                "rynek", "wtorn",
+                "rynek", "wtorn", "uzywan", "po ile", "ile chodzi", "chodzi uzywan", "kosztuje", "koszt", "wycena",
                 "news", "wiadomosci", "zloto", "zlot", "xau", "walut", "sprawdz w sieci", "wyszukaj w sieci",
                 "latest", "current price", "price", "market", "exchange rate", "rate", "gold")) {
             return ToolIntent.SEARCH_WEB;

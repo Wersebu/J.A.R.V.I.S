@@ -28,15 +28,21 @@ public class ToolCallingStage implements PipelineStage {
 
     private final ToolCallingRuntime toolCallingRuntime;
     private final List<AIProvider> aiProviders;
+    private final MainModelActionParser actionParser;
 
     /**
      * Creates the tool-calling stage.
      *
      * @param toolCallingRuntime native tool-calling runtime
      */
-    public ToolCallingStage(ToolCallingRuntime toolCallingRuntime, List<AIProvider> aiProviders) {
+    public ToolCallingStage(
+            ToolCallingRuntime toolCallingRuntime,
+            List<AIProvider> aiProviders,
+            MainModelActionParser actionParser
+    ) {
         this.toolCallingRuntime = toolCallingRuntime;
         this.aiProviders = List.copyOf(aiProviders);
+        this.actionParser = actionParser;
     }
 
     @Override
@@ -103,14 +109,136 @@ public class ToolCallingStage implements PipelineStage {
     }
 
     private String streamPrompt(PipelineContext context, String prompt, String fallback) {
-        StringBuilder answer = new StringBuilder();
-        selectProvider(context).stream(context.conversationId(), context.brain(), prompt, AIJobType.CHAT, event -> {
+        ToolAnswerStreamState streamState = new ToolAnswerStreamState();
+        selectProvider(context).stream(context.conversationId(), context.brain(), prompt, AIJobType.MAIN_MODEL, event -> {
             if (event instanceof TokenEvent tokenEvent) {
-                answer.append(tokenEvent.text());
+                handleToolAnswerToken(context, tokenEvent.text(), streamState);
             }
-            context.modelEventSink().publish(event);
+            if (event instanceof GenerationFinishedEvent finishedEvent) {
+                streamState.finishedEvent = finishedEvent;
+            }
         });
-        return answer.isEmpty() ? fallback : answer.toString();
+        String answer = finishToolAnswerStream(context, streamState, fallback);
+        return answer.isBlank() ? fallback : answer;
+    }
+
+    private void handleToolAnswerToken(PipelineContext context, String token, ToolAnswerStreamState streamState) {
+        if (token == null || token.isEmpty()) {
+            return;
+        }
+        streamState.raw.append(token);
+        if (!streamState.modeDecided) {
+            String raw = streamState.raw.toString();
+            String stripped = raw.stripLeading();
+            if (stripped.isEmpty()) {
+                return;
+            }
+            streamState.structured = stripped.startsWith("{");
+            streamState.modeDecided = true;
+            if (!streamState.structured) {
+                streamToolAnswerChunk(context, raw, streamState);
+                streamState.raw.setLength(0);
+                return;
+            }
+        }
+        if (!streamState.structured) {
+            streamToolAnswerChunk(context, token, streamState);
+            streamState.raw.setLength(0);
+            return;
+        }
+        StreamingStructuredResponseParser.ParserUpdate update = streamState.parser.accept(token);
+        update.detectedType().ifPresent(type -> publishStructuredToolAnswerDetected(context, type));
+        if (update.streamedText() != null && !update.streamedText().isEmpty()) {
+            streamToolAnswerChunk(context, update.streamedText(), streamState);
+        }
+    }
+
+    private String finishToolAnswerStream(PipelineContext context, ToolAnswerStreamState streamState, String fallback) {
+        String answer = streamState.answer.toString();
+        if (streamState.structured && answer.isBlank()) {
+            answer = parsedStructuredToolAnswer(streamState.raw.toString(), fallback);
+            if (!answer.isBlank()) {
+                streamToolAnswerChunk(context, answer, streamState);
+            }
+        }
+        if (!streamState.structured && !streamState.raw.isEmpty()) {
+            answer = streamState.raw.toString();
+            streamToolAnswerChunk(context, answer, streamState);
+        }
+        if (answer.isBlank()) {
+            answer = fallback;
+            streamToolAnswerChunk(context, answer, streamState);
+        }
+        long durationMs = streamState.answerStartedNano == 0L ? 0L : (System.nanoTime() - streamState.answerStartedNano) / 1_000_000L;
+        publish(context, CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Tool answer finished", Map.of(
+                "durationMs", durationMs,
+                "characters", answer.length(),
+                "tokens", Math.max(1, answer.length() / 4),
+                "source", "tool-final-answer"
+        ));
+        publish(context, CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Tool answer streaming finished", Map.of(
+                "generationTimeMs", streamState.finishedEvent == null ? 0 : streamState.finishedEvent.generationTimeMs(),
+                "promptTokens", streamState.finishedEvent == null || streamState.finishedEvent.promptTokens() == null ? 0 : streamState.finishedEvent.promptTokens(),
+                "completionTokens", streamState.finishedEvent == null || streamState.finishedEvent.completionTokens() == null
+                        ? Math.max(1, answer.length() / 4)
+                        : streamState.finishedEvent.completionTokens(),
+                "tokensStreamed", Math.max(1, streamState.answerChunks),
+                "tokensPerSecond", streamState.finishedEvent == null || streamState.finishedEvent.tokensPerSecond() == null ? 0.0d : streamState.finishedEvent.tokensPerSecond(),
+                "source", "tool-final-answer"
+        ));
+        return answer;
+    }
+
+    private String parsedStructuredToolAnswer(String raw, String fallback) {
+        try {
+            MainModelAction action = actionParser.parse(raw);
+            return switch (action.type()) {
+                case FINAL_ANSWER -> action.answer();
+                case CLARIFICATION -> action.question();
+                case TOOL_REQUEST -> fallback;
+            };
+        } catch (RuntimeException exception) {
+            return fallback;
+        }
+    }
+
+    private void publishStructuredToolAnswerDetected(PipelineContext context, MainModelActionType type) {
+        publish(context, CognitiveEventType.STRUCTURED_RESPONSE_DETECTED, type.name(),
+                "Structured tool final response detected", Map.of(
+                        "type", type.name(),
+                        "model", context.model(),
+                        "source", "tool-final-answer"
+                ));
+    }
+
+    private void streamToolAnswerChunk(PipelineContext context, String chunk, ToolAnswerStreamState streamState) {
+        if (chunk == null || chunk.isEmpty()) {
+            return;
+        }
+        if (!streamState.answerStarted) {
+            streamState.answerStarted = true;
+            streamState.answerStartedNano = System.nanoTime();
+            publish(context, CognitiveEventType.ANSWER_STARTED, "ANSWERING", "Tool answer started", Map.of(
+                    "model", context.model(),
+                    "source", "tool-final-answer"
+            ));
+            publish(context, CognitiveEventType.STREAMING_STARTED, "STREAMING", "Tool answer streaming started", Map.of(
+                    "model", context.model(),
+                    "source", "tool-final-answer"
+            ));
+        }
+        streamState.answerChunks++;
+        streamState.answer.append(chunk);
+        publish(context, CognitiveEventType.ANSWER_TOKEN, "TOKEN", chunk, Map.of(
+                "text", chunk,
+                "index", streamState.answerChunks,
+                "source", "tool-final-answer"
+        ));
+        publish(context, CognitiveEventType.TOKEN, "TOKEN", chunk, Map.of(
+                "text", chunk,
+                "index", streamState.answerChunks,
+                "source", "tool-final-answer"
+        ));
     }
 
     private String publishBufferedFallback(PipelineContext context, String answer, String source) {
@@ -269,6 +397,18 @@ public class ToolCallingStage implements PipelineStage {
 
     private String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private static final class ToolAnswerStreamState {
+        private final StringBuilder raw = new StringBuilder();
+        private final StringBuilder answer = new StringBuilder();
+        private final StreamingStructuredResponseParser parser = new StreamingStructuredResponseParser();
+        private GenerationFinishedEvent finishedEvent;
+        private boolean modeDecided;
+        private boolean structured;
+        private boolean answerStarted;
+        private int answerChunks;
+        private long answerStartedNano;
     }
 
 }

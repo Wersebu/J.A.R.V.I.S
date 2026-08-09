@@ -96,7 +96,18 @@ public class ModelExecutionStage implements PipelineStage {
         try {
             return actionParser.parse(raw);
         } catch (MainModelActionParsingException first) {
+            if (!looksLikeStructuredAction(raw)) {
+                return safeFinalAnswerFromRaw(raw, first.getMessage());
+            }
             String repaired = selectProvider(context).chat(context.brain(), repairPrompt(raw), AIJobType.DEBUG).response();
+            if (isRepairArtifact(repaired)) {
+                cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "INVALID",
+                        "Main model repair returned an internal repair artifact", null, Map.of(
+                                "repairAttempted", true,
+                                "error", "repair-artifact"
+                        ));
+                return safeFallbackAnswer("Nie moge teraz bezpiecznie przygotowac odpowiedzi, bo model nie zwrocil poprawnej tresci. Sprobuj ponownie.");
+            }
             try {
                 return actionParser.parse(repaired);
             } catch (MainModelActionParsingException second) {
@@ -105,9 +116,49 @@ public class ModelExecutionStage implements PipelineStage {
                                 "repairAttempted", true,
                                 "error", second.getMessage()
                         ));
-                return actionParser.finalAnswer("Nie moge bezpiecznie przetworzyc odpowiedzi modelu, poniewaz nie zwrocil poprawnego formatu akcji.");
+                if (repaired != null && !repaired.isBlank() && !looksLikeStructuredAction(repaired)) {
+                    return safeFinalAnswerFromRaw(repaired, second.getMessage());
+                }
+                return safeFallbackAnswer("Nie moge teraz bezpiecznie przygotowac odpowiedzi, bo model nie zwrocil poprawnej tresci. Sprobuj ponownie.");
             }
         }
+    }
+
+    private MainModelAction safeFinalAnswerFromRaw(String raw, String error) {
+        String value = raw == null ? "" : raw.strip();
+        if (value.isBlank() || isRepairArtifact(value)) {
+            cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "INVALID",
+                    "Main model returned no user-facing action", null, Map.of(
+                            "repairAttempted", false,
+                            "error", error == null ? "" : error
+                    ));
+            return safeFallbackAnswer("Nie moge teraz bezpiecznie przygotowac odpowiedzi, bo model nie zwrocil tresci odpowiedzi. Sprobuj ponownie.");
+        }
+        cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "FALLBACK_FINAL_ANSWER",
+                "Main model returned plain text instead of structured action", null, Map.of(
+                        "repairAttempted", false,
+                        "characters", value.length()
+                ));
+        return actionParser.finalAnswer(value);
+    }
+
+    private MainModelAction safeFallbackAnswer(String answer) {
+        return actionParser.finalAnswer(answer);
+    }
+
+    private boolean looksLikeStructuredAction(String raw) {
+        String value = raw == null ? "" : raw.strip();
+        return value.startsWith("{")
+                || value.startsWith("```")
+                || value.contains("\"type\"")
+                || value.contains("'type'");
+    }
+
+    private boolean isRepairArtifact(String value) {
+        String normalized = value == null ? "" : value.toLowerCase(java.util.Locale.ROOT);
+        return (normalized.contains("raw text") && normalized.contains("valid json"))
+                || normalized.contains("needs to be repaired into valid json")
+                || normalized.contains("repair this main model action");
     }
 
     private String repairPrompt(String raw) {
