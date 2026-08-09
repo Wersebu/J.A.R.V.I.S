@@ -231,6 +231,13 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 }
                 observation = observation(result);
 
+                if (result.success() && isTerminalWebSearch(action)) {
+                    saveDebug(request, intent, steps, "FINISHED", errors);
+                    publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished",
+                            targetNode(action), step, resultMetadata(result));
+                    return new ToolCallingResult(true, "", steps, results);
+                }
+
                 publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "VERIFYING", "Verifying tool result",
                         targetNode(action), step, Map.of("operation", action.operation()));
                 publish(request, CognitiveEventType.TOOL_VERIFICATION_FINISHED, "VERIFIED", "Tool result verified",
@@ -278,7 +285,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 return parse(repaired);
             } catch (RuntimeException repairException) {
                 LOGGER.warn("[TOOL_LOOP] action JSON repair failed step={} repaired={}", step, abbreviate(repaired));
-                return plainTextFinalAnswer(raw, "I could not convert the model response into a safe tool action.");
+                return fallbackAfterInvalidToolJson(request, intent, raw,
+                        "I could not convert the model response into a safe tool action.");
             }
         }
     }
@@ -289,7 +297,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             return parse(raw);
         } catch (RuntimeException exception) {
             LOGGER.warn("[TOOL_LOOP] retry action JSON invalid step={} raw={}", step, abbreviate(raw));
-            return plainTextFinalAnswer(raw, "Nie moglem bezpiecznie przygotowac poprawnego wywolania narzedzia.");
+            return fallbackAfterInvalidToolJson(request, intent, raw,
+                    "Nie moglem bezpiecznie przygotowac poprawnego wywolania narzedzia.");
         }
     }
 
@@ -317,13 +326,18 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             return parse(raw);
         } catch (RuntimeException exception) {
             LOGGER.warn("[TOOL_LOOP] invalid-action retry JSON invalid step={} raw={}", step, abbreviate(raw));
-            return plainTextFinalAnswer(raw, "Nie moglem bezpiecznie przygotowac poprawionego wywolania narzedzia.");
+            return fallbackAfterInvalidToolJson(request, intent, raw,
+                    "Nie moglem bezpiecznie przygotowac poprawionego wywolania narzedzia.");
         }
     }
 
     private ToolAction parse(String raw) {
         try {
             JsonNode node = objectMapper.readTree(extractJsonPayload(raw));
+            String type = text(node, "type");
+            if ("TOOL_REQUEST".equalsIgnoreCase(type)) {
+                throw new ToolException("Model returned main action envelope instead of concrete tool action");
+            }
             String action = text(node, "action");
             if (action.isBlank() && !text(node, "name").isBlank()) {
                 String name = text(node, "name");
@@ -344,6 +358,29 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         } catch (JsonProcessingException exception) {
             throw new ToolException("Invalid tool action JSON", exception);
         }
+    }
+
+    private ToolAction fallbackAfterInvalidToolJson(ToolCallingRequest request, ToolIntent intent, String raw, String fallback) {
+        if (intent == ToolIntent.SEARCH_WEB && looksLikeToolRequestEnvelope(raw)) {
+            return webSearchFallback(request, raw);
+        }
+        return safePlainTextFinalAnswer(raw, fallback);
+    }
+
+    private ToolAction webSearchFallback(ToolCallingRequest request, String raw) {
+        LOGGER.warn("[TOOL_LOOP] coercing repeated TOOL_REQUEST envelope into web.SEARCH_WEB requestId={}",
+                request.requestId());
+        String query = request.userMessage() == null || request.userMessage().isBlank()
+                ? request.goal()
+                : request.userMessage();
+        return new ToolAction("TOOL_CALL", "web", "SEARCH_WEB", Map.of(
+                "query", query == null ? "" : query.strip(),
+                "maxResults", 5
+        ), "Main model requested current external information but returned the main action envelope again.", "");
+    }
+
+    private ToolAction safePlainTextFinalAnswer(String raw, String fallback) {
+        return plainTextFinalAnswer(looksLikeStructuredEnvelope(raw) ? "" : raw, fallback);
     }
 
     private ToolAction plainTextFinalAnswer(String raw, String fallback) {
@@ -589,6 +626,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         return "web".equalsIgnoreCase(action.tool()) && "SEARCH_WEB".equalsIgnoreCase(action.operation());
     }
 
+    private boolean isTerminalWebSearch(ToolAction action) {
+        return "web".equalsIgnoreCase(action.tool()) && "SEARCH_WEB".equalsIgnoreCase(action.operation());
+    }
+
     private Map<String, Object> actionMetadata(ToolAction action) {
         Map<String, Object> values = new HashMap<>();
         values.put("tool", action.tool());
@@ -677,6 +718,19 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             return value.substring(start, end + 1);
         }
         return value;
+    }
+
+    private boolean looksLikeToolRequestEnvelope(String raw) {
+        String value = raw == null ? "" : raw;
+        return value.contains("\"type\"") && value.contains("\"TOOL_REQUEST\"");
+    }
+
+    private boolean looksLikeStructuredEnvelope(String raw) {
+        String value = raw == null ? "" : raw;
+        return value.contains("\"type\"")
+                && (value.contains("\"TOOL_REQUEST\"")
+                || value.contains("\"FINAL_ANSWER\"")
+                || value.contains("\"CLARIFICATION\""));
     }
 
     private String abbreviate(String value) {
