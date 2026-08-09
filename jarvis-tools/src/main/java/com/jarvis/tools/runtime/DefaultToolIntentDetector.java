@@ -32,8 +32,10 @@ public class DefaultToolIntentDetector implements ToolIntentDetector {
         if (containsAny(value, "przeczytaj", "read", "co masz o", "pokaz dokument")) {
             return ToolIntent.READ_DOCUMENT;
         }
-        if (containsAny(value, "internet", "w internecie", "web", "online", "aktualn", "cena", "ceny", "news", "wiadomosci",
-                "sprawdz w sieci", "wyszukaj w sieci", "latest", "current price", "price", "market")) {
+        if (containsAny(value, "internet", "w internecie", "web", "online", "aktualn", "cena", "ceny", "kurs", "notowan",
+                "rynek", "wtorn",
+                "news", "wiadomosci", "zloto", "zlot", "xau", "walut", "sprawdz w sieci", "wyszukaj w sieci",
+                "latest", "current price", "price", "market", "exchange rate", "rate", "gold")) {
             return ToolIntent.SEARCH_WEB;
         }
         if (containsAny(value, "wyszukaj", "search", "znajdz w wiedzy", "szukaj",

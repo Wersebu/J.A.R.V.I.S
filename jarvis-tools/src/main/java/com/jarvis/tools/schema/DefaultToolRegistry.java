@@ -37,7 +37,7 @@ public class DefaultToolRegistry implements ToolRegistry {
                 .collect(Collectors.joining("\n\n"))
                 + "\n\nRules:\n"
                 + "- Use tools when the user explicitly asks to save, update, create, read, search or organize knowledge.\n"
-                + "- Use web search when the user asks for current, recent, external, internet, price, market, news, release, documentation, or source-backed information not already available in the prompt.\n"
+                + "- Use web search when the user asks for current, recent, external, internet, price, market, exchange-rate, commodity, gold-price, news, release, documentation, or source-backed information not already available in the prompt.\n"
                 + "- The knowledge tool DOES support writing. For saving a new fact, use CREATE_DOCUMENT with explicit path and content.\n"
                 + "- For CREATE_DOCUMENT, the model must decide the logical path and complete markdown content.\n"
                 + "- For UPDATE_DOCUMENT, the model must decide the target path and exact update instruction.\n"
