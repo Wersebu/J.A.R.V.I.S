@@ -35,7 +35,9 @@ public class KnowledgeModeStage implements PipelineStage {
     @Override
     public PipelineContext execute(PipelineContext context) {
         KnowledgeMode requested = context.request().knowledgeMode();
-        KnowledgeMode effective = requested == KnowledgeMode.AUTO ? auto(context) : requested;
+        KnowledgeMode effective = hasAttachments(context)
+                ? KnowledgeMode.FAST
+                : requested == KnowledgeMode.AUTO ? auto(context) : requested;
         cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_ANALYZED, "MODE_SELECTED", "Knowledge mode selected", null, Map.of(
                 "requestedMode", requested.name(),
                 "knowledgeMode", effective.name(),
@@ -60,11 +62,18 @@ public class KnowledgeModeStage implements PipelineStage {
     }
 
     private String reason(PipelineContext context, KnowledgeMode effective) {
+        if (hasAttachments(context)) {
+            return "Temporary attachments use direct prompt context";
+        }
         if (context.request().knowledgeMode() != KnowledgeMode.AUTO) {
             return "User selected " + effective.name();
         }
         return effective == KnowledgeMode.RESEARCH
                 ? "Auto selected research for multi-step knowledge work"
                 : "Auto selected fast retrieval for low latency";
+    }
+
+    private boolean hasAttachments(PipelineContext context) {
+        return !context.request().attachments().isEmpty();
     }
 }
