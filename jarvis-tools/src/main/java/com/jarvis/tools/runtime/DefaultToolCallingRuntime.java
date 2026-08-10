@@ -83,7 +83,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
 
     @Override
     public ToolCallingResult execute(ToolCallingRequest request) {
-        ToolIntent intent = intentDetector.detect(request.userMessage());
+        ToolIntent intent = resolveIntent(request);
         if (!properties.isEnabled()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
         }
@@ -507,6 +507,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         Matcher gpu = Pattern.compile("(?i)\\b(rtx|gtx|rx)\\s*(\\d{3,4})\\s*(ti|super|xt)?\\b").matcher(normalized);
         while (gpu.find()) {
             addQueryPart(parts, (gpu.group(1) + " " + gpu.group(2) + " " + safe(gpu.group(3))).strip().replaceAll("\\s+", " "));
+            addAdjacentProductTerm(parts, normalized.substring(gpu.end()));
         }
         Matcher memory = Pattern.compile("(?i)\\b(\\d{1,3})\\s*(gb|gib)\\b").matcher(normalized);
         while (memory.find()) {
@@ -551,6 +552,19 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         if (!exists) {
             parts.add(candidate);
         }
+    }
+
+    private void addAdjacentProductTerm(Set<String> parts, String textAfterMatch) {
+        Matcher matcher = Pattern.compile("(?i)^\\s*([a-z0-9][a-z0-9-]{2,})\\b").matcher(safe(textAfterMatch));
+        if (!matcher.find()) {
+            return;
+        }
+        String term = matcher.group(1);
+        String normalized = normalizeAscii(term);
+        if (Set.of("gpu", "gpus", "card", "cards", "karta", "karty", "used", "uzywana", "cena", "price").contains(normalized)) {
+            return;
+        }
+        addQueryPart(parts, term);
     }
 
     private String cleanupSearchQuery(String value) {
@@ -829,6 +843,26 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 || intent == ToolIntent.DELETE_KNOWLEDGE
                 || intent == ToolIntent.ORGANIZE_KNOWLEDGE
                 || intent == ToolIntent.SEARCH_WEB;
+    }
+
+    private ToolIntent resolveIntent(ToolCallingRequest request) {
+        ToolIntent messageIntent = intentDetector.detect(request.userMessage());
+        if (messageIntent != ToolIntent.NO_TOOL) {
+            return messageIntent;
+        }
+        ToolIntent contextualIntent = intentDetector.detect(safe(request.goal()) + " " + safe(request.reason()));
+        if (contextualIntent != ToolIntent.NO_TOOL) {
+            LOGGER.info("[TOOL_LOOP] resolved intent from main model tool request requestId={} intent={}",
+                    request.requestId(), contextualIntent);
+            return contextualIntent;
+        }
+        String context = normalizeAscii(safe(request.goal()) + " " + safe(request.reason()));
+        if (!context.isBlank()
+                && context.matches(".*\\b(web|internet|external|current|live|market|price|prices|listing|listings|search)\\b.*")) {
+            LOGGER.info("[TOOL_LOOP] inferred web intent from main model tool request requestId={}", request.requestId());
+            return ToolIntent.SEARCH_WEB;
+        }
+        return messageIntent;
     }
 
     private String observation(ToolResult result) {

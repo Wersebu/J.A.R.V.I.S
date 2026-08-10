@@ -383,6 +383,44 @@ class DefaultToolCallingRuntimeTest {
         assertThat(executed.get().arguments()).containsEntry("url", "https://allegro.pl/oferta/rtx-4060-ti");
     }
 
+    @Test
+    void usesMainModelToolGoalWhenUserReplyOnlyConfirmsPreviousClarification() {
+        AtomicReference<ToolRequest> executed = new AtomicReference<>();
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger modelCalls = new AtomicInteger();
+        DefaultToolCallingRuntime runtime = new DefaultToolCallingRuntime(
+                List.of(new StubProvider("{\"action\":\"NO_TOOL\",\"reason\":\"Should not be asked during direct web mapping.\"}", modelCalls)),
+                new StubToolManager(executed, executions),
+                webRegistry(),
+                query -> ToolIntent.NO_TOOL,
+                new ToolRuntimeProperties(true, 2, 2, 1, 30),
+                new NoopCognitiveEventBus(),
+                new ToolRuntimeDebugService(),
+                new ObjectMapper()
+        );
+
+        ToolCallingResult result = runtime.execute(new ToolCallingRequest(
+                "request-8",
+                "conversation-1",
+                "tak +/-",
+                "Retrieve up-to-date listings and price ranges for used RTX3060 Aorus GPUs in Poland, focusing on OLX and Allegro.",
+                "User confirmed that approximate current prices are enough; need current web data.",
+                "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(modelCalls).hasValue(0);
+        assertThat(executions).hasValue(1);
+        assertThat(executed.get()).isNotNull();
+        assertThat(executed.get().toolName()).isEqualTo("web");
+        assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
+        assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("RTX 3060");
+        assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("Aorus");
+        assertThat(String.valueOf(executed.get().arguments().get("query"))).contains("OLX");
+    }
+
     private ToolRegistry webRegistry() {
         ToolDefinition definition = new ToolDefinition("web", "Web search", List.of(
                 new ToolOperationDefinition("SEARCH_WEB", "Search web", List.of(
