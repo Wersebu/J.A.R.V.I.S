@@ -52,6 +52,7 @@ public class OllamaProvider implements AIProvider {
     private final OllamaProperties properties;
     private final CognitiveEventBus cognitiveEventBus;
     private final OllamaRequestCoordinator requestCoordinator;
+    private final ModelWarmupRegistry warmupRegistry;
 
     /**
      * Creates the Ollama HTTP service.
@@ -67,13 +68,15 @@ public class OllamaProvider implements AIProvider {
             ObjectMapper objectMapper,
             OllamaProperties properties,
             CognitiveEventBus cognitiveEventBus,
-            OllamaRequestCoordinator requestCoordinator
+            OllamaRequestCoordinator requestCoordinator,
+            ModelWarmupRegistry warmupRegistry
     ) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.cognitiveEventBus = cognitiveEventBus;
         this.requestCoordinator = requestCoordinator;
+        this.warmupRegistry = warmupRegistry;
     }
 
     /**
@@ -618,6 +621,18 @@ public class OllamaProvider implements AIProvider {
         );
         LOGGER.info("[MODEL_BOTTLENECK] requestId={} type={} shareOfTotal={}%",
                 diagnosticsRequestId(), metrics.bottleneck(), "%.1f".formatted(bottleneckShare(metrics) * 100.0d));
+        logUnexpectedColdStart(jobType, metrics);
+    }
+
+    private void logUnexpectedColdStart(AIJobType jobType, OllamaInferenceMetrics metrics) {
+        if ((jobType == AIJobType.CHAT || jobType == AIJobType.MAIN_MODEL)
+                && warmupRegistry.eagerModelReady(metrics.model())
+                && !metrics.modelLikelyWarm()
+                && metrics.loadDurationMs() > 1_000L
+                && warmupRegistry.markUnexpectedColdStartIfFirst(metrics.model())) {
+            LOGGER.warn("[MODEL WARMUP] model={} loadMs={} status=UNEXPECTED_COLD_START",
+                    metrics.model(), metrics.loadDurationMs());
+        }
     }
 
     private void appendPromptMetrics(Map<String, Object> metadata, InferenceDiagnostics diagnostics, OllamaInferenceMetrics metrics) {

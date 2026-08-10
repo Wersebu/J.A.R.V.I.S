@@ -49,8 +49,19 @@ jarvis:
   ollama:
     base-url: http://localhost:11434
     model: gpt-oss:20b
-    keep-alive: 30m
+    keep-alive: -1
     interactive-priority: true
+  model-startup:
+    models:
+      "gpt-oss:20b":
+        startup-policy: EAGER
+        keep-alive: -1
+      Chatterbox:
+        startup-policy: LAZY
+      Whisper:
+        startup-policy: LAZY
+      Vision:
+        startup-policy: LAZY
   decision:
     reasoning-complexity-threshold: 6
     large-prompt-token-threshold: 800

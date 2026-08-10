@@ -10,7 +10,7 @@ import java.net.http.HttpClient;
  * Wires Ollama-specific infrastructure.
  */
 @Configuration
-@EnableConfigurationProperties(OllamaProperties.class)
+@EnableConfigurationProperties({OllamaProperties.class, ModelStartupProperties.class})
 public class OllamaConfiguration {
 
     /**
