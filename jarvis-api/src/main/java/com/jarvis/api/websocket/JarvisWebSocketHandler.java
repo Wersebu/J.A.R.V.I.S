@@ -2,6 +2,7 @@ package com.jarvis.api.websocket;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jarvis.api.diagnostics.JarvisLogBroadcaster;
 import com.jarvis.api.service.ChatService;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.event.CognitiveEvent;
@@ -20,6 +21,7 @@ import java.io.IOException;
 public class JarvisWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(JarvisWebSocketHandler.class);
+    private static final String LOG_SUBSCRIPTION_ATTRIBUTE = "jarvisLogSubscription";
 
     private final ChatService chatService;
     private final ObjectMapper objectMapper;
@@ -43,6 +45,8 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+        AutoCloseable logSubscription = JarvisLogBroadcaster.subscribe(event -> send(session, event));
+        session.getAttributes().put(LOG_SUBSCRIPTION_ATTRIBUTE, logSubscription);
         send(session, new WebSocketStatus("CONNECTED", "Jarvis WebSocket online"));
     }
 
@@ -79,6 +83,18 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        closeLogSubscription(session);
+    }
+
+    /**
+     * Cleans up session resources after transport failure.
+     *
+     * @param session active WebSocket session
+     * @param exception transport exception
+     */
+    @Override
+    public void handleTransportError(WebSocketSession session, Throwable exception) {
+        closeLogSubscription(session);
     }
 
     private void sendEvent(WebSocketSession session, CognitiveEvent event) {
@@ -96,6 +112,17 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
                 LOGGER.debug("[JARVIS] WebSocket session already closed");
             } catch (IOException exception) {
                 LOGGER.debug("[JARVIS] Could not send WebSocket message: {}", exception.getMessage());
+            }
+        }
+    }
+
+    private void closeLogSubscription(WebSocketSession session) {
+        Object subscription = session.getAttributes().remove(LOG_SUBSCRIPTION_ATTRIBUTE);
+        if (subscription instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception exception) {
+                LOGGER.debug("[JARVIS] Could not close log subscription: {}", exception.getMessage());
             }
         }
     }
