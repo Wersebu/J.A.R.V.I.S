@@ -104,17 +104,13 @@ public class OllamaProvider implements AIProvider {
     @Override
     public ChatResponse chat(Brain brain, String prompt, AIJobType jobType) {
         StringBuilder responseBuilder = new StringBuilder();
-        StringBuilder thinkingBuilder = new StringBuilder();
         stream("", brain, prompt, jobType, event -> {
             if (event instanceof TokenEvent tokenEvent) {
                 responseBuilder.append(tokenEvent.text());
             }
-            if (event instanceof ThinkingTokenEvent thinkingTokenEvent) {
-                thinkingBuilder.append(thinkingTokenEvent.text());
-            }
         });
         String response = responseBuilder.toString();
-        return new ChatResponse(response.isBlank() ? thinkingBuilder.toString() : response);
+        return new ChatResponse(response);
     }
 
     /**

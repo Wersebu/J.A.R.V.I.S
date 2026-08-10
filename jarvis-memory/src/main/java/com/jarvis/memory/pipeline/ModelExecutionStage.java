@@ -70,14 +70,13 @@ public class ModelExecutionStage implements PipelineStage {
                 handleParserUpdate(context, update, streamState, true);
             }
             if (event instanceof ThinkingTokenEvent thinkingTokenEvent) {
-                StreamingStructuredResponseParser.ParserUpdate update = streamingParser.accept(thinkingTokenEvent.text());
-                handleParserUpdate(context, update, streamState, false);
+                streamState.thinking.append(thinkingTokenEvent.text());
             }
             if (event instanceof GenerationFinishedEvent finishedEvent) {
                 streamState.finishedEvent = finishedEvent;
             }
         });
-        MainModelAction action = parseAction(context, streamingParser);
+        MainModelAction action = parseAction(context, streamingParser, streamState.thinking.toString());
         long durationMs = (System.nanoTime() - startedNano) / 1_000_000L;
         publishMainModelAction(context, action, durationMs);
         return switch (action.type()) {
@@ -106,7 +105,11 @@ public class ModelExecutionStage implements PipelineStage {
         }
     }
 
-    private MainModelAction parseAction(PipelineContext context, StreamingStructuredResponseParser streamingParser) {
+    private MainModelAction parseAction(
+            PipelineContext context,
+            StreamingStructuredResponseParser streamingParser,
+            String privateThinking
+    ) {
         String raw = streamingParser.raw();
         try {
             return actionParser.parse(raw);
@@ -114,6 +117,10 @@ public class ModelExecutionStage implements PipelineStage {
             MainModelAction streamedAction = actionFromStreamedValue(streamingParser);
             if (streamedAction != null) {
                 return streamedAction;
+            }
+            MainModelAction repairedFromThinking = repairPrivateThinking(context, privateThinking, first.getMessage());
+            if (repairedFromThinking != null) {
+                return repairedFromThinking;
             }
             if (!looksLikeStructuredAction(raw)) {
                 return safeFinalAnswerFromRaw(raw, first.getMessage());
@@ -140,6 +147,31 @@ public class ModelExecutionStage implements PipelineStage {
                 }
                 return safeFallbackAnswer("Nie moge teraz bezpiecznie przygotowac odpowiedzi, bo model nie zwrocil poprawnej tresci. Sprobuj ponownie.");
             }
+        }
+    }
+
+    private MainModelAction repairPrivateThinking(PipelineContext context, String privateThinking, String error) {
+        if (privateThinking == null || privateThinking.isBlank()) {
+            return null;
+        }
+        String repaired = selectProvider(context).chat(context.brain(), repairPrompt(privateThinking), AIJobType.DEBUG).response();
+        if (repaired == null || repaired.isBlank() || isRepairArtifact(repaired)) {
+            cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "INVALID",
+                    "Main model returned only private thinking and repair failed", null, Map.of(
+                            "repairAttempted", true,
+                            "error", error == null ? "" : error
+                    ));
+            return null;
+        }
+        try {
+            return actionParser.parse(repaired);
+        } catch (MainModelActionParsingException exception) {
+            cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "INVALID",
+                    "Main model private thinking repair returned invalid action JSON", null, Map.of(
+                            "repairAttempted", true,
+                            "error", exception.getMessage()
+                    ));
+            return null;
         }
     }
 
@@ -372,6 +404,7 @@ public class ModelExecutionStage implements PipelineStage {
 
     private static final class StreamState {
         private final StringBuilder answer = new StringBuilder();
+        private final StringBuilder thinking = new StringBuilder();
         private GenerationFinishedEvent finishedEvent;
         private boolean answerStarted;
         private int answerChunks;
