@@ -240,6 +240,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                     return new ToolCallingResult(true, "", steps, results);
                 }
                 if (!result.success()) {
+                    if (isWebPageRead(action) && step < maxCalls) {
+                        observation = observation(result);
+                        continue;
+                    }
                     failures++;
                     if (isTerminalFailedSearch(action)) {
                         errors.add(result.errorMessage().isBlank() ? "Web search failed" : result.errorMessage());
@@ -287,7 +291,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 }
                 if (!result.success() && isWebPageRead(action)) {
                     errors.add(result.errorMessage().isBlank() ? "Web page read failed" : result.errorMessage());
-                    break;
+                    continue;
                 }
             }
             String finalAnswer = errors.isEmpty()
@@ -779,6 +783,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "\nYou may perform multiple web searches when results are weak, irrelevant, or from the wrong domain."
                 + "\nYou may read multiple web pages when comparing offers or looking for a concrete listing."
                 + "\nIf a READ_WEB_PAGE observation has pageQualityAccepted=false, do not finish. Search again with a different query or read another relevant result."
+                + "\nIf READ_WEB_PAGE fails with 403, 401, 429, timeout, or blocked content, do not finish. Read another result or search again through another source/domain."
                 + "\nFor requested sites/domains, include them in the query, e.g. site:allegro.pl RTX 4060 Ti."
                 + "\nOnly return FINAL_ANSWER when observations contain enough relevant evidence, or when you honestly cannot find it after attempts."
                 + "\nThe LLM is the only component allowed to decide semantic knowledge writes."

@@ -486,6 +486,69 @@ class DefaultToolCallingRuntimeTest {
         assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("RTX 3060 Ti");
     }
 
+    @Test
+    void continuesWebResearchWhenReadPageIsBlocked() {
+        AtomicReference<ToolRequest> executed = new AtomicReference<>();
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger modelCalls = new AtomicInteger();
+        DefaultToolCallingRuntime runtime = new DefaultToolCallingRuntime(
+                List.of(new SequentialStubProvider(modelCalls,
+                        """
+                        {"action":"TOOL_CALL","tool":"web","operation":"READ_WEB_PAGE","arguments":{"url":"https://olx.pl/oferta/rtx-5060-ti"},"reason":"Read the best marketplace result."}
+                        """,
+                        """
+                        {"action":"TOOL_CALL","tool":"web","operation":"SEARCH_WEB","arguments":{"query":"RTX 5060 Ti cena uzywana Allegro","maxResults":5},"reason":"The previous page was blocked, search another source."}
+                        """
+                )),
+                new StubToolManager(executed, executions) {
+                    @Override
+                    public ToolResult execute(ToolRequest request) {
+                        executed.set(request);
+                        int call = executions.incrementAndGet();
+                        if (call == 1) {
+                            return webResult(request, "rtx 5060 ti - Komputery w dobrej cenie - OLX",
+                                    "https://olx.pl/oferta/rtx-5060-ti",
+                                    "RTX 5060 Ti karta graficzna uzywana OLX");
+                        }
+                        if (call == 2) {
+                            assertThat(request.operation()).isEqualTo("READ_WEB_PAGE");
+                            return new ToolResult(false, "web", "READ_WEB_PAGE", request.requestId(), request.conversationId(), false,
+                                    List.of(), "Web page read failed", Map.of(
+                                    "url", request.arguments().get("url"),
+                                    "statusCode", 403,
+                                    "errorMessage", "HTTP 403"
+                            ), "WEB_PAGE_READ_FAILED", "HTTP 403", false, "");
+                        }
+                        return webResult(request, "RTX 5060 Ti - Niska cena na Allegro",
+                                "https://allegro.pl/oferta/rtx-5060-ti",
+                                "RTX 5060 Ti uzywana cena 2500 PLN");
+                    }
+                },
+                webRegistry(),
+                query -> ToolIntent.SEARCH_WEB,
+                new ToolRuntimeProperties(true, 5, 5, 1, 30),
+                new NoopCognitiveEventBus(),
+                new ToolRuntimeDebugService(),
+                new ObjectMapper()
+        );
+
+        ToolCallingResult result = runtime.execute(new ToolCallingRequest(
+                "request-10",
+                "conversation-1",
+                "po ile sa uzywane 5060 ti?",
+                "Retrieve the current market price for NVIDIA GeForce RTX 5060 Ti in Polish currency.",
+                "Need current marketplace price.",
+                "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(executions).hasValue(3);
+        assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
+        assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("RTX 5060 Ti");
+    }
+
     private ToolRegistry webRegistry() {
         ToolDefinition definition = new ToolDefinition("web", "Web search", List.of(
                 new ToolOperationDefinition("SEARCH_WEB", "Search web", List.of(
