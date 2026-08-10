@@ -336,7 +336,7 @@ class DefaultToolCallingRuntimeTest {
         AtomicInteger executions = new AtomicInteger();
         AtomicInteger modelCalls = new AtomicInteger();
         DefaultToolCallingRuntime runtime = new DefaultToolCallingRuntime(
-                List.of(new SequentialStubProvider(modelCalls, "", "")),
+                List.of(new SequentialStubProvider(modelCalls, "", "{\"action\":\"NO_TOOL\",\"reason\":\"No safe action.\"}")),
                 new StubToolManager(executed, executions) {
                     @Override
                     public ToolResult execute(ToolRequest request) {

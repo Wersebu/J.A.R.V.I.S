@@ -318,7 +318,13 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             LOGGER.warn("[TOOL_LOOP] invalid action JSON step={} raw={}", step, abbreviate(raw));
             String repaired = selectProvider(request).chat(request.brain(), repairPrompt(raw), AIJobType.BACKGROUND).response();
             try {
-                return parse(repaired);
+                ToolAction repairedAction = parse(repaired);
+                ToolAction webContinuation = webContinuationAfterUnsafeStep(request, intent, observation, repaired,
+                        "Repaired web action declined after previous web results; continue by reading the best result.");
+                if (isNoTool(repairedAction) && webContinuation != null) {
+                    return webContinuation;
+                }
+                return repairedAction;
             } catch (RuntimeException repairException) {
                 LOGGER.warn("[TOOL_LOOP] action JSON repair failed step={} repaired={}", step, abbreviate(repaired));
                 return fallbackAfterInvalidToolJson(request, intent, observation, raw,
@@ -403,6 +409,21 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             String raw,
             String fallback
     ) {
+        ToolAction webContinuation = webContinuationAfterUnsafeStep(request, intent, observation, raw,
+                "Main model requested current external information but returned an unsafe web continuation.");
+        if (webContinuation != null) {
+            return webContinuation;
+        }
+        return safePlainTextFinalAnswer(raw, fallback);
+    }
+
+    private ToolAction webContinuationAfterUnsafeStep(
+            ToolCallingRequest request,
+            ToolIntent intent,
+            String observation,
+            String raw,
+            String searchReason
+    ) {
         if (intent == ToolIntent.SEARCH_WEB) {
             ToolAction rawUrlAction = readUrlAction(firstHttpUrl(raw),
                     "Model requested browsing a specific URL; WebSearchTool reads pages through READ_WEB_PAGE.");
@@ -420,12 +441,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             if (shouldCoerceWebToolRequest(raw)) {
                 LOGGER.warn("[TOOL_LOOP] coercing repeated TOOL_REQUEST envelope into web.SEARCH_WEB requestId={}",
                         request.requestId());
-                return webSearchAction(request,
-                        "Main model requested current external information but returned the main action envelope again.",
-                        raw);
+                return webSearchAction(request, searchReason, raw);
             }
         }
-        return safePlainTextFinalAnswer(raw, fallback);
+        return null;
     }
 
     private ToolAction initialWebAction(ToolCallingRequest request) {
