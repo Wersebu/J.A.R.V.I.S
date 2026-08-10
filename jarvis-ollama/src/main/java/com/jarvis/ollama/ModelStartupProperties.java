@@ -21,7 +21,7 @@ public class ModelStartupProperties {
      */
     public Map<String, ModelPolicyProperties> getModels() {
         Map<String, ModelPolicyProperties> merged = defaultModels();
-        merged.putAll(models);
+        models.forEach((model, policy) -> merged.put(normalizeModelName(model), policy));
         return merged;
     }
 
@@ -31,7 +31,20 @@ public class ModelStartupProperties {
      * @param models model policy map
      */
     public void setModels(Map<String, ModelPolicyProperties> models) {
-        this.models = models == null ? defaultModels() : new LinkedHashMap<>(models);
+        if (models == null) {
+            this.models = defaultModels();
+            return;
+        }
+        Map<String, ModelPolicyProperties> normalized = new LinkedHashMap<>();
+        models.forEach((model, policy) -> normalized.put(normalizeModelName(model), policy));
+        this.models = normalized;
+    }
+
+    private static String normalizeModelName(String model) {
+        if ("gpt-oss20b".equals(model)) {
+            return "gpt-oss:20b";
+        }
+        return model;
     }
 
     private static Map<String, ModelPolicyProperties> defaultModels() {

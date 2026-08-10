@@ -53,7 +53,7 @@ jarvis:
     interactive-priority: true
   model-startup:
     models:
-      "gpt-oss:20b":
+      "[gpt-oss:20b]":
         startup-policy: EAGER
         keep-alive: -1m
       Chatterbox:
