@@ -46,6 +46,9 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     };
     private static final String AI_UNAVAILABLE_WRITE_MESSAGE =
             "Nie moge teraz przeanalizowac i zapisac tej informacji, poniewaz model AI jest niedostepny.";
+    private static final Pattern SPECIFIC_VALUE_PATTERN = Pattern.compile(
+            "(?iu)(?:\\b\\d+[\\d .,\u00a0]{0,24}\\s*(?:zl|zł|pln|usd|eur|gbp|\\$|€)\\b|(?:\\$|€)\\s*\\d+[\\d .,\\u00a0]{0,24})"
+    );
 
     private final List<AIProvider> aiProviders;
     private final ToolManager toolManager;
@@ -258,14 +261,16 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                     return new ToolCallingResult(true, "", steps, results);
                 }
                 if (result.success() && isWebPageRead(action)) {
-                    publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "VERIFYING", "Verifying tool result",
-                            targetNode(action), step, Map.of("operation", action.operation()));
-                    publish(request, CognitiveEventType.TOOL_VERIFICATION_FINISHED, "VERIFIED", "Tool result verified",
-                            targetNode(action), step, Map.of("operation", action.operation(), "success", true));
-                    saveDebug(request, intent, steps, "FINISHED", errors);
-                    publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished",
-                            targetNode(action), step, resultMetadata(result));
-                    return new ToolCallingResult(true, "", steps, results);
+                    result = enrichWebPageQuality(request, result, step, action);
+                    results.set(results.size() - 1, result);
+                    observation = observation(result);
+                    if (webPageAccepted(result)) {
+                        saveDebug(request, intent, steps, "FINISHED", errors);
+                        publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished",
+                                targetNode(action), step, resultMetadata(result));
+                        return new ToolCallingResult(true, "", steps, results);
+                    }
+                    continue;
                 }
 
                 if (!isTerminalWebSearch(action)) {
@@ -773,6 +778,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "\nUse READ_WEB_PAGE when search snippets do not contain prices, dates, exact values, or enough evidence."
                 + "\nYou may perform multiple web searches when results are weak, irrelevant, or from the wrong domain."
                 + "\nYou may read multiple web pages when comparing offers or looking for a concrete listing."
+                + "\nIf a READ_WEB_PAGE observation has pageQualityAccepted=false, do not finish. Search again with a different query or read another relevant result."
                 + "\nFor requested sites/domains, include them in the query, e.g. site:allegro.pl RTX 4060 Ti."
                 + "\nOnly return FINAL_ANSWER when observations contain enough relevant evidence, or when you honestly cannot find it after attempts."
                 + "\nThe LLM is the only component allowed to decide semantic knowledge writes."
@@ -921,9 +927,74 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         );
     }
 
+    private ToolResult enrichWebPageQuality(ToolCallingRequest request, ToolResult result, int step, ToolAction action) {
+        String content = safe(String.valueOf(result.data().getOrDefault("content", "")));
+        boolean requiresValue = requiresSpecificValue(request.userMessage() + " " + request.goal() + " " + request.reason());
+        boolean valueFound = containsSpecificValue(content);
+        boolean accepted = result.success() && !content.isBlank() && (!requiresValue || valueFound);
+        String reason;
+        if (accepted) {
+            reason = "Web page contains enough visible content for the requested answer.";
+        } else if (content.isBlank()) {
+            reason = "Web page read returned no visible content. Search again or read another result.";
+        } else if (requiresValue) {
+            reason = "Web page was readable, but no requested numeric value was found. Search again or read another result.";
+        } else {
+            reason = "Web page content was not sufficient. Search again or read another result.";
+        }
+        Map<String, Object> data = new HashMap<>(result.data());
+        data.put("pageQualityAccepted", accepted);
+        data.put("pageQualityReason", reason);
+        data.put("pageValueFound", valueFound);
+        data.put("requiresSpecificValue", requiresValue);
+        publish(request,
+                accepted ? CognitiveEventType.TOOL_VERIFICATION_FINISHED : CognitiveEventType.TOOL_VERIFICATION_STARTED,
+                accepted ? "VERIFIED" : "RETRY_NEEDED",
+                accepted ? "Tool result verified" : "Web page did not contain enough evidence",
+                targetNode(action),
+                step,
+                Map.of(
+                        "tool", result.tool(),
+                        "operation", result.operation(),
+                        "pageQualityAccepted", accepted,
+                        "pageQualityReason", reason,
+                        "pageValueFound", valueFound,
+                        "requiresSpecificValue", requiresValue
+                ));
+        return new ToolResult(
+                result.success(),
+                result.tool(),
+                result.operation(),
+                result.requestId(),
+                result.conversationId(),
+                result.changed(),
+                result.targetNodeIds(),
+                result.message(),
+                data,
+                result.errorCode(),
+                result.errorMessage(),
+                result.requiresApproval(),
+                result.draftId()
+        );
+    }
+
     private boolean webSearchAccepted(ToolResult result) {
         Object accepted = result.data().get("sourceQualityAccepted");
         return !(accepted instanceof Boolean value) || value;
+    }
+
+    private boolean webPageAccepted(ToolResult result) {
+        Object accepted = result.data().get("pageQualityAccepted");
+        return !(accepted instanceof Boolean value) || value;
+    }
+
+    private boolean requiresSpecificValue(String text) {
+        String normalized = normalizeAscii(text);
+        return normalized.matches(".*\\b(cena|ceny|koszt|kosztuje|kurs|notowania|price|prices|rate|market)\\b.*");
+    }
+
+    private boolean containsSpecificValue(String text) {
+        return SPECIFIC_VALUE_PATTERN.matcher(safe(text)).find();
     }
 
     private Map<String, Object> resultMetadata(ToolResult result) {
@@ -960,6 +1031,11 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             values.put("sourceQualityAccepted", result.data().get("sourceQualityAccepted"));
             values.put("sourceQualityScore", result.data().getOrDefault("sourceQualityScore", 0.0d));
             values.put("sourceQualityReason", result.data().getOrDefault("sourceQualityReason", ""));
+        }
+        if (result.data().containsKey("pageQualityAccepted")) {
+            values.put("pageQualityAccepted", result.data().get("pageQualityAccepted"));
+            values.put("pageQualityReason", result.data().getOrDefault("pageQualityReason", ""));
+            values.put("pageValueFound", result.data().getOrDefault("pageValueFound", false));
         }
         return values;
     }
