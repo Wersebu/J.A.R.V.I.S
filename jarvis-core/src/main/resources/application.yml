@@ -49,13 +49,13 @@ jarvis:
   ollama:
     base-url: http://localhost:11434
     model: gpt-oss:20b
-    keep-alive: -1
+    keep-alive: -1m
     interactive-priority: true
   model-startup:
     models:
       "gpt-oss:20b":
         startup-policy: EAGER
-        keep-alive: -1
+        keep-alive: -1m
       Chatterbox:
         startup-policy: LAZY
       Whisper:

@@ -87,7 +87,7 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
     private WarmupResult warmup(String model, ModelStartupProperties.ModelPolicyProperties policy) {
         long startedNano = System.nanoTime();
         String endpoint = normalizeBaseUrl(ollamaProperties.baseUrl()) + "/api/generate";
-        String keepAlive = policy.getKeepAlive().isBlank() ? "-1" : policy.getKeepAlive();
+        String keepAlive = policy.getKeepAlive().isBlank() ? "-1m" : policy.getKeepAlive();
         OllamaGenerateRequest requestBody = new OllamaGenerateRequest(model, WARMUP_PROMPT, false, "low", keepAlive);
         try {
             HttpRequest request = HttpRequest.newBuilder()
@@ -98,7 +98,8 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
                     .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new OllamaException("Warmup failed with status " + response.statusCode());
+                throw new OllamaException("Warmup failed with status " + response.statusCode()
+                        + " body=" + response.body());
             }
             OllamaGenerateResponse generateResponse = objectMapper.readValue(response.body(), OllamaGenerateResponse.class);
             return new WarmupResult(nsToMs(generateResponse.loadDuration()), elapsedMs(startedNano));

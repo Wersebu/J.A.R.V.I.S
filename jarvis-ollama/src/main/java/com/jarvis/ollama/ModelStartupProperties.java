@@ -36,7 +36,7 @@ public class ModelStartupProperties {
 
     private static Map<String, ModelPolicyProperties> defaultModels() {
         Map<String, ModelPolicyProperties> defaults = new LinkedHashMap<>();
-        defaults.put("gpt-oss:20b", new ModelPolicyProperties(ModelStartupPolicy.EAGER, "-1"));
+        defaults.put("gpt-oss:20b", new ModelPolicyProperties(ModelStartupPolicy.EAGER, "-1m"));
         defaults.put("Chatterbox", new ModelPolicyProperties(ModelStartupPolicy.LAZY, ""));
         defaults.put("Whisper", new ModelPolicyProperties(ModelStartupPolicy.LAZY, ""));
         defaults.put("Vision", new ModelPolicyProperties(ModelStartupPolicy.LAZY, ""));
