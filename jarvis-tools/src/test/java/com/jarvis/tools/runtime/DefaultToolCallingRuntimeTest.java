@@ -330,6 +330,59 @@ class DefaultToolCallingRuntimeTest {
         assertThat(executed.get().arguments()).containsEntry("url", "https://www.olx.pl/d/oferta/rtx-4060-ti");
     }
 
+    @Test
+    void readsBestSearchResultWhenNextWebStepIsEmptyAfterWeakSnippets() {
+        AtomicReference<ToolRequest> executed = new AtomicReference<>();
+        AtomicInteger executions = new AtomicInteger();
+        AtomicInteger modelCalls = new AtomicInteger();
+        DefaultToolCallingRuntime runtime = new DefaultToolCallingRuntime(
+                List.of(new SequentialStubProvider(modelCalls, "", "")),
+                new StubToolManager(executed, executions) {
+                    @Override
+                    public ToolResult execute(ToolRequest request) {
+                        executed.set(request);
+                        int call = executions.incrementAndGet();
+                        if (call == 1) {
+                            return webResult(request, "RTX 4060 Ti Uzywana - Niska cena na Allegro",
+                                    "https://allegro.pl/oferta/rtx-4060-ti",
+                                    "NVIDIA GeForce RTX 4060 Ti 16GB karta graficzna");
+                        }
+                        assertThat(request.operation()).isEqualTo("READ_WEB_PAGE");
+                        return new ToolResult(true, "web", "READ_WEB_PAGE", request.requestId(), request.conversationId(), false,
+                                List.of("web:page"), "Read page", Map.of(
+                                "url", request.arguments().get("url"),
+                                "title", "RTX 4060 Ti Uzywana - Niska cena na Allegro",
+                                "content", "RTX 4060 Ti 16GB cena 1250 PLN",
+                                "characters", 31
+                        ), "", "", false, "");
+                    }
+                },
+                webRegistry(),
+                query -> ToolIntent.SEARCH_WEB,
+                new ToolRuntimeProperties(true, 4, 4, 1, 30),
+                new NoopCognitiveEventBus(),
+                new ToolRuntimeDebugService(),
+                new ObjectMapper()
+        );
+
+        ToolCallingResult result = runtime.execute(new ToolCallingRequest(
+                "request-7",
+                "conversation-1",
+                "polska i pln",
+                "Search the live web for current used Nvidia GeForce RTX 4060 Ti GPUs with 16 GB VRAM and retrieve current market prices.",
+                "Need current marketplace price in Poland.",
+                "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(executions).hasValue(2);
+        assertThat(modelCalls).hasValue(2);
+        assertThat(executed.get().operation()).isEqualTo("READ_WEB_PAGE");
+        assertThat(executed.get().arguments()).containsEntry("url", "https://allegro.pl/oferta/rtx-4060-ti");
+    }
+
     private ToolRegistry webRegistry() {
         ToolDefinition definition = new ToolDefinition("web", "Web search", List.of(
                 new ToolOperationDefinition("SEARCH_WEB", "Search web", List.of(

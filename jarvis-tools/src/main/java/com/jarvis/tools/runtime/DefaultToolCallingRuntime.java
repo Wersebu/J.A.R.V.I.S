@@ -403,25 +403,27 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             String raw,
             String fallback
     ) {
-        if (intent == ToolIntent.SEARCH_WEB && shouldCoerceWebToolRequest(raw)) {
+        if (intent == ToolIntent.SEARCH_WEB) {
             ToolAction rawUrlAction = readUrlAction(firstHttpUrl(raw),
                     "Model requested browsing a specific URL; WebSearchTool reads pages through READ_WEB_PAGE.");
             if (rawUrlAction != null) {
-                LOGGER.warn("[TOOL_LOOP] coercing browse request into web.READ_WEB_PAGE from raw URL requestId={}",
+                LOGGER.warn("[TOOL_LOOP] coercing malformed web step into web.READ_WEB_PAGE from raw URL requestId={}",
                         request.requestId());
                 return rawUrlAction;
             }
             ToolAction readAction = readAcceptedWebResultAction(observation);
             if (readAction != null) {
-                LOGGER.warn("[TOOL_LOOP] coercing repeated TOOL_REQUEST envelope into web.READ_WEB_PAGE requestId={}",
+                LOGGER.warn("[TOOL_LOOP] coercing malformed web step into web.READ_WEB_PAGE from previous search result requestId={}",
                         request.requestId());
                 return readAction;
             }
-            LOGGER.warn("[TOOL_LOOP] coercing repeated TOOL_REQUEST envelope into web.SEARCH_WEB requestId={}",
-                    request.requestId());
-            return webSearchAction(request,
-                    "Main model requested current external information but returned the main action envelope again.",
-                    raw);
+            if (shouldCoerceWebToolRequest(raw)) {
+                LOGGER.warn("[TOOL_LOOP] coercing repeated TOOL_REQUEST envelope into web.SEARCH_WEB requestId={}",
+                        request.requestId());
+                return webSearchAction(request,
+                        "Main model requested current external information but returned the main action envelope again.",
+                        raw);
+            }
         }
         return safePlainTextFinalAnswer(raw, fallback);
     }
