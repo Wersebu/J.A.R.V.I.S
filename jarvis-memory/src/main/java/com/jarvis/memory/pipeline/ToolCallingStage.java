@@ -18,6 +18,10 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Executes native tool-calling after the main model requested an external capability.
@@ -25,6 +29,10 @@ import java.util.Map;
 @Service
 @Order(92)
 public class ToolCallingStage implements PipelineStage {
+
+    private static final Pattern PRICE_PATTERN = Pattern.compile(
+            "(?i)(?:\\d{1,3}(?:[ .\\u00A0]?\\d{3})*|\\d+)(?:[,.]\\d{1,2})?\\s*(?:zl|zlotych|pln|usd|eur)"
+    );
 
     private final ToolCallingRuntime toolCallingRuntime;
     private final List<AIProvider> aiProviders;
@@ -280,6 +288,8 @@ public class ToolCallingStage implements PipelineStage {
                 + "\nIf WebSearchTool or READ_WEB_PAGE succeeded, never claim that you have no internet access."
                 + "\nIf a specific page was unreadable, blocked, or did not expose the requested detail, say that exact limitation instead."
                 + "\nIf page observations include structured data, meta data, prices, currencies, or offer details, use those details directly."
+                + "\nNever answer with internal tool status text such as \"Web search finished\", \"Web page read finished\", or \"Tool finished\"."
+                + "\nFor READ_WEB_PAGE observations, extract the user-facing answer from the page title/content/data, not from the tool status message."
                 + "\nDo not invent, rewrite, or append source URLs. Core attaches verified source links separately."
                 + "\nKeep the answer concise, natural, and in the user's language."
                 + "\nReturn plain text only."
@@ -322,12 +332,92 @@ public class ToolCallingStage implements PipelineStage {
         if (result.finalAnswer() != null && !result.finalAnswer().isBlank()) {
             return result.finalAnswer();
         }
-        return result.results().stream()
-                .findFirst()
-                .map(toolResult -> toolResult.requiresApproval()
-                        ? "Przygotowalem szkic zmiany. Czeka na zatwierdzenie."
-                        : toolResult.message().isBlank() ? "Zakonczylem prace z narzedziami." : toolResult.message())
-                .orElse("Zakonczylem prace z narzedziami.");
+        Optional<ToolResult> readPage = lastWebResult(result, "READ_WEB_PAGE");
+        if (readPage.isPresent()) {
+            return fallbackWebPageAnswer(readPage.get());
+        }
+        Optional<ToolResult> search = lastWebResult(result, "SEARCH_WEB");
+        if (search.isPresent()) {
+            return fallbackWebSearchAnswer(search.get());
+        }
+        for (int index = result.results().size() - 1; index >= 0; index--) {
+            ToolResult toolResult = result.results().get(index);
+            if (toolResult.requiresApproval()) {
+                return "Przygotowalem szkic zmiany. Czeka na zatwierdzenie.";
+            }
+            if (!toolResult.message().isBlank() && !isTechnicalToolMessage(toolResult.message())) {
+                return toolResult.message();
+            }
+        }
+        return "Zakonczylem prace z narzedziami, ale model nie zwrocil tresci odpowiedzi.";
+    }
+
+    private Optional<ToolResult> lastWebResult(ToolCallingResult result, String operation) {
+        for (int index = result.results().size() - 1; index >= 0; index--) {
+            ToolResult toolResult = result.results().get(index);
+            if (toolResult.success()
+                    && "web".equalsIgnoreCase(toolResult.tool())
+                    && operation.equalsIgnoreCase(toolResult.operation())) {
+                return Optional.of(toolResult);
+            }
+        }
+        return Optional.empty();
+    }
+
+    private String fallbackWebPageAnswer(ToolResult toolResult) {
+        String title = text(toolResult.data().get("title"));
+        String content = text(toolResult.data().get("content"));
+        String price = firstPrice(content);
+        if (!price.isBlank()) {
+            if (!title.isBlank()) {
+                return title + " kosztuje " + price + ".";
+            }
+            return "Znalazlem cene: " + price + ".";
+        }
+        if (!content.isBlank()) {
+            return "Odczytalem strone, ale nie znalazlem w niej jednoznacznej ceny lub wartosci potrzebnej do odpowiedzi.";
+        }
+        return "Odczytalem strone, ale nie otrzymalem tresci potrzebnej do przygotowania odpowiedzi.";
+    }
+
+    private String fallbackWebSearchAnswer(ToolResult toolResult) {
+        Object results = toolResult.data().containsKey("acceptedResults")
+                ? toolResult.data().get("acceptedResults")
+                : toolResult.data().get("results");
+        if (results instanceof List<?> list) {
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> map)) {
+                    continue;
+                }
+                String title = text(map.get("title"));
+                String snippet = text(map.get("snippet"));
+                String price = firstPrice(snippet);
+                if (!price.isBlank()) {
+                    return title.isBlank() ? "Znalazlem cene: " + price + "." : title + ": " + price + ".";
+                }
+            }
+        }
+        return "Znalazlem wyniki web, ale model nie zwrocil tresci finalnej odpowiedzi.";
+    }
+
+    private String firstPrice(String content) {
+        if (content == null || content.isBlank()) {
+            return "";
+        }
+        Matcher matcher = PRICE_PATTERN.matcher(content);
+        return matcher.find() ? matcher.group().trim() : "";
+    }
+
+    private boolean isTechnicalToolMessage(String message) {
+        String normalized = message == null ? "" : message.trim().toLowerCase(java.util.Locale.ROOT);
+        return normalized.equals("web search finished")
+                || normalized.equals("web page read finished")
+                || normalized.equals("tool execution finished")
+                || normalized.equals("websearchtool finished");
+    }
+
+    private String text(Object value) {
+        return Objects.toString(value, "").trim();
     }
 
     private String toolBasePrompt(PipelineContext context) {
