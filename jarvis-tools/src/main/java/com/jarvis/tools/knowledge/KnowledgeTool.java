@@ -154,9 +154,33 @@ public class KnowledgeTool implements JarvisTool, ToolSchemaProvider {
 
     private ToolResult readDocument(ToolRequest request) {
         KnowledgeToolResult result = workspaceService.read(arg(request, "path"));
+        if (!result.applied()) {
+            publish(request, CognitiveEventType.DOCUMENT_READ, "NOT_FOUND", result.message(), result.nodeId(), result.data());
+            LOGGER.info("[TOOL] READ_DOCUMENT not found {}", result.path());
+            return failedReadResult(result);
+        }
         publish(request, CognitiveEventType.DOCUMENT_READ, "READ", "Document read", result.nodeId(), result.data());
         LOGGER.info("[TOOL] READ_DOCUMENT {}", result.path());
         return wrapResult(result);
+    }
+
+    private ToolResult failedReadResult(KnowledgeToolResult result) {
+        Map<String, Object> data = mergedResultData(result, result.data());
+        return new ToolResult(
+                false,
+                TOOL_NAME,
+                result.tool().replace("knowledge.", "").toUpperCase(Locale.ROOT),
+                "",
+                "",
+                false,
+                result.nodeId() == null || result.nodeId().isBlank() ? List.of() : List.of(result.nodeId()),
+                result.message(),
+                data,
+                "DOCUMENT_NOT_FOUND",
+                result.message() + ": " + result.path(),
+                false,
+                ""
+        );
     }
 
     private ToolResult updateDocument(ToolRequest request) {

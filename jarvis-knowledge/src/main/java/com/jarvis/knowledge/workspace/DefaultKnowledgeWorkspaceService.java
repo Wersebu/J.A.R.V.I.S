@@ -96,6 +96,14 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     public KnowledgeToolResult read(String logicalPath) {
         Path path = resolveRelative(logicalPath);
         String relativePath = relativePath(path);
+        if (!Files.isRegularFile(path)) {
+            return result("knowledge.read", false, false, "Document not found", nodeId(relativePath),
+                    relativePath, Map.of(
+                            "exists", false,
+                            "content", "",
+                            "characters", 0
+                    ));
+        }
         try {
             String content = Files.readString(path, StandardCharsets.UTF_8);
             return result("knowledge.read", true, false, "Document read", nodeId(relativePath),
