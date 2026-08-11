@@ -65,6 +65,8 @@ public class WebSearchQualityEvaluator {
             if (domain.isBlank()) {
                 continue;
             }
+            boolean searchPage = booleanValue(map.get("searchPage")) || searchPage(url);
+            boolean concreteListing = booleanValue(map.get("concreteListing")) || concreteListing(url);
             String rawCandidateText = text(map.get("title")) + " " + text(map.get("snippet")) + " "
                     + text(map.get("source")) + " " + domain;
             EntityMatchResult entityMatch = entityMatcher.match(requestedEntity, rawCandidateText);
@@ -74,29 +76,39 @@ public class WebSearchQualityEvaluator {
             }
             String haystack = normalize(rawCandidateText);
             double score = Math.min(1.0d, score(terms, desiredDomains, domain, haystack) + entityMatch.score() * 0.25d);
+            if (concreteListing) {
+                score = Math.min(1.0d, score + 0.22d);
+            } else if (searchPage && requiresSpecificListing(intentText)) {
+                score = Math.max(0.0d, score - 0.24d);
+            }
             bestScore = Math.max(bestScore, score);
             boolean valueFoundForResult = containsSpecificValue(haystack);
             List<MarketObservation> resultObservations = marketObservationExtractor.extract(request,
                     text(map.get("title")), text(map.get("snippet")), text(map.get("source")), url);
             if (score >= ACCEPTANCE_THRESHOLD && (!requiresSpecificValue || valueFoundForResult || !resultObservations.isEmpty())) {
                 observations.addAll(resultObservations);
-                accepted.add(Map.of(
-                        "title", text(map.get("title")),
-                        "url", url,
-                        "snippet", text(map.get("snippet")),
-                        "source", text(map.get("source")),
-                        "domain", domain,
-                        "relevanceScore", score,
-                        "entityScore", entityMatch.score(),
-                        "entityReason", entityMatch.reason(),
-                        "valueFound", valueFoundForResult,
-                        "marketObservations", resultObservations.size()
-                ));
+                Map<String, Object> acceptedResult = new java.util.LinkedHashMap<>();
+                acceptedResult.put("title", text(map.get("title")));
+                acceptedResult.put("url", url);
+                acceptedResult.put("snippet", text(map.get("snippet")));
+                acceptedResult.put("source", text(map.get("source")));
+                acceptedResult.put("domain", domain);
+                acceptedResult.put("relevanceScore", score);
+                acceptedResult.put("entityScore", entityMatch.score());
+                acceptedResult.put("entityReason", entityMatch.reason());
+                acceptedResult.put("valueFound", valueFoundForResult);
+                acceptedResult.put("concreteListing", concreteListing);
+                acceptedResult.put("searchPage", searchPage);
+                acceptedResult.put("marketObservations", resultObservations.size());
+                accepted.add(acceptedResult);
             }
         }
 
         MarketAnalysis marketAnalysis = MarketAnalysis.from(observations);
+        boolean listingSatisfied = !requiresSpecificListing(intentText)
+                || accepted.stream().anyMatch(item -> Boolean.TRUE.equals(item.get("concreteListing")));
         boolean liveEvidenceSatisfied = !accepted.isEmpty()
+                && listingSatisfied
                 && (!requiresSpecificValue || accepted.stream().anyMatch(item -> Boolean.TRUE.equals(item.get("valueFound")))
                 || !observations.isEmpty());
         boolean marketSatisfied = !requiresMarketValue || !observations.isEmpty();
@@ -106,6 +118,8 @@ public class WebSearchQualityEvaluator {
             reason = requiresMarketValue
                     ? "Relevant web results and market value observations found."
                     : "Relevant web results found.";
+        } else if (!listingSatisfied) {
+            reason = "Search results were relevant but did not include concrete listing URLs. Search again with listing-specific queries.";
         } else if (!accepted.isEmpty() && requiresSpecificValue) {
             reason = "Relevant result links found, but snippets did not contain enough requested numeric values. Read result pages or search again.";
         } else if (requiresMarketValue && marketAnalysis.count() > 0) {
@@ -187,6 +201,52 @@ public class WebSearchQualityEvaluator {
     private boolean requiresSpecificValue(String text) {
         String normalized = normalize(text);
         return normalized.matches(".*\\b(cena|ceny|koszt|kosztuje|kurs|notowania|price|prices|rate)\\b.*");
+    }
+
+    private boolean requiresSpecificListing(String text) {
+        String normalized = normalize(text);
+        return normalized.matches(".*\\b(link|url|ofert|ogloszen|ogloszenie|konkret|kupic|buy)\\w*\\b.*")
+                || normalized.matches(".*\\b(top\\s*\\d{1,2}|\\d{1,2})\\b.*\\bolx\\b.*")
+                || normalized.matches(".*\\bolx\\b.*\\b(top\\s*\\d{1,2}|\\d{1,2})\\b.*");
+    }
+
+    private boolean booleanValue(Object value) {
+        return value instanceof Boolean bool && bool;
+    }
+
+    private boolean concreteListing(String url) {
+        try {
+            URI uri = new URI(url);
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+            String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+            if (host.endsWith("olx.pl")) {
+                return path.contains("/d/oferta/") || path.contains("/oferta/");
+            }
+            if (host.endsWith("allegro.pl")) {
+                return path.contains("/oferta/");
+            }
+            return false;
+        } catch (URISyntaxException exception) {
+            return false;
+        }
+    }
+
+    private boolean searchPage(String url) {
+        try {
+            URI uri = new URI(url);
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+            String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+            String query = uri.getQuery() == null ? "" : uri.getQuery().toLowerCase(Locale.ROOT);
+            if (host.endsWith("olx.pl")) {
+                return path.contains("/q-") || query.contains("search") || query.contains("q=");
+            }
+            if (host.endsWith("allegro.pl")) {
+                return path.startsWith("/listing") || query.contains("string=");
+            }
+            return false;
+        } catch (URISyntaxException exception) {
+            return false;
+        }
     }
 
     private boolean containsSpecificValue(String text) {

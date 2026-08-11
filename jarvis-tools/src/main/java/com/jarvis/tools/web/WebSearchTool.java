@@ -16,7 +16,11 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -102,7 +106,7 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
                 Map.of("tool", TOOL_NAME, "operation", operation, "query", query, "maxResults", effectiveMaxResults,
                         "profile", profile, "page", page));
         try {
-            WebSearchResponse response = webSearchClient.search(new WebSearchRequest(
+            WebSearchRequest searchRequest = new WebSearchRequest(
                     query,
                     effectiveMaxResults,
                     arg(request, "language"),
@@ -110,7 +114,8 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
                     arg(request, "timeRange"),
                     arg(request, "category"),
                     profile
-            ));
+            );
+            WebSearchResponse response = search(searchRequest, effectiveMaxResults);
             for (WebSearchResult result : response.results()) {
                 publish(request, CognitiveEventType.SEARCH_RESULT, "FOUND", "Web search result", nodeId(result),
                         Map.of("tool", TOOL_NAME, "operation", operation, "title", result.title(), "url", result.url(),
@@ -266,8 +271,142 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
                 "title", result.title(),
                 "url", result.url(),
                 "snippet", result.snippet(),
-                "source", result.source()
+                "source", result.source(),
+                "concreteListing", concreteListing(result.url()),
+                "searchPage", searchPage(result.url())
         );
+    }
+
+    private WebSearchResponse search(WebSearchRequest request, int effectiveMaxResults) {
+        WebSearchResponse primary = webSearchClient.search(request);
+        if (!marketplaceResearch(request)) {
+            return primary;
+        }
+
+        Map<String, WebSearchResult> merged = new LinkedHashMap<>();
+        addResults(merged, primary.results());
+        int attempts = Math.max(1, properties.maxSearchAttempts());
+        List<String> queries = marketplaceQueries(request.query());
+        for (int index = 0; index < queries.size() && index < attempts - 1; index++) {
+            if (concreteCount(merged) >= Math.min(5, effectiveMaxResults)) {
+                break;
+            }
+            WebSearchResponse extra = webSearchClient.search(new WebSearchRequest(
+                    queries.get(index),
+                    effectiveMaxResults,
+                    request.language(),
+                    1,
+                    request.timeRange(),
+                    request.category(),
+                    request.profile()
+            ));
+            addResults(merged, extra.results());
+        }
+
+        List<WebSearchResult> ordered = merged.values().stream()
+                .sorted((left, right) -> Integer.compare(resultRank(right.url()), resultRank(left.url())))
+                .limit(effectiveMaxResults)
+                .toList();
+        return new WebSearchResponse(primary.query(), ordered, primary.durationMs());
+    }
+
+    private void addResults(Map<String, WebSearchResult> merged, List<WebSearchResult> results) {
+        for (WebSearchResult result : results) {
+            String key = canonicalUrl(result.url());
+            if (key.isBlank()) {
+                continue;
+            }
+            merged.putIfAbsent(key, result);
+        }
+    }
+
+    private int concreteCount(Map<String, WebSearchResult> merged) {
+        int count = 0;
+        for (WebSearchResult result : merged.values()) {
+            if (concreteListing(result.url())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private boolean marketplaceResearch(WebSearchRequest request) {
+        String query = request == null ? "" : request.query();
+        String profile = request == null ? "" : request.profile();
+        String normalized = query == null ? "" : query.toLowerCase(Locale.ROOT);
+        return "MARKET".equalsIgnoreCase(profile)
+                || marketLike(query)
+                || normalized.matches(".*\\b(olx|allegro|ofert|ogloszen|ogloszenie|listing|link)\\w*\\b.*");
+    }
+
+    private List<String> marketplaceQueries(String query) {
+        String compact = query == null ? "" : query.replaceAll("\\s+", " ").strip();
+        if (compact.isBlank()) {
+            return List.of();
+        }
+        List<String> queries = new ArrayList<>();
+        queries.add("site:olx.pl/d/oferta " + compact);
+        queries.add("site:allegro.pl/oferta " + compact);
+        queries.add(compact + " OLX oferta cena");
+        queries.add(compact + " Allegro oferta cena");
+        return queries;
+    }
+
+    private int resultRank(String url) {
+        if (concreteListing(url)) {
+            return 3;
+        }
+        if (searchPage(url)) {
+            return 1;
+        }
+        return 2;
+    }
+
+    private boolean concreteListing(String url) {
+        try {
+            URI uri = new URI(url == null ? "" : url.strip());
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+            String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+            if (host.endsWith("olx.pl")) {
+                return path.contains("/d/oferta/") || path.contains("/oferta/");
+            }
+            if (host.endsWith("allegro.pl")) {
+                return path.contains("/oferta/");
+            }
+            return false;
+        } catch (URISyntaxException exception) {
+            return false;
+        }
+    }
+
+    private boolean searchPage(String url) {
+        try {
+            URI uri = new URI(url == null ? "" : url.strip());
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+            String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+            String query = uri.getQuery() == null ? "" : uri.getQuery().toLowerCase(Locale.ROOT);
+            if (host.endsWith("olx.pl")) {
+                return path.contains("/q-") || query.contains("search") || query.contains("q=");
+            }
+            if (host.endsWith("allegro.pl")) {
+                return path.startsWith("/listing") || query.contains("string=");
+            }
+            return false;
+        } catch (URISyntaxException exception) {
+            return false;
+        }
+    }
+
+    private String canonicalUrl(String url) {
+        try {
+            URI uri = new URI(url == null ? "" : url.strip());
+            if (uri.getHost() == null) {
+                return "";
+            }
+            return uri.normalize().toString();
+        } catch (URISyntaxException exception) {
+            return "";
+        }
     }
 
     private void publish(
