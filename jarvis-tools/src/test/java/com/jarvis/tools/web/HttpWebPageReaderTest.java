@@ -116,6 +116,33 @@ class HttpWebPageReaderTest {
         assertThat(content.text()).contains("PLN");
     }
 
+    @Test
+    void prefersConcreteMarketplaceOffersBeforeGenericSearchLinks() throws IOException {
+        startServer("""
+                <html>
+                  <head><title>OLX search</title></head>
+                  <body>
+                    <a href="/elektronika/komputery/q-rtx-3060/">Generic RTX 3060 search</a>
+                    <script>
+                      window.__STATE__ = {
+                        "url":"https:\\u002F\\u002Fwww.olx.pl\\u002Fd\\u002Foferta\\u002Facer-predator-nvidia-geforce-rtx-3060-12gb-gddr6-karta-graficzna-CID99-ID1bKCUI.html?search_reason=search%7Cpromoted"
+                      };
+                    </script>
+                    <a href="https://www.ceneo.pl/123456789">Ceneo concrete product</a>
+                  </body>
+                </html>
+                """);
+        TestableReader reader = new TestableReader(defaultProperties());
+
+        WebPageContent content = reader.read(baseUrl());
+
+        assertThat(content.links()).extracting(WebPageContent.WebPageLink::url)
+                .startsWith(
+                        "https://www.ceneo.pl/123456789",
+                        "https://www.olx.pl/d/oferta/acer-predator-nvidia-geforce-rtx-3060-12gb-gddr6-karta-graficzna-CID99-ID1bKCUI.html?search_reason=search%7Cpromoted"
+                );
+    }
+
     private WebSearchProperties defaultProperties() {
         return new WebSearchProperties(true, "http://127.0.0.1:8888", 5, 10, 320, 8000,
                 Duration.ofSeconds(1), Duration.ofSeconds(1));

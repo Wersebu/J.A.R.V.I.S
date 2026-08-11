@@ -170,12 +170,21 @@ public class WebAnswerSourceExtractor {
         if (!(links instanceof List<?> list)) {
             return List.of();
         }
+        List<SourceCandidate> concrete = new ArrayList<>();
         List<SourceCandidate> candidates = new ArrayList<>();
         for (Object item : list) {
             SourceCandidate candidate = candidate(item);
             if (candidate != null) {
-                candidates.add(candidate);
+                if (concreteListing(candidate.url())) {
+                    concrete.add(candidate);
+                } else {
+                    candidates.add(candidate);
+                }
             }
+        }
+        if (!concrete.isEmpty()) {
+            concrete.addAll(candidates);
+            return List.copyOf(concrete);
         }
         return List.copyOf(candidates);
     }
@@ -201,6 +210,32 @@ public class WebAnswerSourceExtractor {
 
     private String normalizeUrl(String url) {
         return Objects.toString(url, "").trim();
+    }
+
+    private boolean concreteListing(String url) {
+        try {
+            URI uri = new URI(url);
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+            String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+            if (host.endsWith("olx.pl")) {
+                return path.contains("/d/oferta/") || path.contains("/oferta/");
+            }
+            if (host.endsWith("allegro.pl")) {
+                return path.contains("/oferta/");
+            }
+            if (host.endsWith("ceneo.pl")) {
+                return path.matches("/\\d+.*");
+            }
+            if (host.endsWith("x-kom.pl")) {
+                return path.startsWith("/p/");
+            }
+            if (host.endsWith("morele.net")) {
+                return path.matches(".*/\\d+/?$") && !path.contains("wyszukiwarka");
+            }
+            return false;
+        } catch (URISyntaxException exception) {
+            return false;
+        }
     }
 
     private String text(Object value) {

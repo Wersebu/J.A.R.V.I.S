@@ -174,6 +174,42 @@ class WebAnswerSourceExtractorTest {
     }
 
     @Test
+    void prefersConcreteReadPageLinksBeforeGenericMarketplaceSearchLinks() {
+        ToolResult page = new ToolResult(
+                true,
+                "web",
+                "READ_WEB_PAGE",
+                "request-1",
+                "conversation-1",
+                false,
+                List.of(),
+                "ok",
+                Map.of(
+                        "title", "OLX search page",
+                        "url", "https://www.olx.pl/elektronika/komputery/q-rtx-3060/",
+                        "links", List.of(
+                                Map.of("title", "Category", "url",
+                                        "https://www.olx.pl/elektronika/komputery/q-geforce-rtx-3060/"),
+                                Map.of("title", "Acer Predator RTX 3060", "url",
+                                        "https://www.olx.pl/d/oferta/acer-predator-nvidia-geforce-rtx-3060-12gb-gddr6-karta-graficzna-CID99-ID1bKCUI.html?search_reason=search%7Cpromoted")
+                        )
+                ),
+                "",
+                "",
+                false,
+                ""
+        );
+        ToolCallingResult result = new ToolCallingResult(true, "", List.of(), List.of(page));
+
+        assertThat(extractor.extract(result, 3)).extracting(source -> source.get("url"))
+                .containsExactly(
+                        "https://www.olx.pl/d/oferta/acer-predator-nvidia-geforce-rtx-3060-12gb-gddr6-karta-graficzna-CID99-ID1bKCUI.html?search_reason=search%7Cpromoted",
+                        "https://www.olx.pl/elektronika/komputery/q-geforce-rtx-3060/",
+                        "https://www.olx.pl/elektronika/komputery/q-rtx-3060/"
+                );
+    }
+
+    @Test
     void limitsSourceCount() {
         ToolCallingResult result = webResult(List.of(
                 Map.of("title", "One", "url", "https://one.example/a"),

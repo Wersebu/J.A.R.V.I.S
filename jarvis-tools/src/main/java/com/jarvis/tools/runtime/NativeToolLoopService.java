@@ -331,7 +331,10 @@ public class NativeToolLoopService {
                 If freshness is MUST_BE_LIVE, do not answer current-world facts before live evidence is collected.
                 If web tools succeeded, never claim you have no internet access. Mention exact technical limitations instead.
                 Prefer 3-5 valid market observations for price questions. If fewer are found, say how many.
-                For links or listing requests, return URLs from tool evidence.
+                For marketplace price or listing searches, preserve the exact product tokens from the user request.
+                Do not replace a requested product with generic "top", "popular", or broad model-family searches.
+                Prefer concrete offer/product URLs from tool evidence over category, search, or filtered listing pages.
+                For links or listing requests, return only URLs from tool evidence and never invent item ids.
                 Stop with plain final content only when enough evidence is available.
 
                 Freshness: %s

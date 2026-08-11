@@ -152,10 +152,12 @@ public class HttpWebPageReader implements WebPageReader {
     }
 
     private List<WebPageContent.WebPageLink> extractLinks(String html, URI baseUri) {
-        List<WebPageContent.WebPageLink> links = new ArrayList<>();
+        String normalizedHtml = normalizeEscapedUrls(html == null ? "" : html);
+        List<WebPageContent.WebPageLink> offerLinks = new ArrayList<>();
+        List<WebPageContent.WebPageLink> otherLinks = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
-        Matcher matcher = LINK_PATTERN.matcher(html == null ? "" : html);
-        while (matcher.find() && links.size() < 40) {
+        Matcher matcher = LINK_PATTERN.matcher(normalizedHtml);
+        while (matcher.find() && seen.size() < 80) {
             String href = decode(matcher.group(1)).strip();
             if (href.isBlank() || href.startsWith("#") || href.toLowerCase(Locale.ROOT).startsWith("javascript:")) {
                 continue;
@@ -171,17 +173,34 @@ public class HttpWebPageReader implements WebPageReader {
             if (label.isBlank()) {
                 label = absolute;
             }
-            links.add(new WebPageContent.WebPageLink(label, absolute));
+            WebPageContent.WebPageLink link = new WebPageContent.WebPageLink(label, absolute);
+            if (isLikelyOfferUrl(absolute)) {
+                offerLinks.add(link);
+            } else {
+                otherLinks.add(link);
+            }
         }
-        Matcher embedded = EMBEDDED_URL_PATTERN.matcher(html == null ? "" : html);
-        while (embedded.find() && links.size() < 40) {
-            String absolute = decode(embedded.group()).replace("\\/", "/").replace("\\u002F", "/").strip();
+        Matcher embedded = EMBEDDED_URL_PATTERN.matcher(normalizedHtml);
+        while (embedded.find() && seen.size() < 120) {
+            String absolute = decode(embedded.group()).strip();
             if (!isLikelyOfferUrl(absolute) || !seen.add(absolute)) {
                 continue;
             }
-            links.add(new WebPageContent.WebPageLink(titleFromUrl(absolute), absolute));
+            offerLinks.add(new WebPageContent.WebPageLink(titleFromUrl(absolute), absolute));
         }
-        return List.copyOf(links);
+        List<WebPageContent.WebPageLink> ordered = new ArrayList<>();
+        ordered.addAll(offerLinks);
+        if (ordered.size() < 40) {
+            ordered.addAll(otherLinks.stream().limit(40L - ordered.size()).toList());
+        }
+        return List.copyOf(ordered);
+    }
+
+    private String normalizeEscapedUrls(String value) {
+        return value
+                .replace("\\u002F", "/")
+                .replace("\\u002f", "/")
+                .replace("\\/", "/");
     }
 
     private boolean isLikelyOfferUrl(String url) {
@@ -194,6 +213,15 @@ public class HttpWebPageReader implements WebPageReader {
             }
             if (host.endsWith("allegro.pl")) {
                 return path.contains("/oferta/");
+            }
+            if (host.endsWith("ceneo.pl")) {
+                return path.matches("/\\d+.*");
+            }
+            if (host.endsWith("x-kom.pl")) {
+                return path.startsWith("/p/");
+            }
+            if (host.endsWith("morele.net")) {
+                return path.matches(".*/\\d+/?$") && !path.contains("wyszukiwarka");
             }
             return false;
         } catch (URISyntaxException exception) {
@@ -377,6 +405,8 @@ public class HttpWebPageReader implements WebPageReader {
                 .replace("&quot;", "\"")
                 .replace("&#39;", "'")
                 .replace("\\/", "/")
+                .replace("\\u002F", "/")
+                .replace("\\u002f", "/")
                 .replaceAll("&#(\\d+);", " ");
     }
 }
