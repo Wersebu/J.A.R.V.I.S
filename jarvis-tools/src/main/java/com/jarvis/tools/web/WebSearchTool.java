@@ -347,6 +347,8 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
         List<String> queries = new ArrayList<>();
         queries.add("site:olx.pl/d/oferta " + compact);
         queries.add("site:allegro.pl/oferta " + compact);
+        queries.add("site:ceneo.pl " + compact + " cena");
+        queries.add("site:x-kom.pl/p " + compact + " cena");
         queries.add(compact + " OLX oferta cena");
         queries.add(compact + " Allegro oferta cena");
         return queries;
@@ -373,6 +375,15 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
             if (host.endsWith("allegro.pl")) {
                 return path.contains("/oferta/");
             }
+            if (host.endsWith("ceneo.pl")) {
+                return path.matches("/\\d+.*");
+            }
+            if (host.endsWith("x-kom.pl")) {
+                return path.startsWith("/p/");
+            }
+            if (host.endsWith("morele.net")) {
+                return path.matches(".*/\\d+/?$") && !path.contains("wyszukiwarka");
+            }
             return false;
         } catch (URISyntaxException exception) {
             return false;
@@ -389,7 +400,18 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
                 return path.contains("/q-") || query.contains("search") || query.contains("q=");
             }
             if (host.endsWith("allegro.pl")) {
-                return path.startsWith("/listing") || query.contains("string=");
+                return path.startsWith("/listing") || path.startsWith("/kategoria")
+                        || path.startsWith("/oferty") || query.contains("string=");
+            }
+            if (host.endsWith("ceneo.pl")) {
+                return path.contains("szukaj") || query.contains("szukaj")
+                        || query.contains("search") || query.contains("q=");
+            }
+            if (host.endsWith("x-kom.pl")) {
+                return path.contains("/szukaj") || query.contains("q=");
+            }
+            if (host.endsWith("morele.net")) {
+                return path.contains("wyszukiwarka") || query.contains("q=");
             }
             return false;
         } catch (URISyntaxException exception) {
