@@ -175,12 +175,16 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
                     "truncated", content.truncated(),
                     "durationMs", content.durationMs(),
                     "statusCode", content.statusCode(),
-                    "contentType", content.contentType()
+                    "contentType", content.contentType(),
+                    "links", content.links().stream()
+                            .map(link -> Map.of("title", link.title(), "url", link.url()))
+                            .toList()
             );
             publish(request, CognitiveEventType.DOCUMENT_READ, "READ", "Web page read", nodeId(content.url()),
                     Map.of("tool", TOOL_NAME, "operation", operation, "url", content.url(), "title", content.title(),
                             "characters", content.characters(), "truncated", content.truncated(),
-                            "statusCode", content.statusCode(), "contentType", content.contentType()));
+                            "statusCode", content.statusCode(), "contentType", content.contentType(),
+                            "links", content.links().size()));
             publish(request, CognitiveEventType.DOCUMENT_READ_FINISHED, "FINISHED", "Web page read finished", nodeId(content.url()),
                     Map.of("tool", TOOL_NAME, "operation", operation, "url", content.url(), "title", content.title(),
                             "characters", content.characters(), "durationMs", content.durationMs(),

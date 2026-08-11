@@ -41,7 +41,7 @@ class WebAnswerSourceExtractorTest {
     }
 
     @Test
-    void removesDuplicateUrlsAndDomains() {
+    void removesDuplicateUrlsButAllowsMultipleSourcesFromSameDomain() {
         ToolCallingResult result = webResult(List.of(
                 Map.of("title", "First", "url", "https://www.example.com/a"),
                 Map.of("title", "Duplicate URL", "url", "https://www.example.com/a"),
@@ -51,9 +51,9 @@ class WebAnswerSourceExtractorTest {
 
         List<Map<String, Object>> sources = extractor.extract(result);
 
-        assertThat(sources).hasSize(2);
-        assertThat(sources).extracting(source -> source.get("domain"))
-                .containsExactly("example.com", "other.example");
+        assertThat(sources).hasSize(3);
+        assertThat(sources).extracting(source -> source.get("url"))
+                .containsExactly("https://www.example.com/a", "https://example.com/b", "https://other.example/c");
     }
 
     @Test
@@ -138,6 +138,39 @@ class WebAnswerSourceExtractorTest {
                     assertThat(source.get("url")).isEqualTo("https://allegro.pl/oferta/rtx-4060-ti");
                     assertThat(source.get("domain")).isEqualTo("allegro.pl");
                 });
+    }
+
+    @Test
+    void prefersLinksExtractedFromReadWebPageBeforeContainerPage() {
+        ToolResult page = new ToolResult(
+                true,
+                "web",
+                "READ_WEB_PAGE",
+                "request-1",
+                "conversation-1",
+                false,
+                List.of(),
+                "ok",
+                Map.of(
+                        "title", "OLX search page",
+                        "url", "https://www.olx.pl/elektronika/komputery/q-rtx-3060/",
+                        "links", List.of(
+                                Map.of("title", "Acer Predator RTX 3060", "url",
+                                        "https://www.olx.pl/d/oferta/acer-predator-nvidia-geforce-rtx-3060-12gb-CID99-ID1bKCUI.html")
+                        )
+                ),
+                "",
+                "",
+                false,
+                ""
+        );
+        ToolCallingResult result = new ToolCallingResult(true, "", List.of(), List.of(page));
+
+        assertThat(extractor.extract(result, 2)).extracting(source -> source.get("url"))
+                .containsExactly(
+                        "https://www.olx.pl/d/oferta/acer-predator-nvidia-geforce-rtx-3060-12gb-CID99-ID1bKCUI.html",
+                        "https://www.olx.pl/elektronika/komputery/q-rtx-3060/"
+                );
     }
 
     @Test

@@ -12,7 +12,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
@@ -34,6 +36,10 @@ public class HttpWebPageReader implements WebPageReader {
             "(?is)\"(?:priceCurrency|currency|currencyCode)\"\\s*:\\s*\"([A-Z]{3}|zł|PLN)\"");
     private static final Pattern EMBEDDED_TITLE_PATTERN = Pattern.compile(
             "(?is)\"(?:title|name)\"\\s*:\\s*\"([^\"{}]{3,180})\"");
+    private static final Pattern LINK_PATTERN = Pattern.compile(
+            "(?is)<a\\b[^>]*href\\s*=\\s*['\"]([^'\"]{1,2000})['\"][^>]*>(.*?)</a>");
+    private static final Pattern EMBEDDED_URL_PATTERN = Pattern.compile(
+            "(?is)https?:\\\\?/\\\\?/[^\"'\\s<>]{8,2000}");
 
     private final WebSearchProperties properties;
     private final HttpClient httpClient;
@@ -78,8 +84,9 @@ public class HttpWebPageReader implements WebPageReader {
             int max = properties.pageMaxLength();
             boolean truncated = text.length() > max;
             String returned = truncated ? text.substring(0, max).strip() : text;
+            List<WebPageContent.WebPageLink> links = extractLinks(body, uri);
             return new WebPageContent(uri.toString(), title, returned, returned.length(), truncated, durationMs,
-                    response.statusCode(), contentType);
+                    response.statusCode(), contentType, links);
         } catch (IOException exception) {
             throw new WebSearchException("Web page request failed for " + uri + ": " + exception.getClass().getSimpleName(), exception);
         } catch (InterruptedException exception) {
@@ -142,6 +149,86 @@ public class HttpWebPageReader implements WebPageReader {
                 .replaceAll(" *\\n+ *", "\n")
                 .replaceAll(" {2,}", " ")
                 .strip();
+    }
+
+    private List<WebPageContent.WebPageLink> extractLinks(String html, URI baseUri) {
+        List<WebPageContent.WebPageLink> links = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        Matcher matcher = LINK_PATTERN.matcher(html == null ? "" : html);
+        while (matcher.find() && links.size() < 40) {
+            String href = decode(matcher.group(1)).strip();
+            if (href.isBlank() || href.startsWith("#") || href.toLowerCase(Locale.ROOT).startsWith("javascript:")) {
+                continue;
+            }
+            String absolute = resolveLink(baseUri, href);
+            if (absolute.isBlank() || !seen.add(absolute)) {
+                continue;
+            }
+            String label = normalizeText(matcher.group(2));
+            if (label.length() > 180) {
+                label = label.substring(0, 180).strip();
+            }
+            if (label.isBlank()) {
+                label = absolute;
+            }
+            links.add(new WebPageContent.WebPageLink(label, absolute));
+        }
+        Matcher embedded = EMBEDDED_URL_PATTERN.matcher(html == null ? "" : html);
+        while (embedded.find() && links.size() < 40) {
+            String absolute = decode(embedded.group()).replace("\\/", "/").replace("\\u002F", "/").strip();
+            if (!isLikelyOfferUrl(absolute) || !seen.add(absolute)) {
+                continue;
+            }
+            links.add(new WebPageContent.WebPageLink(titleFromUrl(absolute), absolute));
+        }
+        return List.copyOf(links);
+    }
+
+    private boolean isLikelyOfferUrl(String url) {
+        try {
+            URI uri = new URI(url);
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT);
+            String path = uri.getPath() == null ? "" : uri.getPath().toLowerCase(Locale.ROOT);
+            if (host.endsWith("olx.pl")) {
+                return path.contains("/d/oferta/") || path.contains("/oferta/");
+            }
+            if (host.endsWith("allegro.pl")) {
+                return path.contains("/oferta/");
+            }
+            return false;
+        } catch (URISyntaxException exception) {
+            return false;
+        }
+    }
+
+    private String titleFromUrl(String url) {
+        try {
+            String path = new URI(url).getPath();
+            if (path == null || path.isBlank()) {
+                return url;
+            }
+            String leaf = path.substring(path.lastIndexOf('/') + 1)
+                    .replaceAll("-CID\\d+-.*$", "")
+                    .replaceAll("\\.html$", "")
+                    .replace('-', ' ')
+                    .strip();
+            return leaf.isBlank() ? url : leaf;
+        } catch (URISyntaxException exception) {
+            return url;
+        }
+    }
+
+    private String resolveLink(URI baseUri, String href) {
+        try {
+            URI resolved = baseUri.resolve(href).normalize();
+            String scheme = resolved.getScheme() == null ? "" : resolved.getScheme().toLowerCase(Locale.ROOT);
+            if (!"http".equals(scheme) && !"https".equals(scheme)) {
+                return "";
+            }
+            return resolved.toString();
+        } catch (IllegalArgumentException exception) {
+            return "";
+        }
     }
 
     private String enrichWithStructuredData(String html) {
@@ -289,6 +376,7 @@ public class HttpWebPageReader implements WebPageReader {
                 .replace("&gt;", ">")
                 .replace("&quot;", "\"")
                 .replace("&#39;", "'")
+                .replace("\\/", "/")
                 .replaceAll("&#(\\d+);", " ");
     }
 }

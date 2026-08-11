@@ -44,7 +44,6 @@ public class WebAnswerSourceExtractor {
         }
         List<Map<String, Object>> sources = new ArrayList<>();
         Set<String> seenUrls = new LinkedHashSet<>();
-        Set<String> seenDomains = new LinkedHashSet<>();
         for (ToolResult toolResult : result.results()) {
             if (!isWebSearchResult(toolResult)) {
                 continue;
@@ -53,9 +52,15 @@ public class WebAnswerSourceExtractor {
                 continue;
             }
             if ("READ_WEB_PAGE".equalsIgnoreCase(toolResult.operation())) {
+                for (SourceCandidate link : readPageLinkCandidates(toolResult)) {
+                    addSource(link, sources, seenUrls);
+                    if (sources.size() >= limit) {
+                        return List.copyOf(sources);
+                    }
+                }
                 SourceCandidate readPage = readPageCandidate(toolResult);
                 if (readPage != null) {
-                    addSource(readPage, sources, seenUrls, seenDomains);
+                    addSource(readPage, sources, seenUrls);
                     if (sources.size() >= limit) {
                         return List.copyOf(sources);
                     }
@@ -70,7 +75,7 @@ public class WebAnswerSourceExtractor {
             }
             for (Object item : list) {
                 SourceCandidate candidate = candidate(item);
-                if (candidate == null || !addSource(candidate, sources, seenUrls, seenDomains)) {
+                if (candidate == null || !addSource(candidate, sources, seenUrls)) {
                     continue;
                 }
                 if (sources.size() >= limit) {
@@ -130,15 +135,13 @@ public class WebAnswerSourceExtractor {
     private boolean addSource(
             SourceCandidate candidate,
             List<Map<String, Object>> sources,
-            Set<String> seenUrls,
-            Set<String> seenDomains
+            Set<String> seenUrls
     ) {
         if (!isSafeHttpUrl(candidate.url())) {
             return false;
         }
         String normalizedUrl = normalizeUrl(candidate.url());
-        String normalizedDomain = candidate.domain().toLowerCase(Locale.ROOT);
-        if (!seenUrls.add(normalizedUrl) || !seenDomains.add(normalizedDomain)) {
+        if (!seenUrls.add(normalizedUrl)) {
             return false;
         }
         sources.add(Map.of(
@@ -160,6 +163,21 @@ public class WebAnswerSourceExtractor {
             title = domain;
         }
         return new SourceCandidate(title, url, domain);
+    }
+
+    private List<SourceCandidate> readPageLinkCandidates(ToolResult toolResult) {
+        Object links = toolResult.data().get("links");
+        if (!(links instanceof List<?> list)) {
+            return List.of();
+        }
+        List<SourceCandidate> candidates = new ArrayList<>();
+        for (Object item : list) {
+            SourceCandidate candidate = candidate(item);
+            if (candidate != null) {
+                candidates.add(candidate);
+            }
+        }
+        return List.copyOf(candidates);
     }
 
     private SourceCandidate candidate(Object item) {

@@ -307,14 +307,41 @@ public class ToolCallingStage implements PipelineStage {
                 + "\nIf page observations include structured data, meta data, prices, currencies, or offer details, use those details directly."
                 + "\nFor market-price questions, summarize the observed sample size. If fewer than 10 relevant listings/results were found, say exactly how many were found."
                 + "\nIf the user asked for a link, URL, source, concrete listing, or where to buy, include the best verified URL in the answer instead of giving only a price."
+                + "\nUse links only from TRUSTED_WEB_SOURCES below. Copy URLs exactly. Never synthesize URLs from titles, categories, snippets, or item IDs."
+                + "\nIf TRUSTED_WEB_SOURCES only contains a category/search URL, label it as a search/results page, not a concrete listing."
+                + "\nIf no exact listing URL is present, say that an exact listing URL was not verified instead of inventing one."
                 + "\nNever answer with internal tool status text such as \"Web search finished\", \"Web page read finished\", or \"Tool finished\"."
                 + "\nFor READ_WEB_PAGE observations, extract the user-facing answer from the page title/content/data, not from the tool status message."
                 + "\nDo not invent, rewrite, or append source URLs. Use only URLs present in tool observations."
                 + "\nKeep the answer concise, natural, and in the user's language."
                 + "\nReturn plain text only."
                 + "\n\nUser request:\n" + context.request().message()
+                + "\n\nTRUSTED_WEB_SOURCES:\n" + trustedSourceManifest(result)
                 + "\n\nTool observations:\n" + toolObservations(result)
                 + "\n\nExisting final answer guidance:\n" + safe(result.finalAnswer());
+    }
+
+    private String trustedSourceManifest(ToolCallingResult result) {
+        List<Map<String, Object>> sources = sourceExtractor.extract(result, 12);
+        if (sources.isEmpty()) {
+            return "- No trusted web URLs were verified.\n";
+        }
+        StringBuilder builder = new StringBuilder();
+        int index = 1;
+        for (Map<String, Object> source : sources) {
+            String title = text(source.get("title"));
+            String domain = text(source.get("domain"));
+            String url = text(source.get("url"));
+            builder.append(index++).append(". ");
+            if (!title.isBlank()) {
+                builder.append(title).append(" | ");
+            }
+            if (!domain.isBlank()) {
+                builder.append(domain).append(" | ");
+            }
+            builder.append(url).append("\n");
+        }
+        return builder.toString();
     }
 
     private String toolObservations(ToolCallingResult result) {
@@ -388,7 +415,16 @@ public class ToolCallingStage implements PipelineStage {
         String title = text(toolResult.data().get("title"));
         String url = text(toolResult.data().get("url"));
         if (linkRequest && !url.isBlank()) {
-            return title.isBlank() ? "Najbardziej pasujacy link: " + url : "Najbardziej pasujacy link: " + title + " - " + url;
+            Optional<SearchFallbackCandidate> extractedLink = firstPageLink(toolResult);
+            if (extractedLink.isPresent()) {
+                SearchFallbackCandidate candidate = extractedLink.get();
+                return candidate.title().isBlank()
+                        ? "Najbardziej pasujacy link: " + candidate.url()
+                        : "Najbardziej pasujacy link: " + candidate.title() + " - " + candidate.url();
+            }
+            return title.isBlank()
+                    ? "Zweryfikowalem tylko strone wynikow: " + url
+                    : "Zweryfikowalem tylko strone wynikow: " + title + " - " + url;
         }
         String content = text(toolResult.data().get("content"));
         String price = firstPrice(content);
@@ -402,6 +438,24 @@ public class ToolCallingStage implements PipelineStage {
             return "Odczytalem strone, ale nie znalazlem w niej jednoznacznej ceny lub wartosci potrzebnej do odpowiedzi.";
         }
         return "Odczytalem strone, ale nie otrzymalem tresci potrzebnej do przygotowania odpowiedzi.";
+    }
+
+    private Optional<SearchFallbackCandidate> firstPageLink(ToolResult toolResult) {
+        Object links = toolResult.data().get("links");
+        if (!(links instanceof List<?> list)) {
+            return Optional.empty();
+        }
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> map)) {
+                continue;
+            }
+            String title = text(map.get("title"));
+            String url = text(map.get("url"));
+            if (!url.isBlank()) {
+                return Optional.of(new SearchFallbackCandidate(title, "", url, ""));
+            }
+        }
+        return Optional.empty();
     }
 
     private String fallbackWebSearchAnswer(ToolResult toolResult, boolean linkRequest) {
