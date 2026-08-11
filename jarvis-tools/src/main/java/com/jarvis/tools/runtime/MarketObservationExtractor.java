@@ -18,7 +18,7 @@ import java.util.regex.Pattern;
 public class MarketObservationExtractor {
 
     private static final Pattern PRICE_PATTERN = Pattern.compile(
-            "(?iu)(?:\\b(\\d{1,3}(?:[ .\\u00a0]?\\d{3})+|\\d{2,6})(?:[,.](\\d{1,2}))?\\s*(zł|zl|pln|usd|eur|gbp)\\b|([$€])\\s*(\\d{1,6}(?:[,.]\\d{1,2})?))"
+            "(?iu)(?:\\b(\\d{1,3}(?:[ .\\u00a0]?\\d{3})+|\\d{2,6})(?:[,.](\\d{1,2}))?\\s*(zł|zl|pln|usd|eur|gbp)(?=$|\\s|[.,;:)]|<)|([$€])\\s*(\\d{1,6}(?:[,.]\\d{1,2})?))"
     );
     private static final Set<String> MARKET_VALUE_TERMS = Set.of(
             "cena", "ceny", "koszt", "kosztuje", "po ile", "ile chodzi",

@@ -47,7 +47,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private static final String AI_UNAVAILABLE_WRITE_MESSAGE =
             "Nie moge teraz przeanalizowac i zapisac tej informacji, poniewaz model AI jest niedostepny.";
     private static final Pattern SPECIFIC_VALUE_PATTERN = Pattern.compile(
-            "(?iu)(?:\\b\\d+[\\d .,\u00a0]{0,24}\\s*(?:zl|zł|pln|usd|eur|gbp|\\$|€)\\b|(?:\\$|€)\\s*\\d+[\\d .,\\u00a0]{0,24})"
+            "(?iu)(?:\\b\\d+[\\d .,\u00a0]{0,24}\\s*(?:zl|zł|pln|usd|eur|gbp|\\$|€)(?=$|\\s|[.,;:)]|<)|(?:\\$|€)\\s*\\d+[\\d .,\\u00a0]{0,24})"
     );
 
     private final List<AIProvider> aiProviders;

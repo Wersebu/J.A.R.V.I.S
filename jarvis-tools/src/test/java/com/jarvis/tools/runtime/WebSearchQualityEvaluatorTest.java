@@ -42,6 +42,19 @@ class WebSearchQualityEvaluatorTest {
     }
 
     @Test
+    void acceptsPolishZlotySymbolFromMarketplaceSnippet() {
+        WebSearchQualityReport report = evaluator.evaluate(priceRequest("RTX 5060 Ti 16GB"),
+                webResult("Rtx 5060 Ti 16 Gb - Niska cena na Allegro", "https://allegro.pl/listing?string=rtx+5060+ti+16+gb",
+                        "Karta graficzna MSI GeForce RTX 5060 Ti Ventus 2X OC Plus 16GB GDDR7 128bit 4499,00 zł"));
+
+        assertThat(report.accepted()).isTrue();
+        assertThat(report.liveEvidenceSatisfied()).isTrue();
+        assertThat(report.marketAnalysis().count()).isEqualTo(1);
+        assertThat(report.marketObservations().getFirst().currency()).isEqualTo("PLN");
+        assertThat(report.marketObservations().getFirst().price()).isEqualByComparingTo("4499.00");
+    }
+
+    @Test
     void excludesMarketOutliersFromAggregateRange() {
         MarketAnalysis analysis = MarketAnalysis.from(List.of(
                 observation("OLX", "1000"),

@@ -176,7 +176,7 @@ public class WebSearchQualityEvaluator {
     }
 
     private boolean containsSpecificValue(String text) {
-        return text.matches(".*\\b\\d+[\\d., ]*\\s*(zl|pln|usd|eur|gbp|\\$|€)\\b.*")
+        return text.matches(".*\\b\\d+[\\d., ]*\\s*(zl|zł|pln|usd|eur|gbp|\\$|€)(?=$|\\s|[.,;:)]|<).*")
                 || text.matches(".*\\b(\\$|€)\\s*\\d+[\\d., ]*.*");
     }
 
@@ -196,7 +196,8 @@ public class WebSearchQualityEvaluator {
 
     private String normalize(String value) {
         String noMarks = Normalizer.normalize(Objects.toString(value, ""), Normalizer.Form.NFD)
-                .replaceAll("\\p{M}", "");
+                .replaceAll("\\p{M}", "")
+                .replace('ł', 'l');
         return noMarks.toLowerCase(Locale.ROOT);
     }
 
