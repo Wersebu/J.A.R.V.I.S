@@ -236,6 +236,8 @@ public enum CognitiveEventType {
     TOOL_FINISHED,
     /** Native tool loop started. */
     TOOL_LOOP_STARTED,
+    /** Native structured tool call was received from the model. */
+    NATIVE_TOOL_CALL_RECEIVED,
     /** Tool selection started. */
     TOOL_SELECTION_STARTED,
     /** Model proposed a tool call. */
@@ -248,6 +250,16 @@ public enum CognitiveEventType {
     TOOL_EXECUTION_STARTED,
     /** Tool execution finished. */
     TOOL_EXECUTION_FINISHED,
+    /** Tool result was sent back to the model. */
+    TOOL_RESULT_SENT_TO_MODEL,
+    /** A web candidate was rejected by validation. */
+    WEB_CANDIDATE_REJECTED,
+    /** A web candidate was blocked by a technical read failure. */
+    WEB_CANDIDATE_BLOCKED,
+    /** Final synthesis call started. */
+    FINAL_SYNTHESIS_STARTED,
+    /** Final synthesis call finished. */
+    FINAL_SYNTHESIS_FINISHED,
     /** Tool result was received by the runtime. */
     TOOL_RESULT_RECEIVED,
     /** Tool result verification started. */

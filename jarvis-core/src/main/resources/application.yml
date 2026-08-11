@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.7.1"
+  version: "2.7.3"
   workspace:
     root: ./temp-workspaces
     ttl: 60m
@@ -28,6 +28,7 @@ jarvis:
     expose-debug-api: true
   tools:
     enabled: true
+    runtime: native
     max-calls-fast: 2
     max-calls-research: 8
     max-consecutive-failures: 2

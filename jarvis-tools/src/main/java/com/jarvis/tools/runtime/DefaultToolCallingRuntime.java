@@ -21,6 +21,7 @@ import com.jarvis.tools.schema.ToolOperationDefinition;
 import com.jarvis.tools.schema.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -61,10 +62,12 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private final WebSearchQualityEvaluator webSearchQualityEvaluator;
     private final InformationFreshnessEvaluator freshnessEvaluator;
     private final MarketObservationExtractor marketObservationExtractor;
+    private final NativeToolLoopService nativeToolLoopService;
 
     /**
      * Creates the runtime.
      */
+    @Autowired
     public DefaultToolCallingRuntime(
             List<AIProvider> aiProviders,
             ToolManager toolManager,
@@ -73,7 +76,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             ToolRuntimeProperties properties,
             CognitiveEventBus cognitiveEventBus,
             ToolRuntimeDebugService debugService,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            NativeToolLoopService nativeToolLoopService
     ) {
         this.aiProviders = List.copyOf(aiProviders);
         this.toolManager = toolManager;
@@ -86,10 +90,34 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         this.webSearchQualityEvaluator = new WebSearchQualityEvaluator();
         this.freshnessEvaluator = new InformationFreshnessEvaluator();
         this.marketObservationExtractor = new MarketObservationExtractor();
+        this.nativeToolLoopService = nativeToolLoopService;
+    }
+
+    /**
+     * Creates the legacy runtime for focused unit tests.
+     */
+    public DefaultToolCallingRuntime(
+            List<AIProvider> aiProviders,
+            ToolManager toolManager,
+            ToolRegistry toolRegistry,
+            ToolIntentDetector intentDetector,
+            ToolRuntimeProperties properties,
+            CognitiveEventBus cognitiveEventBus,
+            ToolRuntimeDebugService debugService,
+            ObjectMapper objectMapper
+    ) {
+        this(aiProviders, toolManager, toolRegistry, intentDetector, properties, cognitiveEventBus, debugService,
+                objectMapper, null);
     }
 
     @Override
     public ToolCallingResult execute(ToolCallingRequest request) {
+        if (properties.isNativeRuntime()) {
+            if (nativeToolLoopService == null) {
+                throw new ToolException("Native tool runtime is enabled but NativeToolLoopService is unavailable");
+            }
+            return nativeToolLoopService.execute(request);
+        }
         ToolIntent intent = resolveIntent(request);
         InformationFreshness freshness = freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason());
         if (!properties.isEnabled()) {

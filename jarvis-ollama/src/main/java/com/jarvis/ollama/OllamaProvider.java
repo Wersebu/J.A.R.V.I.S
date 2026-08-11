@@ -5,6 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.ai.Brain;
+import com.jarvis.common.ai.ModelMessage;
+import com.jarvis.common.ai.ModelResponse;
+import com.jarvis.common.ai.ModelToolCall;
+import com.jarvis.common.ai.ModelUsage;
+import com.jarvis.common.ai.NativeToolDefinition;
 import com.jarvis.common.dto.ChatResponse;
 import com.jarvis.common.diagnostics.InferenceDiagnostics;
 import com.jarvis.common.diagnostics.InferenceDiagnosticsContext;
@@ -36,6 +41,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
@@ -249,6 +255,77 @@ public class OllamaProvider implements AIProvider {
         }
     }
 
+    @Override
+    public ModelResponse toolChat(
+            Brain brain,
+            List<ModelMessage> messages,
+            List<NativeToolDefinition> tools,
+            AIJobType jobType
+    ) {
+        String requestId = diagnosticsRequestId();
+        String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/chat";
+        try {
+            LOGGER.info("[JARVIS][requestId={}][OLLAMA] NATIVE_TOOL_CHAT_PREPARING model={} tools={}",
+                    requestId, brain.model(), tools == null ? 0 : tools.size());
+            publishCognitive(jobType, CognitiveEventType.MODEL_REQUEST_STARTED, "REQUESTING",
+                    "Native tool model turn started", "model:" + brain.model(), Map.of(
+                            "model", brain.model(),
+                            "endpoint", endpoint,
+                            "provider", provider(),
+                            "toolDefinitions", tools == null ? 0 : tools.size()
+                    ));
+            try (OllamaRequestCoordinator.Permit ignored = requestCoordinator.acquire(jobType, requestId)) {
+                OllamaChatRequest requestBody = new OllamaChatRequest(
+                        brain.model(),
+                        toOllamaMessages(messages),
+                        toOllamaTools(tools),
+                        false,
+                        brain.reasoningLevel().name().toLowerCase(java.util.Locale.ROOT),
+                        properties.keepAlive(),
+                        contextBudgetService.ollamaOptions()
+                );
+                long started = System.nanoTime();
+                HttpRequest httpRequest = HttpRequest.newBuilder()
+                        .uri(URI.create(endpoint))
+                        .timeout(Duration.ofMinutes(5))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(requestBody)))
+                        .build();
+                HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                long durationMs = nanosToMillis(System.nanoTime() - started);
+                if (httpResponse.statusCode() < 200 || httpResponse.statusCode() >= 300) {
+                    LOGGER.error("[JARVIS][requestId={}][OLLAMA] NATIVE_TOOL_CHAT_HTTP_ERROR status={} body={}",
+                            requestId, httpResponse.statusCode(), httpResponse.body());
+                    throw new OllamaException("Ollama native tool chat failed with status " + httpResponse.statusCode());
+                }
+                OllamaChatResponse response = objectMapper.readValue(httpResponse.body(), OllamaChatResponse.class);
+                ModelResponse modelResponse = toModelResponse(response);
+                LOGGER.info("[JARVIS][requestId={}][OLLAMA] NATIVE_TOOL_CHAT_FINISHED durationMs={} contentChars={} toolCalls={}",
+                        requestId, durationMs, modelResponse.content().length(), modelResponse.toolCalls().size());
+                publishCognitive(jobType, CognitiveEventType.EXECUTION_TRACE, "FINISHED",
+                        "Native tool model turn finished", "model:" + brain.model(), Map.of(
+                                "stage", "NATIVE_TOOL_MODEL_TURN",
+                                "durationMs", durationMs,
+                                "toolCalls", modelResponse.toolCalls().size(),
+                                "contentCharacters", modelResponse.content().length(),
+                                "finishReason", modelResponse.finishReason(),
+                                "severity", severity(durationMs)
+                        ));
+                return modelResponse;
+            }
+        } catch (JsonProcessingException exception) {
+            LOGGER.error("[JARVIS] Ollama native tool JSON error", exception);
+            throw new OllamaException("Failed to process Ollama native tool response", exception);
+        } catch (IOException exception) {
+            LOGGER.error("[JARVIS] Ollama native tool request failed at {}", properties.baseUrl(), exception);
+            throw new OllamaException("Failed to communicate with Ollama native tool endpoint", exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            LOGGER.error("[JARVIS] Ollama native tool request interrupted", exception);
+            throw new OllamaException("Ollama native tool request was interrupted", exception);
+        }
+    }
+
     private void streamResponse(
             String conversationId,
             Brain brain,
@@ -453,6 +530,69 @@ public class OllamaProvider implements AIProvider {
             }
             cognitiveEventBus.publish(event, status, message, nodeId, metadata);
         }
+    }
+
+    private List<OllamaChatMessage> toOllamaMessages(List<ModelMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return List.of();
+        }
+        return messages.stream()
+                .map(message -> new OllamaChatMessage(
+                        message.role(),
+                        message.content(),
+                        "",
+                        toOllamaToolCalls(message.toolCalls()),
+                        message.toolCallId()
+                ))
+                .toList();
+    }
+
+    private List<OllamaToolCall> toOllamaToolCalls(List<ModelToolCall> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) {
+            return List.of();
+        }
+        return toolCalls.stream()
+                .map(call -> new OllamaToolCall(call.id(), "function",
+                        new OllamaToolFunction(call.name(), call.arguments())))
+                .toList();
+    }
+
+    private List<Map<String, Object>> toOllamaTools(List<NativeToolDefinition> tools) {
+        if (tools == null || tools.isEmpty()) {
+            return List.of();
+        }
+        return tools.stream()
+                .map(tool -> Map.<String, Object>of(
+                        "type", "function",
+                        "function", Map.of(
+                                "name", tool.name(),
+                                "description", tool.description(),
+                                "parameters", tool.parameters()
+                        )))
+                .toList();
+    }
+
+    private ModelResponse toModelResponse(OllamaChatResponse response) {
+        OllamaChatMessage message = response == null ? null : response.message();
+        List<ModelToolCall> toolCalls = message == null || message.toolCalls() == null
+                ? List.of()
+                : message.toolCalls().stream()
+                .filter(call -> call.function() != null)
+                .map(call -> new ModelToolCall(
+                        call.id(),
+                        call.function().name(),
+                        call.function().arguments()
+                ))
+                .toList();
+        int promptTokens = response == null || response.promptEvalCount() == null ? 0 : response.promptEvalCount();
+        int completionTokens = response == null || response.evalCount() == null ? 0 : response.evalCount();
+        return new ModelResponse(
+                message == null ? "" : message.content(),
+                message == null ? "" : message.thinking(),
+                toolCalls,
+                response == null ? "" : response.doneReason(),
+                new ModelUsage(promptTokens, completionTokens, promptTokens + completionTokens)
+        );
     }
 
     private String normalizeBaseUrl(String baseUrl) {

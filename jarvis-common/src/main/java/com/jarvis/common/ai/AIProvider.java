@@ -3,6 +3,8 @@ package com.jarvis.common.ai;
 import com.jarvis.common.dto.ChatResponse;
 import com.jarvis.common.event.ChatEventSink;
 
+import java.util.List;
+
 /**
  * Provider-independent contract for AI chat generation.
  */
@@ -57,5 +59,23 @@ public interface AIProvider {
      */
     default void stream(String conversationId, Brain brain, String prompt, AIJobType jobType, ChatEventSink eventSink) {
         stream(conversationId, brain, prompt, eventSink);
+    }
+
+    /**
+     * Executes one non-streaming native tool-calling model turn.
+     *
+     * @param brain selected logical brain
+     * @param messages conversation messages
+     * @param tools scoped native tool definitions
+     * @param jobType job type
+     * @return model response with content, thinking and native tool calls
+     */
+    default ModelResponse toolChat(
+            Brain brain,
+            List<ModelMessage> messages,
+            List<NativeToolDefinition> tools,
+            AIJobType jobType
+    ) {
+        throw new AIProviderException("Native tool calling is not supported by provider: " + provider());
     }
 }

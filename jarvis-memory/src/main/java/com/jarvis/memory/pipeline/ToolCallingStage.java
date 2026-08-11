@@ -101,13 +101,27 @@ public class ToolCallingStage implements PipelineStage {
         if (result.results().isEmpty() && result.finalAnswer() != null && !result.finalAnswer().isBlank()) {
             return publishBufferedFallback(context, result.finalAnswer(), "tool-fallback");
         }
+        publish(context, CognitiveEventType.FINAL_SYNTHESIS_STARTED, "STARTED",
+                "Final answer synthesis from tool results started", Map.of(
+                        "toolResults", result.results().size(),
+                        "toolSteps", result.steps().size(),
+                        "model", context.model()
+                ));
         String prompt = toolFinalAnswerPrompt(context, result);
         String fallback = fallbackToolAnswer(context, result);
+        String answer;
         try {
-            return streamPrompt(context, prompt, fallback);
+            answer = streamPrompt(context, prompt, fallback);
         } catch (AIProviderException exception) {
-            return publishBufferedFallback(context, fallback, "tool-fallback");
+            answer = publishBufferedFallback(context, fallback, "tool-fallback");
         }
+        publish(context, CognitiveEventType.FINAL_SYNTHESIS_FINISHED, "FINISHED",
+                "Final answer synthesis from tool results finished", Map.of(
+                        "toolResults", result.results().size(),
+                        "characters", answer.length(),
+                        "model", context.model()
+                ));
+        return answer;
     }
 
     private String streamGuidedAnswer(PipelineContext context, String guidance, String source) {
