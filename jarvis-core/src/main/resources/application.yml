@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.6.0"
+  version: "2.7.0"
   workspace:
     root: ./temp-workspaces
     ttl: 60m
@@ -37,7 +37,12 @@ jarvis:
     enabled: true
     base-url: http://127.0.0.1:8888
     default-max-results: 5
-    hard-max-results: 10
+    current-fact-max-results: 8
+    market-max-results: 12
+    max-search-attempts: 4
+    max-page-reads: 5
+    market-min-observations: 3
+    hard-max-results: 15
     snippet-max-length: 320
     page-max-length: 8000
     connect-timeout: 2s

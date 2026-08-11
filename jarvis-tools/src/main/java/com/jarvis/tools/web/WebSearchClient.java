@@ -13,4 +13,14 @@ public interface WebSearchClient {
      * @return normalized search response
      */
     WebSearchResponse search(String query, int maxResults);
+
+    /**
+     * Searches the web using a structured request.
+     *
+     * @param request search request
+     * @return normalized search response
+     */
+    default WebSearchResponse search(WebSearchRequest request) {
+        return search(request.query(), request.maxResults());
+    }
 }

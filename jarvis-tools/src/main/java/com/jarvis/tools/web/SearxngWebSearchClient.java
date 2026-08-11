@@ -42,16 +42,21 @@ public class SearxngWebSearchClient implements WebSearchClient {
 
     @Override
     public WebSearchResponse search(String query, int maxResults) {
+        return search(new WebSearchRequest(query, maxResults, "", 1, "", "", ""));
+    }
+
+    @Override
+    public WebSearchResponse search(WebSearchRequest searchRequest) {
         if (!properties.isEnabled()) {
             throw new WebSearchException("Web search is disabled");
         }
-        String normalizedQuery = query == null ? "" : query.strip();
+        String normalizedQuery = searchRequest == null || searchRequest.query() == null ? "" : searchRequest.query().strip();
         if (normalizedQuery.isBlank()) {
             throw new WebSearchException("Web search query is required");
         }
-        int limit = properties.cappedMaxResults(maxResults);
+        int limit = properties.cappedMaxResults(searchRequest.maxResults());
         long started = System.nanoTime();
-        HttpRequest request = HttpRequest.newBuilder(searchUri(normalizedQuery))
+        HttpRequest request = HttpRequest.newBuilder(searchUri(searchRequest, normalizedQuery))
                 .timeout(properties.readTimeout())
                 .header("Accept", "application/json")
                 .GET()
@@ -77,9 +82,28 @@ public class SearxngWebSearchClient implements WebSearchClient {
         }
     }
 
-    private URI searchUri(String query) {
+    private URI searchUri(WebSearchRequest request, String query) {
         String encodedQuery = URLEncoder.encode(query, StandardCharsets.UTF_8);
-        return URI.create(properties.baseUrl() + "/search?q=" + encodedQuery + "&format=json");
+        StringBuilder uri = new StringBuilder(properties.baseUrl())
+                .append("/search?q=").append(encodedQuery)
+                .append("&format=json");
+        append(uri, "language", request.language());
+        append(uri, "time_range", request.timeRange());
+        append(uri, "categories", request.category());
+        if (request.page() > 1) {
+            append(uri, "pageno", String.valueOf(request.page()));
+        }
+        return URI.create(uri.toString());
+    }
+
+    private void append(StringBuilder uri, String key, String value) {
+        if (value == null || value.isBlank()) {
+            return;
+        }
+        uri.append('&')
+                .append(URLEncoder.encode(key, StandardCharsets.UTF_8))
+                .append('=')
+                .append(URLEncoder.encode(value.strip(), StandardCharsets.UTF_8));
     }
 
     private List<WebSearchResult> normalize(String body, int limit) {

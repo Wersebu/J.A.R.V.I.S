@@ -19,6 +19,7 @@ import java.util.Set;
 public class WebSearchQualityEvaluator {
 
     private static final double ACCEPTANCE_THRESHOLD = 0.34d;
+    private final MarketObservationExtractor marketObservationExtractor = new MarketObservationExtractor();
     private static final Set<String> STOP_WORDS = Set.of(
             "a", "an", "and", "or", "the", "to", "for", "of", "in", "on", "with", "from",
             "i", "me", "my", "please", "link", "listing", "used", "current",
@@ -35,11 +36,11 @@ public class WebSearchQualityEvaluator {
      */
     public WebSearchQualityReport evaluate(ToolCallingRequest request, ToolResult result) {
         if (result == null || !result.success() || !"web".equalsIgnoreCase(result.tool())) {
-            return new WebSearchQualityReport(false, 0.0d, "No successful web search result.", List.of());
+            return new WebSearchQualityReport(false, false, 0.0d, "No successful web search result.", List.of(), List.of(), null);
         }
         Object rawResults = result.data().get("results");
         if (!(rawResults instanceof List<?> list) || list.isEmpty()) {
-            return new WebSearchQualityReport(false, 0.0d, "SearXNG returned no results.", List.of());
+            return new WebSearchQualityReport(false, false, 0.0d, "SearXNG returned no results.", List.of(), List.of(), null);
         }
 
         String query = text(result.data().get("query"));
@@ -47,10 +48,11 @@ public class WebSearchQualityEvaluator {
         Set<String> terms = importantTerms(intentText);
         Set<String> desiredDomains = desiredDomains(intentText);
         boolean requiresSpecificValue = requiresSpecificValue(intentText);
+        boolean requiresMarketValue = marketObservationExtractor.requiresMarketValue(request);
 
         double bestScore = 0.0d;
-        boolean valueFound = false;
         List<Map<String, Object>> accepted = new ArrayList<>();
+        List<MarketObservation> observations = new ArrayList<>();
         for (Object item : list) {
             if (!(item instanceof Map<?, ?> map)) {
                 continue;
@@ -63,29 +65,41 @@ public class WebSearchQualityEvaluator {
             String haystack = normalize(text(map.get("title")) + " " + text(map.get("snippet")) + " " + text(map.get("source")) + " " + domain);
             double score = score(terms, desiredDomains, domain, haystack);
             bestScore = Math.max(bestScore, score);
-            valueFound = valueFound || containsSpecificValue(haystack);
-            if (score >= ACCEPTANCE_THRESHOLD) {
+            boolean valueFoundForResult = containsSpecificValue(haystack);
+            List<MarketObservation> resultObservations = marketObservationExtractor.extract(request,
+                    text(map.get("title")), text(map.get("snippet")), text(map.get("source")), url);
+            if (score >= ACCEPTANCE_THRESHOLD && (!requiresSpecificValue || valueFoundForResult || !resultObservations.isEmpty())) {
+                observations.addAll(resultObservations);
                 accepted.add(Map.of(
                         "title", text(map.get("title")),
                         "url", url,
                         "snippet", text(map.get("snippet")),
                         "source", text(map.get("source")),
                         "domain", domain,
-                        "relevanceScore", score
+                        "relevanceScore", score,
+                        "valueFound", valueFoundForResult,
+                        "marketObservations", resultObservations.size()
                 ));
             }
         }
 
-        boolean acceptedEnough = !accepted.isEmpty() && (!requiresSpecificValue || valueFound);
+        MarketAnalysis marketAnalysis = MarketAnalysis.from(observations);
+        boolean liveEvidenceSatisfied = !accepted.isEmpty()
+                && (!requiresSpecificValue || accepted.stream().anyMatch(item -> Boolean.TRUE.equals(item.get("valueFound")))
+                || !observations.isEmpty());
+        boolean marketSatisfied = !requiresMarketValue || marketAnalysis.count() > 0;
+        boolean acceptedEnough = liveEvidenceSatisfied && marketSatisfied;
         String reason;
         if (acceptedEnough) {
-            reason = "Relevant web results found.";
+            reason = requiresMarketValue
+                    ? "Relevant web results and market value observations found."
+                    : "Relevant web results found.";
         } else if (!accepted.isEmpty() && requiresSpecificValue) {
             reason = "Relevant result links found, but snippets did not contain the requested numeric value. Read result pages or search again.";
         } else {
             reason = "Search results did not match the requested entities/domains well enough.";
         }
-        return new WebSearchQualityReport(acceptedEnough, bestScore, reason, accepted);
+        return new WebSearchQualityReport(acceptedEnough, liveEvidenceSatisfied, bestScore, reason, accepted, observations, marketAnalysis);
     }
 
     private double score(Set<String> terms, Set<String> desiredDomains, String domain, String haystack) {
@@ -158,7 +172,7 @@ public class WebSearchQualityEvaluator {
 
     private boolean requiresSpecificValue(String text) {
         String normalized = normalize(text);
-        return normalized.matches(".*\\b(cena|ceny|koszt|kosztuje|kurs|notowania|price|prices|rate|market)\\b.*");
+        return normalized.matches(".*\\b(cena|ceny|koszt|kosztuje|kurs|notowania|price|prices|rate)\\b.*");
     }
 
     private boolean containsSpecificValue(String text) {

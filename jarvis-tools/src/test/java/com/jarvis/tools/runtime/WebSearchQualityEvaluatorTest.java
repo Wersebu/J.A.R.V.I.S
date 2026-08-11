@@ -1,0 +1,109 @@
+package com.jarvis.tools.runtime;
+
+import com.jarvis.common.ai.Brain;
+import com.jarvis.common.ai.BrainType;
+import com.jarvis.common.ai.ReasoningLevel;
+import com.jarvis.common.knowledge.KnowledgeMode;
+import com.jarvis.tools.ToolResult;
+import org.junit.jupiter.api.Test;
+
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class WebSearchQualityEvaluatorTest {
+
+    private final WebSearchQualityEvaluator evaluator = new WebSearchQualityEvaluator();
+
+    @Test
+    void rejectsRelevantLinkWithoutPriceAndUnrelatedPrice() {
+        WebSearchQualityReport report = evaluator.evaluate(priceRequest("RTX 4060 Ti"),
+                webResult("RTX 4060 Ti 16GB - Allegro", "https://allegro.pl/oferta/rtx-4060-ti", "Karta graficzna RTX 4060 Ti 16GB",
+                        "Audi A8 D3", "https://olx.pl/d/oferta/audi-a8", "Cena 18000 PLN"));
+
+        assertThat(report.accepted()).isFalse();
+        assertThat(report.liveEvidenceSatisfied()).isFalse();
+        assertThat(report.marketObservations()).isEmpty();
+    }
+
+    @Test
+    void acceptsPriceOnlyWhenItBelongsToRequestedEntity() {
+        WebSearchQualityReport report = evaluator.evaluate(priceRequest("RTX 4060 Ti"),
+                webResult("RTX 4060 Ti 16GB - Allegro", "https://allegro.pl/oferta/rtx-4060-ti",
+                        "Uzywana karta graficzna RTX 4060 Ti 16GB cena 1299 PLN"));
+
+        assertThat(report.accepted()).isTrue();
+        assertThat(report.liveEvidenceSatisfied()).isTrue();
+        assertThat(report.marketAnalysis().count()).isEqualTo(1);
+        assertThat(report.marketObservations().getFirst().price()).isEqualByComparingTo("1299");
+    }
+
+    @Test
+    void excludesMarketOutliersFromAggregateRange() {
+        MarketAnalysis analysis = MarketAnalysis.from(List.of(
+                observation("OLX", "1000"),
+                observation("Allegro", "1100"),
+                observation("OLX", "1200"),
+                observation("Random", "5000")
+        ));
+
+        assertThat(analysis.count()).isEqualTo(3);
+        assertThat(analysis.minimum()).isEqualByComparingTo("1000");
+        assertThat(analysis.maximum()).isEqualByComparingTo("1200");
+        assertThat(analysis.median()).isEqualByComparingTo("1100");
+        assertThat(analysis.observations()).anyMatch(MarketObservation::outlier);
+    }
+
+    private ToolCallingRequest priceRequest(String entity) {
+        return new ToolCallingRequest(
+                "request-test",
+                "conversation-test",
+                "po ile jest " + entity + "?",
+                "Retrieve current market price for " + entity,
+                "Need current marketplace price.",
+                "Base prompt",
+                new Brain(BrainType.FAST, "test", "gpt-oss:20b", "test", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        );
+    }
+
+    private ToolResult webResult(String title, String url, String snippet) {
+        return webResult(new Object[]{title, url, snippet});
+    }
+
+    private ToolResult webResult(Object... triples) {
+        List<Map<String, Object>> results = new java.util.ArrayList<>();
+        for (int index = 0; index < triples.length; index += 3) {
+            results.add(Map.of(
+                    "title", triples[index],
+                    "url", triples[index + 1],
+                    "snippet", triples[index + 2],
+                    "source", "Test"
+            ));
+        }
+        return new ToolResult(true, "web", "SEARCH_WEB", "request-test", "conversation-test", false,
+                List.of("web:search"), "Search finished", Map.of(
+                "query", "RTX 4060 Ti cena",
+                "results", results
+        ), "", "", false, "");
+    }
+
+    private MarketObservation observation(String source, String amount) {
+        return new MarketObservation(
+                "RTX 4060 Ti",
+                "16GB",
+                "RTX 4060 Ti",
+                new BigDecimal(amount),
+                "PLN",
+                "used",
+                source,
+                "https://example.com/" + source,
+                Instant.parse("2026-08-11T00:00:00Z"),
+                0.8d,
+                false
+        );
+    }
+}

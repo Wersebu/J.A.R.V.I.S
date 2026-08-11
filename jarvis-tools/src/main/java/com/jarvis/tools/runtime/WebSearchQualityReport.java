@@ -13,9 +13,12 @@ import java.util.Map;
  */
 public record WebSearchQualityReport(
         boolean accepted,
+        boolean liveEvidenceSatisfied,
         double score,
         String reason,
-        List<Map<String, Object>> acceptedResults
+        List<Map<String, Object>> acceptedResults,
+        List<MarketObservation> marketObservations,
+        MarketAnalysis marketAnalysis
 ) {
 
     /**
@@ -24,5 +27,7 @@ public record WebSearchQualityReport(
     public WebSearchQualityReport {
         reason = reason == null ? "" : reason;
         acceptedResults = acceptedResults == null ? List.of() : List.copyOf(acceptedResults);
+        marketObservations = marketObservations == null ? List.of() : List.copyOf(marketObservations);
+        marketAnalysis = marketAnalysis == null ? MarketAnalysis.from(marketObservations) : marketAnalysis;
     }
 }

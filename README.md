@@ -2,7 +2,7 @@
 
 Jarvis is a long-term AI operating system backend foundation.
 
-Version `2.6.0` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE/WebSocket streaming, Knowledge Workspace, Cognitive Memory, native tool calling, SearXNG-backed Web Search, temporary chat attachments, and a unified Cognitive Event Bus.
+Version `2.7.0` provides a headless Spring Boot backend for Ubuntu Server 24.04 LTS, Windows, Java 21, Maven, provider-independent AI chat through Ollama, brain routing, real-time SSE/WebSocket streaming, Knowledge Workspace, Cognitive Memory, native tool calling, SearXNG-backed Web Search, temporary chat attachments, and a unified Cognitive Event Bus.
 
 ## Modules
 
@@ -32,7 +32,7 @@ curl http://localhost:8080/api/health
 Expected response:
 
 ```json
-{"status":"online","version":"2.6.0"}
+{"status":"online","version":"2.7.0"}
 ```
 
 ## Chat v0.2

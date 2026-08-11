@@ -72,7 +72,12 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
         return new ToolDefinition(TOOL_NAME, getDescription(), List.of(
                 operation(SEARCH_WEB, "Search current internet information using local SearXNG. Use this for current prices, recent facts, news, releases, or external sources.", false, ToolSafetyLevel.READ,
                         arg("query", true, "Search query sent to SearXNG."),
-                        arg("maxResults", false, "Maximum normalized results to return.")),
+                        arg("maxResults", false, "Maximum normalized results to return."),
+                        arg("profile", false, "Research profile: GENERAL, CURRENT_FACT, NEWS, or MARKET."),
+                        arg("language", false, "Optional SearXNG language."),
+                        arg("page", false, "Optional SearXNG page number."),
+                        arg("timeRange", false, "Optional SearXNG time range."),
+                        arg("category", false, "Optional SearXNG category.")),
                 operation(READ_WEB_PAGE, "Fetch and read normalized visible text from a public http/https search result URL. Use after SEARCH_WEB when snippets do not contain enough detail, prices, facts, or source evidence.", false, ToolSafetyLevel.READ,
                         arg("url", true, "Public http/https URL returned by web search."))
         ));
@@ -86,15 +91,26 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
         }
         String query = arg(request, "query");
         int maxResults = intArg(request, "maxResults");
-        int effectiveMaxResults = properties.cappedMaxResults(maxResults);
+        String profile = profile(request);
+        int effectiveMaxResults = properties.cappedMaxResults(maxResults > 0 ? maxResults : defaultMaxResults(profile));
+        int page = Math.max(1, intArg(request, "page"));
         long started = System.nanoTime();
-        LOGGER.info("[WEB_SEARCH] query=\"{}\" maxResults={}", query, effectiveMaxResults);
+        LOGGER.info("[WEB_SEARCH] query=\"{}\" profile={} page={} maxResults={}", query, profile, page, effectiveMaxResults);
         publish(request, CognitiveEventType.TOOL_STARTED, "STARTED", "WebSearchTool started", null,
                 Map.of("tool", TOOL_NAME, "operation", operation));
         publish(request, CognitiveEventType.SEARCH_STARTED, "SEARCHING", "Web search started", null,
-                Map.of("tool", TOOL_NAME, "operation", operation, "query", query, "maxResults", effectiveMaxResults));
+                Map.of("tool", TOOL_NAME, "operation", operation, "query", query, "maxResults", effectiveMaxResults,
+                        "profile", profile, "page", page));
         try {
-            WebSearchResponse response = webSearchClient.search(query, effectiveMaxResults);
+            WebSearchResponse response = webSearchClient.search(new WebSearchRequest(
+                    query,
+                    effectiveMaxResults,
+                    arg(request, "language"),
+                    page,
+                    arg(request, "timeRange"),
+                    arg(request, "category"),
+                    profile
+            ));
             for (WebSearchResult result : response.results()) {
                 publish(request, CognitiveEventType.SEARCH_RESULT, "FOUND", "Web search result", nodeId(result),
                         Map.of("tool", TOOL_NAME, "operation", operation, "title", result.title(), "url", result.url(),
@@ -102,9 +118,11 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
             }
             long durationMs = (System.nanoTime() - started) / 1_000_000L;
             Map<String, Object> data = resultData(response, effectiveMaxResults);
+            data.put("profile", profile);
+            data.put("page", page);
             publish(request, CognitiveEventType.SEARCH_FINISHED, "FINISHED", "Web search finished", null,
                     Map.of("tool", TOOL_NAME, "operation", operation, "query", query, "resultsReturned",
-                            response.results().size(), "durationMs", durationMs));
+                            response.results().size(), "durationMs", durationMs, "profile", profile, "page", page));
             publish(request, CognitiveEventType.TOOL_FINISHED, "FINISHED", "WebSearchTool finished", null,
                     Map.of("tool", TOOL_NAME, "operation", operation, "success", true));
             LOGGER.info("[WEB_SEARCH] results={} duration={}ms", response.results().size(), durationMs);
@@ -115,6 +133,8 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
             Map<String, Object> data = Map.of(
                     "query", query,
                     "maxResults", effectiveMaxResults,
+                    "profile", profile,
+                    "page", page,
                     "durationMs", durationMs,
                     "baseUrl", properties.baseUrl(),
                     "errorCode", "WEB_SEARCH_FAILED",
@@ -196,7 +216,28 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
     }
 
     private ToolArgumentDefinition arg(String name, boolean required, String description) {
-        return new ToolArgumentDefinition(name, "maxResults".equals(name) ? "number" : "string", required, description);
+        return new ToolArgumentDefinition(name, ("maxResults".equals(name) || "page".equals(name)) ? "number" : "string", required, description);
+    }
+
+    private String profile(ToolRequest request) {
+        String value = arg(request, "profile").toUpperCase(Locale.ROOT);
+        return switch (value) {
+            case "CURRENT_FACT", "NEWS", "MARKET" -> value;
+            default -> marketLike(arg(request, "query")) ? "MARKET" : "GENERAL";
+        };
+    }
+
+    private int defaultMaxResults(String profile) {
+        return switch (profile) {
+            case "MARKET" -> properties.marketMaxResults();
+            case "CURRENT_FACT", "NEWS" -> properties.currentFactMaxResults();
+            default -> properties.defaultMaxResults();
+        };
+    }
+
+    private boolean marketLike(String query) {
+        String normalized = query == null ? "" : query.toLowerCase(Locale.ROOT);
+        return normalized.matches(".*\\b(cena|ceny|koszt|kosztuje|price|prices|market|uzywan|used|wtorn)\\w*\\b.*");
     }
 
     private String operation(ToolRequest request) {

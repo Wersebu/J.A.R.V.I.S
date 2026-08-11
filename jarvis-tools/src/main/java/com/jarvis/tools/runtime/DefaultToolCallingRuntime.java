@@ -59,6 +59,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private final ToolRuntimeDebugService debugService;
     private final ObjectMapper objectMapper;
     private final WebSearchQualityEvaluator webSearchQualityEvaluator;
+    private final InformationFreshnessEvaluator freshnessEvaluator;
+    private final MarketObservationExtractor marketObservationExtractor;
 
     /**
      * Creates the runtime.
@@ -82,11 +84,14 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         this.debugService = debugService;
         this.objectMapper = objectMapper;
         this.webSearchQualityEvaluator = new WebSearchQualityEvaluator();
+        this.freshnessEvaluator = new InformationFreshnessEvaluator();
+        this.marketObservationExtractor = new MarketObservationExtractor();
     }
 
     @Override
     public ToolCallingResult execute(ToolCallingRequest request) {
         ToolIntent intent = resolveIntent(request);
+        InformationFreshness freshness = freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason());
         if (!properties.isEnabled()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
         }
@@ -134,6 +139,13 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                     return new ToolCallingResult(false, "", steps, results);
                 }
                 if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
+                    if (freshness == InformationFreshness.MUST_BE_LIVE && !hasLiveEvidence(results) && step < maxCalls) {
+                        LOGGER.info("[FRESHNESS] requestId={} final answer blocked; live evidence required", request.requestId());
+                        publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "LIVE_DATA_REQUIRED",
+                                "Final answer blocked until live evidence is collected", null, step,
+                                Map.of("freshness", freshness.name(), "liveEvidenceSatisfied", false));
+                        action = nextLiveEvidenceAction(request, observation, "MUST_BE_LIVE request cannot be answered from stale model memory.");
+                    }
                     if (step == 1 && results.isEmpty() && intent == ToolIntent.NO_TOOL) {
                         LOGGER.info("[TOOL_LOOP] firstAction=FINAL_ANSWER retryingContextualToolDecision intent={}", intent);
                         action = normalizeAction(retryContextualToolDecision(request, action.answer(), step));
@@ -156,6 +168,17 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                                 publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED_WITHOUT_TOOL",
                                         "LLM declined to use a tool", null, step, Map.of("decisionOwner", "LLM"));
                                 return new ToolCallingResult(true, action.answer(), steps, results);
+                            }
+                        }
+                        if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
+                            if (freshness == InformationFreshness.MUST_BE_LIVE && !hasLiveEvidence(results)) {
+                                action = nextLiveEvidenceAction(request, observation,
+                                        "MUST_BE_LIVE request requires live web evidence before answering.");
+                                if (!"FINAL_ANSWER".equalsIgnoreCase(action.action())) {
+                                    // Continue the loop with the forced safe tool action.
+                                } else {
+                                    errors.add("INSUFFICIENT_EVIDENCE");
+                                }
                             }
                         }
                         if ("FINAL_ANSWER".equalsIgnoreCase(action.action())) {
@@ -472,10 +495,20 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
 
     private ToolAction webSearchAction(ToolCallingRequest request, String reason, String rawEnvelope) {
         String query = webSearchQuery(request, rawEnvelope);
+        boolean market = marketObservationExtractor.requiresMarketValue(request);
         return new ToolAction("TOOL_CALL", "web", "SEARCH_WEB", Map.of(
                 "query", query,
-                "maxResults", 5
+                "maxResults", market ? 12 : 8,
+                "profile", market ? "MARKET" : "CURRENT_FACT"
         ), reason, "");
+    }
+
+    private ToolAction nextLiveEvidenceAction(ToolCallingRequest request, String observation, String reason) {
+        ToolAction readAction = readAcceptedWebResultAction(observation);
+        if (readAction != null) {
+            return readAction;
+        }
+        return webSearchAction(request, reason);
     }
 
     private ToolAction readAcceptedWebResultAction(String observation) {
@@ -768,6 +801,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "Read a web search result page:\n"
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"READ_WEB_PAGE\",\"arguments\":{\"url\":\"https://example.com/result\"},\"reason\":\"Search result snippets did not contain the needed price/details.\"}\n"
                 + "\n\nDetected tool intent: " + intent
+                + "\nRequired freshness: " + freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason())
                 + "\nThis detected intent is only a weak hint from Java. You own the final tool decision."
                 + "\nMain model tool goal:\n" + safe(request.goal())
                 + "\nMain model reason summary:\n" + safe(request.reason())
@@ -778,6 +812,9 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "\nUse NO_TOOL when no tool should be used and the normal model answer should continue."
                 + "\nIf recent conversation context shows the assistant proposed a knowledge update and the latest user confirms it, call KnowledgeTool instead of answering with text."
                 + "\nFor web search, inspect previous observations. If sourceQualityAccepted=false, change the query and search again."
+                + "\nFor MUST_BE_LIVE requests, your training knowledge may be stale. Absence from your memory is not evidence that an entity does not exist."
+                + "\nFor current prices, rates, releases, availability, or news, do not return FINAL_ANSWER until live observations contain matching evidence."
+                + "\nFor market prices, prefer multiple observations and at least two sources when available; one observation is LOW confidence."
                 + "\nIf sourceQualityAccepted=false but acceptedResults contains relevant URLs, use web.READ_WEB_PAGE on the best result URLs before asking the user for clarification."
                 + "\nUse READ_WEB_PAGE when search snippets do not contain prices, dates, exact values, or enough evidence."
                 + "\nYou may perform multiple web searches when results are weak, irrelevant, or from the wrong domain."
@@ -857,6 +894,11 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     }
 
     private ToolIntent resolveIntent(ToolCallingRequest request) {
+        InformationFreshness freshness = freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason());
+        if (freshness == InformationFreshness.MUST_BE_LIVE) {
+            LOGGER.info("[FRESHNESS] requestId={} freshness={} forcing live-capable intent", request.requestId(), freshness);
+            return ToolIntent.SEARCH_WEB;
+        }
         ToolIntent messageIntent = intentDetector.detect(request.userMessage());
         if (messageIntent != ToolIntent.NO_TOOL) {
             return messageIntent;
@@ -898,9 +940,12 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         WebSearchQualityReport report = webSearchQualityEvaluator.evaluate(request, result);
         Map<String, Object> data = new HashMap<>(result.data());
         data.put("sourceQualityAccepted", report.accepted());
+        data.put("liveEvidenceSatisfied", report.liveEvidenceSatisfied());
         data.put("sourceQualityScore", report.score());
         data.put("sourceQualityReason", report.reason());
         data.put("acceptedResults", report.acceptedResults());
+        data.put("marketObservations", report.marketObservations());
+        data.put("marketAnalysis", report.marketAnalysis().toMap());
         publish(request,
                 report.accepted() ? CognitiveEventType.TOOL_VERIFICATION_FINISHED : CognitiveEventType.TOOL_VERIFICATION_STARTED,
                 report.accepted() ? "VERIFIED" : "RETRY_NEEDED",
@@ -911,9 +956,12 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                         "tool", result.tool(),
                         "operation", result.operation(),
                         "sourceQualityAccepted", report.accepted(),
+                        "liveEvidenceSatisfied", report.liveEvidenceSatisfied(),
                         "sourceQualityScore", report.score(),
                         "sourceQualityReason", report.reason(),
-                        "acceptedResults", report.acceptedResults().size()
+                        "acceptedResults", report.acceptedResults().size(),
+                        "marketObservations", report.marketObservations().size(),
+                        "marketConfidence", report.marketAnalysis().confidence()
                 ));
         return new ToolResult(
                 result.success(),
@@ -936,7 +984,13 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         String content = safe(String.valueOf(result.data().getOrDefault("content", "")));
         boolean requiresValue = requiresSpecificValue(request.userMessage() + " " + request.goal() + " " + request.reason());
         boolean valueFound = containsSpecificValue(content);
-        boolean accepted = result.success() && !content.isBlank() && (!requiresValue || valueFound);
+        List<MarketObservation> observations = marketObservationExtractor.extract(request,
+                safe(String.valueOf(result.data().getOrDefault("title", ""))),
+                content,
+                safe(String.valueOf(result.data().getOrDefault("source", ""))),
+                safe(String.valueOf(result.data().getOrDefault("url", ""))));
+        MarketAnalysis marketAnalysis = MarketAnalysis.from(observations);
+        boolean accepted = result.success() && !content.isBlank() && (!requiresValue || valueFound || !observations.isEmpty());
         String reason;
         if (accepted) {
             reason = "Web page contains enough visible content for the requested answer.";
@@ -952,6 +1006,9 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         data.put("pageQualityReason", reason);
         data.put("pageValueFound", valueFound);
         data.put("requiresSpecificValue", requiresValue);
+        data.put("liveEvidenceSatisfied", accepted);
+        data.put("marketObservations", observations);
+        data.put("marketAnalysis", marketAnalysis.toMap());
         publish(request,
                 accepted ? CognitiveEventType.TOOL_VERIFICATION_FINISHED : CognitiveEventType.TOOL_VERIFICATION_STARTED,
                 accepted ? "VERIFIED" : "RETRY_NEEDED",
@@ -964,7 +1021,9 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                         "pageQualityAccepted", accepted,
                         "pageQualityReason", reason,
                         "pageValueFound", valueFound,
-                        "requiresSpecificValue", requiresValue
+                        "requiresSpecificValue", requiresValue,
+                        "marketObservations", observations.size(),
+                        "marketConfidence", marketAnalysis.confidence()
                 ));
         return new ToolResult(
                 result.success(),
@@ -991,6 +1050,29 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private boolean webPageAccepted(ToolResult result) {
         Object accepted = result.data().get("pageQualityAccepted");
         return !(accepted instanceof Boolean value) || value;
+    }
+
+    private boolean hasLiveEvidence(List<ToolResult> results) {
+        for (ToolResult result : results) {
+            if (!result.success() || !"web".equalsIgnoreCase(result.tool())) {
+                continue;
+            }
+            Object liveEvidence = result.data().get("liveEvidenceSatisfied");
+            if (Boolean.TRUE.equals(liveEvidence)) {
+                return true;
+            }
+            Object observations = result.data().get("marketObservations");
+            if (observations instanceof List<?> list && !list.isEmpty()) {
+                return true;
+            }
+            if ("READ_WEB_PAGE".equalsIgnoreCase(result.operation()) && webPageAccepted(result)) {
+                return true;
+            }
+            if ("SEARCH_WEB".equalsIgnoreCase(result.operation()) && webSearchAccepted(result)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean requiresSpecificValue(String text) {
@@ -1034,6 +1116,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         }
         if (result.data().containsKey("sourceQualityAccepted")) {
             values.put("sourceQualityAccepted", result.data().get("sourceQualityAccepted"));
+            values.put("liveEvidenceSatisfied", result.data().getOrDefault("liveEvidenceSatisfied", false));
             values.put("sourceQualityScore", result.data().getOrDefault("sourceQualityScore", 0.0d));
             values.put("sourceQualityReason", result.data().getOrDefault("sourceQualityReason", ""));
         }
@@ -1041,6 +1124,13 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             values.put("pageQualityAccepted", result.data().get("pageQualityAccepted"));
             values.put("pageQualityReason", result.data().getOrDefault("pageQualityReason", ""));
             values.put("pageValueFound", result.data().getOrDefault("pageValueFound", false));
+        }
+        if (result.data().containsKey("marketAnalysis")) {
+            values.put("marketAnalysis", result.data().get("marketAnalysis"));
+        }
+        if (result.data().containsKey("marketObservations")) {
+            Object observations = result.data().get("marketObservations");
+            values.put("marketObservations", observations instanceof List<?> list ? list.size() : 0);
         }
         return values;
     }
