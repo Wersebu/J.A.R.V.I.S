@@ -1,6 +1,7 @@
 package com.jarvis.tools.web;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 import java.time.Duration;
 
@@ -58,6 +59,7 @@ public record WebSearchProperties(
     /**
      * Applies safe defaults.
      */
+    @ConstructorBinding
     public WebSearchProperties {
         enabled = enabled == null ? Boolean.TRUE : enabled;
         baseUrl = baseUrl == null || baseUrl.isBlank() ? "http://127.0.0.1:8888" : stripTrailingSlash(baseUrl);
