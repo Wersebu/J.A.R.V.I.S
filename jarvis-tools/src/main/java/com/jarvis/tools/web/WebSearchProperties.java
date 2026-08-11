@@ -52,7 +52,7 @@ public record WebSearchProperties(
             Duration connectTimeout,
             Duration readTimeout
     ) {
-        this(enabled, baseUrl, defaultMaxResults, 8, 12, 4, 5, 3, hardMaxResults, snippetMaxLength, pageMaxLength,
+        this(enabled, baseUrl, defaultMaxResults, 8, 15, 4, 5, 3, hardMaxResults, snippetMaxLength, pageMaxLength,
                 connectTimeout, readTimeout);
     }
 
@@ -65,7 +65,7 @@ public record WebSearchProperties(
         baseUrl = baseUrl == null || baseUrl.isBlank() ? "http://127.0.0.1:8888" : stripTrailingSlash(baseUrl);
         defaultMaxResults = defaultMaxResults > 0 ? defaultMaxResults : 5;
         currentFactMaxResults = currentFactMaxResults > 0 ? currentFactMaxResults : 8;
-        marketMaxResults = marketMaxResults > 0 ? marketMaxResults : 12;
+        marketMaxResults = marketMaxResults > 0 ? marketMaxResults : 15;
         maxSearchAttempts = maxSearchAttempts > 0 ? maxSearchAttempts : 4;
         maxPageReads = maxPageReads > 0 ? maxPageReads : 5;
         marketMinObservations = marketMinObservations > 0 ? marketMinObservations : 3;

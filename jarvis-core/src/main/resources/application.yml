@@ -38,7 +38,7 @@ jarvis:
     base-url: http://127.0.0.1:8888
     default-max-results: 5
     current-fact-max-results: 8
-    market-max-results: 12
+    market-max-results: 15
     max-search-attempts: 4
     max-page-reads: 5
     market-min-observations: 3

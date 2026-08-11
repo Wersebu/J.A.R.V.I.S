@@ -498,7 +498,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         boolean market = marketObservationExtractor.requiresMarketValue(request);
         return new ToolAction("TOOL_CALL", "web", "SEARCH_WEB", Map.of(
                 "query", query,
-                "maxResults", market ? 12 : 8,
+                "maxResults", market ? 15 : 8,
                 "profile", market ? "MARKET" : "CURRENT_FACT"
         ), reason, "");
     }
@@ -797,7 +797,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "Search knowledge:\n"
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"Kuba urodziny\"},\"reason\":\"Need to inspect existing knowledge before answering.\"}\n"
                 + "Search the web through local SearXNG:\n"
-                + "{\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"SEARCH_WEB\",\"arguments\":{\"query\":\"RTX 4060 Ti 16GB cena Polska\",\"maxResults\":5},\"reason\":\"The user asked for current internet information.\"}\n"
+                + "{\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"SEARCH_WEB\",\"arguments\":{\"query\":\"RTX 4060 Ti 16GB cena Polska\",\"maxResults\":15,\"profile\":\"MARKET\"},\"reason\":\"The user asked for current internet market information.\"}\n"
                 + "Read a web search result page:\n"
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"READ_WEB_PAGE\",\"arguments\":{\"url\":\"https://example.com/result\"},\"reason\":\"Search result snippets did not contain the needed price/details.\"}\n"
                 + "\n\nDetected tool intent: " + intent
@@ -814,7 +814,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 + "\nFor web search, inspect previous observations. If sourceQualityAccepted=false, change the query and search again."
                 + "\nFor MUST_BE_LIVE requests, your training knowledge may be stale. Absence from your memory is not evidence that an entity does not exist."
                 + "\nFor current prices, rates, releases, availability, or news, do not return FINAL_ANSWER until live observations contain matching evidence."
+                + "\nFor market prices, search a broad sample of 10-15 candidate listings/results when available."
+                + "\nIf fewer than 10 relevant market listings/results are found, state the exact smaller count instead of implying a full market sample."
                 + "\nFor market prices, prefer multiple observations and at least two sources when available; one observation is LOW confidence."
+                + "\nIf the user asks for a link, URL, source, concrete listing, or where to buy, return the best verified URL/listing instead of replacing it with only a price."
                 + "\nIf sourceQualityAccepted=false but acceptedResults contains relevant URLs, use web.READ_WEB_PAGE on the best result URLs before asking the user for clarification."
                 + "\nUse READ_WEB_PAGE when search snippets do not contain prices, dates, exact values, or enough evidence."
                 + "\nYou may perform multiple web searches when results are weak, irrelevant, or from the wrong domain."
@@ -831,7 +834,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private String repairPrompt(String raw) {
         return "Repair this malformed tool action into valid JSON only. It must be either "
                 + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"...\"},\"reason\":\"...\"} "
-                + "or {\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"SEARCH_WEB\",\"arguments\":{\"query\":\"...\",\"maxResults\":5},\"reason\":\"...\"} "
+                + "or {\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"SEARCH_WEB\",\"arguments\":{\"query\":\"...\",\"maxResults\":15,\"profile\":\"MARKET\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"READ_WEB_PAGE\",\"arguments\":{\"url\":\"https://...\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"CREATE_DOCUMENT\",\"arguments\":{\"path\":\"...\",\"content\":\"...\"},\"reason\":\"...\"} "
                 + "or {\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"UPDATE_DOCUMENT\",\"arguments\":{\"path\":\"...\",\"instruction\":\"...\",\"text\":\"...\"},\"reason\":\"...\"} "

@@ -15,8 +15,11 @@ import com.jarvis.tools.runtime.ToolCallingRuntime;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
+import java.text.Normalizer;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -99,7 +102,7 @@ public class ToolCallingStage implements PipelineStage {
             return publishBufferedFallback(context, result.finalAnswer(), "tool-fallback");
         }
         String prompt = toolFinalAnswerPrompt(context, result);
-        String fallback = fallbackToolAnswer(result);
+        String fallback = fallbackToolAnswer(context, result);
         try {
             return streamPrompt(context, prompt, fallback);
         } catch (AIProviderException exception) {
@@ -288,9 +291,11 @@ public class ToolCallingStage implements PipelineStage {
                 + "\nIf WebSearchTool or READ_WEB_PAGE succeeded, never claim that you have no internet access."
                 + "\nIf a specific page was unreadable, blocked, or did not expose the requested detail, say that exact limitation instead."
                 + "\nIf page observations include structured data, meta data, prices, currencies, or offer details, use those details directly."
+                + "\nFor market-price questions, summarize the observed sample size. If fewer than 10 relevant listings/results were found, say exactly how many were found."
+                + "\nIf the user asked for a link, URL, source, concrete listing, or where to buy, include the best verified URL in the answer instead of giving only a price."
                 + "\nNever answer with internal tool status text such as \"Web search finished\", \"Web page read finished\", or \"Tool finished\"."
                 + "\nFor READ_WEB_PAGE observations, extract the user-facing answer from the page title/content/data, not from the tool status message."
-                + "\nDo not invent, rewrite, or append source URLs. Core attaches verified source links separately."
+                + "\nDo not invent, rewrite, or append source URLs. Use only URLs present in tool observations."
                 + "\nKeep the answer concise, natural, and in the user's language."
                 + "\nReturn plain text only."
                 + "\n\nUser request:\n" + context.request().message()
@@ -328,17 +333,18 @@ public class ToolCallingStage implements PipelineStage {
         ));
     }
 
-    private String fallbackToolAnswer(ToolCallingResult result) {
+    private String fallbackToolAnswer(PipelineContext context, ToolCallingResult result) {
         if (result.finalAnswer() != null && !result.finalAnswer().isBlank()) {
             return result.finalAnswer();
         }
+        boolean linkRequest = isLinkRequest(context.request().message());
         Optional<ToolResult> readPage = lastWebResult(result, "READ_WEB_PAGE");
         if (readPage.isPresent()) {
-            return fallbackWebPageAnswer(readPage.get());
+            return fallbackWebPageAnswer(readPage.get(), linkRequest);
         }
         Optional<ToolResult> search = lastWebResult(result, "SEARCH_WEB");
         if (search.isPresent()) {
-            return fallbackWebSearchAnswer(search.get());
+            return fallbackWebSearchAnswer(search.get(), linkRequest);
         }
         for (int index = result.results().size() - 1; index >= 0; index--) {
             ToolResult toolResult = result.results().get(index);
@@ -364,8 +370,12 @@ public class ToolCallingStage implements PipelineStage {
         return Optional.empty();
     }
 
-    private String fallbackWebPageAnswer(ToolResult toolResult) {
+    private String fallbackWebPageAnswer(ToolResult toolResult, boolean linkRequest) {
         String title = text(toolResult.data().get("title"));
+        String url = text(toolResult.data().get("url"));
+        if (linkRequest && !url.isBlank()) {
+            return title.isBlank() ? "Najbardziej pasujacy link: " + url : "Najbardziej pasujacy link: " + title + " - " + url;
+        }
         String content = text(toolResult.data().get("content"));
         String price = firstPrice(content);
         if (!price.isBlank()) {
@@ -380,24 +390,71 @@ public class ToolCallingStage implements PipelineStage {
         return "Odczytalem strone, ale nie otrzymalem tresci potrzebnej do przygotowania odpowiedzi.";
     }
 
-    private String fallbackWebSearchAnswer(ToolResult toolResult) {
+    private String fallbackWebSearchAnswer(ToolResult toolResult, boolean linkRequest) {
         Object results = toolResult.data().containsKey("acceptedResults")
                 ? toolResult.data().get("acceptedResults")
                 : toolResult.data().get("results");
         if (results instanceof List<?> list) {
-            for (Object item : list) {
-                if (!(item instanceof Map<?, ?> map)) {
-                    continue;
+            List<SearchFallbackCandidate> candidates = searchFallbackCandidates(list);
+            if (linkRequest) {
+                Optional<SearchFallbackCandidate> withUrl = candidates.stream()
+                        .filter(candidate -> !candidate.url().isBlank())
+                        .findFirst();
+                if (withUrl.isPresent()) {
+                    SearchFallbackCandidate candidate = withUrl.get();
+                    return candidate.title().isBlank()
+                            ? "Najbardziej pasujacy link: " + candidate.url()
+                            : "Najbardziej pasujacy link: " + candidate.title() + " - " + candidate.url();
                 }
-                String title = text(map.get("title"));
-                String snippet = text(map.get("snippet"));
-                String price = firstPrice(snippet);
-                if (!price.isBlank()) {
-                    return title.isBlank() ? "Znalazlem cene: " + price + "." : title + ": " + price + ".";
+            }
+            long priced = candidates.stream().filter(candidate -> !candidate.price().isBlank()).count();
+            for (SearchFallbackCandidate candidate : candidates) {
+                if (!candidate.price().isBlank()) {
+                    String prefix = priced > 0 && priced < 10
+                            ? "Znalazlem " + priced + " wynikow z cena. "
+                            : "";
+                    return prefix + (candidate.title().isBlank()
+                            ? "Znalazlem cene: " + candidate.price() + "."
+                            : candidate.title() + ": " + candidate.price() + ".");
                 }
             }
         }
         return "Znalazlem wyniki web, ale model nie zwrocil tresci finalnej odpowiedzi.";
+    }
+
+    private List<SearchFallbackCandidate> searchFallbackCandidates(List<?> list) {
+        List<SearchFallbackCandidate> candidates = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> map)) {
+                continue;
+            }
+            String title = text(map.get("title"));
+            String snippet = text(map.get("snippet"));
+            String url = text(map.get("url"));
+            candidates.add(new SearchFallbackCandidate(title, snippet, url, firstPrice(snippet)));
+        }
+        return candidates;
+    }
+
+    private boolean isLinkRequest(String message) {
+        String normalized = normalizeAscii(message);
+        return normalized.contains("link")
+                || normalized.contains("url")
+                || normalized.contains("adres")
+                || normalized.contains("odnosnik")
+                || normalized.contains("oferta")
+                || normalized.contains("ogloszenie")
+                || normalized.contains("listing")
+                || normalized.contains("gdzie kupic")
+                || normalized.contains("gdzie jest");
+    }
+
+    private String normalizeAscii(String value) {
+        String normalized = Normalizer.normalize(Objects.toString(value, ""), Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "")
+                .replace('ł', 'l')
+                .replace('Ł', 'L');
+        return normalized.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ").trim();
     }
 
     private String firstPrice(String content) {
@@ -418,6 +475,9 @@ public class ToolCallingStage implements PipelineStage {
 
     private String text(Object value) {
         return Objects.toString(value, "").trim();
+    }
+
+    private record SearchFallbackCandidate(String title, String snippet, String url, String price) {
     }
 
     private String toolBasePrompt(PipelineContext context) {
