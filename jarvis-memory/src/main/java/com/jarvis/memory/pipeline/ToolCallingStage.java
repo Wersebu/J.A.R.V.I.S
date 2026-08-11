@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
 public class ToolCallingStage implements PipelineStage {
 
     private static final Pattern PRICE_PATTERN = Pattern.compile(
-            "(?i)(?:\\d{1,3}(?:[ .\\u00A0]?\\d{3})*|\\d+)(?:[,.]\\d{1,2})?\\s*(?:zl|zlotych|pln|usd|eur)"
+            "(?iu)(?:\\d{1,3}(?:[ .\\u00A0]?\\d{3})*|\\d+)(?:[,.]\\d{1,2})?\\s*(?:zł|zl|zlotych|pln|usd|eur)"
     );
 
     private final ToolCallingRuntime toolCallingRuntime;
