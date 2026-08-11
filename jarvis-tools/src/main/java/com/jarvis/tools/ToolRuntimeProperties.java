@@ -1,6 +1,7 @@
 package com.jarvis.tools;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 
 /**
  * Configuration for native tool-calling runtime budgets.
@@ -25,6 +26,7 @@ public record ToolRuntimeProperties(
     /**
      * Applies safe defaults.
      */
+    @ConstructorBinding
     public ToolRuntimeProperties {
         enabled = enabled == null ? Boolean.TRUE : enabled;
         maxCallsFast = maxCallsFast > 0 ? maxCallsFast : 2;
