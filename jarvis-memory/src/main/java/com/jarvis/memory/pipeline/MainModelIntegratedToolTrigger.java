@@ -4,6 +4,7 @@ import com.jarvis.tools.runtime.ToolIntent;
 import com.jarvis.tools.runtime.ToolIntentDetector;
 import com.jarvis.tools.runtime.InformationFreshness;
 import com.jarvis.tools.runtime.InformationFreshnessEvaluator;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -30,6 +31,7 @@ public class MainModelIntegratedToolTrigger implements ToolTriggerStrategy {
      * @param toolIntentDetector lightweight advisory detector
      * @param freshnessEvaluator request freshness classifier
      */
+    @Autowired
     public MainModelIntegratedToolTrigger(ToolIntentDetector toolIntentDetector, InformationFreshnessEvaluator freshnessEvaluator) {
         this.toolIntentDetector = toolIntentDetector;
         this.freshnessEvaluator = freshnessEvaluator;
