@@ -19,13 +19,15 @@ import java.util.Set;
 public class WebSearchQualityEvaluator {
 
     private static final double ACCEPTANCE_THRESHOLD = 0.34d;
-    private final MarketObservationExtractor marketObservationExtractor = new MarketObservationExtractor();
     private static final Set<String> STOP_WORDS = Set.of(
             "a", "an", "and", "or", "the", "to", "for", "of", "in", "on", "with", "from",
             "i", "me", "my", "please", "link", "listing", "used", "current",
             "daj", "do", "dla", "jakis", "jakies", "konkretnej", "konkretny", "moze",
             "prosze", "sprawdz", "szukaj", "uzywany", "uzywane", "z", "ze"
     );
+
+    private final MarketObservationExtractor marketObservationExtractor = new MarketObservationExtractor();
+    private final WebEntityMatcher entityMatcher = new WebEntityMatcher();
 
     /**
      * Evaluates a WebSearchTool result.
@@ -44,9 +46,10 @@ public class WebSearchQualityEvaluator {
         }
 
         String query = text(result.data().get("query"));
-        String intentText = request.userMessage() + " " + request.goal() + " " + query;
+        String intentText = request.userMessage() + " " + request.goal() + " " + request.reason() + " " + query;
         Set<String> terms = importantTerms(intentText);
         Set<String> desiredDomains = desiredDomains(intentText);
+        EntityDescriptor requestedEntity = entityMatcher.describe(intentText);
         boolean requiresSpecificValue = requiresSpecificValue(intentText);
         boolean requiresMarketValue = marketObservationExtractor.requiresMarketValue(request);
 
@@ -62,8 +65,15 @@ public class WebSearchQualityEvaluator {
             if (domain.isBlank()) {
                 continue;
             }
-            String haystack = normalize(text(map.get("title")) + " " + text(map.get("snippet")) + " " + text(map.get("source")) + " " + domain);
-            double score = score(terms, desiredDomains, domain, haystack);
+            String rawCandidateText = text(map.get("title")) + " " + text(map.get("snippet")) + " "
+                    + text(map.get("source")) + " " + domain;
+            EntityMatchResult entityMatch = entityMatcher.match(requestedEntity, rawCandidateText);
+            if (!entityMatch.accepted()) {
+                bestScore = Math.max(bestScore, entityMatch.score());
+                continue;
+            }
+            String haystack = normalize(rawCandidateText);
+            double score = Math.min(1.0d, score(terms, desiredDomains, domain, haystack) + entityMatch.score() * 0.25d);
             bestScore = Math.max(bestScore, score);
             boolean valueFoundForResult = containsSpecificValue(haystack);
             List<MarketObservation> resultObservations = marketObservationExtractor.extract(request,
@@ -77,6 +87,8 @@ public class WebSearchQualityEvaluator {
                         "source", text(map.get("source")),
                         "domain", domain,
                         "relevanceScore", score,
+                        "entityScore", entityMatch.score(),
+                        "entityReason", entityMatch.reason(),
                         "valueFound", valueFoundForResult,
                         "marketObservations", resultObservations.size()
                 ));
@@ -87,7 +99,7 @@ public class WebSearchQualityEvaluator {
         boolean liveEvidenceSatisfied = !accepted.isEmpty()
                 && (!requiresSpecificValue || accepted.stream().anyMatch(item -> Boolean.TRUE.equals(item.get("valueFound")))
                 || !observations.isEmpty());
-        boolean marketSatisfied = !requiresMarketValue || marketAnalysis.count() > 0;
+        boolean marketSatisfied = !requiresMarketValue || !observations.isEmpty();
         boolean acceptedEnough = liveEvidenceSatisfied && marketSatisfied;
         String reason;
         if (acceptedEnough) {
@@ -95,7 +107,9 @@ public class WebSearchQualityEvaluator {
                     ? "Relevant web results and market value observations found."
                     : "Relevant web results found.";
         } else if (!accepted.isEmpty() && requiresSpecificValue) {
-            reason = "Relevant result links found, but snippets did not contain the requested numeric value. Read result pages or search again.";
+            reason = "Relevant result links found, but snippets did not contain enough requested numeric values. Read result pages or search again.";
+        } else if (requiresMarketValue && marketAnalysis.count() > 0) {
+            reason = "Relevant market evidence exists with low sample size.";
         } else {
             reason = "Search results did not match the requested entities/domains well enough.";
         }
@@ -176,8 +190,8 @@ public class WebSearchQualityEvaluator {
     }
 
     private boolean containsSpecificValue(String text) {
-        return text.matches(".*\\b\\d+[\\d., ]*\\s*(zl|zł|pln|usd|eur|gbp|\\$|€)(?=$|\\s|[.,;:)]|<).*")
-                || text.matches(".*\\b(\\$|€)\\s*\\d+[\\d., ]*.*");
+        return text.matches(".*\\b\\d+[\\d., ]*\\s*(zl|z\\u0142|pln|usd|eur|gbp|\\$|\\u20ac)(?=$|\\s|[.,;:)]|<).*")
+                || text.matches(".*\\b(\\$|\\u20ac)\\s*\\d+[\\d., ]*.*");
     }
 
     private String domain(String url) {
@@ -196,8 +210,7 @@ public class WebSearchQualityEvaluator {
 
     private String normalize(String value) {
         String noMarks = Normalizer.normalize(Objects.toString(value, ""), Normalizer.Form.NFD)
-                .replaceAll("\\p{M}", "")
-                .replace('ł', 'l');
+                .replaceAll("\\p{M}", "");
         return noMarks.toLowerCase(Locale.ROOT);
     }
 

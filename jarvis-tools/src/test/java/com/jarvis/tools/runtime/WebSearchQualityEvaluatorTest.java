@@ -55,6 +55,55 @@ class WebSearchQualityEvaluatorTest {
     }
 
     @Test
+    void rejectsDifferentGpuGenerationEvenWithPrice() {
+        WebSearchQualityReport report = evaluator.evaluate(priceRequest("RTX 5060 Ti 16GB"),
+                webResult("RTX 4060 Ti 16GB - Niska cena na Allegro", "https://allegro.pl/oferta/rtx-4060-ti-16gb",
+                        "Karta graficzna RTX 4060 Ti 16GB cena 1999 PLN"));
+
+        assertThat(report.accepted()).isFalse();
+        assertThat(report.liveEvidenceSatisfied()).isFalse();
+        assertThat(report.marketObservations()).isEmpty();
+    }
+
+    @Test
+    void rejectsWrongGpuMemoryVariant() {
+        WebSearchQualityReport report = evaluator.evaluate(priceRequest("RTX 4060 Ti 16GB"),
+                webResult("Gigabyte RTX 4060 Ti Eagle 8GB - OLX", "https://olx.pl/d/oferta/rtx-4060-ti-8gb",
+                        "Karta graficzna RTX 4060 Ti 8GB cena 1050 PLN"));
+
+        assertThat(report.accepted()).isFalse();
+        assertThat(report.liveEvidenceSatisfied()).isFalse();
+        assertThat(report.marketObservations()).isEmpty();
+    }
+
+    @Test
+    void rejectsWholeComputerWhenUserAskedForGpuPrice() {
+        WebSearchQualityReport report = evaluator.evaluate(priceRequest("RTX 4060 Ti"),
+                webResult("Komputer gamingowy RTX 4060 Ti - OLX", "https://olx.pl/d/oferta/komputer-rtx-4060-ti",
+                        "Komputer gamingowy z procesorem Ryzen i RTX 4060 Ti cena 3500 PLN"));
+
+        assertThat(report.accepted()).isFalse();
+        assertThat(report.liveEvidenceSatisfied()).isFalse();
+        assertThat(report.marketObservations()).isEmpty();
+    }
+
+    @Test
+    void acceptsMultipleMatchingMarketObservationsWithMediumConfidence() {
+        WebSearchQualityReport report = evaluator.evaluate(priceRequest("RTX 4060 Ti 16GB"),
+                webResult(
+                        "RTX 4060 Ti 16GB - OLX", "https://olx.pl/oferta/rtx-4060-ti-16gb-1",
+                        "Karta graficzna RTX 4060 Ti 16GB cena 1200 PLN",
+                        "RTX 4060 Ti 16GB - Allegro", "https://allegro.pl/oferta/rtx-4060-ti-16gb-2",
+                        "Karta graficzna RTX 4060 Ti 16GB cena 1300 PLN",
+                        "RTX 4060 Ti 16GB - OLX", "https://olx.pl/oferta/rtx-4060-ti-16gb-3",
+                        "Karta graficzna RTX 4060 Ti 16GB cena 1400 PLN"));
+
+        assertThat(report.accepted()).isTrue();
+        assertThat(report.marketAnalysis().count()).isEqualTo(3);
+        assertThat(report.marketAnalysis().confidence()).isEqualTo("MEDIUM");
+    }
+
+    @Test
     void excludesMarketOutliersFromAggregateRange() {
         MarketAnalysis analysis = MarketAnalysis.from(List.of(
                 observation("OLX", "1000"),

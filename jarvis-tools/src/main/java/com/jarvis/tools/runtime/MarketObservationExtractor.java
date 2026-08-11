@@ -18,13 +18,15 @@ import java.util.regex.Pattern;
 public class MarketObservationExtractor {
 
     private static final Pattern PRICE_PATTERN = Pattern.compile(
-            "(?iu)(?:\\b(\\d{1,3}(?:[ .\\u00a0]?\\d{3})+|\\d{2,6})(?:[,.](\\d{1,2}))?\\s*(zł|zl|pln|usd|eur|gbp)(?=$|\\s|[.,;:)]|<)|([$€])\\s*(\\d{1,6}(?:[,.]\\d{1,2})?))"
+            "(?iu)(?:\\b(\\d{1,3}(?:[ .\\u00a0]?\\d{3})+|\\d{2,6})(?:[,.](\\d{1,2}))?\\s*(z\\u0142|zl|pln|usd|eur|gbp)(?=$|\\s|[.,;:)]|<)|([$\\u20ac])\\s*(\\d{1,6}(?:[,.]\\d{1,2})?))"
     );
     private static final Set<String> MARKET_VALUE_TERMS = Set.of(
             "cena", "ceny", "koszt", "kosztuje", "po ile", "ile chodzi",
             "price", "prices", "rate", "exchange", "kurs", "notowan"
     );
     private static final Set<String> MARKET_CONTEXT_TERMS = Set.of("rynek", "wtorn");
+
+    private final WebEntityMatcher entityMatcher = new WebEntityMatcher();
 
     /**
      * Extracts observations from text when the value belongs to the searched entity.
@@ -41,7 +43,9 @@ public class MarketObservationExtractor {
         if (text.isBlank() || !requiresMarketValue(request)) {
             return List.of();
         }
-        if (!entityMatches(request, text)) {
+        EntityDescriptor requestedEntity = entityMatcher.describe(request.userMessage() + " " + request.goal() + " " + request.reason());
+        EntityMatchResult match = entityMatcher.match(requestedEntity, text);
+        if (!match.accepted() || !entityMatches(request, text)) {
             return List.of();
         }
         List<MarketObservation> observations = new ArrayList<>();
@@ -57,7 +61,7 @@ public class MarketObservationExtractor {
                     sourceName(source, url),
                     url == null ? "" : url,
                     Instant.now(),
-                    confidence(text, source, url),
+                    Math.min(0.98d, confidence(text, source, url) + match.score() * 0.1d),
                     false
             )));
         }
@@ -131,7 +135,8 @@ public class MarketObservationExtractor {
     }
 
     private String variantName(ToolCallingRequest request) {
-        Matcher matcher = Pattern.compile("(?i)\\b(\\d{1,3}\\s*(?:gb|gib)|ti|super|xt|aorus|eagle)\\b").matcher(request.userMessage() + " " + request.goal());
+        Matcher matcher = Pattern.compile("(?i)\\b(\\d{1,3}\\s*(?:gb|gib)|ti|super|xt|aorus|eagle)\\b")
+                .matcher(request.userMessage() + " " + request.goal());
         List<String> variants = new ArrayList<>();
         while (matcher.find()) {
             variants.add(matcher.group().replaceAll("\\s+", ""));
@@ -176,7 +181,7 @@ public class MarketObservationExtractor {
 
     private String normalizeCurrency(String value) {
         String normalized = normalize(value);
-        if (normalized.equals("zl")) {
+        if (normalized.equals("zl") || normalized.startsWith("z")) {
             return "PLN";
         }
         return normalized.toUpperCase(Locale.ROOT);
@@ -188,8 +193,7 @@ public class MarketObservationExtractor {
 
     private String normalize(String value) {
         String noMarks = Normalizer.normalize(value == null ? "" : value, Normalizer.Form.NFD)
-                .replaceAll("\\p{M}", "")
-                .replace('ł', 'l');
+                .replaceAll("\\p{M}", "");
         return noMarks.toLowerCase(Locale.ROOT);
     }
 

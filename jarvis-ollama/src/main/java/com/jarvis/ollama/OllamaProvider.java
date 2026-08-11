@@ -53,6 +53,7 @@ public class OllamaProvider implements AIProvider {
     private final CognitiveEventBus cognitiveEventBus;
     private final OllamaRequestCoordinator requestCoordinator;
     private final ModelWarmupRegistry warmupRegistry;
+    private final ContextBudgetService contextBudgetService;
 
     /**
      * Creates the Ollama HTTP service.
@@ -69,7 +70,8 @@ public class OllamaProvider implements AIProvider {
             OllamaProperties properties,
             CognitiveEventBus cognitiveEventBus,
             OllamaRequestCoordinator requestCoordinator,
-            ModelWarmupRegistry warmupRegistry
+            ModelWarmupRegistry warmupRegistry,
+            ContextBudgetService contextBudgetService
     ) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
@@ -77,6 +79,7 @@ public class OllamaProvider implements AIProvider {
         this.cognitiveEventBus = cognitiveEventBus;
         this.requestCoordinator = requestCoordinator;
         this.warmupRegistry = warmupRegistry;
+        this.contextBudgetService = contextBudgetService;
     }
 
     /**
@@ -145,12 +148,14 @@ public class OllamaProvider implements AIProvider {
 
             try (OllamaRequestCoordinator.Permit ignored = requestCoordinator.acquire(jobType, requestId)) {
                 long httpPreparationStarted = System.nanoTime();
+                String budgetedPrompt = contextBudgetService.fitPrompt(brain.model(), prompt);
                 OllamaGenerateRequest requestBody = new OllamaGenerateRequest(
                         brain.model(),
-                        prompt,
+                        budgetedPrompt,
                         true,
                         brain.reasoningLevel().name().toLowerCase(java.util.Locale.ROOT),
-                        properties.keepAlive()
+                        properties.keepAlive(),
+                        contextBudgetService.ollamaOptions()
                 );
                 HttpRequest httpRequest = HttpRequest.newBuilder()
                         .uri(URI.create(endpoint))

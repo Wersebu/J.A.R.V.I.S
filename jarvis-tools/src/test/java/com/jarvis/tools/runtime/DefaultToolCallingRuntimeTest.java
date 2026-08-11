@@ -418,7 +418,7 @@ class DefaultToolCallingRuntimeTest {
         assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
         assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("RTX 3060");
         assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("Aorus");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).contains("OLX");
+        assertThat(String.valueOf(executed.get().arguments().get("query"))).doesNotContain("OLX");
     }
 
     @Test

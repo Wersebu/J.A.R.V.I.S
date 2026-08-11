@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.7.0"
+  version: "2.7.1"
   workspace:
     root: ./temp-workspaces
     ttl: 60m
@@ -19,6 +19,8 @@ jarvis:
     prompt-max-characters: 24000
   ai:
     identity-file: file:config/jarvis.md
+    context-window: 16384
+    reserved-output-tokens: 2048
   diagnostics:
     enabled: true
     request-history-size: 100

@@ -30,6 +30,7 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
     private final OllamaProperties ollamaProperties;
     private final ModelStartupProperties startupProperties;
     private final ModelWarmupRegistry warmupRegistry;
+    private final ContextBudgetService contextBudgetService;
 
     /**
      * Creates the startup warmup runner.
@@ -45,13 +46,15 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
             com.fasterxml.jackson.databind.ObjectMapper objectMapper,
             OllamaProperties ollamaProperties,
             ModelStartupProperties startupProperties,
-            ModelWarmupRegistry warmupRegistry
+            ModelWarmupRegistry warmupRegistry,
+            ContextBudgetService contextBudgetService
     ) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
         this.ollamaProperties = ollamaProperties;
         this.startupProperties = startupProperties;
         this.warmupRegistry = warmupRegistry;
+        this.contextBudgetService = contextBudgetService;
     }
 
     @Override
@@ -88,7 +91,14 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
         long startedNano = System.nanoTime();
         String endpoint = normalizeBaseUrl(ollamaProperties.baseUrl()) + "/api/generate";
         String keepAlive = policy.getKeepAlive().isBlank() ? "-1m" : policy.getKeepAlive();
-        OllamaGenerateRequest requestBody = new OllamaGenerateRequest(model, WARMUP_PROMPT, false, "low", keepAlive);
+        OllamaGenerateRequest requestBody = new OllamaGenerateRequest(
+                model,
+                contextBudgetService.fitPrompt(model, WARMUP_PROMPT),
+                false,
+                "low",
+                keepAlive,
+                contextBudgetService.ollamaOptions()
+        );
         try {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(endpoint))

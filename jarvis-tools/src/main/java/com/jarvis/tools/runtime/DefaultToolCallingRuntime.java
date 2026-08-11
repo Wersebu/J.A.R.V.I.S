@@ -342,8 +342,12 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     }
 
     private ToolAction nextAction(ToolCallingRequest request, ToolIntent intent, String observation, int step) {
-        String prompt = prompt(request, intent, observation, step);
+        String prompt = prompt(request, intent, compactObservation(observation), step);
         String raw = selectProvider(request).chat(request.brain(), prompt, AIJobType.BACKGROUND).response();
+        if (raw == null || raw.isBlank()) {
+            LOGGER.warn("[TOOL_PLANNER_OUTPUT_STARVATION] requestId={} step={} promptChars={} estimatedPromptTokens={} model={}",
+                    request.requestId(), step, prompt.length(), Math.ceil(prompt.length() / 4.0d), request.brain().model());
+        }
         try {
             return parse(raw);
         } catch (RuntimeException exception) {
@@ -464,7 +468,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                         request.requestId());
                 return rawUrlAction;
             }
-            ToolAction readAction = readAcceptedWebResultAction(observation);
+            ToolAction readAction = readAcceptedWebResultAction(request, observation);
             if (readAction != null) {
                 LOGGER.warn("[TOOL_LOOP] coercing malformed web step into web.READ_WEB_PAGE from previous search result requestId={}",
                         request.requestId());
@@ -504,16 +508,16 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     }
 
     private ToolAction nextLiveEvidenceAction(ToolCallingRequest request, String observation, String reason) {
-        ToolAction readAction = readAcceptedWebResultAction(observation);
+        ToolAction readAction = readAcceptedWebResultAction(request, observation);
         if (readAction != null) {
             return readAction;
         }
         return webSearchAction(request, reason);
     }
 
-    private ToolAction readAcceptedWebResultAction(String observation) {
-        String url = firstAcceptedWebUrl(observation);
-        return readUrlAction(url, "Search snippets were relevant but incomplete, so the best result page must be read.");
+    private ToolAction readAcceptedWebResultAction(ToolCallingRequest request, String observation) {
+        String url = bestAcceptedWebUrl(request, observation);
+        return readUrlAction(url, "Search snippets were relevant but incomplete, so the best matching result page must be read.");
     }
 
     private ToolAction readUrlAction(String url, String reason) {
@@ -546,7 +550,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     private String entityFocusedSearchQuery(String text) {
         String normalized = safe(text).replace('-', ' ');
         Set<String> parts = new LinkedHashSet<>();
-        Matcher gpu = Pattern.compile("(?i)\\b(rtx|gtx|rx)\\s*(\\d{3,4})\\s*(ti|super|xt)?\\b").matcher(normalized);
+        Matcher gpu = Pattern.compile("(?i)\\b(rtx|gtx|rx)\\s*-?\\s*(\\d{3,4})(?:\\s*-?\\s*(ti|super|xt))?\\b").matcher(normalized);
         while (gpu.find()) {
             addQueryPart(parts, (gpu.group(1) + " " + gpu.group(2) + " " + safe(gpu.group(3))).strip().replaceAll("\\s+", " "));
             addAdjacentProductTerm(parts, normalized.substring(gpu.end()));
@@ -568,14 +572,12 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             }
             if (lower.contains("allegro")) {
                 addQueryPart(parts, "Allegro");
-            }
-            if (lower.contains("olx")) {
+            } else if (lower.contains("olx")) {
                 addQueryPart(parts, "OLX");
             }
             if (parts.stream().noneMatch(part -> part.equalsIgnoreCase("Allegro") || part.equalsIgnoreCase("OLX"))
                     && lower.matches(".*\\b(uzywan|used|wtorn|secondary|marketplace|cena|ceny|price|prices)\\w*\\b.*")) {
                 addQueryPart(parts, "Allegro");
-                addQueryPart(parts, "OLX");
             }
             return String.join(" ", parts);
         }
@@ -633,34 +635,44 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         }
     }
 
-    private String firstAcceptedWebUrl(String observation) {
+    private String bestAcceptedWebUrl(ToolCallingRequest request, String observation) {
         if (observation == null || observation.isBlank()) {
             return "";
         }
         try {
             JsonNode root = objectMapper.readTree(extractJsonPayload(observation));
             JsonNode data = root.path("data");
-            String acceptedUrl = firstUrl(data.path("acceptedResults"));
+            String acceptedUrl = bestUrl(request, data.path("acceptedResults"));
             if (!acceptedUrl.isBlank()) {
                 return acceptedUrl;
             }
-            return firstUrl(data.path("results"));
+            return bestUrl(request, data.path("results"));
         } catch (JsonProcessingException | RuntimeException exception) {
             return "";
         }
     }
 
-    private String firstUrl(JsonNode results) {
+    private String bestUrl(ToolCallingRequest request, JsonNode results) {
         if (!results.isArray()) {
             return "";
         }
+        WebEntityMatcher matcher = new WebEntityMatcher();
+        EntityDescriptor requested = matcher.describe(request.userMessage() + " " + request.goal() + " " + request.reason());
+        double bestScore = 0.0d;
+        String bestUrl = "";
         for (JsonNode item : results) {
             String url = text(item, "url");
-            if (url.startsWith("http://") || url.startsWith("https://")) {
-                return url;
+            if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                continue;
+            }
+            EntityMatchResult match = matcher.match(requested,
+                    text(item, "title") + " " + text(item, "snippet") + " " + text(item, "source") + " " + url);
+            if (match.accepted() && match.score() >= bestScore) {
+                bestScore = match.score();
+                bestUrl = url;
             }
         }
-        return "";
+        return bestUrl;
     }
 
     private String firstHttpUrl(String value) {
@@ -785,50 +797,67 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
     }
 
     private String prompt(ToolCallingRequest request, ToolIntent intent, String observation, int step) {
-        return request.basePrompt()
-                + "\n\n" + toolRegistry.promptSection()
-                + "\n\nTOOL ACTION JSON EXAMPLES\n"
-                + "No tool needed:\n"
-                + "{\"action\":\"NO_TOOL\",\"reason\":\"The user is only chatting and no tool is useful.\"}\n"
-                + "Create a knowledge document:\n"
-                + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"CREATE_DOCUMENT\",\"arguments\":{\"path\":\"People/Kuba.md\",\"content\":\"# Kuba\\n\\n## Urodziny\\n\\n6 czerwca\\n\"},\"reason\":\"User asked to save a birthday fact.\"}\n"
-                + "Update an existing document:\n"
-                + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"UPDATE_DOCUMENT\",\"arguments\":{\"path\":\"People/Kuba.md\",\"instruction\":\"SET_SECTION:Urodziny\",\"text\":\"6 czerwca\"},\"reason\":\"User asked to update the birthday section.\"}\n"
-                + "Search knowledge:\n"
-                + "{\"action\":\"TOOL_CALL\",\"tool\":\"knowledge\",\"operation\":\"SEARCH_CONTENT\",\"arguments\":{\"query\":\"Kuba urodziny\"},\"reason\":\"Need to inspect existing knowledge before answering.\"}\n"
-                + "Search the web through local SearXNG:\n"
-                + "{\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"SEARCH_WEB\",\"arguments\":{\"query\":\"RTX 4060 Ti 16GB cena Polska\",\"maxResults\":15,\"profile\":\"MARKET\"},\"reason\":\"The user asked for current internet market information.\"}\n"
-                + "Read a web search result page:\n"
-                + "{\"action\":\"TOOL_CALL\",\"tool\":\"web\",\"operation\":\"READ_WEB_PAGE\",\"arguments\":{\"url\":\"https://example.com/result\"},\"reason\":\"Search result snippets did not contain the needed price/details.\"}\n"
-                + "\n\nDetected tool intent: " + intent
-                + "\nRequired freshness: " + freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason())
-                + "\nThis detected intent is only a weak hint from Java. You own the final tool decision."
-                + "\nMain model tool goal:\n" + safe(request.goal())
-                + "\nMain model reason summary:\n" + safe(request.reason())
-                + "\nUser request:\n" + request.userMessage()
-                + "\n\nPrevious tool observation:\n" + observation
-                + "\n\nStep: " + step
-                + "\nYou are not writing the normal assistant answer in this stage."
-                + "\nUse NO_TOOL when no tool should be used and the normal model answer should continue."
-                + "\nIf recent conversation context shows the assistant proposed a knowledge update and the latest user confirms it, call KnowledgeTool instead of answering with text."
-                + "\nFor web search, inspect previous observations. If sourceQualityAccepted=false, change the query and search again."
-                + "\nFor MUST_BE_LIVE requests, your training knowledge may be stale. Absence from your memory is not evidence that an entity does not exist."
-                + "\nFor current prices, rates, releases, availability, or news, do not return FINAL_ANSWER until live observations contain matching evidence."
-                + "\nFor market prices, search a broad sample of 10-15 candidate listings/results when available."
-                + "\nIf fewer than 10 relevant market listings/results are found, state the exact smaller count instead of implying a full market sample."
-                + "\nFor market prices, prefer multiple observations and at least two sources when available; one observation is LOW confidence."
-                + "\nIf the user asks for a link, URL, source, concrete listing, or where to buy, return the best verified URL/listing instead of replacing it with only a price."
-                + "\nIf sourceQualityAccepted=false but acceptedResults contains relevant URLs, use web.READ_WEB_PAGE on the best result URLs before asking the user for clarification."
-                + "\nUse READ_WEB_PAGE when search snippets do not contain prices, dates, exact values, or enough evidence."
-                + "\nYou may perform multiple web searches when results are weak, irrelevant, or from the wrong domain."
-                + "\nYou may read multiple web pages when comparing offers or looking for a concrete listing."
-                + "\nIf a READ_WEB_PAGE observation has pageQualityAccepted=false, do not finish. Search again with a different query or read another relevant result."
-                + "\nIf READ_WEB_PAGE fails with 403, 401, 429, timeout, or blocked content, do not finish. Read another result or search again through another source/domain."
-                + "\nFor requested sites/domains, include them in the query, e.g. site:allegro.pl RTX 4060 Ti."
-                + "\nOnly return FINAL_ANSWER when observations contain enough relevant evidence, or when you honestly cannot find it after attempts."
-                + "\nThe LLM is the only component allowed to decide semantic knowledge writes."
-                + "\nJava will only validate and execute your structured TOOL_CALL."
-                + "\nReturn JSON only. Choose TOOL_CALL, NO_TOOL, or FINAL_ANSWER only after tool observations.";
+        if (intent == ToolIntent.SEARCH_WEB) {
+            return webPlannerPrompt(request, observation, step);
+        }
+        return """
+                You are J.A.R.V.I.S. Tool Planner.
+                Decide the next safe tool action. Return JSON only.
+                Actions:
+                {"action":"NO_TOOL","reason":"..."}
+                {"action":"FINAL_ANSWER","answer":"..."}
+                {"action":"TOOL_CALL","tool":"knowledge","operation":"SEARCH_CONTENT","arguments":{"query":"..."},"reason":"..."}
+                {"action":"TOOL_CALL","tool":"knowledge","operation":"CREATE_DOCUMENT","arguments":{"path":"People/Kuba.md","content":"# Kuba\\n\\n## Urodziny\\n\\n6 czerwca\\n"},"reason":"..."}
+                {"action":"TOOL_CALL","tool":"knowledge","operation":"UPDATE_DOCUMENT","arguments":{"path":"People/Kuba.md","instruction":"SET_SECTION:Urodziny","text":"6 czerwca"},"reason":"..."}
+
+                Detected intent: %s
+                User request: %s
+                Tool goal: %s
+                Reason: %s
+                Previous observation: %s
+                Step: %d
+
+                Rules:
+                - You own semantic decisions.
+                - Java only validates and executes.
+                - Do not write a normal assistant answer unless action is FINAL_ANSWER.
+                - If a user confirms a previous knowledge update proposal, call KnowledgeTool.
+                """.formatted(intent, request.userMessage(), safe(request.goal()), safe(request.reason()), observation, step);
+    }
+
+    private String webPlannerPrompt(ToolCallingRequest request, String observation, int step) {
+        return """
+                You are J.A.R.V.I.S. Web Tool Planner.
+                Return one JSON object only. Do not include prose.
+
+                Allowed actions:
+                {"action":"TOOL_CALL","tool":"web","operation":"SEARCH_WEB","arguments":{"query":"RTX 4060 Ti 16GB cena uzywana Allegro","maxResults":15,"profile":"MARKET"},"reason":"..."}
+                {"action":"TOOL_CALL","tool":"web","operation":"READ_WEB_PAGE","arguments":{"url":"https://example.com/result"},"reason":"..."}
+                {"action":"FINAL_ANSWER","answer":"..."}
+
+                User request: %s
+                Tool goal: %s
+                Reason: %s
+                Freshness: %s
+                Step: %d
+                Compact research state: %s
+
+                Rules:
+                - For current prices, rates, news, availability, listings, and market data, do not answer without live evidence.
+                - Wrong entity, wrong variant, wrong memory size, or whole PC/laptop instead of requested GPU is invalid evidence.
+                - If snippets are relevant but do not contain enough price/value evidence, READ_WEB_PAGE for the best matching URL.
+                - If a page is blocked or lacks the value, SEARCH_WEB again with a different precise query/domain.
+                - For market prices, collect multiple observations when possible; one observation is low confidence.
+                - If the user asks for a link/location/source, preserve the best verified URL in the final answer.
+                - If no safe evidence exists after attempts, answer that it could not be verified.
+                """.formatted(
+                request.userMessage(),
+                safe(request.goal()),
+                safe(request.reason()),
+                freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason()),
+                step,
+                observation
+        );
     }
 
     private String repairPrompt(String raw) {
@@ -937,6 +966,61 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         } catch (JsonProcessingException exception) {
             return "TOOL OBSERVATION unavailable";
         }
+    }
+
+    private String compactObservation(String observation) {
+        if (observation == null || observation.isBlank()) {
+            return "none";
+        }
+        try {
+            JsonNode root = objectMapper.readTree(extractJsonPayload(observation));
+            JsonNode data = root.path("data");
+            Map<String, Object> compact = new java.util.LinkedHashMap<>();
+            compact.put("tool", text(root, "tool"));
+            compact.put("operation", text(root, "operation"));
+            compact.put("success", root.path("success").asBoolean(false));
+            compact.put("message", text(root, "message"));
+            copyIfPresent(compact, data, "query");
+            copyIfPresent(compact, data, "url");
+            copyIfPresent(compact, data, "title");
+            copyIfPresent(compact, data, "sourceQualityAccepted");
+            copyIfPresent(compact, data, "sourceQualityReason");
+            copyIfPresent(compact, data, "pageQualityAccepted");
+            copyIfPresent(compact, data, "pageQualityReason");
+            copyIfPresent(compact, data, "liveEvidenceSatisfied");
+            copyIfPresent(compact, data, "marketAnalysis");
+            compact.put("acceptedResults", compactResults(data.path("acceptedResults"), 6));
+            compact.put("results", compactResults(data.path("results"), 6));
+            return objectMapper.writeValueAsString(compact);
+        } catch (JsonProcessingException | RuntimeException exception) {
+            return abbreviate(observation);
+        }
+    }
+
+    private void copyIfPresent(Map<String, Object> target, JsonNode data, String field) {
+        JsonNode value = data.path(field);
+        if (!value.isMissingNode() && !value.isNull()) {
+            target.put(field, objectMapper.convertValue(value, Object.class));
+        }
+    }
+
+    private List<Map<String, Object>> compactResults(JsonNode results, int limit) {
+        if (!results.isArray()) {
+            return List.of();
+        }
+        List<Map<String, Object>> values = new ArrayList<>();
+        for (JsonNode item : results) {
+            if (values.size() >= limit) {
+                break;
+            }
+            values.add(Map.of(
+                    "title", abbreviate(text(item, "title")),
+                    "url", text(item, "url"),
+                    "snippet", abbreviate(text(item, "snippet")),
+                    "source", text(item, "source")
+            ));
+        }
+        return values;
     }
 
     private ToolResult enrichWebSearchQuality(ToolCallingRequest request, ToolResult result, int step) {
@@ -1069,9 +1153,6 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 return true;
             }
             if ("READ_WEB_PAGE".equalsIgnoreCase(result.operation()) && webPageAccepted(result)) {
-                return true;
-            }
-            if ("SEARCH_WEB".equalsIgnoreCase(result.operation()) && webSearchAccepted(result)) {
                 return true;
             }
         }
