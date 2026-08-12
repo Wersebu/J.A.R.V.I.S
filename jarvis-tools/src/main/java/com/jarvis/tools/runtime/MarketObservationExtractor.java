@@ -81,13 +81,23 @@ public class MarketObservationExtractor {
     }
 
     private Optional<ParsedPrice> parsePrice(Matcher matcher) {
-        String symbol = matcher.group(5);
+        String symbol = groupOrBlank(matcher, 4);
         if (symbol != null && !symbol.isBlank()) {
-            return parseAmount(matcher.group(6)).map(amount -> new ParsedPrice(amount, "$".equals(symbol) ? "USD" : "EUR"));
+            return parseAmount(groupOrBlank(matcher, 5))
+                    .map(amount -> new ParsedPrice(amount, "$".equals(symbol) ? "USD" : "EUR"));
         }
-        String currency = matcher.group(3);
-        return parseAmount(matcher.group(1) + (matcher.group(2) == null ? "" : "." + matcher.group(2)))
+        String currency = groupOrBlank(matcher, 3);
+        String decimalPart = groupOrBlank(matcher, 2);
+        return parseAmount(groupOrBlank(matcher, 1) + (decimalPart.isBlank() ? "" : "." + decimalPart))
                 .map(amount -> new ParsedPrice(amount, normalizeCurrency(currency)));
+    }
+
+    private String groupOrBlank(Matcher matcher, int group) {
+        if (group > matcher.groupCount()) {
+            return "";
+        }
+        String value = matcher.group(group);
+        return value == null ? "" : value;
     }
 
     private Optional<BigDecimal> parseAmount(String raw) {

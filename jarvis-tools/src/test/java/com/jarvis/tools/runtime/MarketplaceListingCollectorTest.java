@@ -111,6 +111,22 @@ class MarketplaceListingCollectorTest {
     }
 
     @Test
+    void parsesDollarPricesWithoutFailingOnMissingRegexGroups() {
+        ToolCallingRequest request = request("po ile jest RTX 3060 12GB w USD?");
+        List<MarketObservation> observations = extractor.extract(
+                request,
+                "Legacy Nvidia RTX 3060 12GB returns",
+                "Legacy Nvidia RTX 3060 12GB returns, priced at $339 with limited stock.",
+                "Tom's Hardware",
+                "https://www.tomshardware.com/news/rtx-3060-12gb-price");
+
+        assertThat(observations).singleElement().satisfies(observation -> {
+            assertThat(observation.currency()).isEqualTo("USD");
+            assertThat(observation.price().toString()).isEqualTo("339");
+        });
+    }
+
+    @Test
     void deduplicatesSameCanonicalListingWithoutLosingExactFirstUrl() {
         ToolCallingRequest request = request("daj 2 oferty RTX 3060 12GB z olx");
         MarketplaceListingCollector collector = new MarketplaceListingCollector(ResearchRequirements.from(request), extractor);
