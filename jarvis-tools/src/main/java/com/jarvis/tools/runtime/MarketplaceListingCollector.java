@@ -15,6 +15,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Collects concrete marketplace listings from search results and read pages.
@@ -22,10 +24,12 @@ import java.util.Set;
 public class MarketplaceListingCollector {
 
     private final ResearchRequirements requirements;
-    private final MarketObservationExtractor observationExtractor;
+    private final MarketplaceListingExtractor listingExtractor;
     private final Set<String> queuedOrRead = new LinkedHashSet<>();
+    private final Set<String> listingIdentities = new LinkedHashSet<>();
     private final Queue<MarketplaceListingCandidate> queue = new ArrayDeque<>();
     private final List<MarketplaceListing> listings = new ArrayList<>();
+    private final Map<ListingVerificationStatus, Integer> statuses = new LinkedHashMap<>();
 
     /**
      * Creates a collector for the request.
@@ -34,8 +38,18 @@ public class MarketplaceListingCollector {
      * @param observationExtractor observation extractor
      */
     public MarketplaceListingCollector(ResearchRequirements requirements, MarketObservationExtractor observationExtractor) {
+        this(requirements, new MarketplaceListingExtractor());
+    }
+
+    /**
+     * Creates a collector for the request.
+     *
+     * @param requirements requirements
+     * @param listingExtractor listing extractor
+     */
+    public MarketplaceListingCollector(ResearchRequirements requirements, MarketplaceListingExtractor listingExtractor) {
         this.requirements = requirements;
-        this.observationExtractor = observationExtractor;
+        this.listingExtractor = listingExtractor;
     }
 
     /**
@@ -84,7 +98,10 @@ public class MarketplaceListingCollector {
      * @return true when satisfied
      */
     public boolean satisfied() {
-        return !requirements.multiListing() || listings.size() >= requirements.requestedCount();
+        if (!requirements.concreteListingsRequired()) {
+            return true;
+        }
+        return listings.size() >= targetCount();
     }
 
     /**
@@ -93,7 +110,7 @@ public class MarketplaceListingCollector {
      * @return true when more are needed
      */
     public boolean needsMore() {
-        return requirements.multiListing() && !satisfied();
+        return requirements.concreteListingsRequired() && !satisfied();
     }
 
     /**
@@ -106,6 +123,38 @@ public class MarketplaceListingCollector {
     }
 
     /**
+     * Returns verified listings as market observations for aggregate analysis.
+     *
+     * @return verified observations
+     */
+    public List<MarketObservation> marketObservations() {
+        return listings.stream()
+                .map(listing -> new MarketObservation(
+                        listing.title(),
+                        "",
+                        listing.title(),
+                        listing.price(),
+                        listing.currency(),
+                        listing.condition(),
+                        listing.source(),
+                        listing.url(),
+                        listing.verifiedAt(),
+                        listing.confidence(),
+                        false
+                ))
+                .toList();
+    }
+
+    /**
+     * Returns market analysis based only on verified marketplace listings.
+     *
+     * @return market analysis
+     */
+    public MarketAnalysis marketAnalysis() {
+        return MarketAnalysis.from(marketObservations());
+    }
+
+    /**
      * Returns collector metadata.
      *
      * @return metadata
@@ -115,7 +164,9 @@ public class MarketplaceListingCollector {
                 "requestedListingCount", requirements.requestedCount(),
                 "validListingCount", listings.size(),
                 "researchSatisfied", satisfied(),
-                "queuedCandidates", queue.size()
+                "queuedCandidates", queue.size(),
+                "verifiedMarketplaceListings", listings.size(),
+                "listingStatusCounts", Map.copyOf(statuses)
         );
     }
 
@@ -145,10 +196,20 @@ public class MarketplaceListingCollector {
         if (!url.isBlank()) {
             queuedOrRead.add("read:" + url);
         }
-        if (result.success()) {
-            extractListing(request, result).ifPresent(listings::add);
+        ListingVerificationStatus status = verificationStatus(result);
+        if (status == ListingVerificationStatus.VERIFIED) {
+            Optional<MarketplaceListing> listing = extractListing(request, result);
+            if (listing.isPresent()) {
+                addListing(listing.get());
+            } else {
+                count(ListingVerificationStatus.REJECTED);
+            }
+        } else {
+            count(status);
         }
-        observeLinks(result.data().get("links"));
+        if (result.success()) {
+            observeLinks(result.data().get("links"));
+        }
     }
 
     private void observeLinks(Object rawLinks) {
@@ -174,26 +235,10 @@ public class MarketplaceListingCollector {
 
     private Optional<MarketplaceListing> extractListing(ToolCallingRequest request, ToolResult result) {
         String url = Objects.toString(result.data().getOrDefault("url", ""), "");
-        if (!WebUrlClassifier.isConcreteListing(url) || !acceptableDomain(url)) {
+        if (!acceptableDomain(url)) {
             return Optional.empty();
         }
-        String title = Objects.toString(result.data().getOrDefault("title", ""), "");
-        String content = Objects.toString(result.data().getOrDefault("content", ""), "");
-        List<MarketObservation> observations = observationExtractor.extract(request, title, content,
-                WebUrlClassifier.domain(url), url);
-        if (observations.isEmpty()) {
-            return Optional.empty();
-        }
-        MarketObservation best = observations.getFirst();
-        return Optional.of(new MarketplaceListing(
-                title.isBlank() ? best.title() : title,
-                best.price(),
-                best.currency(),
-                best.condition(),
-                best.source(),
-                best.url(),
-                best.confidence()
-        ));
+        return listingExtractor.extract(request, result);
     }
 
     private void addCandidate(List<MarketplaceListingCandidate> candidates, String title, String url, String source, String snippet, int priority) {
@@ -218,6 +263,73 @@ public class MarketplaceListingCollector {
             return 20;
         }
         return 0;
+    }
+
+    private void addListing(MarketplaceListing listing) {
+        if (!listing.verified() || listing.status() != ListingVerificationStatus.VERIFIED) {
+            count(ListingVerificationStatus.REJECTED);
+            return;
+        }
+        if (!listingIdentities.add(canonicalIdentity(listing.url()))) {
+            return;
+        }
+        listings.add(listing);
+        count(ListingVerificationStatus.VERIFIED);
+    }
+
+    private ListingVerificationStatus verificationStatus(ToolResult result) {
+        int statusCode = statusCode(result);
+        if (!result.success()) {
+            if (statusCode == 404 || statusCode == 410) {
+                return ListingVerificationStatus.DEAD;
+            }
+            return ListingVerificationStatus.BLOCKED;
+        }
+        if (statusCode == 404 || statusCode == 410) {
+            return ListingVerificationStatus.DEAD;
+        }
+        if (statusCode == 403 || statusCode == 429 || statusCode == 408) {
+            return ListingVerificationStatus.BLOCKED;
+        }
+        if (statusCode < 200 || statusCode >= 300) {
+            return ListingVerificationStatus.REJECTED;
+        }
+        return ListingVerificationStatus.VERIFIED;
+    }
+
+    private int statusCode(ToolResult result) {
+        Object value = result.data().get("statusCode");
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        String text = Objects.toString(value, "");
+        if (text.isBlank()) {
+            text = result.errorMessage();
+        }
+        Matcher matcher = Pattern.compile("\\b(\\d{3})\\b").matcher(Objects.toString(text, ""));
+        if (matcher.find()) {
+            return Integer.parseInt(matcher.group(1));
+        }
+        return result.success() ? 200 : 0;
+    }
+
+    private void count(ListingVerificationStatus status) {
+        statuses.merge(status, 1, Integer::sum);
+    }
+
+    private int targetCount() {
+        return Math.max(1, requirements.requestedCount());
+    }
+
+    private String canonicalIdentity(String url) {
+        try {
+            java.net.URI uri = new java.net.URI(url);
+            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT).replaceFirst("^www\\.", "");
+            String path = uri.getPath() == null ? "" : uri.getPath().replaceAll("/+$", "");
+            return host + path;
+        } catch (java.net.URISyntaxException exception) {
+            return Objects.toString(url, "").split("\\?")[0];
+        }
     }
 
     private boolean acceptableDomain(String url) {

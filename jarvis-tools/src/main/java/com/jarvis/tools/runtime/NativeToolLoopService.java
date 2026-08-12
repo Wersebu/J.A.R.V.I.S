@@ -92,7 +92,7 @@ public class NativeToolLoopService {
         ToolIntent intent = resolveIntent(request);
         InformationFreshness freshness = freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason());
         ResearchRequirements researchRequirements = ResearchRequirements.from(request);
-        MarketplaceListingCollector marketplaceCollector = new MarketplaceListingCollector(researchRequirements, marketObservationExtractor);
+        MarketplaceListingCollector marketplaceCollector = new MarketplaceListingCollector(researchRequirements, new MarketplaceListingExtractor());
         List<NativeToolDefinition> definitions = schemaMapper.definitions(intent);
         if (definitions.isEmpty()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
@@ -289,8 +289,8 @@ public class NativeToolLoopService {
             MarketAnalysis analysis = MarketAnalysis.from(observations);
             Map<String, Object> data = new HashMap<>(result.data());
             data.put("liveEvidenceSatisfied", result.success() && (!content.isBlank() || !observations.isEmpty()));
-            data.put("marketObservations", observations);
-            data.put("marketAnalysis", analysis.toMap());
+            data.put("marketObservations", shouldTrustPageObservations(request, result) ? observations : List.of());
+            data.put("marketAnalysis", shouldTrustPageObservations(request, result) ? analysis.toMap() : MarketAnalysis.from(List.of()).toMap());
             return copy(result, data);
         }
         return result;
@@ -428,7 +428,8 @@ public class NativeToolLoopService {
         for (String key : List.of("query", "url", "title", "sourceQualityAccepted", "sourceQualityReason",
                 "liveEvidenceSatisfied", "pageQualityAccepted", "pageQualityReason", "marketAnalysis",
                 "marketObservations", "marketplaceListings", "requestedListingCount", "validListingCount",
-                "researchSatisfied", "queuedCandidates", "acceptedResults", "results", "links", "statusCode", "contentType")) {
+                "researchSatisfied", "queuedCandidates", "verifiedMarketplaceListings", "listingStatusCounts",
+                "acceptedResults", "results", "links", "statusCode", "contentType")) {
             if (data.containsKey(key)) {
                 compact.put(key, data.get(key));
             }
@@ -481,6 +482,9 @@ public class NativeToolLoopService {
         Map<String, Object> data = new HashMap<>(result.data());
         data.putAll(collector.metadata());
         data.put("marketplaceListings", collector.listingsAsMaps());
+        data.put("marketObservations", collector.marketObservations());
+        data.put("marketAnalysis", collector.marketAnalysis().toMap());
+        data.put("liveEvidenceSatisfied", !collector.listingsAsMaps().isEmpty());
         return copy(result, data);
     }
 
@@ -496,8 +500,21 @@ public class NativeToolLoopService {
             if (observations instanceof List<?> list && !list.isEmpty()) {
                 return true;
             }
+            Object marketplaceListings = result.data().get("marketplaceListings");
+            if (marketplaceListings instanceof List<?> list && !list.isEmpty()) {
+                return true;
+            }
         }
         return false;
+    }
+
+    private boolean shouldTrustPageObservations(ToolCallingRequest request, ToolResult result) {
+        ResearchRequirements requirements = ResearchRequirements.from(request);
+        if (!requirements.concreteListingsRequired() || !requirements.priceRequired()) {
+            return true;
+        }
+        Object marketplaceListings = result.data().get("marketplaceListings");
+        return marketplaceListings instanceof List<?> list && !list.isEmpty();
     }
 
     private ToolResult duplicateResult(ToolCallingRequest request, ModelToolCall call) {

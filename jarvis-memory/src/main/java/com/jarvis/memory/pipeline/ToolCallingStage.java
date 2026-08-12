@@ -18,11 +18,13 @@ import org.springframework.stereotype.Service;
 import java.text.Normalizer;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -305,7 +307,13 @@ public class ToolCallingStage implements PipelineStage {
                 + "\nIf WebSearchTool or READ_WEB_PAGE succeeded, never claim that you have no internet access."
                 + "\nIf a specific page was unreadable, blocked, or did not expose the requested detail, say that exact limitation instead."
                 + "\nIf page observations include structured data, meta data, prices, currencies, or offer details, use those details directly."
-                + "\nFor market-price questions, summarize the observed sample size. If fewer than 10 relevant listings/results were found, say exactly how many were found."
+                + "\nFor marketplace/current-price answers, VERIFIED_MARKETPLACE_LISTINGS are authoritative."
+                + "\nIf VERIFIED_MARKETPLACE_LISTINGS exists, build marketplace tables only from that block."
+                + "\nNever build marketplace listing rows from raw SEARCH_WEB snippets, acceptedResults, category pages, or unread links."
+                + "\nNever mix listing fields. Each row must use title, price, condition, and URL from the same verified listing record."
+                + "\nMarketplace tables must include a Link column and copy each listing URL exactly."
+                + "\nDo not invent listing location, seller, stock, or condition unless that field exists in a verified listing."
+                + "\nFor market-price questions, summarize the verified sample size. If fewer listings were verified than requested, say exactly how many were verified."
                 + "\nIf the user asked for a link, URL, source, concrete listing, or where to buy, include the best verified URL in the answer instead of giving only a price."
                 + "\nUse links only from TRUSTED_WEB_SOURCES below. Copy URLs exactly. Never synthesize URLs from titles, categories, snippets, or item IDs."
                 + "\nIf TRUSTED_WEB_SOURCES only contains a category/search URL, label it as a search/results page, not a concrete listing."
@@ -316,9 +324,54 @@ public class ToolCallingStage implements PipelineStage {
                 + "\nKeep the answer concise, natural, and in the user's language."
                 + "\nReturn plain text only."
                 + "\n\nUser request:\n" + context.request().message()
+                + "\n\nVERIFIED_MARKETPLACE_LISTINGS:\n" + verifiedMarketplaceListings(result)
                 + "\n\nTRUSTED_WEB_SOURCES:\n" + trustedSourceManifest(result)
                 + "\n\nTool observations:\n" + toolObservations(result)
                 + "\n\nExisting final answer guidance:\n" + safe(result.finalAnswer());
+    }
+
+    private String verifiedMarketplaceListings(ToolCallingResult result) {
+        List<Map<String, Object>> listings = marketplaceListings(result);
+        if (listings.isEmpty()) {
+            return "- No verified marketplace listings.\n";
+        }
+        StringBuilder builder = new StringBuilder();
+        int index = 1;
+        for (Map<String, Object> listing : listings) {
+            builder.append(index++).append(".\n")
+                    .append("Title: ").append(text(listing.get("title"))).append("\n")
+                    .append("Price: ").append(text(listing.get("price"))).append("\n")
+                    .append("Currency: ").append(text(listing.get("currency"))).append("\n")
+                    .append("Condition: ").append(text(listing.get("condition"))).append("\n")
+                    .append("URL: ").append(text(listing.get("url"))).append("\n")
+                    .append("Verified: ").append(text(listing.get("verified"))).append("\n")
+                    .append("HTTP status: ").append(text(listing.get("httpStatus"))).append("\n\n");
+        }
+        return builder.toString();
+    }
+
+    private List<Map<String, Object>> marketplaceListings(ToolCallingResult result) {
+        List<Map<String, Object>> listings = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (ToolResult toolResult : result.results()) {
+            Object raw = toolResult.data().get("marketplaceListings");
+            if (!(raw instanceof List<?> list)) {
+                continue;
+            }
+            for (Object item : list) {
+                if (!(item instanceof Map<?, ?> map) || !Boolean.TRUE.equals(map.get("verified"))) {
+                    continue;
+                }
+                String url = text(map.get("url"));
+                if (url.isBlank() || !seen.add(url)) {
+                    continue;
+                }
+                Map<String, Object> copy = new java.util.LinkedHashMap<>();
+                map.forEach((key, value) -> copy.put(text(key), value));
+                listings.add(copy);
+            }
+        }
+        return List.copyOf(listings);
     }
 
     private String trustedSourceManifest(ToolCallingResult result) {

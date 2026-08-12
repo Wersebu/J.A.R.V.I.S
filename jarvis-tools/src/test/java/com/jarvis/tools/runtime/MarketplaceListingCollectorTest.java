@@ -63,6 +63,75 @@ class MarketplaceListingCollectorTest {
         assertThat(collector.satisfied()).isFalse();
     }
 
+    @Test
+    void marketPriceQuestionDefaultsToFiveConcreteListings() {
+        ToolCallingRequest request = request("po ile sa uzywane RTX 3060 12GB?");
+        ResearchRequirements requirements = ResearchRequirements.from(request);
+        MarketplaceListingCollector collector = new MarketplaceListingCollector(requirements, extractor);
+
+        assertThat(requirements.requestedCount()).isEqualTo(5);
+        assertThat(collector.satisfied()).isFalse();
+    }
+
+    @Test
+    void rejectsDeadListingPages() {
+        ToolCallingRequest request = request("daj oferte RTX 3060 12GB z olx");
+        MarketplaceListingCollector collector = new MarketplaceListingCollector(ResearchRequirements.from(request), extractor);
+
+        collector.observe(request, failedReadPage(
+                "https://www.olx.pl/d/oferta/dead-rtx-3060-12gb-CID99-ID404.html",
+                "Web page returned HTTP 404"
+        ));
+
+        assertThat(collector.listingsAsMaps()).isEmpty();
+        assertThat(collector.metadata().get("listingStatusCounts").toString()).contains("DEAD=1");
+    }
+
+    @Test
+    void storesExactVerifiedListingUrlAndAtomicFields() {
+        ToolCallingRequest request = request("ile kosztuje Gigabyte RTX 3060 12GB?");
+        MarketplaceListingCollector collector = new MarketplaceListingCollector(ResearchRequirements.from(request), extractor);
+        String exactUrl = "https://www.olx.pl/d/oferta/gigabyte-rtx-3060-12gb-CID99-ID1.html?search_reason=search%7Cpromoted";
+
+        collector.observe(request, readPage(
+                exactUrl,
+                "Gigabyte RTX 3060 Gaming OC 12GB",
+                "structured data offer price: 950 PLN. Uzywana karta graficzna Gigabyte RTX 3060 12GB.",
+                List.of()));
+
+        assertThat(collector.listingsAsMaps()).singleElement().satisfies(listing -> {
+            assertThat(listing).containsEntry("title", "Gigabyte RTX 3060 Gaming OC 12GB");
+            assertThat(listing).containsEntry("url", exactUrl);
+            assertThat(listing).containsEntry("currency", "PLN");
+            assertThat(listing).containsEntry("httpStatus", 200);
+            assertThat(listing).containsEntry("verified", true);
+            assertThat(listing).containsEntry("status", "VERIFIED");
+            assertThat(listing.get("price").toString()).isEqualTo("950");
+        });
+    }
+
+    @Test
+    void deduplicatesSameCanonicalListingWithoutLosingExactFirstUrl() {
+        ToolCallingRequest request = request("daj 2 oferty RTX 3060 12GB z olx");
+        MarketplaceListingCollector collector = new MarketplaceListingCollector(ResearchRequirements.from(request), extractor);
+        String firstUrl = "https://www.olx.pl/d/oferta/gigabyte-rtx-3060-12gb-CID99-ID1.html?search_reason=search%7Cpromoted";
+        String duplicateUrl = "https://www.olx.pl/d/oferta/gigabyte-rtx-3060-12gb-CID99-ID1.html?utm_source=test";
+
+        collector.observe(request, readPage(
+                firstUrl,
+                "Gigabyte RTX 3060 Gaming OC 12GB",
+                "Cena 950 PLN. Uzywana karta graficzna Gigabyte RTX 3060 12GB.",
+                List.of()));
+        collector.observe(request, readPage(
+                duplicateUrl,
+                "Gigabyte RTX 3060 Gaming OC 12GB",
+                "Cena 950 PLN. Uzywana karta graficzna Gigabyte RTX 3060 12GB.",
+                List.of()));
+
+        assertThat(collector.listingsAsMaps()).singleElement()
+                .satisfies(listing -> assertThat(listing.get("url")).isEqualTo(firstUrl));
+    }
+
     private ToolCallingRequest request(String message) {
         return new ToolCallingRequest(
                 "request-test",
@@ -88,9 +157,18 @@ class MarketplaceListingCollectorTest {
         return new ToolResult(true, "web", "READ_WEB_PAGE", "request-test", "conversation-test", false,
                 List.of("web:page"), "Web page read finished", Map.of(
                 "url", url,
+                "statusCode", 200,
                 "title", title,
                 "content", content,
                 "links", links
         ), "", "", false, "");
+    }
+
+    private ToolResult failedReadPage(String url, String errorMessage) {
+        return new ToolResult(false, "web", "READ_WEB_PAGE", "request-test", "conversation-test", false,
+                List.of("web:page"), errorMessage, Map.of(
+                "url", url,
+                "statusCode", 404
+        ), errorMessage, "", false, "");
     }
 }

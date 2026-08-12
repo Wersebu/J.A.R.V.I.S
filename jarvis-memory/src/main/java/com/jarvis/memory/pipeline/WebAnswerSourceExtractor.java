@@ -44,6 +44,10 @@ public class WebAnswerSourceExtractor {
         }
         List<Map<String, Object>> sources = new ArrayList<>();
         Set<String> seenUrls = new LinkedHashSet<>();
+        boolean marketplaceMode = addMarketplaceListingSources(result.results(), sources, seenUrls, limit);
+        if (marketplaceMode) {
+            return List.copyOf(sources);
+        }
         for (ToolResult toolResult : result.results()) {
             if (!isWebSearchResult(toolResult)) {
                 continue;
@@ -52,12 +56,6 @@ public class WebAnswerSourceExtractor {
                 continue;
             }
             if ("READ_WEB_PAGE".equalsIgnoreCase(toolResult.operation())) {
-                for (SourceCandidate link : readPageLinkCandidates(toolResult)) {
-                    addSource(link, sources, seenUrls);
-                    if (sources.size() >= limit) {
-                        return List.copyOf(sources);
-                    }
-                }
                 SourceCandidate readPage = readPageCandidate(toolResult);
                 if (readPage != null) {
                     addSource(readPage, sources, seenUrls);
@@ -84,6 +82,35 @@ public class WebAnswerSourceExtractor {
             }
         }
         return List.copyOf(sources);
+    }
+
+    private boolean addMarketplaceListingSources(
+            List<ToolResult> results,
+            List<Map<String, Object>> sources,
+            Set<String> seenUrls,
+            int limit
+    ) {
+        boolean foundMarketplacePayload = false;
+        for (ToolResult toolResult : results) {
+            if (toolResult == null || !"web".equalsIgnoreCase(toolResult.tool())) {
+                continue;
+            }
+            Object rawListings = toolResult.data().get("marketplaceListings");
+            if (!(rawListings instanceof List<?> listings) || listings.isEmpty()) {
+                continue;
+            }
+            foundMarketplacePayload = true;
+            for (Object item : listings) {
+                SourceCandidate candidate = marketplaceCandidate(item);
+                if (candidate == null || !addSource(candidate, sources, seenUrls)) {
+                    continue;
+                }
+                if (sources.size() >= limit) {
+                    return true;
+                }
+            }
+        }
+        return foundMarketplacePayload;
     }
 
     /**
@@ -202,6 +229,22 @@ public class WebAnswerSourceExtractor {
         if (title.isBlank()) {
             title = text(map.get("source"));
         }
+        if (title.isBlank()) {
+            title = domain;
+        }
+        return new SourceCandidate(title, url, domain);
+    }
+
+    private SourceCandidate marketplaceCandidate(Object item) {
+        if (!(item instanceof Map<?, ?> map) || !Boolean.TRUE.equals(map.get("verified"))) {
+            return null;
+        }
+        String url = text(map.get("url"));
+        String domain = domain(url);
+        if (domain.isBlank()) {
+            return null;
+        }
+        String title = text(map.get("title"));
         if (title.isBlank()) {
             title = domain;
         }

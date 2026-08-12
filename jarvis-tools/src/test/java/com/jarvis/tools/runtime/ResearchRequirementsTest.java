@@ -37,6 +37,20 @@ class ResearchRequirementsTest {
         assertThat(requirements.multiListing()).isTrue();
     }
 
+    @Test
+    void genericUsedGpuPriceRequestDefaultsToFiveConcreteListings() {
+        ResearchRequirements requirements = ResearchRequirements.from(request(
+                "siemka po ile sa uzywane 3060 12GB?",
+                "Retrieve current market price for used RTX 3060 12GB",
+                "Need current marketplace price."));
+
+        assertThat(requirements.priceRequired()).isTrue();
+        assertThat(requirements.concreteListingsRequired()).isTrue();
+        assertThat(requirements.requestedCount()).isEqualTo(5);
+        assertThat(requirements.multiListing()).isTrue();
+        assertThat(requirements.condition()).isEqualTo("USED");
+    }
+
     private ToolCallingRequest request(String message, String goal, String reason) {
         return new ToolCallingRequest(
                 "request-test",

@@ -83,8 +83,10 @@ public class WebSearchQualityEvaluator {
             }
             bestScore = Math.max(bestScore, score);
             boolean valueFoundForResult = containsSpecificValue(haystack);
-            List<MarketObservation> resultObservations = marketObservationExtractor.extract(request,
-                    text(map.get("title")), text(map.get("snippet")), text(map.get("source")), url);
+            List<MarketObservation> resultObservations = requiresMarketValue
+                    ? List.of()
+                    : marketObservationExtractor.extract(request, text(map.get("title")), text(map.get("snippet")),
+                    text(map.get("source")), url);
             if (score >= ACCEPTANCE_THRESHOLD && (!requiresSpecificValue || valueFoundForResult || !resultObservations.isEmpty())) {
                 observations.addAll(resultObservations);
                 Map<String, Object> acceptedResult = new java.util.LinkedHashMap<>();
@@ -97,6 +99,8 @@ public class WebSearchQualityEvaluator {
                 acceptedResult.put("entityScore", entityMatch.score());
                 acceptedResult.put("entityReason", entityMatch.reason());
                 acceptedResult.put("valueFound", valueFoundForResult);
+                acceptedResult.put("searchPriceHint", requiresMarketValue && valueFoundForResult);
+                acceptedResult.put("marketEvidenceVerified", false);
                 acceptedResult.put("concreteListing", concreteListing);
                 acceptedResult.put("searchPage", searchPage);
                 acceptedResult.put("marketObservations", resultObservations.size());
@@ -107,7 +111,8 @@ public class WebSearchQualityEvaluator {
         MarketAnalysis marketAnalysis = MarketAnalysis.from(observations);
         boolean listingSatisfied = !requiresSpecificListing(intentText)
                 || accepted.stream().anyMatch(item -> Boolean.TRUE.equals(item.get("concreteListing")));
-        boolean liveEvidenceSatisfied = !accepted.isEmpty()
+        boolean liveEvidenceSatisfied = !requiresMarketValue
+                && !accepted.isEmpty()
                 && listingSatisfied
                 && (!requiresSpecificValue || accepted.stream().anyMatch(item -> Boolean.TRUE.equals(item.get("valueFound")))
                 || !observations.isEmpty());
@@ -120,6 +125,8 @@ public class WebSearchQualityEvaluator {
                     : "Relevant web results found.";
         } else if (!listingSatisfied) {
             reason = "Search results were relevant but did not include concrete listing URLs. Search again with listing-specific queries.";
+        } else if (!accepted.isEmpty() && requiresMarketValue) {
+            reason = "Search results are discovery only for market prices; read concrete listing pages before answering.";
         } else if (!accepted.isEmpty() && requiresSpecificValue) {
             reason = "Relevant result links found, but snippets did not contain enough requested numeric values. Read result pages or search again.";
         } else if (requiresMarketValue && marketAnalysis.count() > 0) {

@@ -38,15 +38,11 @@ public record ResearchRequirements(
         String text = request.userMessage() + " " + request.goal() + " " + request.reason();
         String normalized = normalize(text);
         Optional<String> domain = resolver.resolve(text);
-        boolean price = normalized.matches(".*\\b(cena|ceny|koszt|kosztuje|po ile|ile chodzi|price|prices|market)\\b.*");
+        boolean price = normalized.matches(".*\\b(cena|ceny|koszt|kosztuje|po ile|ile kosztuja|ile sa|ile chodza|ile chodzi|price|prices|market)\\b.*");
         boolean listingWords = normalized.matches(".*\\b(link|url|ofert|ogloszen|ogloszenie|listing|listings|kupic|buy)\\w*\\b.*");
         int count = explicitCount(normalized);
         if (count == 0 && normalized.matches(".*\\b(kilka|pare|parę|top|lista|tabela|oferty|listings)\\b.*")) {
             count = 5;
-        }
-        boolean concrete = domain.isPresent() || listingWords || count > 0;
-        if (count == 0 && concrete && price) {
-            count = 1;
         }
         String condition = normalized.matches(".*\\b(uzywan|uzywane|uzywana|used|second\\s*hand|wtorn)\\w*\\b.*")
                 ? "USED"
@@ -54,6 +50,13 @@ public record ResearchRequirements(
         String productType = normalized.matches(".*\\b(rtx|gtx|radeon|gpu|karta graficzna|grafik)\\b.*")
                 ? "GPU"
                 : "UNKNOWN";
+        boolean productMarketPrice = price && !"UNKNOWN".equals(productType);
+        boolean concrete = domain.isPresent() || listingWords || count > 0 || productMarketPrice;
+        if (count == 0 && productMarketPrice) {
+            count = 5;
+        } else if (count == 0 && concrete && price) {
+            count = 1;
+        }
         return new ResearchRequirements(Math.min(Math.max(count, 0), 15), domain.orElse(""), concrete, price, condition, productType);
     }
 

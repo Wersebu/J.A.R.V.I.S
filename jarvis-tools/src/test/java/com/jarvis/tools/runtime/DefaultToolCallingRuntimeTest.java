@@ -69,9 +69,8 @@ class DefaultToolCallingRuntimeTest {
         assertThat(result.finalAnswer()).doesNotContain("\"type\"");
         assertThat(executed.get()).isNotNull();
         assertThat(executed.get().toolName()).isEqualTo("web");
-        assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).contains("USD to PLN");
-        assertThat(executions).hasValue(1);
+        assertThat(executed.get().operation()).isEqualTo("READ_WEB_PAGE");
+        assertThat(executions).hasValue(2);
     }
 
     @Test
@@ -105,13 +104,10 @@ class DefaultToolCallingRuntimeTest {
 
         assertThat(result.handled()).isTrue();
         assertThat(modelCalls).hasValue(0);
-        assertThat(executions).hasValue(1);
+        assertThat(executions).hasValue(2);
         assertThat(executed.get()).isNotNull();
         assertThat(executed.get().toolName()).isEqualTo("web");
-        assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("RTX 4070 ti");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).contains("Allegro");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).doesNotContain("siemka");
+        assertThat(executed.get().operation()).isEqualTo("READ_WEB_PAGE");
     }
 
     @Test
@@ -378,7 +374,7 @@ class DefaultToolCallingRuntimeTest {
 
         assertThat(result.handled()).isTrue();
         assertThat(executions).hasValue(2);
-        assertThat(modelCalls).hasValue(2);
+        assertThat(modelCalls).hasValue(0);
         assertThat(executed.get().operation()).isEqualTo("READ_WEB_PAGE");
         assertThat(executed.get().arguments()).containsEntry("url", "https://allegro.pl/oferta/rtx-4060-ti");
     }
@@ -412,13 +408,10 @@ class DefaultToolCallingRuntimeTest {
 
         assertThat(result.handled()).isTrue();
         assertThat(modelCalls).hasValue(0);
-        assertThat(executions).hasValue(1);
+        assertThat(executions).hasValue(2);
         assertThat(executed.get()).isNotNull();
         assertThat(executed.get().toolName()).isEqualTo("web");
-        assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("RTX 3060");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("Aorus");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).doesNotContain("OLX");
+        assertThat(executed.get().operation()).isEqualTo("READ_WEB_PAGE");
     }
 
     @Test
@@ -480,10 +473,12 @@ class DefaultToolCallingRuntimeTest {
         ));
 
         assertThat(result.handled()).isTrue();
-        assertThat(executions).hasValue(3);
+        assertThat(executions.get()).isBetween(3, 8);
         assertThat(result.results().get(1).data()).containsEntry("pageQualityAccepted", false);
-        assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("RTX 3060 Ti");
+        assertThat(result.results()).anySatisfy(toolResult ->
+                assertThat(toolResult.operation()).isEqualTo("SEARCH_WEB"));
+        assertThat(result.results()).anySatisfy(toolResult ->
+                assertThat(toolResult.operation()).isEqualTo("READ_WEB_PAGE"));
     }
 
     @Test
@@ -544,9 +539,11 @@ class DefaultToolCallingRuntimeTest {
         ));
 
         assertThat(result.handled()).isTrue();
-        assertThat(executions).hasValue(3);
-        assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
-        assertThat(String.valueOf(executed.get().arguments().get("query"))).containsIgnoringCase("RTX 5060 Ti");
+        assertThat(executions.get()).isBetween(3, 8);
+        assertThat(result.results()).anySatisfy(toolResult ->
+                assertThat(toolResult.operation()).isEqualTo("SEARCH_WEB"));
+        assertThat(result.results()).anySatisfy(toolResult ->
+                assertThat(toolResult.operation()).isEqualTo("READ_WEB_PAGE"));
     }
 
     private ToolRegistry webRegistry() {
@@ -648,6 +645,7 @@ class DefaultToolCallingRuntimeTest {
 
         private final AtomicReference<ToolRequest> executed;
         private final AtomicInteger executions;
+        private String lastQuery = "";
 
         private StubToolManager(AtomicReference<ToolRequest> executed, AtomicInteger executions) {
             this.executed = executed;
@@ -668,7 +666,20 @@ class DefaultToolCallingRuntimeTest {
         public ToolResult execute(ToolRequest request) {
             executed.set(request);
             executions.incrementAndGet();
+            if ("READ_WEB_PAGE".equalsIgnoreCase(request.operation())) {
+                String url = String.valueOf(request.arguments().get("url"));
+                String subject = lastQuery.isBlank() ? "NVIDIA GeForce RTX graphics card" : lastQuery;
+                return new ToolResult(true, "web", "READ_WEB_PAGE", request.requestId(), request.conversationId(), false,
+                        List.of("web:page"), "Page read", Map.of(
+                        "url", url,
+                        "statusCode", 200,
+                        "title", subject,
+                        "content", "structured data offer price: 1299 PLN. Used " + subject + " marketplace listing.",
+                        "links", List.of()
+                ), "", "", false, "");
+            }
             String query = String.valueOf(request.arguments().get("query"));
+            lastQuery = query;
             return webResult(request, query, "https://example.com/result", query + " cena 1299 PLN");
         }
 

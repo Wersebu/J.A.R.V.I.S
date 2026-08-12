@@ -155,9 +155,17 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                             "Mapping main model web request to WebSearchTool", targetNode(action), step,
                             Map.of("decisionOwner", "MAIN_MODEL", "tool", "web", "operation", action.operation()));
                 } else {
-                    publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING", "Asking LLM for next tool action",
-                            null, step, Map.of("decisionOwner", "LLM"));
-                    action = normalizeAction(nextAction(request, intent, observation, step));
+                    ToolAction readAcceptedResult = readAcceptedWebResultAction(request, observation);
+                    if (intent == ToolIntent.SEARCH_WEB && readAcceptedResult != null) {
+                        action = readAcceptedResult;
+                        publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING",
+                                "Reading the best accepted web result before asking for another search",
+                                targetNode(action), step, Map.of("decisionOwner", "CORE", "tool", "web", "operation", action.operation()));
+                    } else {
+                        publish(request, CognitiveEventType.TOOL_SELECTION_STARTED, "SELECTING", "Asking LLM for next tool action",
+                                null, step, Map.of("decisionOwner", "LLM"));
+                        action = normalizeAction(nextAction(request, intent, observation, step));
+                    }
                 }
                 if (isNoTool(action)) {
                     steps.add(new ToolRuntimeStep(step, "NO_TOOL", "", "", "DECLINED", null));
@@ -309,7 +317,10 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                 }
                 observation = observation(result);
 
-                if (result.success() && isTerminalWebSearch(action) && webSearchAccepted(result)) {
+                if (result.success()
+                        && isTerminalWebSearch(action)
+                        && webSearchAccepted(result)
+                        && hasLiveEvidence(List.of(result))) {
                     saveDebug(request, intent, steps, "FINISHED", errors);
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED", "Tool loop finished",
                             targetNode(action), step, resultMetadata(result));
