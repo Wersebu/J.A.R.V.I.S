@@ -1017,8 +1017,13 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             copyIfPresent(compact, data, "pageQualityReason");
             copyIfPresent(compact, data, "liveEvidenceSatisfied");
             copyIfPresent(compact, data, "marketAnalysis");
+            copyIfPresent(compact, data, "marketplaceListings");
+            copyIfPresent(compact, data, "requestedListingCount");
+            copyIfPresent(compact, data, "validListingCount");
+            copyIfPresent(compact, data, "researchSatisfied");
             compact.put("acceptedResults", compactResults(data.path("acceptedResults"), 6));
             compact.put("results", compactResults(data.path("results"), 6));
+            compact.put("links", compactResults(data.path("links"), 12));
             return objectMapper.writeValueAsString(compact);
         } catch (JsonProcessingException | RuntimeException exception) {
             return abbreviate(observation);

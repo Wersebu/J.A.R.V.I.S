@@ -91,6 +91,8 @@ public class NativeToolLoopService {
         }
         ToolIntent intent = resolveIntent(request);
         InformationFreshness freshness = freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason());
+        ResearchRequirements researchRequirements = ResearchRequirements.from(request);
+        MarketplaceListingCollector marketplaceCollector = new MarketplaceListingCollector(researchRequirements, marketObservationExtractor);
         List<NativeToolDefinition> definitions = schemaMapper.definitions(intent);
         if (definitions.isEmpty()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
@@ -112,7 +114,10 @@ public class NativeToolLoopService {
         messages.add(ModelMessage.user(request.userMessage()));
 
         publish(request, CognitiveEventType.TOOL_LOOP_STARTED, "STARTED", "Native tool loop started", null, 0,
-                Map.of("runtime", "native", "intent", intent.name(), "freshness", freshness.name(), "tools", definitions.size()));
+                Map.of("runtime", "native", "intent", intent.name(), "freshness", freshness.name(), "tools", definitions.size(),
+                        "requestedListingCount", researchRequirements.requestedCount(),
+                        "requiredDomain", researchRequirements.requiredDomain(),
+                        "concreteListingsRequired", researchRequirements.concreteListingsRequired()));
         LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} intent={} freshness={} tools={}",
                 request.requestId(), intent, freshness, definitions.size());
 
@@ -151,12 +156,15 @@ public class NativeToolLoopService {
                     }
                     ToolResult result = executeAction(request, action, step);
                     result = enrichIfNeeded(request, action, result, step);
+                    marketplaceCollector.observe(request, result);
+                    result = withMarketplaceState(result, marketplaceCollector);
                     results.add(result);
                     steps.add(new ToolRuntimeStep(step, "TOOL_CALL", action.tool(), action.operation(),
                             result.success() ? "OK" : "FAILED", result));
                     messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(result)));
                     publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "SENT",
                             "Tool result sent to model", targetNode(action), step, resultMetadata(result));
+                    drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages, toolCallId(call), step);
 
                     if (result.requiresApproval()) {
                         saveDebug(request, intent, steps, "WAITING_APPROVAL", errors);
@@ -168,10 +176,13 @@ public class NativeToolLoopService {
                         Optional<ToolResult> retry = tryNextWebCandidate(request, results, action, step);
                         if (retry.isPresent()) {
                             ToolResult retryResult = retry.get();
+                            marketplaceCollector.observe(request, retryResult);
+                            retryResult = withMarketplaceState(retryResult, marketplaceCollector);
                             results.add(retryResult);
                             steps.add(new ToolRuntimeStep(step, "TOOL_CALL", "web", "READ_WEB_PAGE",
                                     retryResult.success() ? "OK" : "FAILED", retryResult));
                             messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(retryResult)));
+                            drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages, toolCallId(call), step);
                         }
                     }
                 }
@@ -180,6 +191,14 @@ public class NativeToolLoopService {
 
             String content = response.content().strip();
             if (!content.isBlank()) {
+                if (marketplaceCollector.needsMore() && drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages,
+                        "marketplace-collector-" + step, step)) {
+                    messages.add(ModelMessage.system("Marketplace listing collection is now "
+                            + marketplaceCollector.metadata().get("validListingCount") + "/"
+                            + marketplaceCollector.metadata().get("requestedListingCount")
+                            + ". Use the collected concrete marketplaceListings when answering. If fewer were found than requested, state the exact count found."));
+                    continue;
+                }
                 if (freshness == InformationFreshness.MUST_BE_LIVE && !hasLiveEvidence(results)) {
                     messages.add(ModelMessage.assistant(content, List.of()));
                     messages.add(ModelMessage.system("Live evidence is required. Use the available native web tools before answering."));
@@ -288,24 +307,30 @@ public class NativeToolLoopService {
                 "Web candidate blocked; trying next candidate", targetNode(failedAction), step,
                 Map.of("url", failedUrl));
         for (ToolResult previous : results) {
-            Object candidates = previous.data().containsKey("acceptedResults")
-                    ? previous.data().get("acceptedResults")
-                    : previous.data().get("results");
-            if (!(candidates instanceof List<?> list)) {
-                continue;
-            }
-            for (Object item : list) {
-                if (!(item instanceof Map<?, ?> candidate)) {
-                    continue;
-                }
-                String url = Objects.toString(candidate.get("url"), "");
-                if (url.isBlank() || url.equals(failedUrl) || wasRead(results, url)) {
-                    continue;
-                }
+            Optional<String> nextUrl = firstUnreadCandidateUrl(previous.data().get("acceptedResults"), results, failedUrl)
+                    .or(() -> firstUnreadCandidateUrl(previous.data().get("results"), results, failedUrl))
+                    .or(() -> firstUnreadCandidateUrl(previous.data().get("links"), results, failedUrl));
+            if (nextUrl.isPresent()) {
                 ToolAction retry = new ToolAction("TOOL_CALL", "web", "READ_WEB_PAGE",
-                        Map.of("url", url), "Deterministic retry after blocked candidate", "");
+                        Map.of("url", nextUrl.get()), "Deterministic retry after blocked candidate", "");
                 ToolResult result = executeAction(request, retry, step);
                 return Optional.of(enrichIfNeeded(request, retry, result, step));
+            }
+        }
+        return Optional.empty();
+    }
+
+    private Optional<String> firstUnreadCandidateUrl(Object candidates, List<ToolResult> results, String failedUrl) {
+        if (!(candidates instanceof List<?> list)) {
+            return Optional.empty();
+        }
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> candidate)) {
+                continue;
+            }
+            String url = Objects.toString(candidate.get("url"), "");
+            if (!url.isBlank() && !url.equals(failedUrl) && !wasRead(results, url)) {
+                return Optional.of(url);
             }
         }
         return Optional.empty();
@@ -402,7 +427,8 @@ public class NativeToolLoopService {
         Map<String, Object> compact = new LinkedHashMap<>();
         for (String key : List.of("query", "url", "title", "sourceQualityAccepted", "sourceQualityReason",
                 "liveEvidenceSatisfied", "pageQualityAccepted", "pageQualityReason", "marketAnalysis",
-                "marketObservations", "acceptedResults", "results", "statusCode", "contentType")) {
+                "marketObservations", "marketplaceListings", "requestedListingCount", "validListingCount",
+                "researchSatisfied", "queuedCandidates", "acceptedResults", "results", "links", "statusCode", "contentType")) {
             if (data.containsKey(key)) {
                 compact.put(key, data.get(key));
             }
@@ -412,6 +438,50 @@ public class NativeToolLoopService {
             compact.put("content", content.length() <= 2500 ? content : content.substring(0, 2500));
         }
         return compact;
+    }
+
+    private boolean drainMarketplaceCandidates(
+            ToolCallingRequest request,
+            MarketplaceListingCollector collector,
+            List<ToolResult> results,
+            List<ToolRuntimeStep> steps,
+            List<ModelMessage> messages,
+            String toolCallId,
+            int step
+    ) {
+        boolean executed = false;
+        int readBudget = Math.max(0, Math.min(12, collector.metadata().get("requestedListingCount") instanceof Integer count ? count * 3 : 12));
+        int reads = 0;
+        while (collector.needsMore() && reads < readBudget) {
+            Optional<ToolAction> next = collector.nextReadAction();
+            if (next.isEmpty()) {
+                break;
+            }
+            ToolAction action = next.get();
+            ToolResult result = executeAction(request, action, step);
+            result = enrichIfNeeded(request, action, result, step);
+            collector.observe(request, result);
+            result = withMarketplaceState(result, collector);
+            results.add(result);
+            steps.add(new ToolRuntimeStep(step, "TOOL_CALL", action.tool(), action.operation(),
+                    result.success() ? "OK" : "FAILED", result));
+            messages.add(ModelMessage.tool(toolCallId, compactToolResult(result)));
+            publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "SENT",
+                    "Marketplace candidate result sent to model", targetNode(action), step, resultMetadata(result));
+            executed = true;
+            reads++;
+        }
+        return executed;
+    }
+
+    private ToolResult withMarketplaceState(ToolResult result, MarketplaceListingCollector collector) {
+        if (!"web".equalsIgnoreCase(result.tool())) {
+            return result;
+        }
+        Map<String, Object> data = new HashMap<>(result.data());
+        data.putAll(collector.metadata());
+        data.put("marketplaceListings", collector.listingsAsMaps());
+        return copy(result, data);
     }
 
     private boolean hasLiveEvidence(List<ToolResult> results) {
