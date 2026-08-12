@@ -10,6 +10,8 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.Executors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -121,6 +123,52 @@ class SearxngWebSearchClientTest {
 
         assertThat(response.results().getFirst().snippet()).isEqualTo("abcde...");
         assertThat(response.results().getFirst().source()).isEqualTo("docs.example.com");
+    }
+
+    @Test
+    void encodesSearchQueryAsUriSafeUtf8() throws IOException {
+        AtomicReference<String> rawQuery = new AtomicReference<>();
+        AtomicReference<String> userAgent = new AtomicReference<>();
+        startServer(exchange -> {
+            rawQuery.set(exchange.getRequestURI().getRawQuery());
+            userAgent.set(exchange.getRequestHeaders().getFirst("User-Agent"));
+            write(exchange, 200, "{\"results\":[]}");
+        });
+
+        client(defaultProperties()).search("RTX 3060 Aorus używane OLX", 5);
+
+        assertThat(rawQuery.get()).contains("q=RTX%203060%20Aorus%20u%C5%BCywane%20OLX");
+        assertThat(rawQuery.get()).contains("format=json");
+        assertThat(userAgent.get()).isEqualTo("JARVIS-Core-WebSearch/2.7");
+    }
+
+    @Test
+    void retriesMinimalSearchWhenSearxngRejectsOptionalParameters() throws IOException {
+        AtomicInteger calls = new AtomicInteger();
+        AtomicReference<String> firstQuery = new AtomicReference<>();
+        AtomicReference<String> secondQuery = new AtomicReference<>();
+        startServer(exchange -> {
+            if (calls.incrementAndGet() == 1) {
+                firstQuery.set(exchange.getRequestURI().getRawQuery());
+                write(exchange, 400, "{\"error\":\"bad category\"}");
+                return;
+            }
+            secondQuery.set(exchange.getRequestURI().getRawQuery());
+            write(exchange, 200, """
+                    {"results":[
+                      {"title":"Fallback result","url":"https://example.com/fallback","content":"OK"}
+                    ]}
+                    """);
+        });
+
+        WebSearchRequest request = new WebSearchRequest("RTX 3060", 5, "pl", 2, "day", "shopping", "MARKET");
+        WebSearchResponse response = client(defaultProperties()).search(request);
+
+        assertThat(calls.get()).isEqualTo(2);
+        assertThat(firstQuery.get()).contains("language=pl", "time_range=day", "categories=shopping", "pageno=2");
+        assertThat(secondQuery.get()).contains("q=RTX%203060", "format=json");
+        assertThat(secondQuery.get()).doesNotContain("language=", "time_range=", "categories=", "pageno=");
+        assertThat(response.results()).extracting(WebSearchResult::title).containsExactly("Fallback result");
     }
 
     private SearxngWebSearchClient client(WebSearchProperties properties) {

@@ -55,19 +55,16 @@ public class SearxngWebSearchClient implements WebSearchClient {
             throw new WebSearchException("Web search query is required");
         }
         int limit = properties.cappedMaxResults(searchRequest.maxResults());
-        long started = System.nanoTime();
-        HttpRequest request = HttpRequest.newBuilder(searchUri(searchRequest, normalizedQuery))
-                .timeout(properties.readTimeout())
-                .header("Accept", "application/json")
-                .GET()
-                .build();
         try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            long durationMs = (System.nanoTime() - started) / 1_000_000L;
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new WebSearchException("SearXNG returned HTTP " + response.statusCode());
+            SearchHttpResponse response = send(searchUri(searchRequest, normalizedQuery, false));
+            if (!response.isSuccessful() && response.statusCode() == 400 && hasOptionalSearchParameters(searchRequest)) {
+                response = send(searchUri(searchRequest, normalizedQuery, true));
             }
-            return new WebSearchResponse(normalizedQuery, normalize(response.body(), limit), durationMs);
+            if (!response.isSuccessful()) {
+                throw new WebSearchException("SearXNG returned HTTP " + response.statusCode()
+                        + " body=" + abbreviateBody(response.body()));
+            }
+            return new WebSearchResponse(normalizedQuery, normalize(response.body(), limit), response.durationMs());
         } catch (IOException exception) {
             throw new WebSearchException("SearXNG request failed for " + properties.baseUrl()
                     + ": " + exception.getClass().getSimpleName(), exception);
@@ -82,11 +79,27 @@ public class SearxngWebSearchClient implements WebSearchClient {
         }
     }
 
-    private URI searchUri(WebSearchRequest request, String query) {
-        String encodedQuery = URLEncoder.encode(query, StandardCharsets.UTF_8);
+    private SearchHttpResponse send(URI uri) throws IOException, InterruptedException {
+        long started = System.nanoTime();
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .timeout(properties.readTimeout())
+                .header("Accept", "application/json")
+                .header("User-Agent", "JARVIS-Core-WebSearch/2.7")
+                .GET()
+                .build();
+        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        long durationMs = (System.nanoTime() - started) / 1_000_000L;
+        return new SearchHttpResponse(response.statusCode(), response.body(), durationMs);
+    }
+
+    private URI searchUri(WebSearchRequest request, String query, boolean minimal) {
+        String encodedQuery = encode(query);
         StringBuilder uri = new StringBuilder(properties.baseUrl())
                 .append("/search?q=").append(encodedQuery)
                 .append("&format=json");
+        if (minimal) {
+            return URI.create(uri.toString());
+        }
         append(uri, "language", request.language());
         append(uri, "time_range", request.timeRange());
         append(uri, "categories", request.category());
@@ -101,9 +114,31 @@ public class SearxngWebSearchClient implements WebSearchClient {
             return;
         }
         uri.append('&')
-                .append(URLEncoder.encode(key, StandardCharsets.UTF_8))
+                .append(encode(key))
                 .append('=')
-                .append(URLEncoder.encode(value.strip(), StandardCharsets.UTF_8));
+                .append(encode(value.strip()));
+    }
+
+    private String encode(String value) {
+        return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8)
+                .replace("+", "%20");
+    }
+
+    private boolean hasOptionalSearchParameters(WebSearchRequest request) {
+        return request != null
+                && (hasText(request.language()) || hasText(request.timeRange()) || hasText(request.category()) || request.page() > 1);
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private String abbreviateBody(String value) {
+        String compact = value == null ? "" : value.replaceAll("\\s+", " ").strip();
+        if (compact.isBlank()) {
+            return "<empty>";
+        }
+        return compact.length() <= 240 ? compact : compact.substring(0, 240).strip() + "...";
     }
 
     private List<WebSearchResult> normalize(String body, int limit) {
@@ -169,5 +204,12 @@ public class SearxngWebSearchClient implements WebSearchClient {
             }
         }
         return "";
+    }
+
+    private record SearchHttpResponse(int statusCode, String body, long durationMs) {
+
+        private boolean isSuccessful() {
+            return statusCode >= 200 && statusCode < 300;
+        }
     }
 }
