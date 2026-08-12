@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.ai.AIProvider;
+import com.jarvis.common.ai.AIProviderException;
 import com.jarvis.common.ai.ModelMessage;
 import com.jarvis.common.ai.ModelResponse;
 import com.jarvis.common.ai.ModelToolCall;
@@ -129,7 +130,12 @@ public class NativeToolLoopService {
                 errors.add("TIMEOUT");
                 break;
             }
-            ModelResponse response = selectProvider(request).toolChat(request.brain(), messages, definitions, AIJobType.MAIN_MODEL);
+            ModelResponse response;
+            try {
+                response = selectProvider(request).toolChat(request.brain(), messages, definitions, AIJobType.MAIN_MODEL);
+            } catch (AIProviderException exception) {
+                return handleProviderFailure(request, intent, steps, results, errors, messages, exception, step);
+            }
             publishThinking(request, response);
             if (response.hasToolCalls()) {
                 messages.add(ModelMessage.assistant(response.content(), response.toolCalls()));
@@ -232,6 +238,72 @@ public class NativeToolLoopService {
         publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, errors.isEmpty() ? "FINISHED" : "FAILED",
                 "Native tool loop finished", null, steps.size(), Map.of("errors", errors, "results", results.size()));
         return new ToolCallingResult(true, fallback, steps, results);
+    }
+
+    private ToolCallingResult handleProviderFailure(
+            ToolCallingRequest request,
+            ToolIntent intent,
+            List<ToolRuntimeStep> steps,
+            List<ToolResult> results,
+            List<String> errors,
+            List<ModelMessage> messages,
+            AIProviderException exception,
+            int step
+    ) {
+        String error = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+        errors.add(error);
+        LOGGER.warn("[NATIVE_TOOL_LOOP] provider failure requestId={} step={} error={}",
+                request.requestId(), step, error);
+        publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "MODEL_TOOL_TURN_FAILED",
+                "Native tool model turn failed; falling back safely", "model:" + request.brain().model(), step,
+                Map.of("error", error, "provider", request.brain().provider(), "model", request.brain().model()));
+
+        Optional<ModelResponse> fallback = fallbackTextTurn(request, messages, error);
+        if (fallback.isPresent()) {
+            ModelResponse response = fallback.get();
+            publishThinking(request, response);
+            String content = response.content().strip();
+            if (!content.isBlank()) {
+                steps.add(new ToolRuntimeStep(step, "MODEL_FALLBACK", "", "", "FINISHED", null));
+                saveDebug(request, intent, steps, "MODEL_FALLBACK", errors);
+                publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "MODEL_FALLBACK",
+                        "Native tool loop finished with safe text fallback", null, step,
+                        Map.of("results", results.size(), "error", error));
+                return new ToolCallingResult(true, content, steps, results);
+            }
+        }
+
+        String answer = !results.isEmpty()
+                ? ""
+                : "Nie udalo mi sie teraz bezpiecznie wykonac narzedzia, poniewaz model zwrocil niepoprawne wywolanie narzedzia.";
+        steps.add(new ToolRuntimeStep(step, "MODEL_TOOL_TURN_FAILED", "", "", "FAILED", null));
+        saveDebug(request, intent, steps, "MODEL_TOOL_TURN_FAILED", errors);
+        publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "MODEL_TOOL_TURN_FAILED",
+                "Native tool loop stopped after provider tool-call failure", null, step,
+                Map.of("errors", errors, "results", results.size()));
+        return new ToolCallingResult(true, answer, steps, results);
+    }
+
+    private Optional<ModelResponse> fallbackTextTurn(
+            ToolCallingRequest request,
+            List<ModelMessage> messages,
+            String error
+    ) {
+        List<ModelMessage> fallbackMessages = new ArrayList<>(messages);
+        fallbackMessages.add(ModelMessage.system("""
+                The provider failed while parsing a native tool call.
+                Do not call tools in this recovery turn.
+                Return a concise normal assistant answer based only on already available evidence.
+                If verified evidence is insufficient, say exactly what failed and do not invent prices, links, or facts.
+                Provider failure: %s
+                """.formatted(error)));
+        try {
+            return Optional.of(selectProvider(request).toolChat(request.brain(), fallbackMessages, List.of(), AIJobType.MAIN_MODEL));
+        } catch (AIProviderException retryException) {
+            LOGGER.warn("[NATIVE_TOOL_LOOP] fallback text turn failed requestId={} error={}",
+                    request.requestId(), retryException.getMessage());
+            return Optional.empty();
+        }
     }
 
     private ToolResult executeAction(ToolCallingRequest request, ToolAction action, int step) {
