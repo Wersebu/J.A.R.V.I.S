@@ -10,6 +10,8 @@ import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
 import com.jarvis.common.event.ThinkingTokenEvent;
 import com.jarvis.common.event.TokenEvent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
@@ -22,6 +24,8 @@ import java.util.Map;
 @Service
 @Order(90)
 public class ModelExecutionStage implements PipelineStage {
+
+    private static final Logger TELEMETRY_LOGGER = LoggerFactory.getLogger(ModelExecutionStage.class);
 
     private final List<AIProvider> aiProviders;
     private final ToolTriggerStrategy toolTriggerStrategy;
@@ -79,6 +83,9 @@ public class ModelExecutionStage implements PipelineStage {
         MainModelAction action = parseAction(context, streamingParser, streamState.thinking.toString());
         long durationMs = (System.nanoTime() - startedNano) / 1_000_000L;
         publishMainModelAction(context, action, durationMs);
+        TELEMETRY_LOGGER.info(
+                "[JARVIS_TOOL_DECISION] requestId={} initialModelDecision={} toolRequestedByModel={} autoTriggered=false reason={} modelCalls=1 durationMs={}",
+                context.requestId(), action.type(), action.type() == MainModelActionType.TOOL_REQUEST, action.reason(), durationMs);
         return switch (action.type()) {
             case FINAL_ANSWER -> finishStreamedUserFacingResponse(context, streamedOrParsed(streamingParser, action.answer()), streamState)
                     .withMetadata("mainModelAction", action.type().name());

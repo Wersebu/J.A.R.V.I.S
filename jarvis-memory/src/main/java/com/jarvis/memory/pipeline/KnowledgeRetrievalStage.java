@@ -1,7 +1,5 @@
 package com.jarvis.memory.pipeline;
 
-import com.jarvis.knowledge.retrieval.KnowledgeRetriever;
-import com.jarvis.common.knowledge.KnowledgeMode;
 import com.jarvis.knowledge.retrieval.RetrievalResult;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
@@ -9,22 +7,16 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 
 /**
- * Retrieves knowledge metadata for the request.
+ * Placeholder stage that keeps {@link PipelineContext#retrievalResult()} non-null.
+ *
+ * <p>Knowledge access is exclusively model-driven: the main model must issue a
+ * {@code knowledge__SEARCH_CONTENT} / {@code knowledge__READ_DOCUMENT} native tool call.
+ * Core never searches the Knowledge Workspace on the model's behalf before the model
+ * has had a chance to decide whether it needs it.
  */
 @Service
 @Order(60)
 public class KnowledgeRetrievalStage implements PipelineStage {
-
-    private final KnowledgeRetriever knowledgeRetriever;
-
-    /**
-     * Creates the retrieval stage.
-     *
-     * @param knowledgeRetriever knowledge retriever
-     */
-    public KnowledgeRetrievalStage(KnowledgeRetriever knowledgeRetriever) {
-        this.knowledgeRetriever = knowledgeRetriever;
-    }
 
     @Override
     public String name() {
@@ -33,13 +25,7 @@ public class KnowledgeRetrievalStage implements PipelineStage {
 
     @Override
     public PipelineContext execute(PipelineContext context) {
-        if (context.effectiveKnowledgeMode() == KnowledgeMode.RESEARCH) {
-            return context;
-        }
-        if (context.knowledgeAnalysis() == null || !context.knowledgeAnalysis().required()) {
-            String query = context.request().message() == null ? "" : context.request().message().trim();
-            return context.withRetrievalResult(new RetrievalResult(query, 0, 0, List.of()));
-        }
-        return context.withRetrievalResult(knowledgeRetriever.retrieve(context.request().message()));
+        String query = context.request().message() == null ? "" : context.request().message().trim();
+        return context.withRetrievalResult(new RetrievalResult(query, 0, 0, List.of()));
     }
 }

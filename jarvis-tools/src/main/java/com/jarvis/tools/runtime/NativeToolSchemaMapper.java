@@ -31,17 +31,18 @@ public class NativeToolSchemaMapper {
     }
 
     /**
-     * Returns native tool definitions scoped to the active capability.
+     * Returns native tool definitions for every registered tool.
      *
-     * @param intent inferred capability
+     * <p>The model always sees the full tool catalog. {@code intent} is kept in the
+     * signature only as an advisory hint for callers/telemetry; it must never narrow
+     * which tools the model is allowed to call — that decision belongs to the model.
+     *
+     * @param intent advisory capability hint (not used to filter)
      * @return native tool definitions
      */
     public List<NativeToolDefinition> definitions(ToolIntent intent) {
         List<NativeToolDefinition> values = new ArrayList<>();
         for (ToolDefinition definition : toolRegistry.definitions()) {
-            if (intent == ToolIntent.SEARCH_WEB && !"web".equalsIgnoreCase(definition.name())) {
-                continue;
-            }
             for (ToolOperationDefinition operation : definition.operations()) {
                 values.add(toNative(definition, operation));
             }

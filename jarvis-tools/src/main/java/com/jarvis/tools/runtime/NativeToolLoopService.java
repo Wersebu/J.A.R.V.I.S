@@ -124,6 +124,8 @@ public class NativeToolLoopService {
                         "concreteListingsRequired", researchRequirements.concreteListingsRequired()));
         LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} intent={} freshness={} tools={}",
                 request.requestId(), intent, freshness, definitions.size());
+        LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} phase=TOOL_LOOP_START availableTools={} intentHint={} autoTriggered=false",
+                request.requestId(), definitions.stream().map(NativeToolDefinition::name).distinct().toList(), intent);
 
         for (int step = 1; step <= maxCalls; step++) {
             if (Duration.between(started, Instant.now()).toSeconds() > properties.timeoutSeconds()) {
@@ -220,6 +222,8 @@ public class NativeToolLoopService {
                 saveDebug(request, intent, steps, "FINISHED", errors);
                 publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED",
                         "Native tool loop finished with model answer", null, step, Map.of("results", results.size()));
+                LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} phase=TOOL_LOOP_END toolCalls={} toolExecuted={} autoTriggered=false",
+                        request.requestId(), results.size(), !results.isEmpty());
                 return new ToolCallingResult(true, content, steps, results);
             }
 
@@ -237,6 +241,8 @@ public class NativeToolLoopService {
         saveDebug(request, intent, steps, errors.isEmpty() ? "FINISHED" : "FAILED", errors);
         publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, errors.isEmpty() ? "FINISHED" : "FAILED",
                 "Native tool loop finished", null, steps.size(), Map.of("errors", errors, "results", results.size()));
+        LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} phase=TOOL_LOOP_END toolCalls={} toolExecuted={} autoTriggered=false",
+                request.requestId(), results.size(), !results.isEmpty());
         return new ToolCallingResult(true, fallback, steps, results);
     }
 

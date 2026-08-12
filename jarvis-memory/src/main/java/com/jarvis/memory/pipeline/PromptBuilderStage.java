@@ -2,7 +2,6 @@ package com.jarvis.memory.pipeline;
 
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
-import com.jarvis.common.knowledge.KnowledgeMode;
 import com.jarvis.common.prompt.PromptBuilder;
 import com.jarvis.common.prompt.PromptContext;
 import com.jarvis.common.prompt.PromptContextFactory;
@@ -52,9 +51,6 @@ public class PromptBuilderStage implements PipelineStage {
 
     @Override
     public PipelineContext execute(PipelineContext context) {
-        if (context.effectiveKnowledgeMode() == KnowledgeMode.RESEARCH) {
-            return context;
-        }
         cognitiveEventBus.publish(CognitiveEventType.PROMPT_BUILD_STARTED, "BUILDING", "Building prompt", null, Map.of(
                 "documentsUsed", context.knowledgeContext().sourceCount(),
                 "conversationMessages", context.conversation().size()

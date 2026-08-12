@@ -90,9 +90,12 @@ public class KnowledgeTool implements JarvisTool, ToolSchemaProvider {
 
     @Override
     public ToolResult execute(ToolRequest request) {
+        long startedNano = System.nanoTime();
         KnowledgeToolOperation operation = operation(request);
         LOGGER.info("[TOOL] KnowledgeTool started operation={} requestId={} conversationId={}",
                 operation, request.requestId(), request.conversationId());
+        LOGGER.info("[KNOWLEDGE_ACCESS] requestedBy=MODEL operation={} query={} document={} requestId={}",
+                operation, arg(request, "query"), arg(request, "path"), request.requestId());
         publish(request, CognitiveEventType.TOOL_STARTED, "STARTED", "KnowledgeTool started", null,
                 Map.of("operation", operation.name()));
 
@@ -112,9 +115,12 @@ public class KnowledgeTool implements JarvisTool, ToolSchemaProvider {
         )) {
             ToolResult result = executeOperation(operation, request);
             transaction.commit();
+            long durationMs = (System.nanoTime() - startedNano) / 1_000_000L;
             publish(request, CognitiveEventType.TOOL_FINISHED, "FINISHED", "KnowledgeTool finished", null,
                     Map.of("operation", operation.name(), "success", result.success()));
             LOGGER.info("[TOOL] KnowledgeTool finished operation={} success={}", operation, result.success());
+            LOGGER.info("[KNOWLEDGE_ACCESS] requestedBy=MODEL operation={} success={} durationMs={} requestId={}",
+                    operation, result.success(), durationMs, request.requestId());
             return result;
         } catch (RuntimeException exception) {
             publish(request, CognitiveEventType.ERROR, "ERROR", "KnowledgeTool failed", null,

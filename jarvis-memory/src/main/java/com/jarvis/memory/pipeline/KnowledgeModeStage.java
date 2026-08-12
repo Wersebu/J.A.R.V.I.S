@@ -1,6 +1,5 @@
 package com.jarvis.memory.pipeline;
 
-import com.jarvis.brain.decision.TaskType;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.knowledge.KnowledgeMode;
@@ -11,6 +10,10 @@ import java.util.Map;
 
 /**
  * Selects the effective knowledge access strategy for the request.
+ *
+ * <p>AUTO never escalates to RESEARCH: whether the request needs knowledge/research is a
+ * model decision made through native TOOL_REQUEST calls, not a Core-side heuristic. An
+ * explicit non-AUTO value supplied by the caller is still honored as-is.
  */
 @Service
 @Order(55)
@@ -37,28 +40,13 @@ public class KnowledgeModeStage implements PipelineStage {
         KnowledgeMode requested = context.request().knowledgeMode();
         KnowledgeMode effective = hasAttachments(context)
                 ? KnowledgeMode.FAST
-                : requested == KnowledgeMode.AUTO ? auto(context) : requested;
+                : requested == KnowledgeMode.AUTO ? KnowledgeMode.FAST : requested;
         cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_ANALYZED, "MODE_SELECTED", "Knowledge mode selected", null, Map.of(
                 "requestedMode", requested.name(),
                 "knowledgeMode", effective.name(),
                 "reason", reason(context, effective)
         ));
         return context.withMetadata("knowledgeMode", effective.name());
-    }
-
-    private KnowledgeMode auto(PipelineContext context) {
-        if (context.executionPlan() == null) {
-            return KnowledgeMode.FAST;
-        }
-        TaskType taskType = context.executionPlan().taskType();
-        if (taskType == TaskType.PROGRAMMING
-                || taskType == TaskType.CODE_REVIEW
-                || taskType == TaskType.ANALYSIS
-                || context.executionPlan().estimatedKnowledgeDocuments() >= 3
-                || context.executionPlan().complexityScore() >= 7) {
-            return KnowledgeMode.RESEARCH;
-        }
-        return KnowledgeMode.FAST;
     }
 
     private String reason(PipelineContext context, KnowledgeMode effective) {
@@ -68,9 +56,7 @@ public class KnowledgeModeStage implements PipelineStage {
         if (context.request().knowledgeMode() != KnowledgeMode.AUTO) {
             return "User selected " + effective.name();
         }
-        return effective == KnowledgeMode.RESEARCH
-                ? "Auto selected research for multi-step knowledge work"
-                : "Auto selected fast retrieval for low latency";
+        return "Auto defaults to FAST; knowledge/research is a model tool decision, not a Core heuristic";
     }
 
     private boolean hasAttachments(PipelineContext context) {

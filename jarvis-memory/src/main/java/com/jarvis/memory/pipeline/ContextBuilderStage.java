@@ -1,6 +1,5 @@
 package com.jarvis.memory.pipeline;
 
-import com.jarvis.common.knowledge.KnowledgeMode;
 import com.jarvis.knowledge.context.ContextBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,9 +33,6 @@ public class ContextBuilderStage implements PipelineStage {
 
     @Override
     public PipelineContext execute(PipelineContext context) {
-        if (context.effectiveKnowledgeMode() == KnowledgeMode.RESEARCH) {
-            return context;
-        }
         LOGGER.info("""
                 [JARVIS]
                 CONTEXT BUILDER INPUT
