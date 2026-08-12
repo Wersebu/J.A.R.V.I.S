@@ -162,6 +162,9 @@ public class MarketplaceListingCollector {
     public Map<String, Object> metadata() {
         return Map.of(
                 "requestedListingCount", requirements.requestedCount(),
+                "targetListingCount", targetCount(),
+                "marketplaceResearch", requirements.marketplaceResearch(),
+                "allowedDomains", requirements.allowedDomains(),
                 "validListingCount", listings.size(),
                 "researchSatisfied", satisfied(),
                 "queuedCandidates", queue.size(),
@@ -318,7 +321,7 @@ public class MarketplaceListingCollector {
     }
 
     private int targetCount() {
-        return Math.max(1, requirements.requestedCount());
+        return requirements.targetListingCount();
     }
 
     private String canonicalIdentity(String url) {
@@ -333,11 +336,12 @@ public class MarketplaceListingCollector {
     }
 
     private boolean acceptableDomain(String url) {
-        if (requirements.requiredDomain().isBlank()) {
+        if (requirements.allowedDomains().isEmpty()) {
             return true;
         }
         String domain = WebUrlClassifier.domain(url).toLowerCase(Locale.ROOT);
-        String required = requirements.requiredDomain().toLowerCase(Locale.ROOT);
-        return domain.endsWith(required) || domain.contains(required);
+        return requirements.allowedDomains().stream()
+                .map(required -> required.toLowerCase(Locale.ROOT))
+                .anyMatch(required -> domain.endsWith(required) || domain.contains(required));
     }
 }

@@ -103,6 +103,10 @@ public class ToolCallingStage implements PipelineStage {
         if (result.results().isEmpty() && result.finalAnswer() != null && !result.finalAnswer().isBlank()) {
             return publishBufferedFallback(context, result.finalAnswer(), "tool-fallback");
         }
+        Optional<String> marketplaceAnswer = deterministicMarketplaceAnswer(result);
+        if (marketplaceAnswer.isPresent()) {
+            return publishBufferedFallback(context, marketplaceAnswer.get(), "verified-marketplace");
+        }
         publish(context, CognitiveEventType.FINAL_SYNTHESIS_STARTED, "STARTED",
                 "Final answer synthesis from tool results started", Map.of(
                         "toolResults", result.results().size(),
@@ -326,8 +330,71 @@ public class ToolCallingStage implements PipelineStage {
                 + "\n\nUser request:\n" + context.request().message()
                 + "\n\nVERIFIED_MARKETPLACE_LISTINGS:\n" + verifiedMarketplaceListings(result)
                 + "\n\nTRUSTED_WEB_SOURCES:\n" + trustedSourceManifest(result)
-                + "\n\nTool observations:\n" + toolObservations(result)
+                + "\n\nTool observations:\n" + toolObservations(result, marketplaceResearch(result))
                 + "\n\nExisting final answer guidance:\n" + safe(result.finalAnswer());
+    }
+
+    private Optional<String> deterministicMarketplaceAnswer(ToolCallingResult result) {
+        if (!marketplaceResearch(result)) {
+            return Optional.empty();
+        }
+        List<Map<String, Object>> listings = marketplaceListings(result);
+        if (listings.isEmpty()) {
+            return Optional.of("Nie udalo mi sie zweryfikowac aktualnych ofert spelniajacych te kryteria.");
+        }
+        StringBuilder builder = new StringBuilder();
+        int requested = requestedListingCount(result);
+        builder.append("Zweryfikowalem ")
+                .append(listings.size())
+                .append(requested > 0 ? " z " + requested : "")
+                .append(" ofert na podstawie odczytanych stron ogloszen.\n\n")
+                .append("| # | Tytul | Cena | Stan | Link |\n")
+                .append("|---|---|---:|---|---|\n");
+        int index = 1;
+        for (Map<String, Object> listing : listings) {
+            builder.append("| ")
+                    .append(index++)
+                    .append(" | ")
+                    .append(escapeTable(text(listing.get("title"))))
+                    .append(" | ")
+                    .append(escapeTable(text(listing.get("price"))))
+                    .append(" ")
+                    .append(escapeTable(text(listing.get("currency"))))
+                    .append(" | ")
+                    .append(escapeTable(text(listing.get("condition"))))
+                    .append(" | ")
+                    .append(text(listing.get("url")))
+                    .append(" |\n");
+        }
+        builder.append("\nCeny pochodza z konkretnych odczytanych stron ofert, nie z samych wynikow wyszukiwania.");
+        return Optional.of(builder.toString());
+    }
+
+    private boolean marketplaceResearch(ToolCallingResult result) {
+        for (ToolResult toolResult : result.results()) {
+            if (Boolean.TRUE.equals(toolResult.data().get("marketplaceResearch"))) {
+                return true;
+            }
+            Object listings = toolResult.data().get("marketplaceListings");
+            if (listings instanceof List<?> list && !list.isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private int requestedListingCount(ToolCallingResult result) {
+        for (ToolResult toolResult : result.results()) {
+            Object value = toolResult.data().get("targetListingCount");
+            if (value instanceof Number number) {
+                return number.intValue();
+            }
+            value = toolResult.data().get("requestedListingCount");
+            if (value instanceof Number number) {
+                return number.intValue();
+            }
+        }
+        return 0;
     }
 
     private String verifiedMarketplaceListings(ToolCallingResult result) {
@@ -397,7 +464,10 @@ public class ToolCallingStage implements PipelineStage {
         return builder.toString();
     }
 
-    private String toolObservations(ToolCallingResult result) {
+    private String toolObservations(ToolCallingResult result, boolean marketplaceResearch) {
+        if (marketplaceResearch) {
+            return marketplaceEvidencePackage(result);
+        }
         StringBuilder builder = new StringBuilder();
         for (ToolResult toolResult : result.results()) {
             builder.append("- Tool: ").append(toolResult.tool())
@@ -412,6 +482,27 @@ public class ToolCallingStage implements PipelineStage {
             builder.append("- No concrete tool result was produced.\n");
         }
         return builder.toString();
+    }
+
+    private String marketplaceEvidencePackage(ToolCallingResult result) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("MARKETPLACE_RESEARCH: true\n")
+                .append("REQUESTED: ").append(requestedListingCount(result)).append("\n")
+                .append("VERIFIED: ").append(marketplaceListings(result).size()).append("\n")
+                .append("LISTINGS:\n")
+                .append(verifiedMarketplaceListings(result))
+                .append("STATUS:\n");
+        for (ToolResult toolResult : result.results()) {
+            Object statuses = toolResult.data().get("listingStatusCounts");
+            if (statuses != null) {
+                builder.append(statuses).append("\n");
+            }
+        }
+        return builder.toString();
+    }
+
+    private String escapeTable(String value) {
+        return value.replace("|", "\\|").replace("\n", " ").strip();
     }
 
     private void publishAnswerSources(PipelineContext context, ToolCallingResult result) {

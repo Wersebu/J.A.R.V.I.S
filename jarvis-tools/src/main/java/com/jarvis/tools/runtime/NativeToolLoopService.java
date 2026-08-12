@@ -116,6 +116,9 @@ public class NativeToolLoopService {
         publish(request, CognitiveEventType.TOOL_LOOP_STARTED, "STARTED", "Native tool loop started", null, 0,
                 Map.of("runtime", "native", "intent", intent.name(), "freshness", freshness.name(), "tools", definitions.size(),
                         "requestedListingCount", researchRequirements.requestedCount(),
+                        "targetListingCount", researchRequirements.targetListingCount(),
+                        "marketplaceResearch", researchRequirements.marketplaceResearch(),
+                        "allowedDomains", researchRequirements.allowedDomains(),
                         "requiredDomain", researchRequirements.requiredDomain(),
                         "concreteListingsRequired", researchRequirements.concreteListingsRequired()));
         LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} intent={} freshness={} tools={}",
@@ -146,6 +149,7 @@ public class NativeToolLoopService {
                     ToolAction action;
                     try {
                         action = schemaMapper.toAction(call.name(), call.arguments(), "Native model tool call");
+                        action = normalizeActionForRequirements(request, action, researchRequirements);
                         validate(action);
                     } catch (RuntimeException exception) {
                         ToolResult invalid = invalidResult(request, call, exception.getMessage());
@@ -173,7 +177,7 @@ public class NativeToolLoopService {
                         return new ToolCallingResult(true, "", steps, results);
                     }
                     if (!result.success() && isWebPageRead(action)) {
-                        Optional<ToolResult> retry = tryNextWebCandidate(request, results, action, step);
+                        Optional<ToolResult> retry = tryNextWebCandidate(request, results, action, step, researchRequirements);
                         if (retry.isPresent()) {
                             ToolResult retryResult = retry.get();
                             marketplaceCollector.observe(request, retryResult);
@@ -250,6 +254,51 @@ public class NativeToolLoopService {
         return result;
     }
 
+    private ToolAction normalizeActionForRequirements(
+            ToolCallingRequest request,
+            ToolAction action,
+            ResearchRequirements requirements
+    ) {
+        if (!requirements.marketplaceResearch() || !isWebSearch(action)) {
+            return action;
+        }
+        Map<String, Object> arguments = new LinkedHashMap<>(action.arguments());
+        arguments.put("profile", "MARKET");
+        arguments.put("maxResults", Math.max(10, requirements.targetListingCount() * 3));
+        String query = Objects.toString(arguments.getOrDefault("query", ""), "").strip();
+        if (query.isBlank()) {
+            query = request.userMessage();
+        }
+        arguments.put("query", marketplaceQuery(query, requirements));
+        publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "MARKETPLACE_INTENT",
+                "Marketplace search normalized", "web:search", 0, Map.of(
+                        "marketplace", true,
+                        "condition", requirements.condition(),
+                        "target", requirements.targetListingCount(),
+                        "domains", requirements.allowedDomains(),
+                        "profile", "MARKET",
+                        "maxResults", arguments.get("maxResults")
+                ));
+        return new ToolAction(action.action(), action.tool(), action.operation(), Map.copyOf(arguments), action.reason(), action.answer());
+    }
+
+    private String marketplaceQuery(String query, ResearchRequirements requirements) {
+        String normalized = normalize(query);
+        StringBuilder builder = new StringBuilder(query.strip());
+        if ("USED".equalsIgnoreCase(requirements.condition())
+                && !normalized.contains("uzywan")
+                && !normalized.contains("used")) {
+            builder.append(" uzywane");
+        }
+        if (requirements.allowedDomains().contains("olx.pl") && !normalized.contains("olx")) {
+            builder.append(" OLX");
+        }
+        if (requirements.allowedDomains().contains("allegro.pl") && !normalized.contains("allegro")) {
+            builder.append(" Allegro");
+        }
+        return builder.toString().replaceAll("\\s+", " ").strip();
+    }
+
     private ToolResult enrichIfNeeded(ToolCallingRequest request, ToolAction action, ToolResult result, int step) {
         if (isWebSearch(action)) {
             WebSearchQualityReport report = webSearchQualityEvaluator.evaluate(request, result);
@@ -300,7 +349,8 @@ public class NativeToolLoopService {
             ToolCallingRequest request,
             List<ToolResult> results,
             ToolAction failedAction,
-            int step
+            int step,
+            ResearchRequirements requirements
     ) {
         String failedUrl = Objects.toString(failedAction.arguments().getOrDefault("url", ""), "");
         publish(request, CognitiveEventType.WEB_CANDIDATE_BLOCKED, "BLOCKED",
@@ -313,6 +363,7 @@ public class NativeToolLoopService {
             if (nextUrl.isPresent()) {
                 ToolAction retry = new ToolAction("TOOL_CALL", "web", "READ_WEB_PAGE",
                         Map.of("url", nextUrl.get()), "Deterministic retry after blocked candidate", "");
+                retry = normalizeActionForRequirements(request, retry, requirements);
                 ToolResult result = executeAction(request, retry, step);
                 return Optional.of(enrichIfNeeded(request, retry, result, step));
             }
@@ -425,18 +476,28 @@ public class NativeToolLoopService {
 
     private Map<String, Object> compactData(Map<String, Object> data) {
         Map<String, Object> compact = new LinkedHashMap<>();
+        boolean marketplaceResearch = Boolean.TRUE.equals(data.get("marketplaceResearch"));
         for (String key : List.of("query", "url", "title", "sourceQualityAccepted", "sourceQualityReason",
                 "liveEvidenceSatisfied", "pageQualityAccepted", "pageQualityReason", "marketAnalysis",
                 "marketObservations", "marketplaceListings", "requestedListingCount", "validListingCount",
-                "researchSatisfied", "queuedCandidates", "verifiedMarketplaceListings", "listingStatusCounts",
-                "acceptedResults", "results", "links", "statusCode", "contentType")) {
+                "targetListingCount", "marketplaceResearch", "allowedDomains", "researchSatisfied",
+                "queuedCandidates", "verifiedMarketplaceListings", "listingStatusCounts", "statusCode", "contentType")) {
             if (data.containsKey(key)) {
                 compact.put(key, data.get(key));
             }
         }
+        if (!marketplaceResearch) {
+            for (String key : List.of("acceptedResults", "results", "links")) {
+                if (data.containsKey(key)) {
+                    compact.put(key, data.get(key));
+                }
+            }
+        }
         if (data.containsKey("content")) {
             String content = Objects.toString(data.get("content"), "");
-            compact.put("content", content.length() <= 2500 ? content : content.substring(0, 2500));
+            if (!marketplaceResearch) {
+                compact.put("content", content.length() <= 2500 ? content : content.substring(0, 2500));
+            }
         }
         return compact;
     }
@@ -451,7 +512,11 @@ public class NativeToolLoopService {
             int step
     ) {
         boolean executed = false;
-        int readBudget = Math.max(0, Math.min(12, collector.metadata().get("requestedListingCount") instanceof Integer count ? count * 3 : 12));
+        int target = collector.metadata().get("targetListingCount") instanceof Integer count ? count : 1;
+        int readBudget = Math.min(18, Math.max(1, target * 3));
+        if (collector.needsMore() && readBudget == 0) {
+            throw new IllegalStateException("Marketplace invariant violation: needsMore=true with readBudget=0");
+        }
         int reads = 0;
         while (collector.needsMore() && reads < readBudget) {
             Optional<ToolAction> next = collector.nextReadAction();

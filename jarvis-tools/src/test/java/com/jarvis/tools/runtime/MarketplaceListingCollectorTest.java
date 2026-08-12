@@ -88,6 +88,23 @@ class MarketplaceListingCollectorTest {
     }
 
     @Test
+    void searchPriceHintIsIgnoredWhenReadPageHasDifferentPrice() {
+        ToolCallingRequest request = request("po ile sa uzywane RTX 3060 12GB z olx?");
+        MarketplaceListingCollector collector = new MarketplaceListingCollector(ResearchRequirements.from(request), extractor);
+        String url = "https://www.olx.pl/d/oferta/palit-rtx-3060-12gb-CID99-ID1.html";
+
+        collector.observe(request, searchResult("Palit RTX 3060 12GB 920 zl", url, "Cena 920 zl"));
+        collector.observe(request, readPage(
+                url,
+                "Palit RTX 3060 12GB",
+                "Aktualna cena 800 PLN. Uzywana karta graficzna RTX 3060 12GB.",
+                List.of()));
+
+        assertThat(collector.listingsAsMaps()).singleElement()
+                .satisfies(listing -> assertThat(listing.get("price").toString()).isEqualTo("800"));
+    }
+
+    @Test
     void storesExactVerifiedListingUrlAndAtomicFields() {
         ToolCallingRequest request = request("ile kosztuje Gigabyte RTX 3060 12GB?");
         MarketplaceListingCollector collector = new MarketplaceListingCollector(ResearchRequirements.from(request), extractor);

@@ -45,7 +45,7 @@ public class WebAnswerSourceExtractor {
         List<Map<String, Object>> sources = new ArrayList<>();
         Set<String> seenUrls = new LinkedHashSet<>();
         boolean marketplaceMode = addMarketplaceListingSources(result.results(), sources, seenUrls, limit);
-        if (marketplaceMode) {
+        if (marketplaceMode || hasMarketplaceResearch(result.results())) {
             return List.copyOf(sources);
         }
         for (ToolResult toolResult : result.results()) {
@@ -111,6 +111,17 @@ public class WebAnswerSourceExtractor {
             }
         }
         return foundMarketplacePayload;
+    }
+
+    private boolean hasMarketplaceResearch(List<ToolResult> results) {
+        for (ToolResult toolResult : results) {
+            if (toolResult != null
+                    && "web".equalsIgnoreCase(toolResult.tool())
+                    && Boolean.TRUE.equals(toolResult.data().get("marketplaceResearch"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

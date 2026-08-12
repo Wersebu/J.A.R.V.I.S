@@ -45,10 +45,39 @@ class ResearchRequirementsTest {
                 "Need current marketplace price."));
 
         assertThat(requirements.priceRequired()).isTrue();
+        assertThat(requirements.marketplaceResearch()).isTrue();
         assertThat(requirements.concreteListingsRequired()).isTrue();
         assertThat(requirements.requestedCount()).isEqualTo(5);
+        assertThat(requirements.targetListingCount()).isEqualTo(5);
         assertThat(requirements.multiListing()).isTrue();
         assertThat(requirements.condition()).isEqualTo("USED");
+    }
+
+    @Test
+    void usedModelWithoutRtxPrefixIsSecondHandMarketplaceNotUsageStatistics() {
+        ResearchRequirements requirements = ResearchRequirements.from(request(
+                "po ile sa uzywane 3060 12GB?",
+                "Retrieve current market price",
+                "Need price"));
+
+        assertThat(requirements.marketplaceResearch()).isTrue();
+        assertThat(requirements.priceRequired()).isTrue();
+        assertThat(requirements.condition()).isEqualTo("USED");
+        assertThat(requirements.productType()).isEqualTo("GPU");
+        assertThat(requirements.requestedCount()).isEqualTo(5);
+        assertThat(requirements.targetListingCount()).isEqualTo(5);
+    }
+
+    @Test
+    void keepsAlternativeMarketplaceDomains() {
+        ResearchRequirements requirements = ResearchRequirements.from(request(
+                "chodzilo mi o uzywane chce kupic taka olx albo allegro",
+                "Find used marketplace listings",
+                "Need concrete offers"));
+
+        assertThat(requirements.marketplaceResearch()).isTrue();
+        assertThat(requirements.allowedDomains()).containsExactlyInAnyOrder("olx.pl", "allegro.pl");
+        assertThat(requirements.requestedCount()).isEqualTo(5);
     }
 
     private ToolCallingRequest request(String message, String goal, String reason) {
