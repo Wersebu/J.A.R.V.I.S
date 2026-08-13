@@ -4,6 +4,7 @@ import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.knowledge.retrieval.RetrievalDocument;
 import com.jarvis.knowledge.retrieval.RetrievalResult;
+import com.jarvis.knowledge.workspace.KnowledgeNodeType;
 import com.jarvis.knowledge.workspace.KnowledgeToolResult;
 import com.jarvis.knowledge.workspace.KnowledgeWorkspaceAuditContext;
 import com.jarvis.knowledge.workspace.KnowledgeWorkspaceNode;
@@ -24,6 +25,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
@@ -69,20 +71,37 @@ public class KnowledgeTool implements JarvisTool, ToolSchemaProvider {
     @Override
     public ToolDefinition definition() {
         return new ToolDefinition(TOOL_NAME, getDescription(), List.of(
-                operation("READ_DOCUMENT", "Read a document by logical path.", false, ToolSafetyLevel.READ, arg("path", true)),
+                operation("READ_DOCUMENT",
+                        "Read the full contents of an exact Knowledge Workspace document. Use this as soon as a "
+                                + "document path is already known — for example from a previous SEARCH_CONTENT or "
+                                + "LIST_TREE/LIST_FOLDER result entry such as {\"type\":\"file\",\"path\":\"hardware/graphics_card.txt\"}. "
+                                + "Pass that exact \"path\" value as the path argument; do not guess or modify it.",
+                        false, ToolSafetyLevel.READ, arg("path", true)),
                 operation("CREATE_DOCUMENT", "Create a document by logical path and explicit model-provided content.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("content", true)),
                 operation("UPDATE_DOCUMENT", "Instruction-based document update using explicit model-provided instruction.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("instruction", true), arg("text", false)),
                 operation("APPEND_DOCUMENT", "Append explicit model-provided text to a document.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("text", true)),
                 operation("DELETE_DOCUMENT", "Delete a document.", true, ToolSafetyLevel.DELETE, arg("path", true)),
                 operation("MOVE_DOCUMENT", "Move a document.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("newParent", true)),
                 operation("RENAME_DOCUMENT", "Rename a document.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("newName", true)),
-                operation("LIST_FOLDER", "List one logical folder.", false, ToolSafetyLevel.READ, arg("path", false)),
-                operation("SEARCH_DOCUMENT", "Search indexed knowledge documents.", false, ToolSafetyLevel.READ, arg("query", true)),
-                operation("SEARCH_CONTENT", "Search knowledge content using the configured retriever.", false, ToolSafetyLevel.READ, arg("query", true)),
+                operation("LIST_FOLDER",
+                        "List the direct entries of one logical folder (or the root when path is omitted). "
+                                + "Returns entries:[{type:\"file\"|\"folder\",path,name}]. Use the returned \"path\" verbatim "
+                                + "with READ_DOCUMENT once you spot the file you need — do not keep listing further folders "
+                                + "once a relevant file path is visible.",
+                        false, ToolSafetyLevel.READ, arg("path", false)),
+                operation("SEARCH_DOCUMENT", "Search indexed knowledge documents by title/path/metadata relevance.", false, ToolSafetyLevel.READ, arg("query", true)),
+                operation("SEARCH_CONTENT",
+                        "Search knowledge documents by meaning as well as keywords (hybrid lexical + semantic retrieval). "
+                                + "Can find a relevant document even when the query shares no exact words with its content.",
+                        false, ToolSafetyLevel.READ, arg("query", true)),
                 operation("CREATE_FOLDER", "Create a logical folder.", true, ToolSafetyLevel.WRITE, arg("path", true)),
                 operation("DELETE_FOLDER", "Delete a logical folder.", true, ToolSafetyLevel.DELETE, arg("path", true)),
                 operation("MOVE_FOLDER", "Move a logical folder.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("newParent", true)),
-                operation("LIST_TREE", "List the knowledge tree.", false, ToolSafetyLevel.READ),
+                operation("LIST_TREE",
+                        "List every folder and document in the Knowledge Workspace, flattened as "
+                                + "entries:[{type:\"file\"|\"folder\",path,name}]. Use the returned \"path\" verbatim with "
+                                + "READ_DOCUMENT once you spot the file you need.",
+                        false, ToolSafetyLevel.READ),
                 operation("DOCUMENT_EXISTS", "Check whether a logical path exists.", false, ToolSafetyLevel.READ, arg("path", true)),
                 operation("PLAN_KNOWLEDGE_UPDATE", "Plan a multi-document knowledge update before writing.", false, ToolSafetyLevel.READ, arg("query", false), arg("changes", false), arg("content", false))
         ));
@@ -152,7 +171,7 @@ public class KnowledgeTool implements JarvisTool, ToolSchemaProvider {
                     workspaceService.delete(folderNode(arg(request, "path"))));
             case MOVE_FOLDER -> wrap(request, CognitiveEventType.DOCUMENT_MOVED,
                     workspaceService.move(folderNode(arg(request, "path")), folderNode(arg(request, "newParent"))));
-            case LIST_TREE -> success("Knowledge tree", Map.of("tree", workspaceService.list()));
+            case LIST_TREE -> listTree();
             case DOCUMENT_EXISTS -> wrap(request, null, workspaceService.exists(arg(request, "path")));
             case PLAN_KNOWLEDGE_UPDATE -> planKnowledgeUpdate(request);
         };
@@ -212,10 +231,38 @@ public class KnowledgeTool implements JarvisTool, ToolSchemaProvider {
     private ToolResult listFolder(ToolRequest request) {
         KnowledgeWorkspaceTree tree = workspaceService.list();
         String path = arg(request, "path");
-        Object output = path.isBlank()
-                ? tree
+        KnowledgeWorkspaceNode node = path.isBlank()
+                ? tree.root()
                 : findNode(tree.root(), path).orElse(tree.root());
-        return success("Folder listed", Map.of("path", path, "node", output));
+        return success("Folder listed", Map.of("path", path, "entries", flatten(node, false)));
+    }
+
+    private ToolResult listTree() {
+        KnowledgeWorkspaceTree tree = workspaceService.list();
+        return success("Knowledge tree", Map.of("entries", flatten(tree.root(), true)));
+    }
+
+    /**
+     * Flattens a workspace node's children into a simple, tool-agnostic list the model can copy
+     * an exact "path" from directly into READ_DOCUMENT, instead of a raw recursive node object.
+     *
+     * @param node node whose children are listed
+     * @param recursive true to include the full subtree, false for direct children only
+     * @return flattened entries
+     */
+    private List<Map<String, Object>> flatten(KnowledgeWorkspaceNode node, boolean recursive) {
+        List<Map<String, Object>> entries = new ArrayList<>();
+        for (KnowledgeWorkspaceNode child : node.children()) {
+            entries.add(Map.of(
+                    "type", child.type() == KnowledgeNodeType.DOCUMENT ? "file" : "folder",
+                    "path", child.relativePath(),
+                    "name", child.name()
+            ));
+            if (recursive && child.type() != KnowledgeNodeType.DOCUMENT) {
+                entries.addAll(flatten(child, true));
+            }
+        }
+        return entries;
     }
 
     private ToolResult search(ToolRequest request) {

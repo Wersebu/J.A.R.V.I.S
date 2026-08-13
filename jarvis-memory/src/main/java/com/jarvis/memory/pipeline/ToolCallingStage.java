@@ -100,12 +100,16 @@ public class ToolCallingStage implements PipelineStage {
     }
 
     private String streamToolFinalAnswer(PipelineContext context, ToolCallingResult result) {
-        if (result.results().isEmpty() && result.finalAnswer() != null && !result.finalAnswer().isBlank()) {
-            return publishBufferedFallback(context, result.finalAnswer(), "tool-fallback");
-        }
         Optional<String> marketplaceAnswer = deterministicMarketplaceAnswer(result);
         if (marketplaceAnswer.isPresent()) {
             return publishBufferedFallback(context, marketplaceAnswer.get(), "verified-marketplace");
+        }
+        if (result.finalAnswer() != null && !result.finalAnswer().isBlank()) {
+            // The model already produced this answer inside the native tool loop, with full tool
+            // access and full observation of every tool result. Re-asking a second, tool-less
+            // model turn here would discard that answer and give the model no way to act on
+            // anything it realizes it still needs at that point.
+            return publishBufferedFallback(context, result.finalAnswer(), "tool-fallback");
         }
         publish(context, CognitiveEventType.FINAL_SYNTHESIS_STARTED, "STARTED",
                 "Final answer synthesis from tool results started", Map.of(

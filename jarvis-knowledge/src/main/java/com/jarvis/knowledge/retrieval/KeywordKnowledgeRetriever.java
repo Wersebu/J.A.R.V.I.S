@@ -6,7 +6,6 @@ import com.jarvis.knowledge.KnowledgeDocument;
 import com.jarvis.knowledge.KnowledgeIndex;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import java.text.Normalizer;
@@ -19,9 +18,12 @@ import java.util.Set;
 
 /**
  * Keyword-based retrieval implementation using indexed metadata only.
+ *
+ * <p>Used directly by {@link DefaultHybridKnowledgeRetriever} as the lexical half of hybrid
+ * retrieval; not {@code @Primary} itself so plain {@link KnowledgeRetriever} injection resolves
+ * to the hybrid retriever instead.
  */
 @Service
-@Primary
 public class KeywordKnowledgeRetriever implements KnowledgeRetriever {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(KeywordKnowledgeRetriever.class);

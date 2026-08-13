@@ -572,30 +572,43 @@ public class NativeToolLoopService {
         }
     }
 
+    private static final int MAX_COMPACT_CONTENT_CHARS = 2500;
+    private static final int MAX_COMPACT_LIST_ITEMS = 15;
+
+    /**
+     * Compacts a tool result's data map for the model, bounding known-large fields (page text,
+     * result lists) instead of filtering by a fixed field-name allowlist. Every tool's structural
+     * fields (paths, tree entries, ids, ...) must reach the model unmodified — a curated
+     * include-list silently drops whatever field a future or existing tool happens not to be on
+     * it, which is exactly how LIST_TREE/LIST_FOLDER results previously became invisible to the
+     * model.
+     *
+     * @param data raw tool result data
+     * @return compacted data safe to serialize back to the model
+     */
     private Map<String, Object> compactData(Map<String, Object> data) {
-        Map<String, Object> compact = new LinkedHashMap<>();
+        if (data == null || data.isEmpty()) {
+            return Map.of();
+        }
         boolean marketplaceResearch = Boolean.TRUE.equals(data.get("marketplaceResearch"));
-        for (String key : List.of("query", "url", "title", "sourceQualityAccepted", "sourceQualityReason",
-                "liveEvidenceSatisfied", "pageQualityAccepted", "pageQualityReason", "marketAnalysis",
-                "marketObservations", "marketplaceListings", "requestedListingCount", "validListingCount",
-                "targetListingCount", "marketplaceResearch", "allowedDomains", "researchSatisfied",
-                "queuedCandidates", "verifiedMarketplaceListings", "listingStatusCounts", "statusCode", "contentType")) {
-            if (data.containsKey(key)) {
-                compact.put(key, data.get(key));
-            }
-        }
-        if (!marketplaceResearch) {
-            for (String key : List.of("acceptedResults", "results", "links")) {
-                if (data.containsKey(key)) {
-                    compact.put(key, data.get(key));
+        Map<String, Object> compact = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : data.entrySet()) {
+            String key = entry.getKey();
+            Object value = entry.getValue();
+            if ("content".equals(key)) {
+                if (marketplaceResearch) {
+                    continue;
                 }
+                String content = Objects.toString(value, "");
+                compact.put(key, content.length() <= MAX_COMPACT_CONTENT_CHARS
+                        ? content : content.substring(0, MAX_COMPACT_CONTENT_CHARS));
+                continue;
             }
-        }
-        if (data.containsKey("content")) {
-            String content = Objects.toString(data.get("content"), "");
-            if (!marketplaceResearch) {
-                compact.put("content", content.length() <= 2500 ? content : content.substring(0, 2500));
+            if (value instanceof List<?> list) {
+                compact.put(key, list.size() <= MAX_COMPACT_LIST_ITEMS ? list : list.subList(0, MAX_COMPACT_LIST_ITEMS));
+                continue;
             }
+            compact.put(key, value);
         }
         return compact;
     }

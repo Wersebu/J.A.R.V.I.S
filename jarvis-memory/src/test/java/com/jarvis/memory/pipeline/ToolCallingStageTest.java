@@ -1,17 +1,45 @@
 package com.jarvis.memory.pipeline;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.runtime.ToolCallingResult;
+import com.jarvis.tools.runtime.ToolRuntimeStep;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ToolCallingStageTest {
+
+    @Test
+    void streamToolFinalAnswerTrustsNativeLoopsOwnAnswerWithoutRedundantSynthesisCall() throws Exception {
+        // Zero AIProviders on purpose: if the fix regresses and the stage falls through to the
+        // separate synthesis call, selectProvider() throws because no provider is configured.
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()));
+
+        ToolResult knowledgeRead = new ToolResult(true, "knowledge", "READ_DOCUMENT", "request-1", "conversation-1",
+                false, List.of(), "Document read", Map.of("path", "hardware/graphics_card.txt", "content", "RTX 4060 Ti 16 GB"),
+                "", "", false, "");
+        ToolCallingResult loopResult = new ToolCallingResult(true,
+                "Serwer ma RTX 4060 Ti 16 GB, aktualna cena ok. 2000 PLN.",
+                List.of(new ToolRuntimeStep(1, "TOOL_CALL", "knowledge", "READ_DOCUMENT", "OK", knowledgeRead)),
+                List.of(knowledgeRead));
+
+        ChatRequest request = new ChatRequest("conversation-1", "Jaka karta graficzna jest w serwerze?", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("streamToolFinalAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).isEqualTo("Serwer ma RTX 4060 Ti 16 GB, aktualna cena ok. 2000 PLN.");
+    }
 
     @Test
     void fallbackWebSearchAnswerExtractsPolishZlotyPrice() throws Exception {
