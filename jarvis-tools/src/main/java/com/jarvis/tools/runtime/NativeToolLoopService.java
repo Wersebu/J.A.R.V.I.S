@@ -53,6 +53,7 @@ public class NativeToolLoopService {
     private final InformationFreshnessEvaluator freshnessEvaluator;
     private final WebSearchQualityEvaluator webSearchQualityEvaluator;
     private final MarketObservationExtractor marketObservationExtractor;
+    private final AiListingVerifier listingVerifier;
 
     /**
      * Creates the native tool loop service.
@@ -78,6 +79,7 @@ public class NativeToolLoopService {
         this.freshnessEvaluator = new InformationFreshnessEvaluator();
         this.webSearchQualityEvaluator = new WebSearchQualityEvaluator();
         this.marketObservationExtractor = new MarketObservationExtractor();
+        this.listingVerifier = new AiListingVerifier(objectMapper);
     }
 
     /**
@@ -164,10 +166,13 @@ public class NativeToolLoopService {
                                 request.requestId(), action.tool(), action.operation());
                     }
                     if (marketplaceCollector == null && isMarketplaceSearch(action)) {
+                        ResearchRequirements marketplaceRequirements = marketplaceRequirementsFromAction(action);
+                        ListingVerifier boundVerifier = (title, content) -> listingVerifier.verify(
+                                selectProvider(request), request.brain(), marketplaceRequirements.productQuery(), title, content);
                         marketplaceCollector = new MarketplaceListingCollector(
-                                marketplaceRequirementsFromAction(action), new MarketplaceListingExtractor());
-                        LOGGER.info("[MARKETPLACE_MODE] requestId={} enabled=true source=MODEL_TOOL_REQUEST",
-                                request.requestId());
+                                marketplaceRequirements, new MarketplaceListingExtractor(boundVerifier));
+                        LOGGER.info("[MARKETPLACE_MODE] requestId={} enabled=true source=MODEL_TOOL_REQUEST searchTarget=\"{}\"",
+                                request.requestId(), marketplaceRequirements.productQuery());
                     }
                     ToolResult result = executeAction(request, action, step);
                     result = enrichIfNeeded(request, action, result, step);
@@ -361,7 +366,9 @@ public class NativeToolLoopService {
         String condition = normalizeCondition(Objects.toString(arguments.get("condition"), ""));
         Set<String> domains = parseDomains(Objects.toString(arguments.get("domains"), ""));
         MarketplaceDomainConstraint constraint = new MarketplaceDomainConstraint(domains);
-        return new ResearchRequirements(targetCount, constraint.primaryDomain(), constraint, true, true, true, condition, "UNKNOWN");
+        String productQuery = Objects.toString(arguments.get("query"), "");
+        return new ResearchRequirements(targetCount, constraint.primaryDomain(), constraint, true, true, true,
+                condition, "UNKNOWN", productQuery);
     }
 
     private int intValue(Object value) {

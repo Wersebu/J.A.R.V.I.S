@@ -2,6 +2,8 @@ package com.jarvis.tools.runtime;
 
 import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.web.WebUrlClassifier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -20,8 +22,14 @@ import java.util.regex.Pattern;
 
 /**
  * Collects concrete marketplace listings from search results and read pages.
+ *
+ * <p>{@code requestedCount} means unique, verified, accepted listings — never raw page reads.
+ * A listing only counts once its canonical identity ({@link MarketplaceListingIdentity}) has not
+ * been seen before and it passed {@link MarketplaceListingExtractor}'s verification.
  */
 public class MarketplaceListingCollector {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(MarketplaceListingCollector.class);
 
     private final ResearchRequirements requirements;
     private final MarketplaceListingExtractor listingExtractor;
@@ -30,16 +38,9 @@ public class MarketplaceListingCollector {
     private final Queue<MarketplaceListingCandidate> queue = new ArrayDeque<>();
     private final List<MarketplaceListing> listings = new ArrayList<>();
     private final Map<ListingVerificationStatus, Integer> statuses = new LinkedHashMap<>();
-
-    /**
-     * Creates a collector for the request.
-     *
-     * @param requirements requirements
-     * @param observationExtractor observation extractor
-     */
-    public MarketplaceListingCollector(ResearchRequirements requirements, MarketObservationExtractor observationExtractor) {
-        this(requirements, new MarketplaceListingExtractor());
-    }
+    private int searchedCount;
+    private int readCount;
+    private int duplicateCount;
 
     /**
      * Creates a collector for the request.
@@ -177,6 +178,7 @@ public class MarketplaceListingCollector {
         if (!(rawResults instanceof List<?> list)) {
             return;
         }
+        searchedCount += list.size();
         List<MarketplaceListingCandidate> candidates = new ArrayList<>();
         for (Object item : list) {
             if (!(item instanceof Map<?, ?> map)) {
@@ -199,6 +201,7 @@ public class MarketplaceListingCollector {
         if (!url.isBlank()) {
             queuedOrRead.add("read:" + url);
         }
+        readCount++;
         ListingVerificationStatus status = verificationStatus(result);
         if (status == ListingVerificationStatus.VERIFIED) {
             Optional<MarketplaceListing> listing = extractListing(request, result);
@@ -213,6 +216,12 @@ public class MarketplaceListingCollector {
         if (result.success()) {
             observeLinks(result.data().get("links"));
         }
+        LOGGER.info("[MARKETPLACE_PROGRESS] requested={} searched={} read={} duplicates={} rejected={} accepted={}",
+                requirements.targetListingCount(), searchedCount, readCount, duplicateCount,
+                statuses.getOrDefault(ListingVerificationStatus.REJECTED, 0)
+                        + statuses.getOrDefault(ListingVerificationStatus.DEAD, 0)
+                        + statuses.getOrDefault(ListingVerificationStatus.BLOCKED, 0),
+                listings.size());
     }
 
     private void observeLinks(Object rawLinks) {
@@ -255,6 +264,7 @@ public class MarketplaceListingCollector {
         if (!queuedOrRead.add(key)) {
             return;
         }
+        LOGGER.info("[LISTING_CANDIDATE] title={} url={} source={}", abbreviate(title), url, source);
         candidates.add(new MarketplaceListingCandidate(title, url, source, snippet, priority));
     }
 
@@ -273,7 +283,11 @@ public class MarketplaceListingCollector {
             count(ListingVerificationStatus.REJECTED);
             return;
         }
-        if (!listingIdentities.add(canonicalIdentity(listing.url()))) {
+        String identity = canonicalIdentity(listing);
+        LOGGER.info("[LISTING_CANONICALIZED] url={} identity={}", listing.url(), identity);
+        if (!listingIdentities.add(identity)) {
+            duplicateCount++;
+            LOGGER.info("[LISTING_DUPLICATE] url={} identity={} alreadySeen=true", listing.url(), identity);
             return;
         }
         listings.add(listing);
@@ -324,15 +338,17 @@ public class MarketplaceListingCollector {
         return requirements.targetListingCount();
     }
 
-    private String canonicalIdentity(String url) {
-        try {
-            java.net.URI uri = new java.net.URI(url);
-            String host = uri.getHost() == null ? "" : uri.getHost().toLowerCase(Locale.ROOT).replaceFirst("^www\\.", "");
-            String path = uri.getPath() == null ? "" : uri.getPath().replaceAll("/+$", "");
-            return host + path;
-        } catch (java.net.URISyntaxException exception) {
-            return Objects.toString(url, "").split("\\?")[0];
+    private String canonicalIdentity(MarketplaceListing listing) {
+        String urlIdentity = MarketplaceListingIdentity.forUrl(listing.url());
+        if (!urlIdentity.isBlank()) {
+            return urlIdentity;
         }
+        return MarketplaceListingIdentity.forTitlePriceSource(listing.title(), listing.price(), listing.source());
+    }
+
+    private String abbreviate(String value) {
+        String compact = value == null ? "" : value.replaceAll("\\s+", " ").strip();
+        return compact.length() <= 120 ? compact : compact.substring(0, 120) + "...";
     }
 
     private boolean acceptableDomain(String url) {

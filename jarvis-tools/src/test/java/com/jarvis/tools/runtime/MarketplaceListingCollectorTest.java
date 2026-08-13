@@ -14,7 +14,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class MarketplaceListingCollectorTest {
 
-    private final MarketObservationExtractor extractor = new MarketObservationExtractor();
+    private final MarketObservationExtractor observationExtractor = new MarketObservationExtractor();
+    private final MarketplaceListingExtractor extractor = new MarketplaceListingExtractor(alwaysAccept());
 
     @Test
     void expandsLinksFromReadSearchPageIntoConcreteListingReads() {
@@ -43,7 +44,11 @@ class MarketplaceListingCollectorTest {
     @Test
     void collectsOnlyConcreteListingsWithMatchingPrices() {
         ToolCallingRequest request = request("daj 2 uzywane oferty z olx RTX 3060 12GB");
-        MarketplaceListingCollector collector = new MarketplaceListingCollector(ResearchRequirements.from(request), extractor);
+        MarketplaceListingExtractor productAwareExtractor = new MarketplaceListingExtractor(
+                (title, content) -> (title + " " + content).toLowerCase(java.util.Locale.ROOT).contains("rtx 3060")
+                        ? new ListingVerificationResult(true, 0.9d, "matches target", "RTX 3060", "12GB", List.of())
+                        : ListingVerificationResult.reject("does not match target product"));
+        MarketplaceListingCollector collector = new MarketplaceListingCollector(ResearchRequirements.from(request), productAwareExtractor);
 
         collector.observe(request, readPage(
                 "https://www.olx.pl/d/oferta/acer-predator-rtx-3060-12gb-CID99-ID1.html",
@@ -130,7 +135,7 @@ class MarketplaceListingCollectorTest {
     @Test
     void parsesDollarPricesWithoutFailingOnMissingRegexGroups() {
         ToolCallingRequest request = request("po ile jest RTX 3060 12GB w USD?");
-        List<MarketObservation> observations = extractor.extract(
+        List<MarketObservation> observations = observationExtractor.extract(
                 request,
                 "Legacy Nvidia RTX 3060 12GB returns",
                 "Legacy Nvidia RTX 3060 12GB returns, priced at $339 with limited stock.",
@@ -195,6 +200,10 @@ class MarketplaceListingCollectorTest {
                 "content", content,
                 "links", links
         ), "", "", false, "");
+    }
+
+    private static ListingVerifier alwaysAccept() {
+        return (title, content) -> new ListingVerificationResult(true, 0.9d, "test-accept", "", "", List.of());
     }
 
     private ToolResult failedReadPage(String url, String errorMessage) {

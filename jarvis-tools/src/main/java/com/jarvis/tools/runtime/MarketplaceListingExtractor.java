@@ -2,6 +2,8 @@ package com.jarvis.tools.runtime;
 
 import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.web.WebUrlClassifier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.math.BigDecimal;
 import java.net.URI;
@@ -13,15 +15,20 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
  * Extracts one atomic marketplace listing from a verified concrete page.
+ *
+ * <p>Verification of whether the page is genuinely for the requested product is delegated to an
+ * injected {@link ListingVerifier} (backed by {@link AiListingVerifier} in production) rather than
+ * decided here by keyword/regex matching \u2014 this keeps the extractor general across any product
+ * category and lets the verifier see the model's own current, accurate search target.
  */
 public class MarketplaceListingExtractor {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(MarketplaceListingExtractor.class);
     private static final Pattern STRUCTURED_PRICE = Pattern.compile(
             "(?iu)(?:structured data offer price|offer price|product price|price metadata|meta price)\\s*:?\\s*([0-9][0-9 .,\u00a0]{1,16})\\s*(PLN|z\\u0142|zl|EUR|USD)?"
     );
@@ -31,19 +38,24 @@ public class MarketplaceListingExtractor {
     private static final Pattern PRICE = Pattern.compile(
             "(?iu)(?<![\\w/])([1-9][0-9]{2,6}(?:[,.][0-9]{1,2})?)\\s*(PLN|z\\u0142|zl|EUR|USD)(?!\\w)"
     );
-    private static final Set<String> VALUE_WORDS = Set.of(
-            "cena", "ceny", "koszt", "kosztuje", "po", "ile", "price", "prices", "market",
-            "used", "uzywan", "uzywane", "uzywana", "oferta", "oferty", "listing", "link",
-            "aktualny", "aktualna", "current", "retrieve", "search", "marketplace"
-    );
-    private final WebEntityMatcher entityMatcher = new WebEntityMatcher();
+
+    private final ListingVerifier verifier;
+
+    /**
+     * Creates the extractor.
+     *
+     * @param verifier product-agnostic listing verifier
+     */
+    public MarketplaceListingExtractor(ListingVerifier verifier) {
+        this.verifier = verifier;
+    }
 
     /**
      * Extracts a verified listing from a successful READ_WEB_PAGE result.
      *
      * @param request request
      * @param result result
-     * @return listing when the page contains one matching priced offer
+     * @return listing when the page contains one matching priced offer that passed verification
      */
     public Optional<MarketplaceListing> extract(ToolCallingRequest request, ToolResult result) {
         String url = text(result.data().get("url"));
@@ -59,20 +71,28 @@ public class MarketplaceListingExtractor {
         if ((title + content).isBlank()) {
             return Optional.empty();
         }
-        EntityDescriptor requestedEntity = entityMatcher.describe(request.userMessage() + " " + request.goal() + " " + request.reason());
-        String entityText = title + " " + firstCharacters(content, 2000);
-        EntityMatchResult match = entityMatcher.match(requestedEntity, entityText);
-        if (!match.accepted() || !tokenEntityMatch(request, entityText)) {
+        LOGGER.info("[LISTING_READ] url={} title={} statusCode={}", url, abbreviate(title), statusCode);
+
+        ListingVerificationResult decision = verifier.verify(title, firstCharacters(content, 3000));
+        LOGGER.info("[LISTING_VERIFICATION] url={} decision={} confidence={} reason=\"{}\" matchedProduct=\"{}\" matchedVariant=\"{}\"",
+                url, decision.accepted() ? "ACCEPT" : "REJECT", decision.confidence(), decision.reason(),
+                decision.matchedProduct(), decision.matchedVariant());
+        if (!decision.accepted()) {
+            LOGGER.info("[LISTING_REJECTED] url={} reason=\"{}\"", url, decision.reason());
             return Optional.empty();
         }
+
         Optional<PriceCandidate> price = bestPrice(content)
                 .or(() -> bestPrice(title));
         if (price.isEmpty()) {
+            LOGGER.info("[LISTING_REJECTED] url={} reason=\"No verifiable price found on the page\"", url);
             return Optional.empty();
         }
         PriceCandidate value = price.get();
         String resolvedTitle = title.isBlank() ? titleFromUrl(url) : title;
         String domain = WebUrlClassifier.domain(url);
+        LOGGER.info("[LISTING_ACCEPTED] url={} title={} price={} {} confidence={}",
+                url, abbreviate(resolvedTitle), value.amount(), value.currency(), decision.confidence());
         return Optional.of(new MarketplaceListing(
                 resolvedTitle,
                 value.amount(),
@@ -84,7 +104,7 @@ public class MarketplaceListingExtractor {
                 true,
                 Instant.now(),
                 ListingVerificationStatus.VERIFIED,
-                Math.min(0.98d, value.confidence() + match.score() * 0.08d)
+                Math.min(0.98d, value.confidence() * 0.5d + decision.confidence() * 0.5d)
         ));
     }
 
@@ -145,22 +165,6 @@ public class MarketplaceListingExtractor {
         return ResearchRequirements.from(request).condition();
     }
 
-    private boolean tokenEntityMatch(ToolCallingRequest request, String content) {
-        String normalized = normalize(content);
-        List<String> terms = new ArrayList<>();
-        String requestText = normalize(request.userMessage() + " " + request.goal());
-        for (String token : requestText.split("[^a-z0-9]+")) {
-            if (token.length() >= 3 && !VALUE_WORDS.contains(token)) {
-                terms.add(token);
-            }
-        }
-        if (terms.isEmpty()) {
-            return true;
-        }
-        long matches = terms.stream().distinct().filter(normalized::contains).count();
-        return matches >= Math.min(2, terms.stream().distinct().count());
-    }
-
     private int statusCode(ToolResult result) {
         Object value = result.data().get("statusCode");
         if (value instanceof Number number) {
@@ -211,6 +215,11 @@ public class MarketplaceListingExtractor {
 
     private String text(Object value) {
         return Objects.toString(value, "").trim();
+    }
+
+    private String abbreviate(String value) {
+        String compact = value == null ? "" : value.replaceAll("\\s+", " ").strip();
+        return compact.length() <= 120 ? compact : compact.substring(0, 120) + "...";
     }
 
     private record PriceCandidate(BigDecimal amount, String currency, double confidence) {

@@ -17,6 +17,10 @@ import java.util.regex.Pattern;
  * @param priceRequired whether price evidence is required
  * @param condition requested condition
  * @param productType requested product type
+ * @param productQuery the model's own current search text describing the target product,
+ *         used as the authoritative search target for listing verification. Prefer the exact
+ *         text of the model's SEARCH_MARKETPLACE call over the original (possibly stale, e.g.
+ *         predating a Knowledge Workspace lookup) user/tool-request text.
  */
 public record ResearchRequirements(
         int requestedCount,
@@ -26,7 +30,8 @@ public record ResearchRequirements(
         boolean concreteListingsRequired,
         boolean priceRequired,
         String condition,
-        String productType
+        String productType,
+        String productQuery
 ) {
 
     private static final Pattern COUNT_PATTERN = Pattern.compile("(?iu)\\b(?:top\\s*)?(\\d{1,2})\\b");
@@ -42,6 +47,7 @@ public record ResearchRequirements(
         domainConstraint = domainConstraint == null ? new MarketplaceDomainConstraint(Set.of()) : domainConstraint;
         condition = condition == null ? "UNKNOWN" : condition;
         productType = productType == null ? "UNKNOWN" : productType;
+        productQuery = productQuery == null ? "" : productQuery.strip();
         requestedCount = Math.min(Math.max(requestedCount, 0), 15);
     }
 
@@ -87,7 +93,8 @@ public record ResearchRequirements(
                 concrete,
                 price,
                 condition,
-                productType
+                productType,
+                request.userMessage() + " " + request.goal()
         );
     }
 
