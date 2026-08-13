@@ -137,16 +137,6 @@ public class NativeToolLoopService {
                 for (ModelToolCall call : response.toolCalls()) {
                     publish(request, CognitiveEventType.NATIVE_TOOL_CALL_RECEIVED, "RECEIVED",
                             "Native tool call received", null, step, Map.of("name", call.name(), "arguments", call.arguments()));
-                    String fingerprint = fingerprint(call);
-                    if (!callFingerprints.add(fingerprint)) {
-                        ToolResult duplicate = duplicateResult(request, call);
-                        results.add(duplicate);
-                        steps.add(new ToolRuntimeStep(step, "DUPLICATE_TOOL_CALL", toolName(call), operationName(call), "BLOCKED", duplicate));
-                        messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(duplicate)));
-                        publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "DUPLICATE_TOOL_CALL",
-                                "Duplicate tool call blocked", null, step, Map.of("name", call.name()));
-                        continue;
-                    }
                     ToolAction action;
                     try {
                         action = schemaMapper.toAction(call.name(), call.arguments(), "Native model tool call");
@@ -156,6 +146,17 @@ public class NativeToolLoopService {
                         results.add(invalid);
                         steps.add(new ToolRuntimeStep(step, "INVALID_TOOL_CALL", toolName(call), operationName(call), "FAILED", invalid));
                         messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(invalid)));
+                        continue;
+                    }
+                    String fingerprint = actionFingerprint(action);
+                    if (!callFingerprints.add(fingerprint)) {
+                        ToolResult duplicate = duplicateResult(request, action);
+                        results.add(duplicate);
+                        steps.add(new ToolRuntimeStep(step, "DUPLICATE_TOOL_CALL", action.tool(), action.operation(), "BLOCKED", duplicate));
+                        messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(duplicate)));
+                        publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "DUPLICATE_TOOL_CALL",
+                                "Duplicate tool call blocked", null, step, Map.of(
+                                        "tool", action.tool(), "operation", action.operation(), "arguments", action.arguments()));
                         continue;
                     }
                     if ("web".equalsIgnoreCase(action.tool())) {
@@ -679,10 +680,11 @@ public class NativeToolLoopService {
         return marketplaceListings instanceof List<?> list && !list.isEmpty();
     }
 
-    private ToolResult duplicateResult(ToolCallingRequest request, ModelToolCall call) {
-        return new ToolResult(false, toolName(call), operationName(call), request.requestId(), request.conversationId(),
+    private ToolResult duplicateResult(ToolCallingRequest request, ToolAction action) {
+        return new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
                 false, List.of(), "Duplicate tool call blocked", Map.of("reason", "DUPLICATE_TOOL_CALL"),
-                "DUPLICATE_TOOL_CALL", "The same tool call was already executed.", false, "");
+                "DUPLICATE_TOOL_CALL", "The same tool call (" + action.tool() + "." + action.operation()
+                + " with identical arguments) was already executed in this loop.", false, "");
     }
 
     private ToolResult invalidResult(ToolCallingRequest request, ModelToolCall call, String error) {
@@ -721,12 +723,38 @@ public class NativeToolLoopService {
         );
     }
 
-    private String fingerprint(ModelToolCall call) {
+    /**
+     * Builds the duplicate-detection identity for one parsed, validated tool call: concrete
+     * tool + concrete operation + canonically-normalized arguments (keys sorted, stable JSON).
+     * Two calls are the same call only when all three match exactly. Different operations
+     * (SEARCH vs LIST vs READ) or different arguments (different query/path) are never equal,
+     * regardless of how the raw provider payload happened to be formatted.
+     *
+     * @param action parsed, validated tool action
+     * @return canonical duplicate-detection fingerprint
+     */
+    private String actionFingerprint(ToolAction action) {
+        return action.tool().toLowerCase(Locale.ROOT) + "::" + action.operation().toUpperCase(Locale.ROOT)
+                + "::" + canonicalArguments(action.arguments());
+    }
+
+    private String canonicalArguments(Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return "{}";
+        }
+        try {
+            return objectMapper.writeValueAsString(new java.util.TreeMap<>(arguments));
+        } catch (JsonProcessingException | RuntimeException exception) {
+            return new java.util.TreeMap<>(arguments).toString();
+        }
+    }
+
+    private String rawCallFingerprint(ModelToolCall call) {
         return call.name() + "::" + call.arguments();
     }
 
     private String toolCallId(ModelToolCall call) {
-        return call.id().isBlank() ? fingerprint(call) : call.id();
+        return call.id().isBlank() ? rawCallFingerprint(call) : call.id();
     }
 
     private String toolName(ModelToolCall call) {
