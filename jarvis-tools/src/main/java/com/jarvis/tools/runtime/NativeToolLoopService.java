@@ -92,12 +92,11 @@ public class NativeToolLoopService {
         }
         ToolIntent intent = resolveIntent(request);
         InformationFreshness freshness = freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason());
-        ResearchRequirements researchRequirements = ResearchRequirements.from(request);
-        MarketplaceListingCollector marketplaceCollector = new MarketplaceListingCollector(researchRequirements, new MarketplaceListingExtractor());
         List<NativeToolDefinition> definitions = schemaMapper.definitions(intent);
         if (definitions.isEmpty()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
         }
+        MarketplaceListingCollector marketplaceCollector = null;
 
         Instant started = Instant.now();
         int maxCalls = request.knowledgeMode() == KnowledgeMode.RESEARCH
@@ -115,13 +114,7 @@ public class NativeToolLoopService {
         messages.add(ModelMessage.user(request.userMessage()));
 
         publish(request, CognitiveEventType.TOOL_LOOP_STARTED, "STARTED", "Native tool loop started", null, 0,
-                Map.of("runtime", "native", "intent", intent.name(), "freshness", freshness.name(), "tools", definitions.size(),
-                        "requestedListingCount", researchRequirements.requestedCount(),
-                        "targetListingCount", researchRequirements.targetListingCount(),
-                        "marketplaceResearch", researchRequirements.marketplaceResearch(),
-                        "allowedDomains", researchRequirements.allowedDomains(),
-                        "requiredDomain", researchRequirements.requiredDomain(),
-                        "concreteListingsRequired", researchRequirements.concreteListingsRequired()));
+                Map.of("runtime", "native", "intent", intent.name(), "freshness", freshness.name(), "tools", definitions.size()));
         LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} intent={} freshness={} tools={}",
                 request.requestId(), intent, freshness, definitions.size());
         LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} phase=TOOL_LOOP_START availableTools={} intentHint={} autoTriggered=false",
@@ -157,7 +150,6 @@ public class NativeToolLoopService {
                     ToolAction action;
                     try {
                         action = schemaMapper.toAction(call.name(), call.arguments(), "Native model tool call");
-                        action = normalizeActionForRequirements(request, action, researchRequirements);
                         validate(action);
                     } catch (RuntimeException exception) {
                         ToolResult invalid = invalidResult(request, call, exception.getMessage());
@@ -166,17 +158,31 @@ public class NativeToolLoopService {
                         messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(invalid)));
                         continue;
                     }
+                    if ("web".equalsIgnoreCase(action.tool())) {
+                        LOGGER.info("[WEB_DECISION] requestId={} requestedBy=MODEL tool={} mode={}",
+                                request.requestId(), action.tool(), action.operation());
+                    }
+                    if (marketplaceCollector == null && isMarketplaceSearch(action)) {
+                        marketplaceCollector = new MarketplaceListingCollector(
+                                marketplaceRequirementsFromAction(action), new MarketplaceListingExtractor());
+                        LOGGER.info("[MARKETPLACE_MODE] requestId={} enabled=true source=MODEL_TOOL_REQUEST",
+                                request.requestId());
+                    }
                     ToolResult result = executeAction(request, action, step);
                     result = enrichIfNeeded(request, action, result, step);
-                    marketplaceCollector.observe(request, result);
-                    result = withMarketplaceState(result, marketplaceCollector);
+                    if (marketplaceCollector != null) {
+                        marketplaceCollector.observe(request, result);
+                        result = withMarketplaceState(result, marketplaceCollector);
+                    }
                     results.add(result);
                     steps.add(new ToolRuntimeStep(step, "TOOL_CALL", action.tool(), action.operation(),
                             result.success() ? "OK" : "FAILED", result));
                     messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(result)));
                     publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "SENT",
                             "Tool result sent to model", targetNode(action), step, resultMetadata(result));
-                    drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages, toolCallId(call), step);
+                    if (marketplaceCollector != null) {
+                        drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages, toolCallId(call), step);
+                    }
 
                     if (result.requiresApproval()) {
                         saveDebug(request, intent, steps, "WAITING_APPROVAL", errors);
@@ -185,16 +191,20 @@ public class NativeToolLoopService {
                         return new ToolCallingResult(true, "", steps, results);
                     }
                     if (!result.success() && isWebPageRead(action)) {
-                        Optional<ToolResult> retry = tryNextWebCandidate(request, results, action, step, researchRequirements);
+                        Optional<ToolResult> retry = tryNextWebCandidate(request, results, action, step);
                         if (retry.isPresent()) {
                             ToolResult retryResult = retry.get();
-                            marketplaceCollector.observe(request, retryResult);
-                            retryResult = withMarketplaceState(retryResult, marketplaceCollector);
+                            if (marketplaceCollector != null) {
+                                marketplaceCollector.observe(request, retryResult);
+                                retryResult = withMarketplaceState(retryResult, marketplaceCollector);
+                            }
                             results.add(retryResult);
                             steps.add(new ToolRuntimeStep(step, "TOOL_CALL", "web", "READ_WEB_PAGE",
                                     retryResult.success() ? "OK" : "FAILED", retryResult));
                             messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(retryResult)));
-                            drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages, toolCallId(call), step);
+                            if (marketplaceCollector != null) {
+                                drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages, toolCallId(call), step);
+                            }
                         }
                     }
                 }
@@ -203,7 +213,7 @@ public class NativeToolLoopService {
 
             String content = response.content().strip();
             if (!content.isBlank()) {
-                if (marketplaceCollector.needsMore() && drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages,
+                if (marketplaceCollector != null && marketplaceCollector.needsMore() && drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages,
                         "marketplace-collector-" + step, step)) {
                     messages.add(ModelMessage.system("Marketplace listing collection is now "
                             + marketplaceCollector.metadata().get("validListingCount") + "/"
@@ -332,49 +342,60 @@ public class NativeToolLoopService {
         return result;
     }
 
-    private ToolAction normalizeActionForRequirements(
-            ToolCallingRequest request,
-            ToolAction action,
-            ResearchRequirements requirements
-    ) {
-        if (!requirements.marketplaceResearch() || !isWebSearch(action)) {
-            return action;
-        }
-        Map<String, Object> arguments = new LinkedHashMap<>(action.arguments());
-        arguments.put("profile", "MARKET");
-        arguments.put("maxResults", Math.max(10, requirements.targetListingCount() * 3));
-        String query = Objects.toString(arguments.getOrDefault("query", ""), "").strip();
-        if (query.isBlank()) {
-            query = request.userMessage();
-        }
-        arguments.put("query", marketplaceQuery(query, requirements));
-        publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "MARKETPLACE_INTENT",
-                "Marketplace search normalized", "web:search", 0, Map.of(
-                        "marketplace", true,
-                        "condition", requirements.condition(),
-                        "target", requirements.targetListingCount(),
-                        "domains", requirements.allowedDomains(),
-                        "profile", "MARKET",
-                        "maxResults", arguments.get("maxResults")
-                ));
-        return new ToolAction(action.action(), action.tool(), action.operation(), Map.copyOf(arguments), action.reason(), action.answer());
+    private boolean isMarketplaceSearch(ToolAction action) {
+        return "web".equalsIgnoreCase(action.tool()) && "SEARCH_MARKETPLACE".equalsIgnoreCase(action.operation());
     }
 
-    private String marketplaceQuery(String query, ResearchRequirements requirements) {
-        String normalized = normalize(query);
-        StringBuilder builder = new StringBuilder(query.strip());
-        if ("USED".equalsIgnoreCase(requirements.condition())
-                && !normalized.contains("uzywan")
-                && !normalized.contains("used")) {
-            builder.append(" uzywane");
+    /**
+     * Builds marketplace collection requirements strictly from the model's own SEARCH_MARKETPLACE
+     * tool call arguments. This must never be derived from Core-side keyword matching on the
+     * original user message — the model already made the marketplace decision explicitly.
+     *
+     * @param action the model's SEARCH_MARKETPLACE tool action
+     * @return requirements for the marketplace listing collector
+     */
+    private ResearchRequirements marketplaceRequirementsFromAction(ToolAction action) {
+        Map<String, Object> arguments = action.arguments();
+        int targetCount = clamp(intValue(arguments.get("targetCount")), 1, 15, 5);
+        String condition = normalizeCondition(Objects.toString(arguments.get("condition"), ""));
+        Set<String> domains = parseDomains(Objects.toString(arguments.get("domains"), ""));
+        MarketplaceDomainConstraint constraint = new MarketplaceDomainConstraint(domains);
+        return new ResearchRequirements(targetCount, constraint.primaryDomain(), constraint, true, true, true, condition, "UNKNOWN");
+    }
+
+    private int intValue(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
         }
-        if (requirements.allowedDomains().contains("olx.pl") && !normalized.contains("olx")) {
-            builder.append(" OLX");
+        try {
+            return Integer.parseInt(Objects.toString(value, "0"));
+        } catch (NumberFormatException exception) {
+            return 0;
         }
-        if (requirements.allowedDomains().contains("allegro.pl") && !normalized.contains("allegro")) {
-            builder.append(" Allegro");
+    }
+
+    private int clamp(int value, int min, int max, int defaultValue) {
+        int effective = value > 0 ? value : defaultValue;
+        return Math.max(min, Math.min(max, effective));
+    }
+
+    private String normalizeCondition(String value) {
+        String normalized = value == null ? "" : value.strip().toUpperCase(Locale.ROOT);
+        return normalized.equals("NEW") || normalized.equals("USED") ? normalized : "UNKNOWN";
+    }
+
+    private Set<String> parseDomains(String value) {
+        if (value == null || value.isBlank()) {
+            return Set.of();
         }
-        return builder.toString().replaceAll("\\s+", " ").strip();
+        Set<String> domains = new LinkedHashSet<>();
+        for (String part : value.split(",")) {
+            String trimmed = part.strip().toLowerCase(Locale.ROOT);
+            if (!trimmed.isBlank()) {
+                domains.add(trimmed);
+            }
+        }
+        return domains;
     }
 
     private ToolResult enrichIfNeeded(ToolCallingRequest request, ToolAction action, ToolResult result, int step) {
@@ -427,8 +448,7 @@ public class NativeToolLoopService {
             ToolCallingRequest request,
             List<ToolResult> results,
             ToolAction failedAction,
-            int step,
-            ResearchRequirements requirements
+            int step
     ) {
         String failedUrl = Objects.toString(failedAction.arguments().getOrDefault("url", ""), "");
         publish(request, CognitiveEventType.WEB_CANDIDATE_BLOCKED, "BLOCKED",
@@ -441,7 +461,6 @@ public class NativeToolLoopService {
             if (nextUrl.isPresent()) {
                 ToolAction retry = new ToolAction("TOOL_CALL", "web", "READ_WEB_PAGE",
                         Map.of("url", nextUrl.get()), "Deterministic retry after blocked candidate", "");
-                retry = normalizeActionForRequirements(request, retry, requirements);
                 ToolResult result = executeAction(request, retry, step);
                 return Optional.of(enrichIfNeeded(request, retry, result, step));
             }

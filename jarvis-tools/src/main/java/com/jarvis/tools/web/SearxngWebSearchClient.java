@@ -62,7 +62,7 @@ public class SearxngWebSearchClient implements WebSearchClient {
             }
             if (!response.isSuccessful()) {
                 throw new WebSearchException("SearXNG returned HTTP " + response.statusCode()
-                        + " body=" + abbreviateBody(response.body()));
+                        + " body=" + abbreviateBody(response.body()), response.statusCode());
             }
             return new WebSearchResponse(normalizedQuery, normalize(response.body(), limit), response.durationMs());
         } catch (IOException exception) {
@@ -161,7 +161,8 @@ public class SearxngWebSearchClient implements WebSearchClient {
                         firstNonBlank(text(result, "title"), url),
                         url,
                         abbreviate(firstNonBlank(text(result, "content"), text(result, "snippet"))),
-                        firstNonBlank(text(result, "engine"), firstEngine(result.path("engines")), host(url))
+                        firstNonBlank(text(result, "engine"), firstEngine(result.path("engines")), host(url)),
+                        text(result, "publishedDate")
                 ));
             }
             return normalized;
