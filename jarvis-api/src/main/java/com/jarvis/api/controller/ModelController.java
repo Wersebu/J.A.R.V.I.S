@@ -42,7 +42,8 @@ public class ModelController {
         ModelCatalog catalog = activeModelService.catalog();
         return new ModelsResponse(
                 catalog.models().stream()
-                        .map(model -> new ModelInfoResponse(model.name(), model.family(), model.parameterSize(), model.sizeBytes()))
+                        .map(model -> new ModelInfoResponse(model.name(), model.family(), model.parameterSize(), model.sizeBytes(),
+                                model.capabilities().stream().map(Enum::name).collect(java.util.stream.Collectors.toSet())))
                         .toList(),
                 catalog.activeModel(),
                 catalog.providerReachable(),

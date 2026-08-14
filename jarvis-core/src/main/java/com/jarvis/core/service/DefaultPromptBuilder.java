@@ -296,7 +296,7 @@ public class DefaultPromptBuilder implements PromptBuilder {
     }
 
     private String attachmentBlock(ChatRequest request) {
-        if (request.attachments().isEmpty()) {
+        if (request.attachments().isEmpty() || request.attachments().stream().allMatch(this::isImageAttachment)) {
             return "";
         }
         int maxCharacters = workspaceProperties.getPromptMaxCharacters();
@@ -311,6 +311,12 @@ public class DefaultPromptBuilder implements PromptBuilder {
         int totalCharacters = 0;
         int included = 0;
         for (var reference : request.attachments()) {
+            if (isImageAttachment(reference)) {
+                // Images are resolved separately by ImageAttachmentStage and sent natively to a
+                // vision-capable model - never text-injected (and never UTF-8 decoded, which would
+                // corrupt or crash on binary image bytes).
+                continue;
+            }
             TemporaryWorkspaceService.ReadableAttachment attachment = temporaryWorkspaceService.readAttachment(reference);
             String content = attachment.content();
             int projected = totalCharacters + content.length();
@@ -348,6 +354,18 @@ public class DefaultPromptBuilder implements PromptBuilder {
         LOGGER.info("[JARVIS] Attachments injected count={} characters={} estimatedTokens={}",
                 included, totalCharacters, totalCharacters / 4);
         return builder.toString();
+    }
+
+    private boolean isImageAttachment(com.jarvis.common.dto.AttachmentReference reference) {
+        try {
+            return temporaryWorkspaceService.metadata(reference.workspaceId()).attachments().stream()
+                    .filter(candidate -> candidate.attachmentId().equals(reference.attachmentId()))
+                    .findFirst()
+                    .map(candidate -> temporaryWorkspaceService.isImageExtension(candidate.extension()))
+                    .orElse(false);
+        } catch (RuntimeException exception) {
+            return false;
+        }
     }
 
     private String userPrompt(ChatRequest request) {

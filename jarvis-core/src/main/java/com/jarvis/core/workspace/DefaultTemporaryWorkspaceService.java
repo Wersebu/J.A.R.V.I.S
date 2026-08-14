@@ -35,10 +35,18 @@ import java.util.stream.Stream;
 public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceService {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultTemporaryWorkspaceService.class);
-    private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(
+    private static final Set<String> TEXT_EXTENSIONS = Set.of(
             "txt", "md", "log", "csv", "java", "py", "js", "ts", "html", "css",
             "json", "xml", "yml", "yaml", "properties", "sql", "sh", "ps1"
     );
+    private static final Set<String> IMAGE_EXTENSIONS = Set.of("png", "jpg", "jpeg", "webp", "gif");
+    private static final Set<String> SUPPORTED_EXTENSIONS;
+
+    static {
+        java.util.Set<String> merged = new java.util.HashSet<>(TEXT_EXTENSIONS);
+        merged.addAll(IMAGE_EXTENSIONS);
+        SUPPORTED_EXTENSIONS = Set.copyOf(merged);
+    }
     private static final String WORKSPACE_FILE = ".workspace.properties";
     private static final String METADATA_DIRECTORY = ".metadata";
 
@@ -128,6 +136,33 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
     }
 
     @Override
+    public ReadableImageAttachment readImageAttachment(AttachmentReference reference) {
+        if (reference == null) {
+            throw new IllegalArgumentException("Attachment reference is required.");
+        }
+        validateWorkspaceId(reference.workspaceId());
+        validateWorkspaceId(reference.attachmentId());
+        ReentrantReadWriteLock lock = lock(reference.workspaceId());
+        lock.readLock().lock();
+        try {
+            AttachmentMetadata metadata = attachment(reference.workspaceId(), reference.attachmentId());
+            Path file = safeResolve(workspacePath(reference.workspaceId()).resolve("input"), metadata.storedFileName());
+            byte[] bytes = Files.readAllBytes(file);
+            touch(reference.workspaceId());
+            return new ReadableImageAttachment(metadata, bytes);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Could not read image attachment.", exception);
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    @Override
+    public boolean isImageExtension(String extension) {
+        return IMAGE_EXTENSIONS.contains(extension == null ? "" : extension.toLowerCase(Locale.ROOT));
+    }
+
+    @Override
     public TemporaryWorkspaceMetadata metadata(String workspaceId) {
         validateWorkspaceId(workspaceId);
         try {
@@ -206,12 +241,18 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
             LOGGER.info("[ATTACHMENT] rejected reason=unsupported_type name={}", originalName);
             throw new IllegalArgumentException("Unsupported file type: " + originalName);
         }
-        if (file.getSize() > properties.getMaxFileSizeBytes()) {
+        boolean isImage = IMAGE_EXTENSIONS.contains(extension);
+        long sizeLimit = isImage ? properties.getMaxImageSizeBytes() : properties.getMaxFileSizeBytes();
+        if (file.getSize() > sizeLimit) {
             LOGGER.info("[ATTACHMENT] rejected reason=size_limit name={} size={}", originalName, file.getSize());
             throw new IllegalArgumentException("File is too large: " + originalName);
         }
         byte[] bytes = file.getBytes();
-        validateText(bytes, originalName);
+        if (isImage) {
+            bytes = validateAndDownscaleImage(bytes, extension, originalName);
+        } else {
+            validateText(bytes, originalName);
+        }
         String attachmentId = UUID.randomUUID().toString();
         String storedName = attachmentId + "." + extension;
         Path target = safeResolve(workspace.resolve("input"), storedName);
@@ -236,6 +277,74 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
         saveAttachmentMetadata(workspace, metadata);
         LOGGER.info("[ATTACHMENT] uploaded workspace={} name={} size={}", workspaceId, originalName, bytes.length);
         return metadata;
+    }
+
+    /**
+     * Validates an uploaded image and downscales it in place when it exceeds the configured
+     * resolution limit, preserving aspect ratio.
+     *
+     * <p>WEBP is a special case: the JDK ships no built-in WEBP decoder, so it is only checked by
+     * magic bytes (RIFF....WEBP) and passed through unresized - the size limit still applies, but
+     * an oversized WEBP cannot be automatically downscaled server-side.
+     *
+     * @param bytes raw uploaded bytes
+     * @param extension normalized file extension
+     * @param originalName original file name, for error messages
+     * @return bytes to store: unchanged, or re-encoded at a smaller resolution
+     */
+    private byte[] validateAndDownscaleImage(byte[] bytes, String extension, String originalName) {
+        if ("webp".equals(extension)) {
+            if (bytes.length < 12 || !isRiffWebp(bytes)) {
+                LOGGER.info("[ATTACHMENT] rejected reason=corrupt_image name={}", originalName);
+                throw new IllegalArgumentException("Unsupported or corrupt image: " + originalName);
+            }
+            return bytes;
+        }
+        java.awt.image.BufferedImage image;
+        try {
+            image = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(bytes));
+        } catch (IOException exception) {
+            image = null;
+        }
+        if (image == null) {
+            LOGGER.info("[ATTACHMENT] rejected reason=corrupt_image name={}", originalName);
+            throw new IllegalArgumentException("Unsupported or corrupt image: " + originalName);
+        }
+        int maxDimension = properties.getMaxImageDimensionPx();
+        int width = image.getWidth();
+        int height = image.getHeight();
+        if (width <= maxDimension && height <= maxDimension) {
+            return bytes;
+        }
+        double scale = Math.min((double) maxDimension / width, (double) maxDimension / height);
+        int scaledWidth = Math.max(1, (int) Math.round(width * scale));
+        int scaledHeight = Math.max(1, (int) Math.round(height * scale));
+        java.awt.image.BufferedImage scaled = new java.awt.image.BufferedImage(
+                scaledWidth, scaledHeight, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        java.awt.Graphics2D graphics = scaled.createGraphics();
+        try {
+            graphics.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
+                    java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            graphics.drawImage(image.getScaledInstance(scaledWidth, scaledHeight, java.awt.Image.SCALE_SMOOTH), 0, 0, null);
+        } finally {
+            graphics.dispose();
+        }
+        String writerFormat = "jpg".equals(extension) || "jpeg".equals(extension) ? "jpg" : extension;
+        try {
+            java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+            if (!javax.imageio.ImageIO.write(scaled, writerFormat, output)) {
+                throw new IllegalArgumentException("No encoder available for image type: " + extension);
+            }
+            LOGGER.info("[ATTACHMENT] downscaled name={} from={}x{} to={}x{}", originalName, width, height, scaledWidth, scaledHeight);
+            return output.toByteArray();
+        } catch (IOException exception) {
+            throw new IllegalArgumentException("Failed to downscale image: " + originalName, exception);
+        }
+    }
+
+    private boolean isRiffWebp(byte[] bytes) {
+        return bytes[0] == 'R' && bytes[1] == 'I' && bytes[2] == 'F' && bytes[3] == 'F'
+                && bytes[8] == 'W' && bytes[9] == 'E' && bytes[10] == 'B' && bytes[11] == 'P';
     }
 
     private void validateText(byte[] bytes, String originalName) {

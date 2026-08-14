@@ -3,6 +3,7 @@ package com.jarvis.ollama;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.common.model.ActiveModelService;
 import com.jarvis.common.model.InstalledModel;
+import com.jarvis.common.model.ModelCapability;
 import com.jarvis.common.model.ModelCatalog;
 import com.jarvis.common.model.ModelSwitchResult;
 import org.slf4j.Logger;
@@ -21,8 +22,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -104,9 +108,30 @@ public class DefaultActiveModelService implements ActiveModelService, Initializi
         return properties.model();
     }
 
+    private static final Map<String, ModelCapability> RAW_CAPABILITY_MAPPING = Map.of(
+            "completion", ModelCapability.TEXT,
+            "vision", ModelCapability.VISION,
+            "tools", ModelCapability.TOOLS,
+            "thinking", ModelCapability.THINKING
+    );
+
     @Override
     public String activeModel() {
         return activeModel.get();
+    }
+
+    @Override
+    public Set<ModelCapability> activeModelCapabilities() {
+        try {
+            return fetchInstalledModels().stream()
+                    .filter(model -> model.name().equals(activeModel()))
+                    .findFirst()
+                    .map(InstalledModel::capabilities)
+                    .orElse(Set.of());
+        } catch (RuntimeException exception) {
+            LOGGER.warn("[JARVIS] [MODEL] Failed to resolve active model capabilities: {}", exception.getMessage());
+            return Set.of();
+        }
     }
 
     @Override
@@ -164,7 +189,8 @@ public class DefaultActiveModelService implements ActiveModelService, Initializi
                             model.name(),
                             model.details() == null ? "" : nullToEmpty(model.details().family()),
                             model.details() == null ? "" : nullToEmpty(model.details().parameterSize()),
-                            model.size() == null ? 0L : model.size()))
+                            model.size() == null ? 0L : model.size(),
+                            mapCapabilities(model.capabilities())))
                     .toList();
         } catch (IOException exception) {
             throw new OllamaException("Failed to reach Ollama at " + endpoint, exception);
@@ -210,6 +236,20 @@ public class DefaultActiveModelService implements ActiveModelService, Initializi
         } catch (IOException exception) {
             return null;
         }
+    }
+
+    private static Set<ModelCapability> mapCapabilities(List<String> rawCapabilities) {
+        if (rawCapabilities == null || rawCapabilities.isEmpty()) {
+            return Set.of();
+        }
+        Set<ModelCapability> mapped = EnumSet.noneOf(ModelCapability.class);
+        for (String raw : rawCapabilities) {
+            ModelCapability capability = RAW_CAPABILITY_MAPPING.get(raw == null ? "" : raw.toLowerCase(Locale.ROOT));
+            if (capability != null) {
+                mapped.add(capability);
+            }
+        }
+        return mapped;
     }
 
     private static String nullToEmpty(String value) {

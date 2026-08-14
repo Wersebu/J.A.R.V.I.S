@@ -55,4 +55,26 @@ public class ApiExceptionHandler {
         );
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
     }
+
+    /**
+     * Handles request validation failures (e.g. an unsupported or oversized attachment upload).
+     *
+     * <p>The exception message is already a safe, user-facing validation reason (never an internal
+     * detail) - see {@code DefaultTemporaryWorkspaceService}, which is the primary source of these
+     * exceptions for attachment/image uploads.
+     *
+     * @param exception validation exception
+     * @return bad request response carrying the safe validation message
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException exception) {
+        LOGGER.info("[JARVIS] Rejected request: {}", exception.getMessage());
+        ErrorResponse response = new ErrorResponse(
+                HttpStatus.BAD_REQUEST.value(),
+                "Bad Request",
+                exception.getMessage(),
+                Instant.now()
+        );
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(response);
+    }
 }

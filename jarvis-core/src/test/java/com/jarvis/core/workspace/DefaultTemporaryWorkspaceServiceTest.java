@@ -87,7 +87,7 @@ class DefaultTemporaryWorkspaceServiceTest {
         assertThat(Files.exists(tempDir.resolve("application.yml"))).isFalse();
 
         assertThatThrownBy(() -> service.storeInput(workspace.workspaceId(), "conversation", List.of(
-                new MockMultipartFile("files", "image.png", "image/png", new byte[]{0, 1, 2})
+                new MockMultipartFile("files", "archive.zip", "application/zip", new byte[]{0, 1, 2})
         ))).isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Unsupported file type");
 
@@ -167,6 +167,147 @@ class DefaultTemporaryWorkspaceServiceTest {
         assertThat(prompt).contains("END ATTACHMENT");
         assertThat(prompt.indexOf("=== TEMPORARY ATTACHMENTS ==="))
                 .isLessThan(prompt.indexOf("=== CURRENT USER MESSAGE ==="));
+    }
+
+    @Test
+    void promptBuilderSkipsImageAttachmentsInsteadOfCorruptingOnBinaryBytes() throws Exception {
+        var workspace = service.createWorkspace("conversation");
+        var uploaded = service.storeInput(workspace.workspaceId(), "conversation", List.of(
+                textFile("notes.txt", "hello from a text attachment"),
+                imageFile("photo.png", "png", 10, 10)
+        ));
+        DefaultPromptBuilder builder = new DefaultPromptBuilder(
+                new StaticSystemPromptService(),
+                new NoOpEventBus(),
+                service,
+                properties
+        );
+
+        String prompt = builder.buildPrompt(new ChatRequest(
+                "conversation",
+                "What is in the attachments?",
+                null,
+                null,
+                uploaded.stream()
+                        .map(metadata -> new AttachmentReference(metadata.workspaceId(), metadata.attachmentId()))
+                        .toList()
+        ), KnowledgeContext.empty());
+
+        assertThat(prompt).contains("Name: notes.txt");
+        assertThat(prompt).contains("hello from a text attachment");
+        assertThat(prompt).doesNotContain("photo.png");
+    }
+
+    @Test
+    void promptBuilderOmitsTheAttachmentsSectionWhenOnlyImagesAreAttached() throws Exception {
+        var workspace = service.createWorkspace("conversation");
+        var uploaded = service.storeInput(workspace.workspaceId(), "conversation", List.of(
+                imageFile("photo.png", "png", 10, 10)
+        ));
+        DefaultPromptBuilder builder = new DefaultPromptBuilder(
+                new StaticSystemPromptService(),
+                new NoOpEventBus(),
+                service,
+                properties
+        );
+
+        String prompt = builder.buildPrompt(new ChatRequest(
+                "conversation",
+                "Co jest na tym zdjeciu?",
+                null,
+                null,
+                uploaded.stream()
+                        .map(metadata -> new AttachmentReference(metadata.workspaceId(), metadata.attachmentId()))
+                        .toList()
+        ), KnowledgeContext.empty());
+
+        assertThat(prompt).doesNotContain("=== TEMPORARY ATTACHMENTS ===");
+    }
+
+    @Test
+    void acceptsAndStoresValidPngJpegAndGifImages() throws Exception {
+        var workspace = service.createWorkspace("conversation");
+
+        var uploaded = service.storeInput(workspace.workspaceId(), "conversation", List.of(
+                imageFile("photo.png", "png", 40, 30),
+                imageFile("photo.jpg", "jpg", 40, 30),
+                imageFile("photo.gif", "gif", 40, 30)
+        ));
+
+        assertThat(uploaded).hasSize(3);
+        for (var metadata : uploaded) {
+            assertThat(service.isImageExtension(metadata.extension())).isTrue();
+            var readable = service.readImageAttachment(new AttachmentReference(metadata.workspaceId(), metadata.attachmentId()));
+            assertThat(readable.bytes()).isNotEmpty();
+            assertThat(javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(readable.bytes()))).isNotNull();
+        }
+    }
+
+    @Test
+    void acceptsWebpByMagicBytesWithoutDecoding() {
+        var workspace = service.createWorkspace("conversation");
+        byte[] minimalWebp = new byte[20];
+        System.arraycopy("RIFF".getBytes(StandardCharsets.US_ASCII), 0, minimalWebp, 0, 4);
+        System.arraycopy("WEBP".getBytes(StandardCharsets.US_ASCII), 0, minimalWebp, 8, 4);
+
+        var uploaded = service.storeInput(workspace.workspaceId(), "conversation", List.of(
+                new MockMultipartFile("files", "sticker.webp", "image/webp", minimalWebp)
+        ));
+
+        assertThat(uploaded).hasSize(1);
+        assertThat(service.isImageExtension("webp")).isTrue();
+    }
+
+    @Test
+    void rejectsCorruptImageBytesEvenWithAnImageExtension() {
+        var workspace = service.createWorkspace("conversation");
+
+        assertThatThrownBy(() -> service.storeInput(workspace.workspaceId(), "conversation", List.of(
+                new MockMultipartFile("files", "photo.png", "image/png", new byte[]{0, 1, 2})
+        ))).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("corrupt image");
+
+        assertThatThrownBy(() -> service.storeInput(workspace.workspaceId(), "conversation", List.of(
+                new MockMultipartFile("files", "sticker.webp", "image/webp", new byte[]{0, 1, 2})
+        ))).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("corrupt image");
+    }
+
+    @Test
+    void downscalesOversizedImageToTheConfiguredMaxDimension() throws Exception {
+        properties.setMaxImageDimensionPx(32);
+        var workspace = service.createWorkspace("conversation");
+
+        var uploaded = service.storeInput(workspace.workspaceId(), "conversation", List.of(
+                imageFile("large.png", "png", 200, 100)
+        ));
+
+        var readable = service.readImageAttachment(new AttachmentReference(
+                uploaded.getFirst().workspaceId(), uploaded.getFirst().attachmentId()));
+        var decoded = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(readable.bytes()));
+
+        assertThat(decoded.getWidth()).isLessThanOrEqualTo(32);
+        assertThat(decoded.getHeight()).isLessThanOrEqualTo(32);
+        assertThat(decoded.getWidth()).isEqualTo(32);
+        assertThat(decoded.getHeight()).isEqualTo(16);
+    }
+
+    @Test
+    void enforcesASeparateImageSizeLimitFromRegularFiles() {
+        properties.setMaxImageSizeBytes(20);
+        var workspace = service.createWorkspace("conversation");
+
+        assertThatThrownBy(() -> service.storeInput(workspace.workspaceId(), "conversation", List.of(
+                imageFile("photo.png", "png", 40, 30)
+        ))).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("too large");
+    }
+
+    private MockMultipartFile imageFile(String name, String format, int width, int height) throws Exception {
+        java.awt.image.BufferedImage image = new java.awt.image.BufferedImage(width, height, java.awt.image.BufferedImage.TYPE_INT_RGB);
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(image, format, output);
+        return new MockMultipartFile("files", name, "image/" + format, output.toByteArray());
     }
 
     private MockMultipartFile textFile(String name, String content) {

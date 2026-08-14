@@ -39,6 +39,23 @@ public interface TemporaryWorkspaceService {
     ReadableAttachment readAttachment(AttachmentReference reference);
 
     /**
+     * Reads an image attachment's raw bytes, exactly as stored (already downscaled to the
+     * configured limit at upload time, when needed) - never decoded as text.
+     *
+     * @param reference attachment reference
+     * @return raw image bytes and metadata
+     */
+    ReadableImageAttachment readImageAttachment(AttachmentReference reference);
+
+    /**
+     * Returns whether the given file extension is handled as an image attachment.
+     *
+     * @param extension lowercase file extension, without a leading dot
+     * @return true when the extension is a supported image format
+     */
+    boolean isImageExtension(String extension);
+
+    /**
      * Returns workspace metadata.
      *
      * @param workspaceId workspace identifier
@@ -67,5 +84,14 @@ public interface TemporaryWorkspaceService {
      * @param content UTF-8 text content
      */
     record ReadableAttachment(AttachmentMetadata metadata, String content) {
+    }
+
+    /**
+     * Image attachment loaded from a temporary workspace.
+     *
+     * @param metadata attachment metadata
+     * @param bytes raw image bytes, ready to base64-encode for a vision model
+     */
+    record ReadableImageAttachment(AttachmentMetadata metadata, byte[] bytes) {
     }
 }

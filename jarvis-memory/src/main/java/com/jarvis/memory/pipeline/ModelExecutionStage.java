@@ -10,6 +10,8 @@ import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
 import com.jarvis.common.event.ThinkingTokenEvent;
 import com.jarvis.common.event.TokenEvent;
+import com.jarvis.common.model.ActiveModelService;
+import com.jarvis.common.model.ModelCapability;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
@@ -31,22 +33,26 @@ public class ModelExecutionStage implements PipelineStage {
     private final ToolTriggerStrategy toolTriggerStrategy;
     private final MainModelActionParser actionParser;
     private final CognitiveEventBus cognitiveEventBus;
+    private final ActiveModelService activeModelService;
 
     /**
      * Creates the model execution stage.
      *
      * @param aiProviders available providers
+     * @param activeModelService active model capability lookup, used to gate vision requests
      */
     public ModelExecutionStage(
             List<AIProvider> aiProviders,
             ToolTriggerStrategy toolTriggerStrategy,
             MainModelActionParser actionParser,
-            CognitiveEventBus cognitiveEventBus
+            CognitiveEventBus cognitiveEventBus,
+            ActiveModelService activeModelService
     ) {
         this.aiProviders = List.copyOf(aiProviders);
         this.toolTriggerStrategy = toolTriggerStrategy;
         this.actionParser = actionParser;
         this.cognitiveEventBus = cognitiveEventBus;
+        this.activeModelService = activeModelService;
     }
 
     @Override
@@ -59,16 +65,20 @@ public class ModelExecutionStage implements PipelineStage {
         if (context.response() != null && !context.response().isBlank()) {
             return context;
         }
+        if (!context.images().isEmpty() && !activeModelService.activeModelCapabilities().contains(ModelCapability.VISION)) {
+            return respondNoVisionSupport(context);
+        }
         String mainPrompt = toolTriggerStrategy.buildMainModelPrompt(context);
         recordPromptMetrics(context, mainPrompt);
         cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_REQUEST, "REQUESTING", "Main model action request started", null, Map.of(
                 "model", context.model(),
-                "reasoningLevel", context.brain().reasoningLevel().name()
+                "reasoningLevel", context.brain().reasoningLevel().name(),
+                "hasImages", !context.images().isEmpty()
         ));
         long startedNano = System.nanoTime();
         StreamingStructuredResponseParser streamingParser = new StreamingStructuredResponseParser();
         StreamState streamState = new StreamState();
-        selectProvider(context).stream(context.conversationId(), context.brain(), mainPrompt, AIJobType.MAIN_MODEL, event -> {
+        selectProvider(context).stream(context.conversationId(), context.brain(), mainPrompt, AIJobType.MAIN_MODEL, context.images(), event -> {
             if (event instanceof TokenEvent tokenEvent) {
                 StreamingStructuredResponseParser.ParserUpdate update = streamingParser.accept(tokenEvent.text());
                 handleParserUpdate(context, update, streamState, true);
@@ -98,6 +108,26 @@ public class ModelExecutionStage implements PipelineStage {
                     .withMetadata("toolContext", action.context())
                     .withMetadata("mainModelDurationMs", durationMs);
         };
+    }
+
+    /**
+     * Responds directly, without ever calling the model, when images were attached but the
+     * currently active model does not report vision support - never attempt to analyze an image
+     * with a text-only model.
+     *
+     * @param context pipeline context with unresolved images
+     * @return context carrying the friendly fallback answer
+     */
+    private PipelineContext respondNoVisionSupport(PipelineContext context) {
+        cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "NO_VISION_SUPPORT",
+                "Active model does not support vision, image request rejected without calling the model", null, Map.of(
+                        "model", context.model(),
+                        "images", context.images().size()
+                ));
+        String message = "Aktualnie wybrany model (" + context.model() + ") nie obsluguje analizy obrazow. "
+                + "Wybierz model z obsluga Vision (np. Gemma 4, Qwen 3.5), aby przeanalizowac przeslany obraz.";
+        return finishStreamedUserFacingResponse(context, message, new StreamState())
+                .withMetadata("mainModelAction", MainModelActionType.FINAL_ANSWER.name());
     }
 
     private void handleParserUpdate(

@@ -1,5 +1,7 @@
 package com.jarvis.common.model;
 
+import java.util.Set;
+
 /**
  * Single source of truth for the currently active local AI model.
  *
@@ -14,6 +16,18 @@ public interface ActiveModelService {
      * @return active model
      */
     String activeModel();
+
+    /**
+     * Returns the capabilities reported by the provider for the currently active model.
+     *
+     * <p>Empty when the provider is unreachable, the active model is not in its installed list, or
+     * it reports no capabilities - callers gating a capability-sensitive feature (e.g. vision) must
+     * treat an empty result as "not supported", the same as an explicit absence, so a request never
+     * reaches a model that cannot actually handle it.
+     *
+     * @return active model capabilities
+     */
+    Set<ModelCapability> activeModelCapabilities();
 
     /**
      * Returns the installed models and the currently active model.

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.ai.Brain;
+import com.jarvis.common.ai.ImageAttachment;
 import com.jarvis.common.ai.ModelMessage;
 import com.jarvis.common.ai.ModelResponse;
 import com.jarvis.common.ai.ModelToolCall;
@@ -137,6 +138,11 @@ public class OllamaProvider implements AIProvider {
 
     @Override
     public void stream(String conversationId, Brain brain, String prompt, AIJobType jobType, ChatEventSink eventSink) {
+        stream(conversationId, brain, prompt, jobType, List.of(), eventSink);
+    }
+
+    @Override
+    public void stream(String conversationId, Brain brain, String prompt, AIJobType jobType, List<ImageAttachment> images, ChatEventSink eventSink) {
         Instant startedAt = Instant.now();
         long startedNano = System.nanoTime();
         String requestId = diagnosticsRequestId();
@@ -161,8 +167,13 @@ public class OllamaProvider implements AIProvider {
                         true,
                         brain.reasoningLevel().name().toLowerCase(java.util.Locale.ROOT),
                         properties.keepAlive(),
-                        contextBudgetService.ollamaOptions()
+                        contextBudgetService.ollamaOptions(),
+                        images == null ? List.of() : images.stream().map(ImageAttachment::base64Data).toList()
                 );
+                if (images != null && !images.isEmpty()) {
+                    LOGGER.info("[JARVIS][requestId={}][OLLAMA] Sending images natively count={} model={}",
+                            requestId, images.size(), brain.model());
+                }
                 HttpRequest httpRequest = HttpRequest.newBuilder()
                         .uri(URI.create(endpoint))
                         .timeout(Duration.ofMinutes(5))

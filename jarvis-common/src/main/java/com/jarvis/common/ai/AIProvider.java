@@ -62,6 +62,24 @@ public interface AIProvider {
     }
 
     /**
+     * Streams a prepared prompt, with optional images, through the selected AI brain.
+     *
+     * <p>Providers that do not override this default silently ignore images and behave exactly as
+     * before images existed - callers should only pass a non-empty list once the caller has already
+     * confirmed the selected model supports vision.
+     *
+     * @param conversationId conversation identifier
+     * @param brain selected logical brain
+     * @param prompt prepared prompt
+     * @param jobType job type
+     * @param images images to send alongside the prompt, empty for a text-only request
+     * @param eventSink event sink
+     */
+    default void stream(String conversationId, Brain brain, String prompt, AIJobType jobType, List<ImageAttachment> images, ChatEventSink eventSink) {
+        stream(conversationId, brain, prompt, jobType, eventSink);
+    }
+
+    /**
      * Executes one non-streaming native tool-calling model turn.
      *
      * @param brain selected logical brain

@@ -22,6 +22,8 @@ public class TemporaryWorkspaceProperties {
     private int maxFilesPerWorkspace = 20;
     private long minimumFreeDiskSpaceBytes = 512L * 1024L * 1024L;
     private int promptMaxCharacters = 24_000;
+    private long maxImageSizeBytes = 8L * 1024L * 1024L;
+    private int maxImageDimensionPx = 2048;
 
     /**
      * Returns workspace root.
@@ -103,5 +105,32 @@ public class TemporaryWorkspaceProperties {
 
     public void setPromptMaxCharacters(int promptMaxCharacters) {
         this.promptMaxCharacters = promptMaxCharacters;
+    }
+
+    /**
+     * Returns the maximum accepted image file size, before any auto-downscale, in bytes.
+     *
+     * @return max image size in bytes
+     */
+    public long getMaxImageSizeBytes() {
+        return maxImageSizeBytes;
+    }
+
+    public void setMaxImageSizeBytes(long maxImageSizeBytes) {
+        this.maxImageSizeBytes = maxImageSizeBytes;
+    }
+
+    /**
+     * Returns the maximum width or height an uploaded image may have before it is
+     * automatically downscaled to fit.
+     *
+     * @return max image dimension in pixels
+     */
+    public int getMaxImageDimensionPx() {
+        return maxImageDimensionPx;
+    }
+
+    public void setMaxImageDimensionPx(int maxImageDimensionPx) {
+        this.maxImageDimensionPx = maxImageDimensionPx;
     }
 }
