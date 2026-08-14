@@ -54,6 +54,8 @@ jarvis:
     stream-to-clients: true
     persist: false
     default-visible-in-windows: true
+  model:
+    active-model-file: file:config/active-model.txt
   ollama:
     base-url: http://localhost:11434
     model: gpt-oss:20b
