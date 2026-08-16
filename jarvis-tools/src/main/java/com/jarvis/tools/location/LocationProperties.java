@@ -25,6 +25,9 @@ import java.time.Duration;
  *        2-opt heuristic
  * @param connectTimeout connection timeout
  * @param readTimeout request/read timeout
+ * @param geocodeCandidateLimit how many candidates to request per geocode query for
+ *        {@link GeocodeCandidateScorer} to evaluate - must be more than 1 for postal-code/address
+ *        validation to have anything to choose between, per candidate, in a single HTTP call
  */
 @ConfigurationProperties(prefix = "jarvis.location")
 public record LocationProperties(
@@ -36,7 +39,8 @@ public record LocationProperties(
         int maxBatchSize,
         int exactOptimizationMaxStops,
         Duration connectTimeout,
-        Duration readTimeout
+        Duration readTimeout,
+        int geocodeCandidateLimit
 ) {
 
     /**
@@ -57,6 +61,7 @@ public record LocationProperties(
                 ? Duration.ofSeconds(3) : connectTimeout;
         readTimeout = readTimeout == null || readTimeout.isNegative() || readTimeout.isZero()
                 ? Duration.ofSeconds(8) : readTimeout;
+        geocodeCandidateLimit = geocodeCandidateLimit > 0 ? geocodeCandidateLimit : 5;
     }
 
     /**

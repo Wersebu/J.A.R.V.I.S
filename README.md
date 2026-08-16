@@ -2,7 +2,7 @@
 
 Jarvis (J.A.R.V.I.S. Core) is a long-term AI operating system backend foundation: a headless Spring Boot service that orchestrates local Ollama models behind a provider-independent AI contract, with brain routing, native tool calling, a Knowledge Workspace, web/marketplace/location tools, cognitive memory, and real-time streaming to a separate desktop client.
 
-Current version: **`2.8.0`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
+Current version: **`2.8.1`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
 
 ## Requirements
 
@@ -77,7 +77,7 @@ All configuration lives under the `jarvis:` root key in `jarvis-core/src/main/re
 
 ```yaml
 jarvis:
-  version: "2.8.0"
+  version: "2.8.1"
   ai:
     identity-file: file:config/jarvis.md
     context-window: 16384
@@ -231,10 +231,22 @@ Start SearXNG on Ubuntu: `cd /opt/jarvis/deploy/searxng && docker compose up -d`
 
 `LocationTool` (native tool `location`) resolves free-text addresses to coordinates and computes real road-network distances/durations/visiting orders - so the model never has to misuse web search for geographic lookups. Four operations, all read-only:
 
-- **`GEOCODE`** - resolves one address (`query`) or a batch (`queries`) to `{latitude, longitude, displayName}`. Batch calls report `successfulPoints`/`failedPoints` separately - one bad address never fails the whole call.
+- **`GEOCODE`** - resolves one address (`query`) or a batch (`queries`) to `{latitude, longitude, displayName}`. Batch calls report `successfulPoints`/`ambiguousPoints`/`failedPoints` separately - one bad or uncertain address never fails the whole call, and every address in a batch goes through the exact same validation described below (no separate, looser path for batch calls).
 - **`ROUTE`** - real road distance + driving duration between two points (`from`/`to`, each a free-text address or `{latitude,longitude}`) - never a straight-line estimate.
 - **`ROUTE_MATRIX`** - an NxN road distance/duration matrix for a list of points/addresses (also accepts the operation name `DISTANCE_MATRIX` as an alias). Unreachable pairs are reported as `null` cells, not a hard failure.
 - **`OPTIMIZE_ROUTE`** - given a `start` point and a list of `stops`, proposes a visiting order minimizing total distance or time (`optimize: "distance"|"time"`). This is the operation behind "group these addresses and propose a visit order", "best order to visit these stops", "plan a route through these places" style requests, regardless of whether the addresses came from typed text, an image, a file, or Knowledge.
+
+#### Candidate-based geocoding & address validation
+
+A geocoding provider's top result is not trusted just because its name matches - `NominatimGeocodingClient` requests several candidates per query (`addressdetails=1&limit=<geocode-candidate-limit>`, default 5) and `GeocodeCandidateScorer` (pure logic, no network I/O, in `jarvis-tools/.../location/GeocodeCandidateScorer.java`) scores each one against every address detail present in the original query text - postal code, city, street, house number, region, country - not display-name similarity alone.
+
+Postal code is the strongest signal and is handled with three distinct outcomes, never a blind "mismatch = reject":
+
+1. the query has a postal code and a candidate's matches it -&gt; strong positive weight
+2. the query has a postal code and a candidate's disagrees -&gt; strong negative weight (effectively disqualifying)
+3. the query has a postal code but the candidate didn't report one -&gt; unknown, no effect either way
+
+City/street/region/country matches use word-boundary text matching against the query (not raw substring matching, which would e.g. false-positive-match the street "Warszawska" against the city "Warszawa"). Each query resolves to one of four statuses (`GeocodeStatus`): `RESOLVED` (a clear winner), `AMBIGUOUS` (two or more candidates scored too close together), `NOT_CONFIDENTLY_RESOLVED` (the best candidate's score was still too low to trust, e.g. it contradicts a postal code the user gave), or `NOT_FOUND` (no candidates at all). Only `RESOLVED` results are used for coordinates; the other three come back with their ranked candidate list instead of a guessed coordinate, so the model can ask the user to clarify rather than silently routing to the wrong place - this is what fixed the original bug report ("Nowa Wola 05-500" resolving to a same-named village in a different voivodeship whose postal code didn't match at all).
 
 Geocoding and routing are two swappable, independent HTTP providers behind `GeocodingClient`/`RoutingClient` interfaces:
 
@@ -253,6 +265,7 @@ jarvis:
     min-geocode-interval-millis: 1100
     max-batch-size: 25
     exact-optimization-max-stops: 8
+    geocode-candidate-limit: 5
 ```
 
 Visit-order optimization (`RouteOptimizer`) runs entirely locally, with **no network calls** - it operates on an already-fetched distance/duration matrix: exact brute-force search for small stop counts (`exact-optimization-max-stops`, default 8), nearest-neighbour construction + 2-opt local-search improvement above that. Points that can't be connected to the start are excluded from the route and reported back as `unresolvedStops`/`unreachableIndices`, never silently dropped or treated as zero-cost.
@@ -296,5 +309,6 @@ A separate JavaFX desktop client (independently versioned; see its own `README.m
 - PDF, DOCX, XLSX, PPTX, OCR, and general archive (zip) parsing are not implemented - only the plain-text/code formats and image formats listed under [File Workspace & Attachments](#file-workspace--attachments) are supported.
 - The public Nominatim/OSRM instances used by default for [Location](#location--geocoding--routing) have no uptime SLA and can rate-limit; a self-hosted instance is recommended for production use.
 - Route optimization uses a heuristic (nearest-neighbour + 2-opt) above `exact-optimization-max-stops` stops - not a guaranteed-optimal TSP solution.
+- Candidate-based geocoding validation reduces but does not eliminate the risk of an incorrect match - it only evaluates address details actually present in both the query text and the provider's structured response; a query with no postal code, street, or region to disambiguate a common place name can still land on `AMBIGUOUS`/`NOT_CONFIDENTLY_RESOLVED` rather than a wrong-but-confident answer, which is the intended fail-safe behavior.
 - Ollama thinking-token counts are estimated (characters/4), not exact tokenizer counts, everywhere in this codebase - reported fields are explicitly labeled as estimates where relevant.
 - There is no cross-repository version compatibility matrix between this backend and the Windows client; they are versioned and released independently.

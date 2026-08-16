@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.8.0"
+  version: "2.8.1"
   workspace:
     root: ./temp-workspaces
     ttl: 60m
@@ -61,6 +61,7 @@ jarvis:
     exact-optimization-max-stops: 8
     connect-timeout: 3s
     read-timeout: 8s
+    geocode-candidate-limit: 5
   thinking:
     stream-to-clients: true
     persist: false

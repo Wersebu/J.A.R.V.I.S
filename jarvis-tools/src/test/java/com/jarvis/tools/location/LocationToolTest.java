@@ -22,7 +22,7 @@ class LocationToolTest {
 
     private static final LocationProperties PROPERTIES = new LocationProperties(
             true, "https://nominatim.example", "https://osrm.example", "Test-Agent/1.0",
-            0, 25, 8, Duration.ofSeconds(1), Duration.ofSeconds(1));
+            0, 25, 8, Duration.ofSeconds(1), Duration.ofSeconds(1), 5);
 
     @Test
     void geocodeBatchReturnsPartialSuccessWhenOneAddressFails() {
@@ -40,6 +40,33 @@ class LocationToolTest {
         assertThat((List<?>) result.data().get("failedPoints")).hasSize(1);
         assertThat(result.data().get("requestedCount")).isEqualTo(2);
         assertThat(result.data().get("resolvedCount")).isEqualTo(1);
+    }
+
+    @Test
+    void batchGeocodeRoutesAnAmbiguousAddressToItsOwnBucketNotSuccessfulOrFailed() {
+        // TEST 6: batch geocoding must run every address through the same candidate validation -
+        // an ambiguous result must never be silently promoted to "successful" nor lumped in with
+        // genuine "not found" failures.
+        GeocodeCandidate podlaskie = new GeocodeCandidate(53.0, 23.6, "Nowa Wola, podlaskie", "", "Nowa Wola", "", "", "podlaskie", "Polska");
+        GeocodeCandidate mazowieckie = new GeocodeCandidate(51.75, 21.65, "Nowa Wola, mazowieckie", "", "Nowa Wola", "", "", "mazowieckie", "Polska");
+        FakeGeocodingClient geocodingClient = new FakeGeocodingClient();
+        geocodingClient.on("Biedronka, Korczaka 7, 08-400 Garwolin", GeocodeResult.resolved(
+                "Biedronka, Korczaka 7, 08-400 Garwolin", 51.90, 21.63, "Biedronka, Korczaka 7, Garwolin"));
+        geocodingClient.on("Nowa Wola", GeocodeResult.ambiguous("Nowa Wola", List.of(podlaskie, mazowieckie)));
+        LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES);
+
+        ToolResult result = tool.execute(new ToolRequest("location", "GEOCODE", "conversation-1", "request-1", "", "",
+                Map.of("queries", List.of("Biedronka, Korczaka 7, 08-400 Garwolin", "Nowa Wola"))));
+
+        assertThat(result.success()).isTrue();
+        assertThat((List<?>) result.data().get("successfulPoints")).hasSize(1);
+        assertThat((List<?>) result.data().get("failedPoints")).isEmpty();
+        List<?> ambiguousPoints = (List<?>) result.data().get("ambiguousPoints");
+        assertThat(ambiguousPoints).hasSize(1);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> ambiguousEntry = (Map<String, Object>) ambiguousPoints.get(0);
+        assertThat(ambiguousEntry.get("query")).isEqualTo("Nowa Wola");
+        assertThat((List<?>) ambiguousEntry.get("candidates")).hasSize(2);
     }
 
     @Test

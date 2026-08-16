@@ -73,7 +73,12 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
                                 + "needs to confirm a location exists - never use web search for this. Accepts either a "
                                 + "single \"query\" or a \"queries\" array to batch-resolve many addresses in one call "
                                 + "(preferred over calling this repeatedly for each address). Never used for finding "
-                                + "products, offers, or prices - use web.SEARCH_MARKETPLACE for that instead.",
+                                + "products, offers, or prices - use web.SEARCH_MARKETPLACE for that instead. Results are "
+                                + "validated against every address detail in the query (postal code especially) - a name "
+                                + "match alone is never enough. When a query can't be confidently pinned to one location "
+                                + "(e.g. same place name in multiple regions, no matching postal code among the candidates), "
+                                + "it comes back under \"ambiguousPoints\" with its candidates instead of a guessed coordinate - "
+                                + "ask the user to clarify rather than using an ambiguous result as-is.",
                         false, ToolSafetyLevel.READ,
                         arg("query", "string", false, "A single free-text address/postal code/city to geocode"),
                         arg("queries", "array", false, "Multiple free-text addresses to geocode in one batch call")),
@@ -141,32 +146,63 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
         }
         LOGGER.info("[LOCATION] LocationTool geokoduje {} adresow requestId={}", queries.size(), request.requestId());
         List<Map<String, Object>> successful = new ArrayList<>();
+        List<Map<String, Object>> ambiguous = new ArrayList<>();
         List<Map<String, Object>> failed = new ArrayList<>();
         for (String query : queries) {
             GeocodeResult result = safeGeocode(query);
-            if (result.resolved()) {
-                successful.add(Map.of("query", result.query(), "latitude", result.latitude(),
+            switch (result.status()) {
+                case RESOLVED -> successful.add(Map.of("query", result.query(), "latitude", result.latitude(),
                         "longitude", result.longitude(), "displayName", result.displayName()));
-            } else {
-                failed.add(Map.of("query", result.query(), "reason", result.failureReason()));
+                case AMBIGUOUS, NOT_CONFIDENTLY_RESOLVED -> ambiguous.add(Map.of(
+                        "query", result.query(), "reason", result.failureReason(),
+                        "candidates", result.candidates().stream().map(this::candidateMap).toList()));
+                case NOT_FOUND -> failed.add(Map.of("query", result.query(), "reason", result.failureReason()));
             }
         }
-        LOGGER.info("[LOCATION] Geocoding: {}/{} punktow OK requestId={}", successful.size(), queries.size(), request.requestId());
-        boolean anySuccess = !successful.isEmpty();
+        LOGGER.info("[LOCATION] Geocoding: {}/{} punktow OK, {} niejednoznacznych requestId={}",
+                successful.size(), queries.size(), ambiguous.size(), request.requestId());
+        boolean anyActionable = !successful.isEmpty() || !ambiguous.isEmpty();
         Map<String, Object> data = new HashMap<>();
         data.put("successfulPoints", successful);
         data.put("failedPoints", failed);
+        if (!ambiguous.isEmpty()) {
+            data.put("ambiguousPoints", ambiguous);
+        }
         data.put("requestedCount", queries.size());
         data.put("resolvedCount", successful.size());
         if (!warnings.isEmpty()) {
             data.put("warnings", warnings);
         }
-        String message = anySuccess
-                ? "Zgeokodowano " + successful.size() + " z " + queries.size() + " adresow."
-                : "Nie udalo sie jednoznacznie zlokalizowac zadnego z podanych adresow.";
-        return new ToolResult(anySuccess, TOOL_NAME, "GEOCODE", request.requestId(), request.conversationId(), false, List.of(),
-                message, data, anySuccess ? "" : "GEOCODING_FAILED",
-                anySuccess ? "" : "Nie udalo sie jednoznacznie zlokalizowac podanych adresow.", false, "");
+        String message = messageFor(successful.size(), ambiguous.size(), queries.size());
+        return new ToolResult(anyActionable, TOOL_NAME, "GEOCODE", request.requestId(), request.conversationId(), false, List.of(),
+                message, data, anyActionable ? "" : "GEOCODING_FAILED",
+                anyActionable ? "" : "Nie udalo sie jednoznacznie zlokalizowac podanych adresow.", false, "");
+    }
+
+    private String messageFor(int successCount, int ambiguousCount, int totalCount) {
+        if (successCount > 0) {
+            return "Zgeokodowano " + successCount + " z " + totalCount + " adresow."
+                    + (ambiguousCount > 0 ? " " + ambiguousCount + " wymaga doprecyzowania (niejednoznaczna lokalizacja)." : "");
+        }
+        if (ambiguousCount > 0) {
+            return ambiguousCount + " z " + totalCount + " adresow wymaga doprecyzowania - lokalizacja niejednoznaczna, "
+                    + "potrzebne dodatkowe informacje (np. wojewodztwo, ulica) od uzytkownika.";
+        }
+        return "Nie udalo sie jednoznacznie zlokalizowac zadnego z podanych adresow.";
+    }
+
+    private Map<String, Object> candidateMap(GeocodeCandidate candidate) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("latitude", candidate.latitude());
+        map.put("longitude", candidate.longitude());
+        map.put("displayName", candidate.displayName());
+        if (!candidate.postalCode().isBlank()) {
+            map.put("postalCode", candidate.postalCode());
+        }
+        if (!candidate.region().isBlank()) {
+            map.put("region", candidate.region());
+        }
+        return map;
     }
 
     private ToolResult route(ToolRequest request) {

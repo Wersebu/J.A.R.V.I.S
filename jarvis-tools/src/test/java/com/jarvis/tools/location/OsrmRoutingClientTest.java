@@ -107,7 +107,7 @@ class OsrmRoutingClientTest {
 
     private OsrmRoutingClient client() {
         LocationProperties properties = new LocationProperties(true, "unused", baseUrl(), "JARVIS-Core-LocationTool-Test/1.0",
-                0, 25, 8, Duration.ofSeconds(2), Duration.ofSeconds(2));
+                0, 25, 8, Duration.ofSeconds(2), Duration.ofSeconds(2), 5);
         return new OsrmRoutingClient(properties, new ObjectMapper());
     }
 

@@ -13,6 +13,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * OpenStreetMap Nominatim implementation of {@link GeocodingClient}.
@@ -24,6 +26,11 @@ import java.nio.charset.StandardCharsets;
  * (see {@link LocationTool}) MUST call this sequentially, one address at a time, and must never be
  * changed to fire requests concurrently (e.g. via a thread pool or parallel stream) without first
  * revisiting Nominatim's usage policy.
+ *
+ * <p>Requests {@code addressdetails=1} and up to {@link LocationProperties#geocodeCandidateLimit()}
+ * candidates in a single call, then hands them to {@link GeocodeCandidateScorer} to pick (or
+ * refuse to pick) the best match against the query's own address details - never trusts the
+ * provider's top result blindly (see the scorer's Javadoc for why).
  */
 @Service
 public class NominatimGeocodingClient implements GeocodingClient {
@@ -33,6 +40,7 @@ public class NominatimGeocodingClient implements GeocodingClient {
     private final LocationProperties properties;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final GeocodeCandidateScorer candidateScorer;
     private final Object throttleLock = new Object();
     private long lastCallEpochMillis;
 
@@ -48,6 +56,7 @@ public class NominatimGeocodingClient implements GeocodingClient {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(properties.connectTimeout())
                 .build();
+        this.candidateScorer = new GeocodeCandidateScorer();
     }
 
     @Override
@@ -57,11 +66,12 @@ public class NominatimGeocodingClient implements GeocodingClient {
         }
         String normalized = query == null ? "" : query.strip();
         if (normalized.isBlank()) {
-            return GeocodeResult.unresolved(normalized, "Empty query");
+            return GeocodeResult.notFound(normalized, "Empty query");
         }
         throttle();
         try {
-            URI uri = URI.create(properties.nominatimBaseUrl() + "/search?q=" + encode(normalized) + "&format=jsonv2&limit=1");
+            URI uri = URI.create(properties.nominatimBaseUrl() + "/search?q=" + encode(normalized)
+                    + "&format=jsonv2&addressdetails=1&limit=" + properties.geocodeCandidateLimit());
             HttpRequest request = HttpRequest.newBuilder(uri)
                     .timeout(properties.readTimeout())
                     .header("Accept", "application/json")
@@ -74,9 +84,10 @@ public class NominatimGeocodingClient implements GeocodingClient {
             }
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 LOGGER.warn("[LOCATION] Nominatim returned HTTP {} for query=\"{}\"", response.statusCode(), normalized);
-                return GeocodeResult.unresolved(normalized, "Geocoding provider returned HTTP " + response.statusCode());
+                return GeocodeResult.notFound(normalized, "Geocoding provider returned HTTP " + response.statusCode());
             }
-            return parse(normalized, response.body());
+            List<GeocodeCandidate> candidates = parseCandidates(response.body());
+            return candidateScorer.select(normalized, candidates);
         } catch (IOException exception) {
             throw new LocationException("Nominatim request failed for " + properties.nominatimBaseUrl()
                     + ": " + exception.getClass().getSimpleName(), exception);
@@ -86,23 +97,71 @@ public class NominatimGeocodingClient implements GeocodingClient {
         }
     }
 
-    private GeocodeResult parse(String query, String body) {
+    private List<GeocodeCandidate> parseCandidates(String body) {
         try {
             JsonNode root = objectMapper.readTree(body == null ? "" : body);
-            if (!root.isArray() || root.isEmpty()) {
-                return GeocodeResult.unresolved(query, "No matching location found");
+            if (!root.isArray()) {
+                return List.of();
             }
-            JsonNode first = root.get(0);
-            double lat = first.path("lat").asText("").isBlank() ? Double.NaN : Double.parseDouble(first.path("lat").asText());
-            double lon = first.path("lon").asText("").isBlank() ? Double.NaN : Double.parseDouble(first.path("lon").asText());
-            if (Double.isNaN(lat) || Double.isNaN(lon)) {
-                return GeocodeResult.unresolved(query, "Provider response missing coordinates");
+            List<GeocodeCandidate> candidates = new ArrayList<>();
+            for (JsonNode node : root) {
+                GeocodeCandidate candidate = toCandidate(node);
+                if (candidate != null) {
+                    candidates.add(candidate);
+                }
             }
-            String displayName = first.path("display_name").asText(query);
-            return GeocodeResult.resolved(query, lat, lon, displayName);
+            return candidates;
         } catch (IOException | RuntimeException exception) {
-            return GeocodeResult.unresolved(query, "Could not parse geocoding response");
+            LOGGER.warn("[LOCATION] Could not parse Nominatim response: {}", exception.getMessage());
+            return List.of();
         }
+    }
+
+    private GeocodeCandidate toCandidate(JsonNode node) {
+        double latitude = parseCoordinate(node.path("lat").asText(""));
+        double longitude = parseCoordinate(node.path("lon").asText(""));
+        if (Double.isNaN(latitude) || Double.isNaN(longitude)) {
+            return null;
+        }
+        JsonNode address = node.path("address");
+        String city = firstNonBlank(
+                text(address, "city"), text(address, "town"), text(address, "village"), text(address, "municipality"));
+        return new GeocodeCandidate(
+                latitude,
+                longitude,
+                node.path("display_name").asText(""),
+                text(address, "postcode"),
+                city,
+                text(address, "road"),
+                text(address, "house_number"),
+                text(address, "state"),
+                text(address, "country")
+        );
+    }
+
+    private double parseCoordinate(String value) {
+        if (value == null || value.isBlank()) {
+            return Double.NaN;
+        }
+        try {
+            return Double.parseDouble(value);
+        } catch (NumberFormatException exception) {
+            return Double.NaN;
+        }
+    }
+
+    private String text(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        return value.isMissingNode() || value.isNull() ? "" : value.asText("");
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
     }
 
     private void throttle() {
