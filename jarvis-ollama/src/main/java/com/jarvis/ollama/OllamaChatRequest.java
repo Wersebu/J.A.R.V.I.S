@@ -1,5 +1,6 @@
 package com.jarvis.ollama;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.List;
@@ -14,7 +15,9 @@ import java.util.Map;
  * @param stream whether streaming is enabled
  * @param think native reasoning control: a reasoning-effort string ("low"/"medium"/"high") or a
  *              {@link Boolean} to plainly enable/disable thinking - see
- *              {@code OllamaGenerateRequest.think} for why this is {@code Object}
+ *              {@code OllamaGenerateRequest.think} for why this is {@code Object}. Omitted
+ *              entirely when {@code null}, since Ollama returns HTTP 400 for models that don't
+ *              declare thinking capability if this field is present at all.
  * @param keepAlive Ollama keep_alive value
  * @param options generation options
  */
@@ -23,7 +26,7 @@ public record OllamaChatRequest(
         List<OllamaChatMessage> messages,
         List<Map<String, Object>> tools,
         boolean stream,
-        Object think,
+        @JsonInclude(JsonInclude.Include.NON_NULL) Object think,
         @JsonProperty("keep_alive") String keepAlive,
         Map<String, Object> options
 ) {

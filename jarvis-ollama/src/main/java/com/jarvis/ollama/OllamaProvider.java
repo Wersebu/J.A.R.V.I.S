@@ -26,6 +26,8 @@ import com.jarvis.common.event.StatusChangedEvent;
 import com.jarvis.common.event.ThinkingEvent;
 import com.jarvis.common.event.ThinkingTokenEvent;
 import com.jarvis.common.event.TokenEvent;
+import com.jarvis.common.model.ActiveModelService;
+import com.jarvis.common.model.ModelCapability;
 import com.jarvis.common.model.QwenThinkingBudgetMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,6 +65,7 @@ public class OllamaProvider implements AIProvider {
     private final ModelWarmupRegistry warmupRegistry;
     private final ContextBudgetService contextBudgetService;
     private final QwenThinkingBudgetProperties qwenThinkingBudgetProperties;
+    private final ActiveModelService activeModelService;
 
     /**
      * Creates the Ollama HTTP service.
@@ -73,6 +76,7 @@ public class OllamaProvider implements AIProvider {
      * @param cognitiveEventBus cognitive event bus
      * @param requestCoordinator Ollama request coordinator
      * @param qwenThinkingBudgetProperties Qwen thinking-budget configuration
+     * @param activeModelService resolves the active model's declared capabilities
      */
     public OllamaProvider(
             HttpClient httpClient,
@@ -82,7 +86,8 @@ public class OllamaProvider implements AIProvider {
             OllamaRequestCoordinator requestCoordinator,
             ModelWarmupRegistry warmupRegistry,
             ContextBudgetService contextBudgetService,
-            QwenThinkingBudgetProperties qwenThinkingBudgetProperties
+            QwenThinkingBudgetProperties qwenThinkingBudgetProperties,
+            ActiveModelService activeModelService
     ) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
@@ -92,6 +97,7 @@ public class OllamaProvider implements AIProvider {
         this.warmupRegistry = warmupRegistry;
         this.contextBudgetService = contextBudgetService;
         this.qwenThinkingBudgetProperties = qwenThinkingBudgetProperties;
+        this.activeModelService = activeModelService;
     }
 
     /**
@@ -172,16 +178,17 @@ public class OllamaProvider implements AIProvider {
             try (OllamaRequestCoordinator.Permit ignored = requestCoordinator.acquire(jobType, requestId)) {
                 long httpPreparationStarted = System.nanoTime();
                 String budgetedPrompt = contextBudgetService.fitPrompt(brain.model(), prompt);
+                Object think = resolveThink(brain);
                 String requestJson = hasImages
-                        ? objectMapper.writeValueAsString(buildChatRequestWithImages(brain, budgetedPrompt, images,
-                                brain.reasoningLevel().name().toLowerCase(java.util.Locale.ROOT)))
+                        ? objectMapper.writeValueAsString(buildChatRequestWithImages(brain, budgetedPrompt, images, think))
                         : objectMapper.writeValueAsString(new OllamaGenerateRequest(
                                 brain.model(),
                                 budgetedPrompt,
                                 true,
-                                brain.reasoningLevel().name().toLowerCase(java.util.Locale.ROOT),
+                                think,
                                 properties.keepAlive(),
-                                contextBudgetService.ollamaOptions()
+                                contextBudgetService.ollamaOptions(),
+                                List.of()
                         ));
                 if (hasImages) {
                     LOGGER.info("[JARVIS][requestId={}][OLLAMA] Sending images via /api/chat count={} model={}",
@@ -305,7 +312,7 @@ public class OllamaProvider implements AIProvider {
                         toOllamaMessages(messages),
                         toOllamaTools(tools),
                         false,
-                        brain.reasoningLevel().name().toLowerCase(java.util.Locale.ROOT),
+                        resolveThink(brain),
                         properties.keepAlive(),
                         contextBudgetService.ollamaOptions()
                 );
@@ -691,6 +698,20 @@ public class OllamaProvider implements AIProvider {
      */
     private int estimateTokens(String value) {
         return (int) Math.ceil((value == null ? 0 : value.length()) / 4.0d);
+    }
+
+    /**
+     * Resolves the {@code think} value to send for the primary model turn - the reasoning-effort
+     * string for models that actually declare {@link ModelCapability#THINKING}, or {@code null}
+     * (omitted from the request entirely, see {@code OllamaGenerateRequest.think}) for models that
+     * don't. Ollama returns HTTP 400 for a non-thinking model if this field is present at all, so
+     * every call site must go through this instead of unconditionally sending the reasoning level.
+     */
+    private Object resolveThink(Brain brain) {
+        if (!activeModelService.activeModelCapabilities().contains(ModelCapability.THINKING)) {
+            return null;
+        }
+        return brain.reasoningLevel().name().toLowerCase(java.util.Locale.ROOT);
     }
 
     /**

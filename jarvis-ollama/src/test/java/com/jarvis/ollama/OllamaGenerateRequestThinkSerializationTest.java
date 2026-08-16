@@ -47,4 +47,14 @@ class OllamaGenerateRequestThinkSerializationTest {
 
         assertThat(json).doesNotContain("images");
     }
+
+    @Test
+    void thinkFieldIsOmittedEntirelyWhenNullForModelsWithoutThinkingCapability() throws Exception {
+        OllamaGenerateRequest request = new OllamaGenerateRequest(
+                "ministral-3:14b", "prompt", true, null, "-1m", Map.of(), List.of());
+
+        String json = objectMapper.writeValueAsString(request);
+
+        assertThat(json).doesNotContain("think");
+    }
 }

@@ -47,4 +47,13 @@ class OllamaChatMessageImageSerializationTest {
         assertThat(json).contains("\"think\":false");
         assertThat(json).doesNotContain("\"think\":\"false\"");
     }
+
+    @Test
+    void thinkFieldIsOmittedEntirelyWhenNullForModelsWithoutThinkingCapability() throws Exception {
+        OllamaChatRequest request = new OllamaChatRequest("ministral-3:14b", List.of(), List.of(), true, null, "-1m", Map.of());
+
+        String json = objectMapper.writeValueAsString(request);
+
+        assertThat(json).doesNotContain("think");
+    }
 }
