@@ -60,6 +60,14 @@ jarvis:
     base-url: http://localhost:11434
     model: gpt-oss:20b
     keep-alive: -1m
+  qwen-thinking-budget:
+    # Applies only to this exact model name (case/whitespace-insensitive) - never a family prefix.
+    target-model: qwen3.5:9b
+    # OFF | LOW | NORMAL | HIGH | MAX
+    mode: NORMAL
+    low-tokens: 250
+    normal-tokens: 500
+    high-tokens: 1500
     interactive-priority: true
   model-startup:
     models:

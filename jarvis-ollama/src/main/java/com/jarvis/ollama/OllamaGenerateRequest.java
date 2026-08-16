@@ -12,7 +12,11 @@ import java.util.Map;
  * @param model model name
  * @param prompt prompt text
  * @param stream whether streaming is enabled
- * @param think native reasoning level for thinking-capable models
+ * @param think native reasoning control: a reasoning-effort string ("low"/"medium"/"high", used
+ *              for gpt-oss) or a {@link Boolean} to plainly enable/disable thinking (used by the
+ *              Qwen thinking-budget continuation call). {@code Object} rather than {@code String}
+ *              purely so both shapes serialize correctly - existing callers passing a String are
+ *              unaffected.
  * @param keepAlive Ollama keep_alive value
  * @param options Ollama generation options
  * @param images base64-encoded images, sent natively to a vision-capable model; omitted entirely
@@ -22,7 +26,7 @@ public record OllamaGenerateRequest(
         String model,
         String prompt,
         boolean stream,
-        String think,
+        Object think,
         @JsonProperty("keep_alive") String keepAlive,
         Map<String, Object> options,
         @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> images
@@ -39,6 +43,6 @@ public record OllamaGenerateRequest(
      * @param options Ollama generation options
      */
     public OllamaGenerateRequest(String model, String prompt, boolean stream, String think, String keepAlive, Map<String, Object> options) {
-        this(model, prompt, stream, think, keepAlive, options, List.of());
+        this(model, prompt, stream, (Object) think, keepAlive, options, List.of());
     }
 }

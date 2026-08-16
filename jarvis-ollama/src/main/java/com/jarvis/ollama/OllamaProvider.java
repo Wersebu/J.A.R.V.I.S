@@ -26,6 +26,7 @@ import com.jarvis.common.event.StatusChangedEvent;
 import com.jarvis.common.event.ThinkingEvent;
 import com.jarvis.common.event.ThinkingTokenEvent;
 import com.jarvis.common.event.TokenEvent;
+import com.jarvis.common.model.QwenThinkingBudgetMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -61,6 +62,7 @@ public class OllamaProvider implements AIProvider {
     private final OllamaRequestCoordinator requestCoordinator;
     private final ModelWarmupRegistry warmupRegistry;
     private final ContextBudgetService contextBudgetService;
+    private final QwenThinkingBudgetProperties qwenThinkingBudgetProperties;
 
     /**
      * Creates the Ollama HTTP service.
@@ -70,6 +72,7 @@ public class OllamaProvider implements AIProvider {
      * @param properties Ollama configuration
      * @param cognitiveEventBus cognitive event bus
      * @param requestCoordinator Ollama request coordinator
+     * @param qwenThinkingBudgetProperties Qwen thinking-budget configuration
      */
     public OllamaProvider(
             HttpClient httpClient,
@@ -78,7 +81,8 @@ public class OllamaProvider implements AIProvider {
             CognitiveEventBus cognitiveEventBus,
             OllamaRequestCoordinator requestCoordinator,
             ModelWarmupRegistry warmupRegistry,
-            ContextBudgetService contextBudgetService
+            ContextBudgetService contextBudgetService,
+            QwenThinkingBudgetProperties qwenThinkingBudgetProperties
     ) {
         this.httpClient = httpClient;
         this.objectMapper = objectMapper;
@@ -87,6 +91,7 @@ public class OllamaProvider implements AIProvider {
         this.requestCoordinator = requestCoordinator;
         this.warmupRegistry = warmupRegistry;
         this.contextBudgetService = contextBudgetService;
+        this.qwenThinkingBudgetProperties = qwenThinkingBudgetProperties;
     }
 
     /**
@@ -238,7 +243,8 @@ public class OllamaProvider implements AIProvider {
                         "requestLatencyMs", ollamaRequestLatencyMs,
                         "reasoningLevel", brain.reasoningLevel().name()
                 ));
-                streamResponse(conversationId, brain, httpResponse.body(), startedAt, startedNano, ollamaRequestLatencyMs, jobType, eventSink);
+                streamResponse(conversationId, brain, httpResponse.body(), startedAt, startedNano, ollamaRequestLatencyMs, jobType, eventSink,
+                        budgetedPrompt, images == null ? List.of() : images);
             }
         } catch (JsonProcessingException exception) {
             LOGGER.error("[JARVIS] Ollama JSON error", exception);
@@ -345,22 +351,128 @@ public class OllamaProvider implements AIProvider {
             long startedNano,
             long requestStartToHeadersMs,
             AIJobType jobType,
-            ChatEventSink eventSink
+            ChatEventSink eventSink,
+            String budgetedPrompt,
+            List<ImageAttachment> images
     ) throws IOException {
-        boolean thinkingStarted = false;
-        boolean thinkingFinished = false;
-        boolean answerStarted = false;
-        long firstThinkingNano = 0L;
-        long lastThinkingNano = 0L;
-        long firstAnswerNano = 0L;
-        long firstThinkingTokenMs = 0L;
-        long firstAnswerTokenMs = 0L;
-        OllamaGenerateResponse finalResponse = null;
-        int thinkingChunks = 0;
-        int answerChunks = 0;
-        int thinkingCharacters = 0;
-        int answerCharacters = 0;
+        GenerationStreamState state = new GenerationStreamState();
 
+        boolean qwenBudgetTarget = qwenThinkingBudgetProperties.matchesTarget(brain.model());
+        int configuredMaxTokens = qwenThinkingBudgetProperties.resolveMaxTokens();
+        boolean budgetApplies = qwenBudgetTarget && configuredMaxTokens >= 0;
+
+        boolean budgetExceeded = readGenerationStream(inputStream, conversationId, brain, jobType, eventSink,
+                startedNano, state, budgetApplies, configuredMaxTokens);
+
+        boolean thinkingLimited = false;
+        if (budgetExceeded && !state.answerStarted) {
+            thinkingLimited = true;
+            LOGGER.info(
+                    "[JARVIS][requestId={}][QWEN_THINKING_BUDGET] model={} mode={} budget={} estimatedThinkingTokens={} -> "
+                            + "cancelling reasoning and requesting the final answer directly",
+                    diagnosticsRequestId(), brain.model(), qwenThinkingBudgetProperties.getMode(), configuredMaxTokens, state.estimatedThinkingTokens);
+            try {
+                HttpResponse<InputStream> continuationResponse = sendContinuationRequest(brain, budgetedPrompt, images);
+                // Continuation has thinking disabled, so no further budget accounting is needed or possible.
+                readGenerationStream(continuationResponse.body(), conversationId, brain, jobType, eventSink,
+                        startedNano, state, false, -1);
+            } catch (RuntimeException | IOException | InterruptedException exception) {
+                if (exception instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                LOGGER.warn(
+                        "[JARVIS][requestId={}][QWEN_THINKING_BUDGET] continuation request failed model={} reason={} - "
+                                + "falling back to whatever content was already produced",
+                        diagnosticsRequestId(), brain.model(), exception.getMessage());
+            }
+        }
+
+        if (state.thinkingStarted && !state.thinkingFinished) {
+            long durationMs = nanosToMillis((state.lastThinkingNano == 0L ? System.nanoTime() : state.lastThinkingNano) - state.firstThinkingNano);
+            long finalThinkingChunks = state.thinkingChunks;
+            diagnostics(d -> {
+                d.setThinkingDurationMs(durationMs);
+                d.setThinkingTokensOrChunks(finalThinkingChunks);
+            });
+            publishCognitive(jobType, CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished", "model:" + brain.model(), Map.of(
+                    "durationMs", durationMs,
+                    "chunks", state.thinkingChunks,
+                    "characters", state.thinkingCharacters
+            ));
+        }
+        if (state.answerStarted) {
+            long answerDurationMs = nanosToMillis(System.nanoTime() - state.firstAnswerNano);
+            diagnostics(d -> d.setAnswerStreamingDurationMs(answerDurationMs));
+            publishCognitive(jobType, CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Answer finished", "model:" + brain.model(), Map.of(
+                    "durationMs", answerDurationMs,
+                    "characters", state.answerCharacters,
+                    "tokens", state.finalResponse == null || state.finalResponse.evalCount() == null ? state.answerChunks : state.finalResponse.evalCount()
+            ));
+        }
+
+        long generationTimeMs = Duration.between(startedAt, Instant.now()).toMillis();
+        diagnostics(d -> d.setTotalModelRequestMs(generationTimeMs));
+        Integer completionTokens = state.finalResponse == null ? null : state.finalResponse.evalCount();
+        Integer promptTokens = state.finalResponse == null ? null : state.finalResponse.promptEvalCount();
+        Double tokensPerSecond = tokensPerSecond(completionTokens, generationTimeMs);
+        OllamaInferenceMetrics metrics = buildMetrics(
+                brain,
+                state.finalResponse,
+                requestStartToHeadersMs,
+                state.firstThinkingTokenMs,
+                state.firstAnswerTokenMs
+        );
+        publishMetrics(jobType, brain, metrics, generationTimeMs,
+                qwenBudgetTarget ? new QwenThinkingBudgetOutcome(true, qwenThinkingBudgetProperties.getMode(), configuredMaxTokens, state.estimatedThinkingTokens, thinkingLimited)
+                        : QwenThinkingBudgetOutcome.notApplicable());
+
+        LOGGER.info(
+                "[JARVIS] Generation time: {} ms, tokens: {}, tokens per second: {}",
+                generationTimeMs,
+                tokenSummary(state.finalResponse),
+                tokensPerSecond == null ? "unavailable" : tokensPerSecond
+        );
+        publishCognitive(jobType, CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Streaming finished", "model:" + brain.model(), Map.of(
+                "generationTimeMs", generationTimeMs,
+                "promptTokens", promptTokens == null ? 0 : promptTokens,
+                "completionTokens", completionTokens == null ? state.answerChunks : completionTokens,
+                "tokensStreamed", state.answerChunks,
+                "tokensPerSecond", tokensPerSecond == null ? 0.0d : tokensPerSecond
+        ));
+        eventSink.publish(GenerationFinishedEvent.create(
+                conversationId,
+                generationTimeMs,
+                brain.type(),
+                brain.model(),
+                promptTokens,
+                completionTokens,
+                tokensPerSecond
+        ));
+        eventSink.publish(StatusChangedEvent.create(ChatEventType.IDLE, conversationId, "IDLE"));
+    }
+
+    /**
+     * Reads one native-generate stream line-by-line, updating {@code state} and publishing the
+     * exact same events the original single-pass implementation did. When {@code budgetApplies},
+     * also accumulates an estimated thinking-token count (chars/4, the same estimation approach
+     * already used project-wide in {@code ContextBudgetService} - Ollama does not expose a live
+     * per-chunk token count during streaming, only a final total after {@code done:true}) and
+     * stops reading as soon as that estimate reaches {@code maxThinkingTokens}.
+     *
+     * @return true when reading stopped early because the thinking budget was reached (not a
+     *         natural {@code done:true})
+     */
+    private boolean readGenerationStream(
+            InputStream inputStream,
+            String conversationId,
+            Brain brain,
+            AIJobType jobType,
+            ChatEventSink eventSink,
+            long startedNano,
+            GenerationStreamState state,
+            boolean budgetApplies,
+            int maxThinkingTokens
+    ) throws IOException {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
@@ -370,17 +482,17 @@ public class OllamaProvider implements AIProvider {
 
                 OllamaGenerateResponse response = objectMapper.readValue(line, OllamaGenerateResponse.class);
                 if (Boolean.TRUE.equals(response.done())) {
-                    finalResponse = response;
-                    break;
+                    state.finalResponse = response;
+                    return false;
                 }
 
                 String thinking = response.thinking();
                 if (thinking != null && !thinking.isEmpty()) {
-                    if (!thinkingStarted) {
-                        thinkingStarted = true;
-                        firstThinkingNano = System.nanoTime();
-                        long elapsedMs = nanosToMillis(firstThinkingNano - startedNano);
-                        firstThinkingTokenMs = elapsedMs;
+                    if (!state.thinkingStarted) {
+                        state.thinkingStarted = true;
+                        state.firstThinkingNano = System.nanoTime();
+                        long elapsedMs = nanosToMillis(state.firstThinkingNano - startedNano);
+                        state.firstThinkingTokenMs = elapsedMs;
                         diagnostics(d -> d.setFirstThinkingTokenMs(elapsedMs));
                         publishCognitive(jobType, CognitiveEventType.FIRST_TOKEN_RECEIVED, "RECEIVED", "First model output received", "model:" + brain.model(), Map.of(
                                 "latencyMs", elapsedMs,
@@ -393,37 +505,44 @@ public class OllamaProvider implements AIProvider {
                         ));
                         LOGGER.info("[JARVIS][requestId={}][OLLAMA] FIRST_THINKING_CHUNK elapsedMs={}", diagnosticsRequestId(), elapsedMs);
                     }
-                    lastThinkingNano = System.nanoTime();
-                    thinkingChunks++;
-                    thinkingCharacters += thinking.length();
+                    state.lastThinkingNano = System.nanoTime();
+                    state.thinkingChunks++;
+                    state.thinkingCharacters += thinking.length();
                     publishCognitive(jobType, CognitiveEventType.THINKING_TOKEN, "THINKING", thinking, "model:" + brain.model(), Map.of(
                             "text", thinking,
-                            "index", thinkingChunks
+                            "index", state.thinkingChunks
                     ));
                     eventSink.publish(ThinkingTokenEvent.create(conversationId, thinking));
+
+                    if (budgetApplies) {
+                        state.estimatedThinkingTokens += estimateTokens(thinking);
+                        if (state.estimatedThinkingTokens >= maxThinkingTokens) {
+                            return true;
+                        }
+                    }
                 }
 
                 String token = response.response();
                 if (token != null && !token.isEmpty()) {
-                    if (thinkingStarted && !thinkingFinished) {
-                        thinkingFinished = true;
-                        long durationMs = nanosToMillis((lastThinkingNano == 0L ? System.nanoTime() : lastThinkingNano) - firstThinkingNano);
-                        long finalThinkingChunks = thinkingChunks;
+                    if (state.thinkingStarted && !state.thinkingFinished) {
+                        state.thinkingFinished = true;
+                        long durationMs = nanosToMillis((state.lastThinkingNano == 0L ? System.nanoTime() : state.lastThinkingNano) - state.firstThinkingNano);
+                        long finalThinkingChunks = state.thinkingChunks;
                         diagnostics(d -> {
                             d.setThinkingDurationMs(durationMs);
                             d.setThinkingTokensOrChunks(finalThinkingChunks);
                         });
                         publishCognitive(jobType, CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished", "model:" + brain.model(), Map.of(
                                 "durationMs", durationMs,
-                                "chunks", thinkingChunks,
-                                "characters", thinkingCharacters
+                                "chunks", state.thinkingChunks,
+                                "characters", state.thinkingCharacters
                         ));
                     }
-                    if (!answerStarted) {
-                        answerStarted = true;
-                        firstAnswerNano = System.nanoTime();
-                        long firstTokenLatencyMs = nanosToMillis(firstAnswerNano - startedNano);
-                        firstAnswerTokenMs = firstTokenLatencyMs;
+                    if (!state.answerStarted) {
+                        state.answerStarted = true;
+                        state.firstAnswerNano = System.nanoTime();
+                        long firstTokenLatencyMs = nanosToMillis(state.firstAnswerNano - startedNano);
+                        state.firstAnswerTokenMs = firstTokenLatencyMs;
                         diagnostics(d -> d.setFirstAnswerTokenMs(firstTokenLatencyMs));
                         LOGGER.info("[JARVIS][requestId={}][OLLAMA] FIRST_ANSWER_TOKEN elapsedMs={}",
                                 diagnosticsRequestId(), firstTokenLatencyMs);
@@ -443,82 +562,111 @@ public class OllamaProvider implements AIProvider {
                                 diagnosticsRequestId(), firstTokenLatencyMs);
                     }
                     for (String chunk : responseChunks(token)) {
-                        answerChunks++;
-                        answerCharacters += chunk.length();
+                        state.answerChunks++;
+                        state.answerCharacters += chunk.length();
                         publishCognitive(jobType, CognitiveEventType.ANSWER_TOKEN, "TOKEN", chunk, "model:" + brain.model(), Map.of(
                                 "text", chunk,
-                                "index", answerChunks
+                                "index", state.answerChunks
                         ));
                         publishCognitive(jobType, CognitiveEventType.TOKEN, "TOKEN", chunk, "model:" + brain.model(), Map.of(
                                 "text", chunk,
-                                "index", answerChunks
+                                "index", state.answerChunks
                         ));
                         eventSink.publish(TokenEvent.create(conversationId, chunk));
                     }
                 }
             }
         }
+        return false;
+    }
 
-        if (thinkingStarted && !thinkingFinished) {
-            long durationMs = nanosToMillis((lastThinkingNano == 0L ? System.nanoTime() : lastThinkingNano) - firstThinkingNano);
-            long finalThinkingChunks = thinkingChunks;
-            diagnostics(d -> {
-                d.setThinkingDurationMs(durationMs);
-                d.setThinkingTokensOrChunks(finalThinkingChunks);
-            });
-            publishCognitive(jobType, CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished", "model:" + brain.model(), Map.of(
-                    "durationMs", durationMs,
-                    "chunks", thinkingChunks,
-                    "characters", thinkingCharacters
-            ));
-        }
-        if (answerStarted) {
-            long answerDurationMs = nanosToMillis(System.nanoTime() - firstAnswerNano);
-            diagnostics(d -> d.setAnswerStreamingDurationMs(answerDurationMs));
-            publishCognitive(jobType, CognitiveEventType.ANSWER_FINISHED, "FINISHED", "Answer finished", "model:" + brain.model(), Map.of(
-                    "durationMs", answerDurationMs,
-                    "characters", answerCharacters,
-                    "tokens", finalResponse == null || finalResponse.evalCount() == null ? answerChunks : finalResponse.evalCount()
-            ));
-        }
+    /**
+     * Estimates tokens from characters using the same chars/4 approximation already used
+     * project-wide (see {@code ContextBudgetService.estimateTokens}). This is deliberately an
+     * <b>estimate</b>, not an exact tokenizer count - Ollama's streaming generate response does
+     * not expose a live per-chunk token count, only a final total after generation completes.
+     *
+     * @param value text to estimate
+     * @return estimated token count
+     */
+    private int estimateTokens(String value) {
+        return (int) Math.ceil((value == null ? 0 : value.length()) / 4.0d);
+    }
 
-        long generationTimeMs = Duration.between(startedAt, Instant.now()).toMillis();
-        diagnostics(d -> d.setTotalModelRequestMs(generationTimeMs));
-        Integer completionTokens = finalResponse == null ? null : finalResponse.evalCount();
-        Integer promptTokens = finalResponse == null ? null : finalResponse.promptEvalCount();
-        Double tokensPerSecond = tokensPerSecond(completionTokens, generationTimeMs);
-        OllamaInferenceMetrics metrics = buildMetrics(
-                brain,
-                finalResponse,
-                requestStartToHeadersMs,
-                firstThinkingTokenMs,
-                firstAnswerTokenMs
-        );
-        publishMetrics(jobType, brain, metrics, generationTimeMs);
-
-        LOGGER.info(
-                "[JARVIS] Generation time: {} ms, tokens: {}, tokens per second: {}",
-                generationTimeMs,
-                tokenSummary(finalResponse),
-                tokensPerSecond == null ? "unavailable" : tokensPerSecond
-        );
-        publishCognitive(jobType, CognitiveEventType.STREAMING_FINISHED, "FINISHED", "Streaming finished", "model:" + brain.model(), Map.of(
-                "generationTimeMs", generationTimeMs,
-                "promptTokens", promptTokens == null ? 0 : promptTokens,
-                "completionTokens", completionTokens == null ? answerChunks : completionTokens,
-                "tokensStreamed", answerChunks,
-                "tokensPerSecond", tokensPerSecond == null ? 0.0d : tokensPerSecond
-        ));
-        eventSink.publish(GenerationFinishedEvent.create(
-                conversationId,
-                generationTimeMs,
-                brain.type(),
+    /**
+     * Issues the Qwen thinking-budget continuation call: same model and prompt, thinking
+     * explicitly disabled, so the model answers directly without re-entering unbounded reasoning.
+     * Ollama is stateless per {@code /api/generate} call, so the full prompt (and any images) must
+     * be resent for the model to have context at all.
+     */
+    private HttpResponse<InputStream> sendContinuationRequest(Brain brain, String budgetedPrompt, List<ImageAttachment> images)
+            throws IOException, InterruptedException {
+        String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/generate";
+        OllamaGenerateRequest requestBody = new OllamaGenerateRequest(
                 brain.model(),
-                promptTokens,
-                completionTokens,
-                tokensPerSecond
-        ));
-        eventSink.publish(StatusChangedEvent.create(ChatEventType.IDLE, conversationId, "IDLE"));
+                budgetedPrompt,
+                true,
+                Boolean.FALSE,
+                properties.keepAlive(),
+                contextBudgetService.ollamaOptions(),
+                images == null ? List.of() : images.stream().map(ImageAttachment::base64Data).toList()
+        );
+        HttpRequest httpRequest;
+        try {
+            httpRequest = HttpRequest.newBuilder()
+                    .uri(URI.create(endpoint))
+                    .timeout(Duration.ofMinutes(5))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(requestBody)))
+                    .build();
+        } catch (JsonProcessingException exception) {
+            throw new OllamaException("Failed to serialize Qwen thinking-budget continuation request", exception);
+        }
+        LOGGER.info("[JARVIS][requestId={}][QWEN_THINKING_BUDGET] continuation request sent model={}",
+                diagnosticsRequestId(), brain.model());
+        HttpResponse<InputStream> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new OllamaException("Qwen thinking-budget continuation request failed with status " + response.statusCode());
+        }
+        return response;
+    }
+
+    /**
+     * Mutable accumulator for one native-generate stream pass. Extracted so the thinking-budget
+     * continuation call can resume accumulating into the exact same counters as the original
+     * stream, instead of resetting them - the two calls together are one logical generation turn.
+     */
+    private static final class GenerationStreamState {
+        private boolean thinkingStarted;
+        private boolean thinkingFinished;
+        private boolean answerStarted;
+        private long firstThinkingNano;
+        private long lastThinkingNano;
+        private long firstAnswerNano;
+        private long firstThinkingTokenMs;
+        private long firstAnswerTokenMs;
+        private OllamaGenerateResponse finalResponse;
+        private int thinkingChunks;
+        private int answerChunks;
+        private int thinkingCharacters;
+        private int answerCharacters;
+        private int estimatedThinkingTokens;
+    }
+
+    /**
+     * Qwen thinking-budget outcome for one generation turn, surfaced in MODEL PERFORMANCE only
+     * when {@code applicable} - i.e. only for the exact configured target model.
+     *
+     * @param applicable whether the active model is the configured thinking-budget target
+     * @param mode configured mode
+     * @param budget resolved token cap (-1 when unlimited)
+     * @param estimatedThinkingTokens estimated thinking tokens actually used
+     * @param limited whether the budget was reached
+     */
+    private record QwenThinkingBudgetOutcome(boolean applicable, QwenThinkingBudgetMode mode, int budget, int estimatedThinkingTokens, boolean limited) {
+        private static QwenThinkingBudgetOutcome notApplicable() {
+            return new QwenThinkingBudgetOutcome(false, null, 0, 0, false);
+        }
     }
 
     private void publishCognitive(
@@ -725,7 +873,8 @@ public class OllamaProvider implements AIProvider {
         );
     }
 
-    private void publishMetrics(AIJobType jobType, Brain brain, OllamaInferenceMetrics metrics, long requestTotalMs) {
+    private void publishMetrics(AIJobType jobType, Brain brain, OllamaInferenceMetrics metrics, long requestTotalMs,
+            QwenThinkingBudgetOutcome qwenThinkingBudget) {
         InferenceDiagnostics activeDiagnostics = InferenceDiagnosticsContext.current();
         diagnostics(d -> {
             d.setOllamaMetrics(metrics);
@@ -749,6 +898,14 @@ public class OllamaProvider implements AIProvider {
         metadata.put("firstAnswerTokenMs", metrics.firstAnswerTokenMs());
         metadata.put("modelLikelyWarm", metrics.modelLikelyWarm());
         metadata.put("bottleneck", metrics.bottleneck().name());
+        if (qwenThinkingBudget.applicable()) {
+            // Only ever present for the exact configured Qwen thinking-budget target model - every
+            // other model's OLLAMA_METRICS payload is completely unaffected.
+            metadata.put("thinkingBudgetMode", qwenThinkingBudget.mode().name());
+            metadata.put("thinkingBudgetTokens", qwenThinkingBudget.budget());
+            metadata.put("thinkingBudgetEstimatedTokens", qwenThinkingBudget.estimatedThinkingTokens());
+            metadata.put("thinkingBudgetLimited", qwenThinkingBudget.limited());
+        }
         if (activeDiagnostics != null) {
             appendPromptMetrics(metadata, activeDiagnostics, metrics);
         }
