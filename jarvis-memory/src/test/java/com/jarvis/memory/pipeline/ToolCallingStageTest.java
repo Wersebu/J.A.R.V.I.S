@@ -87,6 +87,47 @@ class ToolCallingStageTest {
     }
 
     @Test
+    void streamToolFinalAnswerUnwrapsAStructuredJsonEnvelopeFromTheNativeLoopsOwnAnswer() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()));
+
+        ToolResult webSearch = new ToolResult(true, "web", "SEARCH_WEB", "request-1", "conversation-1",
+                false, List.of(), "Web search finished", Map.of("results", List.of()), "", "", false, "");
+        String structuredAnswer = "{\"type\":\"FINAL_ANSWER\",\"answer\":\"RTX 4060 Ti ma 8 GB VRAM.\"}";
+        ToolCallingResult loopResult = new ToolCallingResult(true, structuredAnswer, List.of(), List.of(webSearch));
+
+        ChatRequest request = new ChatRequest("conversation-1", "Sprawdz informacje o RTX 4060 Ti.", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("streamToolFinalAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).isEqualTo("RTX 4060 Ti ma 8 GB VRAM.");
+        assertThat(answer).doesNotContain("\"type\"", "\"answer\"", "FINAL_ANSWER");
+    }
+
+    @Test
+    void streamToolFinalAnswerLeavesAGenuinePlainTextAnswerUnchanged() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()));
+
+        ToolResult webSearch = new ToolResult(true, "web", "SEARCH_WEB", "request-1", "conversation-1",
+                false, List.of(), "Web search finished", Map.of("results", List.of()), "", "", false, "");
+        String plainAnswer = "RTX 4060 Ti ma 8 GB VRAM i architekture Ada Lovelace.";
+        ToolCallingResult loopResult = new ToolCallingResult(true, plainAnswer, List.of(), List.of(webSearch));
+
+        ChatRequest request = new ChatRequest("conversation-1", "Sprawdz informacje o RTX 4060 Ti.", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("streamToolFinalAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).isEqualTo(plainAnswer);
+    }
+
+    @Test
     void fallbackWebSearchAnswerExtractsPolishZlotyPrice() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
                 List.of(), new MainModelActionParser(new ObjectMapper()));

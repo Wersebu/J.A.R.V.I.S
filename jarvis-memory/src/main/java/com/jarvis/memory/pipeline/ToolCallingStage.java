@@ -117,7 +117,14 @@ public class ToolCallingStage implements PipelineStage {
             // incidentally touched SEARCH_MARKETPLACE) and found no listings - the model's real
             // answer for the rest of the task must not be discarded just because that one sub-call
             // came up empty.
-            return publishBufferedFallback(context, result.finalAnswer(), "tool-fallback");
+            //
+            // The native loop's own plain-text final turn is sometimes still the structured
+            // {"type":"FINAL_ANSWER","answer":"..."} envelope the model was taught to use elsewhere
+            // (unlike the separate synthesis path below, which already unwraps this via the
+            // structured streaming parser) - unwrap it here too so the raw JSON never reaches the
+            // user. parsedStructuredToolAnswer() falls through to the original text unchanged for
+            // genuinely plain answers (no leading/trailing braces to parse).
+            return publishBufferedFallback(context, parsedStructuredToolAnswer(result.finalAnswer(), result.finalAnswer()), "tool-fallback");
         }
         if (marketplaceResearch(result)) {
             // Pure marketplace research with no listings and no other model answer available -
