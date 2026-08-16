@@ -326,8 +326,14 @@ public class KnowledgeTool implements JarvisTool, ToolSchemaProvider {
     private ToolResult wrapResult(KnowledgeToolResult result, Map<String, Object> data) {
         boolean requiresApproval = Boolean.parseBoolean(String.valueOf(data.getOrDefault("requiresApproval", result.draft())));
         String draftId = String.valueOf(data.getOrDefault("draftId", ""));
+        // "applied" is the honest signal: for write-type operations it means the filesystem was
+        // actually changed. A blocked write (read-only workspace) or a queued-but-unwritten draft
+        // must never be reported as success=true - the model needs to know the change did not
+        // actually happen yet, instead of telling the user it was saved.
+        boolean success = result.applied();
+        boolean genuineFailure = !success && !requiresApproval;
         return new ToolResult(
-                true,
+                success,
                 TOOL_NAME,
                 result.tool().replace("knowledge.", "").toUpperCase(Locale.ROOT),
                 "",
@@ -336,8 +342,8 @@ public class KnowledgeTool implements JarvisTool, ToolSchemaProvider {
                 result.nodeId() == null || result.nodeId().isBlank() ? List.of() : List.of(result.nodeId()),
                 result.message(),
                 mergedResultData(result, data),
-                "",
-                "",
+                genuineFailure ? "WRITE_NOT_APPLIED" : "",
+                genuineFailure ? result.message() : "",
                 requiresApproval,
                 draftId
         );

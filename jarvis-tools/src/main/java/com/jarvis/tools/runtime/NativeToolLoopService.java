@@ -363,10 +363,28 @@ public class NativeToolLoopService {
         );
         publish(request, CognitiveEventType.TOOL_EXECUTION_STARTED, "EXECUTING",
                 "Tool execution started", targetNode(action), step, actionMetadata(action));
-        ToolResult result = toolManager.execute(toolRequest);
+        ToolResult result;
+        try {
+            result = toolManager.execute(toolRequest);
+        } catch (RuntimeException exception) {
+            // A tool implementation throwing (validation errors, IO failures, ...) must never blow
+            // past the whole tool loop and pipeline - the model needs an actual failed ToolResult
+            // it can see and react to (retry differently, or tell the user what went wrong)
+            // instead of the request dying with a generic, unrelated error message.
+            String error = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            LOGGER.warn("[NATIVE_TOOL_LOOP] tool execution threw requestId={} tool={} operation={} error={}",
+                    request.requestId(), action.tool(), action.operation(), error, exception);
+            result = toolExecutionFailedResult(request, action, error);
+        }
         publish(request, CognitiveEventType.TOOL_EXECUTION_FINISHED, result.success() ? "FINISHED" : "FAILED",
                 "Tool execution finished", targetNode(action), step, resultMetadata(result));
         return result;
+    }
+
+    private ToolResult toolExecutionFailedResult(ToolCallingRequest request, ToolAction action, String error) {
+        return new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
+                false, List.of(), "Tool execution failed", Map.of("error", error == null ? "" : error),
+                "TOOL_EXECUTION_FAILED", error == null ? "" : error, false, "");
     }
 
     private boolean isMarketplaceSearch(ToolAction action) {
