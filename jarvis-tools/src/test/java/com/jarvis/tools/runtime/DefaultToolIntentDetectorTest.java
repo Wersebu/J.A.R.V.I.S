@@ -34,4 +34,22 @@ class DefaultToolIntentDetectorTest {
         assertThat(detector.detect("no ceny"))
                 .isEqualTo(ToolIntent.SEARCH_WEB);
     }
+
+    @Test
+    void detectsCoordinateLookupAsLocation() {
+        assertThat(detector.detect("znajdz wspolrzedne Nowa Wola 05-500"))
+                .isEqualTo(ToolIntent.LOCATION);
+    }
+
+    @Test
+    void detectsRouteCalculationAsLocation() {
+        assertThat(detector.detect("oblicz trase Nowa Wola -> Garwolin"))
+                .isEqualTo(ToolIntent.LOCATION);
+    }
+
+    @Test
+    void detectsAddressGroupingRequestAsLocation() {
+        assertThat(detector.detect("pogrupuj te adresy i zaproponuj optymalna kolejnosc"))
+                .isEqualTo(ToolIntent.LOCATION);
+    }
 }

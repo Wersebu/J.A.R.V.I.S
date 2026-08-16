@@ -38,6 +38,8 @@ public class ToolCallingStage implements PipelineStage {
     private static final Pattern PRICE_PATTERN = Pattern.compile(
             "(?iu)(?:\\d{1,3}(?:[ .\\u00A0]?\\d{3})*|\\d+)(?:[,.]\\d{1,2})?\\s*(?:zł|zl|zlotych|pln|usd|eur)"
     );
+    private static final String MARKETPLACE_NO_LISTINGS_MESSAGE =
+            "Nie udalo mi sie zweryfikowac aktualnych ofert spelniajacych te kryteria.";
 
     private final ToolCallingRuntime toolCallingRuntime;
     private final List<AIProvider> aiProviders;
@@ -100,16 +102,27 @@ public class ToolCallingStage implements PipelineStage {
     }
 
     private String streamToolFinalAnswer(PipelineContext context, ToolCallingResult result) {
-        Optional<String> marketplaceAnswer = deterministicMarketplaceAnswer(result);
-        if (marketplaceAnswer.isPresent()) {
-            return publishBufferedFallback(context, marketplaceAnswer.get(), "verified-marketplace");
+        List<Map<String, Object>> verifiedListings = marketplaceListings(result);
+        if (!verifiedListings.isEmpty()) {
+            // Verified listings are strictly more trustworthy than freeform model text (price/URL
+            // come straight from a verified record) - this deterministic table always wins first.
+            return publishBufferedFallback(context, deterministicMarketplaceTable(result, verifiedListings), "verified-marketplace");
         }
         if (result.finalAnswer() != null && !result.finalAnswer().isBlank()) {
             // The model already produced this answer inside the native tool loop, with full tool
             // access and full observation of every tool result. Re-asking a second, tool-less
             // model turn here would discard that answer and give the model no way to act on
-            // anything it realizes it still needs at that point.
+            // anything it realizes it still needs at that point. This also matters when a marketplace
+            // search happened to be part of a mixed-purpose task (e.g. a routing request that
+            // incidentally touched SEARCH_MARKETPLACE) and found no listings - the model's real
+            // answer for the rest of the task must not be discarded just because that one sub-call
+            // came up empty.
             return publishBufferedFallback(context, result.finalAnswer(), "tool-fallback");
+        }
+        if (marketplaceResearch(result)) {
+            // Pure marketplace research with no listings and no other model answer available -
+            // the honest deterministic failure text is still the right answer here.
+            return publishBufferedFallback(context, MARKETPLACE_NO_LISTINGS_MESSAGE, "verified-marketplace");
         }
         publish(context, CognitiveEventType.FINAL_SYNTHESIS_STARTED, "STARTED",
                 "Final answer synthesis from tool results started", Map.of(
@@ -338,14 +351,14 @@ public class ToolCallingStage implements PipelineStage {
                 + "\n\nExisting final answer guidance:\n" + safe(result.finalAnswer());
     }
 
-    private Optional<String> deterministicMarketplaceAnswer(ToolCallingResult result) {
-        if (!marketplaceResearch(result)) {
-            return Optional.empty();
-        }
-        List<Map<String, Object>> listings = marketplaceListings(result);
-        if (listings.isEmpty()) {
-            return Optional.of("Nie udalo mi sie zweryfikowac aktualnych ofert spelniajacych te kryteria.");
-        }
+    /**
+     * Builds the deterministic verified-listings table. Only called once the caller has already
+     * confirmed {@code listings} is non-empty - unlike the removed {@code deterministicMarketplaceAnswer},
+     * this never decides on its own whether marketplace research "failed"; that decision now lives
+     * in {@link #streamToolFinalAnswer}, which only falls back to the plain failure message when
+     * there is truly no other answer to give (see {@link #MARKETPLACE_NO_LISTINGS_MESSAGE}).
+     */
+    private String deterministicMarketplaceTable(ToolCallingResult result, List<Map<String, Object>> listings) {
         StringBuilder builder = new StringBuilder();
         int requested = requestedListingCount(result);
         builder.append("Zweryfikowalem ")
@@ -371,7 +384,7 @@ public class ToolCallingStage implements PipelineStage {
                     .append(" |\n");
         }
         builder.append("\nCeny pochodza z konkretnych odczytanych stron ofert, nie z samych wynikow wyszukiwania.");
-        return Optional.of(builder.toString());
+        return builder.toString();
     }
 
     private boolean marketplaceResearch(ToolCallingResult result) {

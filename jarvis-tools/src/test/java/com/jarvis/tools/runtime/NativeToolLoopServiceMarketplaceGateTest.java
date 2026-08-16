@@ -127,6 +127,56 @@ class NativeToolLoopServiceMarketplaceGateTest {
         assertThat(executed.data().get("targetListingCount")).isEqualTo(2);
     }
 
+    @Test
+    void searchMarketplaceFollowedByUnrelatedSearchWebDoesNotContaminateTheWebResult() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn("web__search_marketplace", Map.of("query", "sklepy Warszawa", "targetCount", 3)));
+        turns.add(toolCallTurn("web__search_web", Map.of("query", "Nowa Wola 05-500 wspolrzedne geograficzne")));
+        turns.add(textTurn("Oto zoptymalizowana trasa dla podanych adresow."));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+
+        ToolResult marketplaceResult = new ToolResult(true, "web", "SEARCH_MARKETPLACE", "request-3", "conversation-1",
+                false, List.of(), "Marketplace search finished", Map.of("query", "sklepy Warszawa", "results", List.of()),
+                "", "", false, "");
+        ToolResult geocodeSearchResult = new ToolResult(true, "web", "SEARCH_WEB", "request-3", "conversation-1",
+                false, List.of(), "Web search finished", Map.of(
+                        "query", "Nowa Wola 05-500 wspolrzedne geograficzne",
+                        "results", List.of(Map.of("title", "Nowa Wola", "url", "https://example.com/nowa-wola", "snippet", "52.5, 20.8", "source", "example.com"))
+                ), "", "", false, "");
+        RoutingFakeToolManager toolManager = new RoutingFakeToolManager(Map.of(
+                "SEARCH_MARKETPLACE", marketplaceResult,
+                "SEARCH_WEB", geocodeSearchResult
+        ));
+
+        NativeToolLoopService service = new NativeToolLoopService(
+                List.of(provider), toolManager, query -> ToolIntent.SEARCH_WEB,
+                new ToolRuntimeProperties(true, 4, 8, 2, 30, "native"),
+                new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
+                new NativeToolSchemaMapper(webRegistry())
+        );
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-3", "conversation-1",
+                "Zaplanuj trase do sklepow zaczynajac od Nowa Wola 05-500.",
+                "Geocode the start point and store addresses to compute an optimal route.",
+                "User asked for a visiting order.",
+                "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(result.results()).hasSize(2);
+        ToolResult marketplaceExecuted = result.results().get(0);
+        ToolResult webSearchExecuted = result.results().get(1);
+        assertThat(marketplaceExecuted.operation()).isEqualTo("SEARCH_MARKETPLACE");
+        assertThat(marketplaceExecuted.data().get("marketplaceResearch")).isEqualTo(true);
+
+        assertThat(webSearchExecuted.operation()).isEqualTo("SEARCH_WEB");
+        assertThat(webSearchExecuted.data()).doesNotContainKey("marketplaceResearch");
+        assertThat(webSearchExecuted.data()).doesNotContainKey("marketplaceListings");
+    }
+
     private static ModelResponse toolCallTurn(String name, Map<String, Object> arguments) {
         return new ModelResponse("", "", List.of(new ModelToolCall("call-1", name, arguments)), "tool_calls", new ModelUsage(0, 0, 0));
     }
@@ -219,6 +269,34 @@ class NativeToolLoopServiceMarketplaceGateTest {
         public ToolResult execute(ToolRequest request) {
             executedOperations.add(request.operation());
             return scriptedResult;
+        }
+    }
+
+    private static final class RoutingFakeToolManager implements ToolManager {
+
+        private final Map<String, ToolResult> resultsByOperation;
+
+        private RoutingFakeToolManager(Map<String, ToolResult> resultsByOperation) {
+            this.resultsByOperation = resultsByOperation;
+        }
+
+        @Override
+        public List<JarvisTool> listTools() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<JarvisTool> findTool(String name) {
+            return "web".equalsIgnoreCase(name) ? Optional.of(new PlaceholderWebTool()) : Optional.empty();
+        }
+
+        @Override
+        public ToolResult execute(ToolRequest request) {
+            ToolResult scripted = resultsByOperation.get(request.operation());
+            if (scripted == null) {
+                throw new IllegalStateException("No scripted result for operation " + request.operation());
+            }
+            return scripted;
         }
     }
 

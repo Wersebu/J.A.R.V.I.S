@@ -32,6 +32,11 @@ public class DefaultToolIntentDetector implements ToolIntentDetector {
         if (containsAny(value, "przeczytaj", "read", "co masz o", "pokaz dokument")) {
             return ToolIntent.READ_DOCUMENT;
         }
+        if (containsAny(value, "trasa", "trase", "adres", "wspolrzedne", "wspolrzednych", "geokod", "lokalizacj",
+                "dojazd", "marszrut", "dystans", "nawigacj", "dojechac", "geocod", "coordinates", "distance",
+                "driving", "route", "mapa", "mape")) {
+            return ToolIntent.LOCATION;
+        }
         if (containsAny(value, "internet", "w internecie", "web", "online", "aktualn", "cena", "ceny", "kurs", "notowan",
                 "rynek", "wtorn", "uzywan", "po ile", "ile chodzi", "chodzi uzywan", "kosztuje", "koszt", "wycena",
                 "news", "wiadomosci", "zloto", "zlot", "xau", "walut", "sprawdz w sieci", "wyszukaj w sieci",

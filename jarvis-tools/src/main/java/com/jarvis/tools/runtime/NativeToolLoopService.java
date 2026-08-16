@@ -104,7 +104,7 @@ public class NativeToolLoopService {
         int maxCalls = request.knowledgeMode() == KnowledgeMode.RESEARCH
                 ? properties.maxCallsResearch()
                 : properties.maxCallsFast();
-        if (intent == ToolIntent.SEARCH_WEB) {
+        if (intent == ToolIntent.SEARCH_WEB || intent == ToolIntent.LOCATION) {
             maxCalls = Math.max(maxCalls, 8);
         }
         List<ModelMessage> messages = new ArrayList<>();
@@ -112,6 +112,7 @@ public class NativeToolLoopService {
         List<ToolResult> results = new ArrayList<>();
         List<String> errors = new ArrayList<>();
         Set<String> callFingerprints = new LinkedHashSet<>();
+        Map<String, Integer> operationRepeatCounts = new LinkedHashMap<>();
         messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions)));
         messages.add(ModelMessage.user(request.userMessage()));
 
@@ -161,6 +162,22 @@ public class NativeToolLoopService {
                                         "tool", action.tool(), "operation", action.operation(), "arguments", action.arguments()));
                         continue;
                     }
+                    // Argument-agnostic no-progress guard: exact duplicates are already blocked
+                    // above, but a model can keep rewording the same query ("X" then "X Google
+                    // Maps" then "X wspolrzedne") without ever repeating an exact fingerprint. Cap
+                    // consecutive calls to the same tool+operation regardless of arguments.
+                    String operationKey = action.tool().toLowerCase(Locale.ROOT) + "::" + action.operation().toUpperCase(Locale.ROOT);
+                    int repeatCount = operationRepeatCounts.merge(operationKey, 1, Integer::sum);
+                    if (repeatCount > properties.maxConsecutiveOperationRepeats()) {
+                        ToolResult noProgress = noProgressResult(request, action, repeatCount);
+                        results.add(noProgress);
+                        steps.add(new ToolRuntimeStep(step, "NO_PROGRESS_BLOCKED", action.tool(), action.operation(), "BLOCKED", noProgress));
+                        messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(noProgress)));
+                        publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "NO_PROGRESS_BLOCKED",
+                                "Repeated tool operation blocked, no progress detected", null, step, Map.of(
+                                        "tool", action.tool(), "operation", action.operation(), "repeatCount", repeatCount));
+                        continue;
+                    }
                     if ("web".equalsIgnoreCase(action.tool())) {
                         LOGGER.info("[WEB_DECISION] requestId={} requestedBy=MODEL tool={} mode={}",
                                 request.requestId(), action.tool(), action.operation());
@@ -176,7 +193,11 @@ public class NativeToolLoopService {
                     }
                     ToolResult result = executeAction(request, action, step);
                     result = enrichIfNeeded(request, action, result, step);
-                    if (marketplaceCollector != null) {
+                    // Only the SEARCH_MARKETPLACE call itself is marketplace evidence - a collector
+                    // existing elsewhere in the loop must never taint an unrelated result (e.g. a
+                    // later SEARCH_WEB call for geocoding) with marketplaceResearch=true, or Core
+                    // ends up treating the whole request as failed marketplace research.
+                    if (marketplaceCollector != null && isMarketplaceSearch(action)) {
                         marketplaceCollector.observe(request, result);
                         result = withMarketplaceState(result, marketplaceCollector);
                     }
@@ -197,13 +218,13 @@ public class NativeToolLoopService {
                         return new ToolCallingResult(true, "", steps, results);
                     }
                     if (!result.success() && isWebPageRead(action)) {
+                        // A retried failed page-read has no reliable signal distinguishing
+                        // "marketplace-adjacent" from "unrelated" - never taint it here. Genuine
+                        // marketplace evidence still reaches the collector through its own
+                        // drainMarketplaceCandidates reads below.
                         Optional<ToolResult> retry = tryNextWebCandidate(request, results, action, step);
                         if (retry.isPresent()) {
                             ToolResult retryResult = retry.get();
-                            if (marketplaceCollector != null) {
-                                marketplaceCollector.observe(request, retryResult);
-                                retryResult = withMarketplaceState(retryResult, marketplaceCollector);
-                            }
                             results.add(retryResult);
                             steps.add(new ToolRuntimeStep(step, "TOOL_CALL", "web", "READ_WEB_PAGE",
                                     retryResult.success() ? "OK" : "FAILED", retryResult));
@@ -705,6 +726,16 @@ public class NativeToolLoopService {
                 false, List.of(), "Duplicate tool call blocked", Map.of("reason", "DUPLICATE_TOOL_CALL"),
                 "DUPLICATE_TOOL_CALL", "The same tool call (" + action.tool() + "." + action.operation()
                 + " with identical arguments) was already executed in this loop.", false, "");
+    }
+
+    private ToolResult noProgressResult(ToolCallingRequest request, ToolAction action, int repeatCount) {
+        return new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
+                false, List.of(), "Repeated tool operation blocked", Map.of("reason", "NO_PROGRESS_OPERATION_REPEATED"),
+                "NO_PROGRESS_OPERATION_REPEATED", action.tool() + "." + action.operation() + " has now been called "
+                + repeatCount + " times in this loop without exact repetition, but without producing a usable result "
+                + "either - this looks like no progress is being made. Try a different tool/operation, a materially "
+                + "different approach, or answer with what is already known instead of retrying this operation again.",
+                false, "");
     }
 
     private ToolResult invalidResult(ToolCallingRequest request, ModelToolCall call, String error) {

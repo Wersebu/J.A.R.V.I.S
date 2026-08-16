@@ -42,6 +42,51 @@ class ToolCallingStageTest {
     }
 
     @Test
+    void streamToolFinalAnswerPrefersModelFinalAnswerOverMarketplaceFailureTemplateWhenNoListingsVerified() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()));
+
+        ToolResult failedMarketplaceSearch = new ToolResult(true, "web", "SEARCH_MARKETPLACE", "request-1", "conversation-1",
+                false, List.of(), "Marketplace search finished",
+                Map.of("marketplaceResearch", true, "marketplaceListings", List.of()), "", "", false, "");
+        ToolResult geocodeSearch = new ToolResult(true, "web", "SEARCH_WEB", "request-1", "conversation-1",
+                false, List.of(), "Web search finished", Map.of("results", List.of()), "", "", false, "");
+        ToolCallingResult loopResult = new ToolCallingResult(true,
+                "Nie znalazlem sklepow do sprzedazy, ale oto zoptymalizowana trasa dla podanych adresow: A -> B -> C.",
+                List.of(), List.of(failedMarketplaceSearch, geocodeSearch));
+
+        ChatRequest request = new ChatRequest("conversation-1", "Zaplanuj trase.", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("streamToolFinalAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).contains("zoptymalizowana trasa");
+        assertThat(answer).doesNotContain("Nie udalo mi sie zweryfikowac aktualnych ofert");
+    }
+
+    @Test
+    void streamToolFinalAnswerStillReturnsMarketplaceFailureTemplateWhenNoOtherAnswerExists() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()));
+
+        ToolResult failedMarketplaceSearch = new ToolResult(true, "web", "SEARCH_MARKETPLACE", "request-2", "conversation-1",
+                false, List.of(), "Marketplace search finished",
+                Map.of("marketplaceResearch", true, "marketplaceListings", List.of()), "", "", false, "");
+        ToolCallingResult loopResult = new ToolCallingResult(true, "", List.of(), List.of(failedMarketplaceSearch));
+
+        ChatRequest request = new ChatRequest("conversation-1", "Znajdz uzywany RTX 4060 Ti.", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-2", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("streamToolFinalAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).isEqualTo("Nie udalo mi sie zweryfikowac aktualnych ofert spelniajacych te kryteria.");
+    }
+
+    @Test
     void fallbackWebSearchAnswerExtractsPolishZlotyPrice() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
                 List.of(), new MainModelActionParser(new ObjectMapper()));

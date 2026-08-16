@@ -12,6 +12,9 @@ import org.springframework.boot.context.properties.bind.ConstructorBinding;
  * @param maxConsecutiveFailures max consecutive failures before aborting
  * @param timeoutSeconds loop timeout
  * @param runtime default runtime: native or legacy
+ * @param maxConsecutiveOperationRepeats max consecutive calls to the same tool+operation
+ *        (regardless of arguments) before the loop refuses further calls to it - a coarser,
+ *        argument-agnostic no-progress guard on top of the exact-fingerprint duplicate blocker
  */
 @ConfigurationProperties(prefix = "jarvis.tools")
 public record ToolRuntimeProperties(
@@ -20,7 +23,8 @@ public record ToolRuntimeProperties(
         int maxCallsResearch,
         int maxConsecutiveFailures,
         int timeoutSeconds,
-        String runtime
+        String runtime,
+        int maxConsecutiveOperationRepeats
 ) {
 
     /**
@@ -34,6 +38,22 @@ public record ToolRuntimeProperties(
         maxConsecutiveFailures = maxConsecutiveFailures > 0 ? maxConsecutiveFailures : 2;
         timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 180;
         runtime = runtime == null || runtime.isBlank() ? "native" : runtime.trim().toLowerCase(java.util.Locale.ROOT);
+        maxConsecutiveOperationRepeats = maxConsecutiveOperationRepeats > 0 ? maxConsecutiveOperationRepeats : 5;
+    }
+
+    /**
+     * Backward-compatible constructor used by older tests/call sites built before
+     * {@code maxConsecutiveOperationRepeats} existed.
+     */
+    public ToolRuntimeProperties(
+            Boolean enabled,
+            int maxCallsFast,
+            int maxCallsResearch,
+            int maxConsecutiveFailures,
+            int timeoutSeconds,
+            String runtime
+    ) {
+        this(enabled, maxCallsFast, maxCallsResearch, maxConsecutiveFailures, timeoutSeconds, runtime, 5);
     }
 
     /**
@@ -46,7 +66,7 @@ public record ToolRuntimeProperties(
             int maxConsecutiveFailures,
             int timeoutSeconds
     ) {
-        this(enabled, maxCallsFast, maxCallsResearch, maxConsecutiveFailures, timeoutSeconds, "legacy");
+        this(enabled, maxCallsFast, maxCallsResearch, maxConsecutiveFailures, timeoutSeconds, "legacy", 5);
     }
 
     /**
