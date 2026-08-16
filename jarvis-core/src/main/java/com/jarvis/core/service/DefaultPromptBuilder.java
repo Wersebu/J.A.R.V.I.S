@@ -296,11 +296,18 @@ public class DefaultPromptBuilder implements PromptBuilder {
     }
 
     private String attachmentBlock(ChatRequest request) {
-        if (request.attachments().isEmpty() || request.attachments().stream().allMatch(this::isImageAttachment)) {
+        if (request.attachments().isEmpty()) {
             return "";
+        }
+        long imageCount = request.attachments().stream().filter(this::isImageAttachment).count();
+        if (imageCount == request.attachments().size()) {
+            return imageAttachmentNote(imageCount);
         }
         int maxCharacters = workspaceProperties.getPromptMaxCharacters();
         StringBuilder builder = new StringBuilder();
+        if (imageCount > 0) {
+            builder.append(imageAttachmentNote(imageCount));
+        }
         builder.append("""
                 === TEMPORARY ATTACHMENTS ===
 
@@ -354,6 +361,29 @@ public class DefaultPromptBuilder implements PromptBuilder {
         LOGGER.info("[JARVIS] Attachments injected count={} characters={} estimatedTokens={}",
                 included, totalCharacters, totalCharacters / 4);
         return builder.toString();
+    }
+
+    /**
+     * Without this, an image-only message left no textual trace anywhere in the prompt (images
+     * are sent natively via the provider's vision channel, not as text) - and models reasoning
+     * strictly off the textual prompt (e.g. the AVAILABLE SOURCES checklist above, which only
+     * lists knowledge/tool sources) could talk themselves into concluding no image was provided
+     * at all, contradicting what they were actually shown. This note closes that gap explicitly.
+     */
+    private String imageAttachmentNote(long imageCount) {
+        return """
+                === ATTACHED IMAGES ===
+
+                The user has attached %d image(s) to this message. This is not a placeholder -
+                the actual image data is passed to you directly as native visual input alongside
+                this text prompt, even though no image bytes appear as text anywhere in this
+                prompt and images are not listed under AVAILABLE SOURCES above. Trust what you
+                actually see in the image and describe or analyze it accordingly. Do not claim
+                that no image was provided just because it is not shown here as text.
+
+                === END ATTACHED IMAGES ===
+
+                """.formatted(imageCount);
     }
 
     private boolean isImageAttachment(com.jarvis.common.dto.AttachmentReference reference) {

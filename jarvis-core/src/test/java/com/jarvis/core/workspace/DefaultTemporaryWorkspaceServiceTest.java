@@ -225,6 +225,33 @@ class DefaultTemporaryWorkspaceServiceTest {
     }
 
     @Test
+    void promptBuilderNotesAttachedImagesSoTheModelDoesNotDenyReceivingThem() throws Exception {
+        var workspace = service.createWorkspace("conversation");
+        var uploaded = service.storeInput(workspace.workspaceId(), "conversation", List.of(
+                imageFile("photo.png", "png", 10, 10)
+        ));
+        DefaultPromptBuilder builder = new DefaultPromptBuilder(
+                new StaticSystemPromptService(),
+                new NoOpEventBus(),
+                service,
+                properties
+        );
+
+        String prompt = builder.buildPrompt(new ChatRequest(
+                "conversation",
+                "Co jest na tym zdjeciu?",
+                null,
+                null,
+                uploaded.stream()
+                        .map(metadata -> new AttachmentReference(metadata.workspaceId(), metadata.attachmentId()))
+                        .toList()
+        ), KnowledgeContext.empty());
+
+        assertThat(prompt).contains("=== ATTACHED IMAGES ===");
+        assertThat(prompt).contains("attached 1 image(s)");
+    }
+
+    @Test
     void acceptsAndStoresValidPngJpegAndGifImages() throws Exception {
         var workspace = service.createWorkspace("conversation");
 
