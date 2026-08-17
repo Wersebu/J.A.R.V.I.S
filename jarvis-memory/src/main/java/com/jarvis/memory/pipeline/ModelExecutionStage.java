@@ -83,8 +83,15 @@ public class ModelExecutionStage implements PipelineStage {
         if (context.response() != null && !context.response().isBlank()) {
             return context;
         }
-        if (!context.images().isEmpty() && !activeModelService.activeModelCapabilities().contains(ModelCapability.VISION)) {
-            return respondNoVisionSupport(context);
+        if (!context.images().isEmpty()) {
+            java.util.Set<ModelCapability> activeCapabilities = activeModelService.activeModelCapabilities();
+            if (!activeCapabilities.contains(ModelCapability.VISION)) {
+                TELEMETRY_LOGGER.warn(
+                        "[VISION_GATE] requestId={} model={} images={} rejected=true reportedCapabilities={} "
+                                + "hint=if this model is actually vision-capable, add it to jarvis.ollama.vision-capability-overrides",
+                        context.requestId(), context.model(), context.images().size(), activeCapabilities);
+                return respondNoVisionSupport(context);
+            }
         }
 
         boolean hasImages = !context.images().isEmpty();

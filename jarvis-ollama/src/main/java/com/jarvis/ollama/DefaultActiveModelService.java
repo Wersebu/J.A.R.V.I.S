@@ -122,9 +122,11 @@ public class DefaultActiveModelService implements ActiveModelService, Initializi
 
     @Override
     public Set<ModelCapability> activeModelCapabilities() {
+        String model = activeModel();
+        Set<ModelCapability> reported;
         try {
-            return fetchInstalledModels().stream()
-                    .filter(model -> model.name().equals(activeModel()))
+            reported = fetchInstalledModels().stream()
+                    .filter(installed -> installed.name().equals(model))
                     .findFirst()
                     .map(InstalledModel::capabilities)
                     .orElse(Set.of());
@@ -132,6 +134,21 @@ public class DefaultActiveModelService implements ActiveModelService, Initializi
             LOGGER.warn("[JARVIS] [MODEL] Failed to resolve active model capabilities: {}", exception.getMessage());
             return Set.of();
         }
+        if (reported.contains(ModelCapability.VISION) || !isVisionOverridden(model)) {
+            return reported;
+        }
+        LOGGER.info("[JARVIS] [MODEL] Vision capability override applied: model={} providerReportedCapabilities={}",
+                model, reported);
+        Set<ModelCapability> withVisionOverride = new java.util.LinkedHashSet<>(reported);
+        withVisionOverride.add(ModelCapability.VISION);
+        return Set.copyOf(withVisionOverride);
+    }
+
+    private boolean isVisionOverridden(String model) {
+        if (model == null || model.isBlank()) {
+            return false;
+        }
+        return properties.visionCapabilityOverrides().stream().anyMatch(model::equalsIgnoreCase);
     }
 
     @Override

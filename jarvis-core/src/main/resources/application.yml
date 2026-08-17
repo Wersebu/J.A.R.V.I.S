@@ -72,6 +72,13 @@ jarvis:
     base-url: http://localhost:11434
     model: gpt-oss:20b
     keep-alive: -1m
+    # Exact model names (case-insensitive) always treated as vision-capable, even when Ollama's own
+    # /api/tags or /api/show response for that model does not list "vision" in its capabilities.
+    # Normally capability detection is trusted as-is - never assumed from a model name - because it
+    # is provider-reported. Use this only when a model confirmed multimodal on its Ollama library
+    # page still comes back without "vision" locally (a capability auto-detection gap for that
+    # architecture/build). Empty by default.
+    vision-capability-overrides: []
   qwen-thinking-budget:
     # Applies only to this exact model name (case/whitespace-insensitive) - never a family prefix.
     target-model: qwen3.5:9b
