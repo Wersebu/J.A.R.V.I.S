@@ -110,7 +110,12 @@ public class NativeToolLoopService {
                 ? properties.maxCallsResearch()
                 : properties.maxCallsFast();
         if (intent == ToolIntent.SEARCH_WEB || intent == ToolIntent.LOCATION) {
-            maxCalls = Math.max(maxCalls, 8);
+            // LOCATION in particular covers multi-store geocoding/scheduling work (read workflow,
+            // create dataset, verify, geocode, optimize route, notify, final answer) - a plain web
+            // search rarely needs this many turns, but capping both at the same floor is still
+            // safe: it only ever raises maxCalls, and the loop's own no-progress/duplicate guards
+            // and timeout still bound a task that isn't actually making progress.
+            maxCalls = Math.max(maxCalls, 12);
         }
         List<ModelMessage> messages = new ArrayList<>();
         List<ToolRuntimeStep> steps = new ArrayList<>();
@@ -157,6 +162,8 @@ public class NativeToolLoopService {
                         action = schemaMapper.toAction(call.name(), call.arguments(), "Native model tool call");
                         validate(action);
                     } catch (RuntimeException exception) {
+                        LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} step={} invalid native tool call name={} arguments={} error={}",
+                                request.requestId(), step, call.name(), call.arguments(), exception.getMessage());
                         ToolResult invalid = invalidResult(request, call, exception.getMessage());
                         results.add(invalid);
                         steps.add(new ToolRuntimeStep(step, "INVALID_TOOL_CALL", toolName(call), operationName(call), "FAILED", invalid));

@@ -33,10 +33,10 @@ public record ToolRuntimeProperties(
     @ConstructorBinding
     public ToolRuntimeProperties {
         enabled = enabled == null ? Boolean.TRUE : enabled;
-        maxCallsFast = maxCallsFast > 0 ? maxCallsFast : 2;
-        maxCallsResearch = maxCallsResearch > 0 ? maxCallsResearch : 8;
+        maxCallsFast = maxCallsFast > 0 ? maxCallsFast : 8;
+        maxCallsResearch = maxCallsResearch > 0 ? maxCallsResearch : 15;
         maxConsecutiveFailures = maxConsecutiveFailures > 0 ? maxConsecutiveFailures : 2;
-        timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 180;
+        timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 600;
         runtime = runtime == null || runtime.isBlank() ? "native" : runtime.trim().toLowerCase(java.util.Locale.ROOT);
         maxConsecutiveOperationRepeats = maxConsecutiveOperationRepeats > 0 ? maxConsecutiveOperationRepeats : 5;
     }

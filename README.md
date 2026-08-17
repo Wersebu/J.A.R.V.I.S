@@ -88,11 +88,11 @@ jarvis:
   tools:                    # native tool-calling runtime budgets (see Native Tool Calling)
     enabled: true
     runtime: native
-    max-calls-fast: 2
-    max-calls-research: 8
+    max-calls-fast: 8
+    max-calls-research: 15
     max-consecutive-failures: 2
     max-consecutive-operation-repeats: 5
-    timeout-seconds: 180
+    timeout-seconds: 600
   web-search:               # SearXNG-backed web + marketplace search (see Web Search)
     enabled: true
     base-url: http://127.0.0.1:8888
@@ -208,9 +208,11 @@ Every native tool is a Spring bean implementing `JarvisTool` (`getName`/`getDesc
 
 - **Exact-duplicate blocking**: an identical `tool.OPERATION` call with identical arguments is blocked immediately (no re-execution).
 - **No-progress guard**: the same `tool.OPERATION` called repeatedly with *different* arguments (e.g. a rewording of the same query) is blocked once it exceeds `max-consecutive-operation-repeats` (default 5), with a message telling the model to try something else or answer with what it already has.
-- **Call budget**: `max-calls-fast`/`max-calls-research` cap total tool calls per turn (bumped automatically for `SEARCH_WEB`/`LOCATION`-flavored requests, which legitimately need more steps).
-- **Hard timeout**: `timeout-seconds` (default 180s) bounds the whole loop regardless of call count.
+- **Call budget**: `max-calls-fast`/`max-calls-research` (default 8/15) cap total tool calls per turn, bumped further to 12 for `SEARCH_WEB`/`LOCATION`-flavored requests. A genuinely multi-stage task (e.g. Store Audit: read workflow, create dataset, verify, geocode, optimize route, notify, final answer) easily needs 6-10 turns - too low a budget forces the loop to cut off mid-task, which previously surfaced as a rushed/malformed final tool call once the model ran out of room.
+- **Hard timeout**: `timeout-seconds` (default 600s) bounds the whole loop regardless of call count - raised alongside the call budget, since more turns need more wall-clock time.
+- **Failed tool results never become the answer**: a result from a rejected/invalid call (bad arguments, a duplicate, a no-progress block) carries an internal diagnostic message (e.g. `invalidResult`'s literal `"Invalid native tool call"`) - `ToolCallingStage.fallbackToolAnswer` only ever considers `success()` results when picking fallback text, so an internal error message can never leak into the chat as if it were the assistant's real answer. Invalid native tool calls are also now logged (`[NATIVE_TOOL_LOOP] ... invalid native tool call name=... arguments=... error=...`) with the exact call that failed, for diagnosing why.
 - **Redundant attachment-retrieval recovery**: a `TOOL_REQUEST` asking to fetch/analyze a current-message image never reaches the tool loop at all - see [Current-Message Attachments vs Knowledge Workspace](#current-message-attachments-vs-knowledge-workspace) for the one-retry recovery that happens one layer up, in `ModelExecutionStage`, before any tool is selected.
+- **No raw JSON scaffolding ever reaches the user**: if the loop's plain-text final turn parses as a `{"type":"TOOL_REQUEST",...}` envelope (the model writing out of habit the JSON protocol it was taught to use one layer up, usually with a prose preamble in front of it - `extractJson` strips that prose and still parses it), that is never legitimate final content. `ToolCallingStage.parsedStructuredToolAnswer` returns an honest fallback message instead of the raw text in that case; `FINAL_ANSWER`/`CLARIFICATION` envelopes still unwrap to their real answer/question text as before.
 
 `ToolIntent` (`jarvis-tools/.../runtime/ToolIntent.java`) is a lightweight, **advisory-only** classifier (`DefaultToolIntentDetector`) used purely to tune the call budget and freshness heuristics - it never narrows which tools the model is allowed to see or call.
 

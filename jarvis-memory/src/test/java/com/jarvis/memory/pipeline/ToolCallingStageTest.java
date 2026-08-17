@@ -167,6 +167,35 @@ class ToolCallingStageTest {
         assertThat(answer).isEqualTo(plainAnswer);
     }
 
+    // Regression for the exact reported bug: the model's second native tool call in the loop was
+    // malformed, got rejected as INVALID_TOOL_CALL (message literally "Invalid native tool call"),
+    // the loop then ran out of its call budget with a blank finalAnswer, and that internal,
+    // developer-facing error message leaked straight into the chat as if it were the assistant's
+    // real answer.
+    @Test
+    void fallbackToolAnswerNeverSurfacesAFailedToolResultsInternalErrorMessage() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        ToolResult readDocument = new ToolResult(true, "knowledge", "READ_DOCUMENT", "request-1", "conversation-1",
+                false, List.of(), "Document read", Map.of("content", "..."), "", "", false, "");
+        ToolResult invalidCall = new ToolResult(false, "location", "GEOCODE", "request-1", "conversation-1",
+                false, List.of(), "Invalid native tool call", Map.of("error", "Unrecognized field \"records\""),
+                "INVALID_TOOL_CALL", "Unrecognized field \"records\"", false, "");
+        // Blank finalAnswer simulates the loop exiting after exhausting its call budget mid-task.
+        ToolCallingResult loopResult = new ToolCallingResult(true, "", List.of(), List.of(readDocument, invalidCall));
+
+        ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("fallbackToolAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).doesNotContain("Invalid native tool call");
+        assertThat(answer).isEqualTo("Zakonczylem prace z narzedziami, ale model nie zwrocil tresci odpowiedzi.");
+    }
+
     @Test
     void fallbackToolAnswerNeverSurfacesAKnowledgeToolStatusLabelAsARealAnswer() throws Exception {
         // Regression test: when the native tool loop ends without the model producing any real

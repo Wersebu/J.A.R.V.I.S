@@ -629,6 +629,13 @@ public class ToolCallingStage implements PipelineStage {
             if (toolResult.requiresApproval()) {
                 return "Przygotowalem szkic zmiany. Czeka na zatwierdzenie.";
             }
+            // A failed result's "message" (e.g. invalidResult's literal "Invalid native tool
+            // call", or duplicateResult's/noProgressResult's internal loop-safety messages) is
+            // diagnostic text for logs, never something a user should see presented as the
+            // assistant's actual answer - only a successful tool's message is eligible here.
+            if (!toolResult.success()) {
+                continue;
+            }
             // KnowledgeTool's "message" is always a generic operation-status label ("Document
             // read", "Search finished", "Folder listed", ...), never real user-facing content -
             // it must never be surfaced as if it were an actual answer. Other tools (web,

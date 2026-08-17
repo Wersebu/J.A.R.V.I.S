@@ -29,10 +29,16 @@ jarvis:
   tools:
     enabled: true
     runtime: native
-    max-calls-fast: 2
-    max-calls-research: 8
+    # A genuinely multi-stage task (e.g. Store Audit: read workflow, create dataset, verify,
+    # geocode, optimize route, notify, final answer) easily needs 6-10 native tool-loop turns.
+    # 2 was only ever enough for the simplest single-lookup tasks and forced the loop to cut off
+    # mid-task, producing an invalid/rushed call once the budget ran out.
+    max-calls-fast: 8
+    max-calls-research: 15
     max-consecutive-failures: 2
-    timeout-seconds: 180
+    # Raised alongside max-calls-* above: more turns need more wall-clock time, especially with a
+    # slow-loading local model (each turn here has been observed taking 45-80s).
+    timeout-seconds: 600
     max-consecutive-operation-repeats: 5
     approval:
       resume-tool-loop-after-approval: true
