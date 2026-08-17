@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -27,13 +28,21 @@ public class DefaultToolManager implements ToolManager {
     public DefaultToolManager(List<JarvisTool> discoveredTools) {
         Map<String, JarvisTool> registered = new LinkedHashMap<>();
         for (JarvisTool tool : discoveredTools) {
-            JarvisTool previous = registered.putIfAbsent(tool.getName(), tool);
+            JarvisTool previous = registered.putIfAbsent(normalize(tool.getName()), tool);
             if (previous != null) {
                 throw new ToolException("Duplicate tool registered: " + tool.getName());
             }
             LOGGER.info("[TOOL] Registered tool name={}", tool.getName());
         }
         this.tools = Map.copyOf(registered);
+    }
+
+    /**
+     * Model-facing native tool names are always lowercased (see {@code NativeToolSchemaMapper}),
+     * so lookups must be case-insensitive regardless of how a tool's own {@code getName()} is cased.
+     */
+    private static String normalize(String name) {
+        return name == null ? "" : name.toLowerCase(Locale.ROOT);
     }
 
     @Override
@@ -43,7 +52,7 @@ public class DefaultToolManager implements ToolManager {
 
     @Override
     public Optional<JarvisTool> findTool(String name) {
-        return Optional.ofNullable(tools.get(name));
+        return Optional.ofNullable(tools.get(normalize(name)));
     }
 
     @Override
@@ -51,7 +60,7 @@ public class DefaultToolManager implements ToolManager {
         if (request == null || request.toolName() == null || request.toolName().isBlank()) {
             throw new ToolException("Tool name is required");
         }
-        JarvisTool tool = tools.get(request.toolName());
+        JarvisTool tool = tools.get(normalize(request.toolName()));
         if (tool == null) {
             throw new ToolException("Tool not registered: " + request.toolName());
         }
