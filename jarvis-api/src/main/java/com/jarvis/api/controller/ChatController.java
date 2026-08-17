@@ -4,7 +4,6 @@ import com.jarvis.api.service.ChatService;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.dto.ChatResponse;
 import com.jarvis.common.event.CognitiveEvent;
-import com.jarvis.common.knowledge.KnowledgeMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -19,6 +18,7 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -33,14 +33,17 @@ public class ChatController {
     private static final long SSE_TIMEOUT_MS = 600_000L;
 
     private final ChatService chatService;
+    private final PendingChatStreamStore pendingChatStreamStore;
 
     /**
      * Creates a chat controller.
      *
      * @param chatService chat orchestration service
+     * @param pendingChatStreamStore short-lived POST-to-GET handoff store for SSE requests
      */
-    public ChatController(ChatService chatService) {
+    public ChatController(ChatService chatService, PendingChatStreamStore pendingChatStreamStore) {
         this.chatService = chatService;
+        this.pendingChatStreamStore = pendingChatStreamStore;
     }
 
     /**
@@ -55,24 +58,41 @@ public class ChatController {
     }
 
     /**
-     * Streams chat lifecycle events and generated tokens using Server-Sent Events.
+     * Submits a chat request body ahead of opening the SSE stream.
      *
-     * @param conversationId stable conversation identifier
-     * @param message user message text
+     * <p>Server-Sent Events is GET-only, so the message text (and attachments) can never be part
+     * of that GET call - putting them in a URL query string risks exceeding the servlet
+     * container's max request-line/header size for anything longer than a short message. This
+     * endpoint holds the request just long enough for the immediately following
+     * {@link #stream(String)} GET call to retrieve it by token.</p>
+     *
+     * @param request chat request
+     * @return correlation token to pass to {@link #stream(String)}
+     */
+    @PostMapping(path = "/stream", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public StreamToken prepareStream(@RequestBody ChatRequest request) {
+        return new StreamToken(pendingChatStreamStore.store(request));
+    }
+
+    /**
+     * Streams chat lifecycle events and generated tokens using Server-Sent Events, for a request
+     * previously submitted via {@link #prepareStream(ChatRequest)}.
+     *
+     * @param token correlation token returned by {@link #prepareStream(ChatRequest)}
      * @return SSE emitter
      */
     @GetMapping(path = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream(
-            @RequestParam String conversationId,
-            @RequestParam String message,
-            @RequestParam(defaultValue = "AUTO") KnowledgeMode knowledgeMode
-    ) {
+    public SseEmitter stream(@RequestParam String token) {
         SseStreamSession session = new SseStreamSession(new SseEmitter(SSE_TIMEOUT_MS));
-        ChatRequest request = new ChatRequest(conversationId, message, null, knowledgeMode);
+        Optional<ChatRequest> request = pendingChatStreamStore.consume(token);
+        if (request.isEmpty()) {
+            session.completeWithError(new ResponseStatusException(HttpStatus.NOT_FOUND, "Unknown or expired stream token"));
+            return session.emitter();
+        }
 
         CompletableFuture.runAsync(() -> {
             try {
-                chatService.stream(request, session::send);
+                chatService.stream(request.get(), session::send);
                 session.complete();
             } catch (SseDeliveryException exception) {
                 LOGGER.warn("[JARVIS] SSE client disconnected: {}", exception.getMessage());
