@@ -301,5 +301,13 @@ public enum CognitiveEventType {
     /** Final answer generation started. */
     FINAL_ANSWER_GENERATION_STARTED,
     /** Final answer generation finished. */
-    FINAL_ANSWER_GENERATION_FINISHED
+    FINAL_ANSWER_GENERATION_FINISHED,
+    /** A structured workflow dataset (e.g. Store Audit) was created and its canonical record count locked. */
+    WORKFLOW_DATASET_CREATED,
+    /** A structured workflow dataset passed its verification pass. */
+    WORKFLOW_DATASET_VERIFIED,
+    /** A structured workflow dataset's records were updated (e.g. geolocation results) without changing record count. */
+    WORKFLOW_DATASET_UPDATED,
+    /** A structured workflow dataset invariant (e.g. record count) was violated and the offending operation was rejected. */
+    WORKFLOW_DATASET_INVARIANT_VIOLATION
 }

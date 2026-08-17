@@ -7,11 +7,15 @@ import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
 import com.jarvis.common.event.TokenEvent;
+import com.jarvis.common.dto.AttachmentReference;
 import com.jarvis.common.memory.ConversationMessage;
 import com.jarvis.tools.ToolResult;
+import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import com.jarvis.tools.runtime.ToolCallingRequest;
 import com.jarvis.tools.runtime.ToolCallingResult;
 import com.jarvis.tools.runtime.ToolCallingRuntime;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 
@@ -35,6 +39,7 @@ import java.util.regex.Pattern;
 @Order(92)
 public class ToolCallingStage implements PipelineStage {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(ToolCallingStage.class);
     private static final Pattern PRICE_PATTERN = Pattern.compile(
             "(?iu)(?:\\d{1,3}(?:[ .\\u00A0]?\\d{3})*|\\d+)(?:[,.]\\d{1,2})?\\s*(?:zł|zl|zlotych|pln|usd|eur)"
     );
@@ -47,21 +52,26 @@ public class ToolCallingStage implements PipelineStage {
     private final List<AIProvider> aiProviders;
     private final MainModelActionParser actionParser;
     private final WebAnswerSourceExtractor sourceExtractor;
+    private final StoreAuditDatasetService storeAuditDatasetService;
 
     /**
      * Creates the tool-calling stage.
      *
      * @param toolCallingRuntime native tool-calling runtime
+     * @param storeAuditDatasetService registers real current-message attachment ids for
+     *         provenance cross-checking by {@code storeDataset.CREATE_DATASET}
      */
     public ToolCallingStage(
             ToolCallingRuntime toolCallingRuntime,
             List<AIProvider> aiProviders,
-            MainModelActionParser actionParser
+            MainModelActionParser actionParser,
+            StoreAuditDatasetService storeAuditDatasetService
     ) {
         this.toolCallingRuntime = toolCallingRuntime;
         this.aiProviders = List.copyOf(aiProviders);
         this.actionParser = actionParser;
         this.sourceExtractor = new WebAnswerSourceExtractor();
+        this.storeAuditDatasetService = storeAuditDatasetService;
     }
 
     @Override
@@ -76,6 +86,11 @@ public class ToolCallingStage implements PipelineStage {
         }
         if (!"TOOL_REQUEST".equals(String.valueOf(context.metadata().getOrDefault("mainModelAction", "")))) {
             return context;
+        }
+        List<String> attachmentIds = context.request().attachments().stream().map(AttachmentReference::attachmentId).toList();
+        storeAuditDatasetService.registerAttachments(context.requestId(), attachmentIds);
+        if (!attachmentIds.isEmpty()) {
+            LOGGER.info("[STORE_AUDIT] requestId={} attachments={}", context.requestId(), attachmentIds.size());
         }
         ToolCallingResult result = toolCallingRuntime.execute(new ToolCallingRequest(
                 context.requestId(),

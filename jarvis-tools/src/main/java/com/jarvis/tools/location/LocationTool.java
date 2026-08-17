@@ -4,6 +4,10 @@ import com.jarvis.tools.JarvisTool;
 import com.jarvis.tools.ToolException;
 import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
+import com.jarvis.tools.dataset.GeolocationEntry;
+import com.jarvis.tools.dataset.GeolocationStatus;
+import com.jarvis.tools.dataset.GeolocationUpdateOutcome;
+import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import com.jarvis.tools.schema.ToolArgumentDefinition;
 import com.jarvis.tools.schema.ToolDefinition;
 import com.jarvis.tools.schema.ToolOperationDefinition;
@@ -38,6 +42,7 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
     private final RoutingClient routingClient;
     private final LocationProperties properties;
     private final RouteOptimizer routeOptimizer;
+    private final StoreAuditDatasetService datasetService;
 
     /**
      * Creates the location tool.
@@ -45,12 +50,15 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
      * @param geocodingClient geocoding provider
      * @param routingClient routing provider
      * @param properties location configuration
+     * @param datasetService canonical store dataset, for {@code GEOCODE_DATASET}
      */
-    public LocationTool(GeocodingClient geocodingClient, RoutingClient routingClient, LocationProperties properties) {
+    public LocationTool(GeocodingClient geocodingClient, RoutingClient routingClient, LocationProperties properties,
+            StoreAuditDatasetService datasetService) {
         this.geocodingClient = geocodingClient;
         this.routingClient = routingClient;
         this.properties = properties;
         this.routeOptimizer = new RouteOptimizer();
+        this.datasetService = datasetService;
     }
 
     @Override
@@ -103,7 +111,17 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
                         false, ToolSafetyLevel.READ,
                         arg("start", "string", true, "Starting address or {latitude,longitude}"),
                         arg("stops", "array", true, "List of stop addresses or {latitude,longitude} points"),
-                        arg("optimize", "string", false, "\"distance\" or \"time\" (default \"time\")"))
+                        arg("optimize", "string", false, "\"distance\" or \"time\" (default \"time\")")),
+                operation("GEOCODE_DATASET",
+                        "Batch-geocodes records already held in a storeDataset (see the storeDataset tool) and "
+                                + "updates them in place by record id - use this instead of GEOCODE whenever the "
+                                + "addresses belong to a locked storeDataset (e.g. a Store Audit dataset), in as few "
+                                + "batch calls as practical rather than one call per record. This can never create a "
+                                + "new store record, no matter how many results come back - unknown record ids are "
+                                + "reported and ignored, not added.",
+                        true, ToolSafetyLevel.WRITE,
+                        arg("datasetId", "string", true, "Dataset id returned by storeDataset.CREATE_DATASET"),
+                        arg("records", "array", true, "Records to geocode: [{recordId, fullAddress}]"))
         ));
     }
 
@@ -119,7 +137,76 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
             case ROUTE -> route(request);
             case ROUTE_MATRIX -> routeMatrix(request);
             case OPTIMIZE_ROUTE -> optimizeRoute(request);
+            case GEOCODE_DATASET -> geocodeDataset(request);
         };
+    }
+
+    private ToolResult geocodeDataset(ToolRequest request) {
+        String datasetId = arg(request, "datasetId");
+        if (datasetId.isBlank()) {
+            return failure(request, "GEOCODE_DATASET", "GEOCODE_DATASET_MISSING_ID", "Nie podano datasetId.");
+        }
+        List<Object> rawRecords = listArg(request, "records");
+        if (rawRecords.isEmpty()) {
+            return failure(request, "GEOCODE_DATASET", "GEOCODE_DATASET_NO_RECORDS", "Nie podano rekordow do zgeokodowania.");
+        }
+        List<Map<String, Object>> resultsForModel = new ArrayList<>();
+        List<GeolocationEntry> updates = new ArrayList<>();
+        for (Object raw : rawRecords) {
+            if (!(raw instanceof Map<?, ?> map)) {
+                continue;
+            }
+            Object recordIdValue = map.get("recordId");
+            Object addressValue = map.containsKey("fullAddress") ? map.get("fullAddress") : map.get("address");
+            String recordId = recordIdValue == null ? "" : String.valueOf(recordIdValue).strip();
+            String address = addressValue == null ? "" : String.valueOf(addressValue).strip();
+            if (recordId.isBlank() || address.isBlank()) {
+                continue;
+            }
+            GeocodeResult result = safeGeocode(address);
+            GeolocationStatus status = switch (result.status()) {
+                case RESOLVED -> GeolocationStatus.RESOLVED;
+                case AMBIGUOUS, NOT_CONFIDENTLY_RESOLVED -> GeolocationStatus.AMBIGUOUS;
+                case NOT_FOUND -> GeolocationStatus.FAILED;
+            };
+            Double latitude = status == GeolocationStatus.RESOLVED ? result.latitude() : null;
+            Double longitude = status == GeolocationStatus.RESOLVED ? result.longitude() : null;
+            updates.add(new GeolocationEntry(recordId, status, latitude, longitude));
+
+            Map<String, Object> entry = new HashMap<>();
+            entry.put("recordId", recordId);
+            entry.put("status", status.name());
+            if (latitude != null) {
+                entry.put("latitude", latitude);
+            }
+            if (longitude != null) {
+                entry.put("longitude", longitude);
+            }
+            if (status != GeolocationStatus.RESOLVED) {
+                entry.put("reason", result.failureReason());
+            }
+            if (!result.candidates().isEmpty()) {
+                entry.put("candidates", result.candidates().stream().map(this::candidateMap).toList());
+            }
+            resultsForModel.add(entry);
+        }
+        GeolocationUpdateOutcome outcome = datasetService.updateGeolocation(datasetId, updates);
+        if (!outcome.success()) {
+            return failure(request, "GEOCODE_DATASET", "STORE_DATASET_NOT_FOUND", outcome.message());
+        }
+        LOGGER.info("[STORE_AUDIT] requestId={} GEOCODE_DATASET datasetId={} attempted={} updated={}",
+                request.requestId(), datasetId, updates.size(), outcome.updatedCount());
+        Map<String, Object> data = new HashMap<>();
+        data.put("datasetId", datasetId);
+        data.put("results", resultsForModel);
+        data.put("updatedCount", outcome.updatedCount());
+        data.put("datasetStage", outcome.dataset().stage().name());
+        data.put("datasetCount", outcome.dataset().stores().size());
+        if (!outcome.unknownRecordIds().isEmpty()) {
+            data.put("unknownRecordIds", outcome.unknownRecordIds());
+        }
+        return new ToolResult(true, TOOL_NAME, "GEOCODE_DATASET", request.requestId(), request.conversationId(),
+                true, List.of(datasetId), outcome.message(), data, "", "", false, "");
     }
 
     private ToolResult geocode(ToolRequest request) {

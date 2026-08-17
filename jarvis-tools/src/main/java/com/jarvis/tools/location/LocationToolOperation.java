@@ -12,5 +12,8 @@ public enum LocationToolOperation {
      *  model might call "DISTANCE_MATRIX"; there is deliberately only one canonical operation. */
     ROUTE_MATRIX,
     /** Orders a start point + a list of stops to reasonably minimize total distance or time. */
-    OPTIMIZE_ROUTE
+    OPTIMIZE_ROUTE,
+    /** Batch-geocodes a set of {@code storeDataset} records by id, updating them in place - can
+     *  never create a new record, regardless of how many results come back. */
+    GEOCODE_DATASET
 }

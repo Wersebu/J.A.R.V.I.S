@@ -1,9 +1,13 @@
 package com.jarvis.memory.pipeline;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jarvis.common.ai.BrainType;
 import com.jarvis.common.dto.ChatRequest;
+import com.jarvis.common.event.CognitiveEvent;
+import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.tools.ToolResult;
+import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import com.jarvis.tools.runtime.ToolCallingResult;
 import com.jarvis.tools.runtime.ToolRuntimeStep;
 import org.junit.jupiter.api.Test;
@@ -24,7 +28,7 @@ class ToolCallingStageTest {
         // Zero AIProviders on purpose: if the fix regresses and the stage falls through to the
         // separate synthesis call, selectProvider() throws because no provider is configured.
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
-                List.of(), new MainModelActionParser(new ObjectMapper()));
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
 
         ToolResult knowledgeRead = new ToolResult(true, "knowledge", "READ_DOCUMENT", "request-1", "conversation-1",
                 false, List.of(), "Document read", Map.of("path", "hardware/graphics_card.txt", "content", "RTX 4060 Ti 16 GB"),
@@ -47,7 +51,7 @@ class ToolCallingStageTest {
     @Test
     void streamToolFinalAnswerPrefersModelFinalAnswerOverMarketplaceFailureTemplateWhenNoListingsVerified() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
-                List.of(), new MainModelActionParser(new ObjectMapper()));
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
 
         ToolResult failedMarketplaceSearch = new ToolResult(true, "web", "SEARCH_MARKETPLACE", "request-1", "conversation-1",
                 false, List.of(), "Marketplace search finished",
@@ -72,7 +76,7 @@ class ToolCallingStageTest {
     @Test
     void streamToolFinalAnswerStillReturnsMarketplaceFailureTemplateWhenNoOtherAnswerExists() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
-                List.of(), new MainModelActionParser(new ObjectMapper()));
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
 
         ToolResult failedMarketplaceSearch = new ToolResult(true, "web", "SEARCH_MARKETPLACE", "request-2", "conversation-1",
                 false, List.of(), "Marketplace search finished",
@@ -92,7 +96,7 @@ class ToolCallingStageTest {
     @Test
     void streamToolFinalAnswerUnwrapsAStructuredJsonEnvelopeFromTheNativeLoopsOwnAnswer() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
-                List.of(), new MainModelActionParser(new ObjectMapper()));
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
 
         ToolResult webSearch = new ToolResult(true, "web", "SEARCH_WEB", "request-1", "conversation-1",
                 false, List.of(), "Web search finished", Map.of("results", List.of()), "", "", false, "");
@@ -113,7 +117,7 @@ class ToolCallingStageTest {
     @Test
     void streamToolFinalAnswerLeavesAGenuinePlainTextAnswerUnchanged() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
-                List.of(), new MainModelActionParser(new ObjectMapper()));
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
 
         ToolResult webSearch = new ToolResult(true, "web", "SEARCH_WEB", "request-1", "conversation-1",
                 false, List.of(), "Web search finished", Map.of("results", List.of()), "", "", false, "");
@@ -139,7 +143,7 @@ class ToolCallingStageTest {
         // fence around it) leaked straight into the chat as a rendered code block instead of the
         // actual answer text.
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
-                List.of(), new MainModelActionParser(new ObjectMapper()));
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
 
         List<String> answerChunks = new ArrayList<>();
         ChatRequest request = new ChatRequest("conversation-1", "Utworz grafik audytow.", Instant.now());
@@ -172,7 +176,7 @@ class ToolCallingStageTest {
     @Test
     void handleToolAnswerTokenLeavesGenuinePlainTextStartingWithBacktickUnchanged() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
-                List.of(), new MainModelActionParser(new ObjectMapper()));
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
 
         List<String> answerChunks = new ArrayList<>();
         ChatRequest request = new ChatRequest("conversation-1", "Co to jest zmienna x?", Instant.now());
@@ -203,7 +207,7 @@ class ToolCallingStageTest {
     @Test
     void fallbackWebSearchAnswerExtractsPolishZlotyPrice() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
-                List.of(), new MainModelActionParser(new ObjectMapper()));
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
         ToolResult result = new ToolResult(true, "web", "SEARCH_WEB", "request-test", "conversation-test",
                 false, List.of(), "Web search finished", Map.of(
                 "acceptedResults", List.of(Map.of(
@@ -225,7 +229,7 @@ class ToolCallingStageTest {
     @Test
     void fallbackWebSearchAnswerReturnsUrlWhenUserAskedForLink() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
-                List.of(), new MainModelActionParser(new ObjectMapper()));
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
         ToolResult result = new ToolResult(true, "web", "SEARCH_WEB", "request-test", "conversation-test",
                 false, List.of(), "Web search finished", Map.of(
                 "acceptedResults", List.of(Map.of(
@@ -243,5 +247,24 @@ class ToolCallingStageTest {
         assertThat(answer).contains("https://www.olx.pl/d/oferta/rtx-4060-ti");
         assertThat(answer).doesNotContain("1 050");
         assertThat(answer).doesNotContain("Web search finished");
+    }
+
+    private static final class NoopCognitiveEventBus implements CognitiveEventBus {
+
+        @Override
+        public void startRequest(String requestId, String conversationId, java.util.function.Consumer<CognitiveEvent> sink) {
+        }
+
+        @Override
+        public void finishRequest() {
+        }
+
+        @Override
+        public void updateBrain(BrainType brain, String model) {
+        }
+
+        @Override
+        public void publish(CognitiveEventType event, String status, String message, String nodeId, Map<String, Object> metadata) {
+        }
     }
 }

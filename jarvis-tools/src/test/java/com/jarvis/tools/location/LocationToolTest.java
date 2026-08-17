@@ -30,7 +30,7 @@ class LocationToolTest {
         geocodingClient.on("Biedronka, Korczaka 7, 08-400 Garwolin", GeocodeResult.resolved(
                 "Biedronka, Korczaka 7, 08-400 Garwolin", 51.90, 21.63, "Biedronka, Korczaka 7, Garwolin"));
         geocodingClient.on("Nieistniejacy Adres XYZ", GeocodeResult.unresolved("Nieistniejacy Adres XYZ", "No matching location found"));
-        LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES);
+        LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES, null);
 
         ToolResult result = tool.execute(new ToolRequest("location", "GEOCODE", "conversation-1", "request-1", "", "",
                 Map.of("queries", List.of("Biedronka, Korczaka 7, 08-400 Garwolin", "Nieistniejacy Adres XYZ"))));
@@ -53,7 +53,7 @@ class LocationToolTest {
         geocodingClient.on("Biedronka, Korczaka 7, 08-400 Garwolin", GeocodeResult.resolved(
                 "Biedronka, Korczaka 7, 08-400 Garwolin", 51.90, 21.63, "Biedronka, Korczaka 7, Garwolin"));
         geocodingClient.on("Nowa Wola", GeocodeResult.ambiguous("Nowa Wola", List.of(podlaskie, mazowieckie)));
-        LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES);
+        LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES, null);
 
         ToolResult result = tool.execute(new ToolRequest("location", "GEOCODE", "conversation-1", "request-1", "", "",
                 Map.of("queries", List.of("Biedronka, Korczaka 7, 08-400 Garwolin", "Nowa Wola"))));
@@ -73,7 +73,7 @@ class LocationToolTest {
     void geocodeSingleQueryStillWorksViaQueryArgument() {
         FakeGeocodingClient geocodingClient = new FakeGeocodingClient();
         geocodingClient.on("Nowa Wola 05-500", GeocodeResult.resolved("Nowa Wola 05-500", 52.0, 20.9, "Nowa Wola"));
-        LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES);
+        LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES, null);
 
         ToolResult result = tool.execute(new ToolRequest("location", "GEOCODE", "conversation-1", "request-1", "", "",
                 Map.of("query", "Nowa Wola 05-500")));
@@ -87,7 +87,7 @@ class LocationToolTest {
     void geocodeWithNoResolvedAddressReturnsGeographicErrorNeverMarketplace() {
         FakeGeocodingClient geocodingClient = new FakeGeocodingClient();
         geocodingClient.on("Zupelnie Nieznany Adres", GeocodeResult.unresolved("Zupelnie Nieznany Adres", "No matching location found"));
-        LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES);
+        LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES, null);
 
         ToolResult result = tool.execute(new ToolRequest("location", "GEOCODE", "conversation-1", "request-1", "", "",
                 Map.of("query", "Zupelnie Nieznany Adres")));
@@ -106,7 +106,7 @@ class LocationToolTest {
         geocodingClient.on("Garwolin", GeocodeResult.resolved("Garwolin", 51.9, 21.6, "Garwolin"));
         FakeRoutingClient routingClient = new FakeRoutingClient();
         routingClient.routeReturns(RouteResult.resolved(45000d, 2400d));
-        LocationTool tool = new LocationTool(geocodingClient, routingClient, PROPERTIES);
+        LocationTool tool = new LocationTool(geocodingClient, routingClient, PROPERTIES, null);
 
         ToolResult result = tool.execute(new ToolRequest("location", "ROUTE", "conversation-1", "request-1", "", "",
                 Map.of("from", "Nowa Wola 05-500", "to", "Garwolin")));
@@ -121,7 +121,7 @@ class LocationToolTest {
         FakeGeocodingClient geocodingClient = new FakeGeocodingClient();
         FakeRoutingClient routingClient = new FakeRoutingClient();
         routingClient.routeReturns(RouteResult.resolved(1000d, 120d));
-        LocationTool tool = new LocationTool(geocodingClient, routingClient, PROPERTIES);
+        LocationTool tool = new LocationTool(geocodingClient, routingClient, PROPERTIES, null);
 
         ToolResult result = tool.execute(new ToolRequest("location", "ROUTE", "conversation-1", "request-1", "", "",
                 Map.of("from", Map.of("latitude", 52.0, "longitude", 20.9),
@@ -135,7 +135,7 @@ class LocationToolTest {
     void routeReturnsRoutingErrorNeverMarketplaceWhenNoRouteFound() {
         FakeRoutingClient routingClient = new FakeRoutingClient();
         routingClient.routeReturns(RouteResult.unresolved("No road route found between these points"));
-        LocationTool tool = new LocationTool(new FakeGeocodingClient(), routingClient, PROPERTIES);
+        LocationTool tool = new LocationTool(new FakeGeocodingClient(), routingClient, PROPERTIES, null);
 
         ToolResult result = tool.execute(new ToolRequest("location", "ROUTE", "conversation-1", "request-1", "", "",
                 Map.of("from", Map.of("latitude", 52.0, "longitude", 20.9),
@@ -153,7 +153,7 @@ class LocationToolTest {
         Double[][] distances = {{0d, 1000d, null}, {1000d, 0d, null}, {null, null, 0d}};
         Double[][] durations = {{0d, 120d, null}, {120d, 0d, null}, {null, null, 0d}};
         routingClient.tableReturns(RouteMatrixResult.resolved(distances, durations));
-        LocationTool tool = new LocationTool(new FakeGeocodingClient(), routingClient, PROPERTIES);
+        LocationTool tool = new LocationTool(new FakeGeocodingClient(), routingClient, PROPERTIES, null);
 
         ToolResult result = tool.execute(new ToolRequest("location", "ROUTE_MATRIX", "conversation-1", "request-1", "", "",
                 Map.of("points", List.of(
@@ -179,7 +179,7 @@ class LocationToolTest {
                 {9000d, 4000d, 0d}
         };
         routingClient.tableReturns(RouteMatrixResult.resolved(distances, durations));
-        LocationTool tool = new LocationTool(new FakeGeocodingClient(), routingClient, PROPERTIES);
+        LocationTool tool = new LocationTool(new FakeGeocodingClient(), routingClient, PROPERTIES, null);
 
         ToolResult result = tool.execute(new ToolRequest("location", "OPTIMIZE_ROUTE", "conversation-1", "request-1", "", "",
                 Map.of(
@@ -204,7 +204,7 @@ class LocationToolTest {
         Double[][] durations = {{0d, 300d}, {300d, 0d}};
         Double[][] distances = {{0d, 3000d}, {3000d, 0d}};
         routingClient.tableReturns(RouteMatrixResult.resolved(distances, durations));
-        LocationTool tool = new LocationTool(geocodingClient, routingClient, PROPERTIES);
+        LocationTool tool = new LocationTool(geocodingClient, routingClient, PROPERTIES, null);
 
         ToolResult result = tool.execute(new ToolRequest("location", "OPTIMIZE_ROUTE", "conversation-1", "request-1", "", "",
                 Map.of(
@@ -217,10 +217,94 @@ class LocationToolTest {
 
     @Test
     void unsupportedOperationThrowsToolException() {
-        LocationTool tool = new LocationTool(new FakeGeocodingClient(), new FakeRoutingClient(), PROPERTIES);
+        LocationTool tool = new LocationTool(new FakeGeocodingClient(), new FakeRoutingClient(), PROPERTIES, null);
 
         assertThatThrownBy(() -> tool.execute(new ToolRequest("location", "TELEPORT", "conversation-1", "request-1", "", "", Map.of())))
                 .isInstanceOf(ToolException.class);
+    }
+
+    // TEST C/D from the Store Audit dataset invariant suite, exercised through the actual
+    // location.GEOCODE_DATASET operation: it can only update existing storeDataset records by id,
+    // never create one, regardless of how many results come back.
+    @Test
+    void geocodeDatasetUpdatesExistingDatasetRecordsWithoutEverCreatingNewOnes() {
+        com.jarvis.tools.dataset.StoreAuditDatasetService datasetService =
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus());
+        com.jarvis.tools.dataset.CreateOutcome created = datasetService.createDataset("request-1", 1, List.of("att-1"), List.of(
+                new com.jarvis.tools.dataset.CandidateRecord("Biedronka", "Garwolin", "Korczaka", "7", "08-400",
+                        "Biedronka, Korczaka 7, 08-400 Garwolin", "att-1", 1),
+                new com.jarvis.tools.dataset.CandidateRecord("Biedronka", "Garwolin", "Targowa", "1", "08-400",
+                        "Nieistniejacy Adres XYZ", "att-1", 2)
+        ));
+        String datasetId = created.dataset().datasetId();
+        String recordId1 = created.dataset().stores().get(0).id();
+        String recordId2 = created.dataset().stores().get(1).id();
+
+        FakeGeocodingClient geocodingClient = new FakeGeocodingClient();
+        geocodingClient.on("Biedronka, Korczaka 7, 08-400 Garwolin", GeocodeResult.resolved(
+                "Biedronka, Korczaka 7, 08-400 Garwolin", 51.90, 21.63, "Biedronka, Korczaka 7, Garwolin"));
+        geocodingClient.on("Nieistniejacy Adres XYZ", GeocodeResult.unresolved("Nieistniejacy Adres XYZ", "No matching location found"));
+        LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES, datasetService);
+
+        ToolResult result = tool.execute(new ToolRequest("location", "GEOCODE_DATASET", "conversation-1", "request-1", "", "",
+                Map.of("datasetId", datasetId, "records", List.of(
+                        Map.of("recordId", recordId1, "fullAddress", "Biedronka, Korczaka 7, 08-400 Garwolin"),
+                        Map.of("recordId", recordId2, "fullAddress", "Nieistniejacy Adres XYZ")
+                ))));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.data().get("updatedCount")).isEqualTo(2);
+        assertThat(result.data().get("datasetCount")).isEqualTo(2);
+
+        var dataset = datasetService.getDataset(datasetId).orElseThrow();
+        assertThat(dataset.stores()).hasSize(2);
+        assertThat(dataset.stores().get(0).geolocationStatus()).isEqualTo(com.jarvis.tools.dataset.GeolocationStatus.RESOLVED);
+        assertThat(dataset.stores().get(1).geolocationStatus()).isEqualTo(com.jarvis.tools.dataset.GeolocationStatus.FAILED);
+    }
+
+    @Test
+    void geocodeDatasetIgnoresAnUnknownRecordIdRatherThanCreatingANewRecord() {
+        com.jarvis.tools.dataset.StoreAuditDatasetService datasetService =
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus());
+        com.jarvis.tools.dataset.CreateOutcome created = datasetService.createDataset("request-1", 1, List.of("att-1"), List.of(
+                new com.jarvis.tools.dataset.CandidateRecord("Biedronka", "Garwolin", "Korczaka", "7", "08-400",
+                        "Biedronka, Korczaka 7, 08-400 Garwolin", "att-1", 1)
+        ));
+        String datasetId = created.dataset().datasetId();
+
+        FakeGeocodingClient geocodingClient = new FakeGeocodingClient();
+        geocodingClient.on("Sklep spoza datasetu", GeocodeResult.resolved("Sklep spoza datasetu", 50.0, 20.0, "Sklep spoza datasetu"));
+        LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES, datasetService);
+
+        ToolResult result = tool.execute(new ToolRequest("location", "GEOCODE_DATASET", "conversation-1", "request-1", "", "",
+                Map.of("datasetId", datasetId, "records", List.of(
+                        Map.of("recordId", "store-999", "fullAddress", "Sklep spoza datasetu")
+                ))));
+
+        assertThat(result.success()).isTrue();
+        @SuppressWarnings("unchecked")
+        List<String> unknownIds = (List<String>) result.data().get("unknownRecordIds");
+        assertThat(unknownIds).containsExactly("store-999");
+        assertThat(datasetService.getDataset(datasetId).orElseThrow().stores()).hasSize(1);
+    }
+
+    private static final class NoopCognitiveEventBus implements com.jarvis.common.event.CognitiveEventBus {
+
+        @Override
+        public void startRequest(String requestId, String conversationId, java.util.function.Consumer<com.jarvis.common.event.CognitiveEvent> sink) {
+        }
+
+        @Override
+        public void finishRequest() {
+        }
+
+        @Override
+        public void updateBrain(com.jarvis.common.ai.BrainType brain, String model) {
+        }
+
+        @Override
+        public void publish(com.jarvis.common.event.CognitiveEventType event, String status, String message, String nodeId, Map<String, Object> metadata) {
+        }
     }
 
     @Test
@@ -229,7 +313,7 @@ class LocationToolTest {
         Double[][] distances = {{0d, 1000d}, {1000d, 0d}};
         Double[][] durations = {{0d, 120d}, {120d, 0d}};
         routingClient.tableReturns(RouteMatrixResult.resolved(distances, durations));
-        LocationTool tool = new LocationTool(new FakeGeocodingClient(), routingClient, PROPERTIES);
+        LocationTool tool = new LocationTool(new FakeGeocodingClient(), routingClient, PROPERTIES, null);
 
         ToolResult result = tool.execute(new ToolRequest("location", "DISTANCE_MATRIX", "conversation-1", "request-1", "", "",
                 Map.of("points", List.of(
