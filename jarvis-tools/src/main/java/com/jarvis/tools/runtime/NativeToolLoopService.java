@@ -557,6 +557,12 @@ public class NativeToolLoopService {
                 For links or listing requests, return only URLs from tool evidence and never invent item ids.
                 Stop with plain final content only when enough evidence is available.
 
+                There is no background process after this turn: if you stop calling tools before the task is
+                actually done, nothing further will ever be delivered to the user - do not claim otherwise.
+                If a task needs several more tool calls and is worth a status update, call system__notify_user
+                with one short message, then immediately keep calling tools - it does not end your turn and is
+                never a substitute for finishing the task.
+
                 Freshness: %s
                 User request: %s
                 Tool goal: %s
@@ -584,9 +590,19 @@ public class NativeToolLoopService {
 
     private ToolIntent resolveIntent(ToolCallingRequest request) {
         ToolIntent messageIntent = intentDetector.detect(request.userMessage());
+        if (messageIntent != ToolIntent.NO_TOOL) {
+            return messageIntent;
+        }
+        // The user message alone ("przygotuj grafik na sierpien") often gives no hint at all,
+        // even though the main model's own TOOL_REQUEST goal/reason explicitly says it needs
+        // geolocation - without this check that request stayed NO_TOOL and never got the higher
+        // maxCalls floor below, capping a multi-store geocoding workflow at maxCallsFast (2).
         String context = normalize(request.goal() + " " + request.reason());
-        if (messageIntent == ToolIntent.NO_TOOL
-                && context.matches(".*\\b(web|internet|external|current|live|market|price|prices|listing|search)\\b.*")) {
+        if (context.matches(".*\\b(geoloc|geocod|location|route|routing|distance|coordinates|navigat|"
+                + "trasa|trase|adres|wspolrzedn|geokod|lokalizacj|dojazd|marszrut|dystans|nawigacj|mapa|mape)\\b.*")) {
+            return ToolIntent.LOCATION;
+        }
+        if (context.matches(".*\\b(web|internet|external|current|live|market|price|prices|listing|search)\\b.*")) {
             return ToolIntent.SEARCH_WEB;
         }
         return messageIntent;
