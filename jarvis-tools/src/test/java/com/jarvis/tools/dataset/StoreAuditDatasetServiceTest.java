@@ -70,6 +70,68 @@ class StoreAuditDatasetServiceTest {
         assertThat(outcome.message()).contains("att-fabricated");
     }
 
+    // Regression: CREATE_DATASET with an empty record list must never be accepted as a valid, if
+    // empty, dataset - that silently set datasetAvailable=true downstream with nothing behind it.
+    @Test
+    void createDatasetRejectsAnEmptyRecordListAsEmptyDataset() {
+        StoreAuditDatasetService service = service();
+
+        CreateOutcome outcome = service.createDataset("request-1", 2, List.of("att-1", "att-2"), List.of());
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.dataset()).isNull();
+        assertThat(outcome.errorCode()).isEqualTo("EMPTY_DATASET");
+    }
+
+    // Regression: every candidate failing provenance also results in zero real records - same
+    // failure mode as an empty submission, must be rejected the same way.
+    @Test
+    void createDatasetRejectsWhenEveryCandidateFailsProvenanceLeavingZeroRecords() {
+        StoreAuditDatasetService service = service();
+        List<CandidateRecord> allInvalid = List.of(
+                new CandidateRecord("Biedronka", "Miasto", "Ulica", "1", "00-001",
+                        "Ulica 1, 00-001 Miasto", "att-unknown", 1)
+        );
+
+        CreateOutcome outcome = service.createDataset("request-1", 1, List.of("att-1"), allInvalid);
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.dataset()).isNull();
+        assertThat(outcome.errorCode()).isEqualTo("EMPTY_DATASET");
+    }
+
+    // Regression: a second CREATE_DATASET for the exact same conversation and source attachments
+    // must not silently produce a second, independent dataset (the observed 23 -> 5 record drift).
+    @Test
+    void createDatasetRejectsADuplicateForTheSameConversationAndSourceAttachments() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-1", List.of("att-1", "att-2"));
+        StoreAuditDataset first = service.createDataset("request-1", 2, List.of("att-1", "att-2"), candidates(23, "att-1")).dataset();
+
+        service.registerAttachments("request-2", "conversation-1", List.of("att-1", "att-2"));
+        CreateOutcome second = service.createDataset("request-2", 2, List.of("att-1", "att-2"), candidates(5, "att-1"));
+
+        assertThat(second.success()).isFalse();
+        assertThat(second.errorCode()).isEqualTo("STORE_DATASET_DUPLICATE_SOURCE");
+        assertThat(second.dataset().datasetId()).isEqualTo(first.datasetId());
+        assertThat(service.getDataset(first.datasetId()).orElseThrow().stores()).hasSize(23);
+    }
+
+    // A different set of source attachments in the same conversation is a genuinely new task (new
+    // photos sent) and must still be allowed to create its own dataset.
+    @Test
+    void createDatasetAllowsADifferentDatasetForDifferentSourceAttachmentsInTheSameConversation() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-1", List.of("att-1"));
+        StoreAuditDataset first = service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset();
+
+        service.registerAttachments("request-2", "conversation-1", List.of("att-2"));
+        CreateOutcome second = service.createDataset("request-2", 1, List.of("att-2"), candidates(5, "att-2"));
+
+        assertThat(second.success()).isTrue();
+        assertThat(second.dataset().datasetId()).isNotEqualTo(first.datasetId());
+    }
+
     // TEST C: GeoLocation returns 23 results -> dataset remains 23 records.
     @Test
     void geolocationUpdatesResolveExistingRecordsWithoutChangingCount() {

@@ -1,6 +1,7 @@
 package com.jarvis.tools.runtime;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.ai.AIProvider;
@@ -19,6 +20,10 @@ import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.ToolRuntimeProperties;
 import com.jarvis.tools.dataset.StoreAuditDataset;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
+import com.jarvis.tools.workflow.CompletionAssessment;
+import com.jarvis.tools.workflow.StoreAuditWorkflowCompletionValidator;
+import com.jarvis.tools.workflow.WorkflowCompletionContext;
+import com.jarvis.tools.workflow.WorkflowCompletionValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -57,6 +62,7 @@ public class NativeToolLoopService {
     private final MarketObservationExtractor marketObservationExtractor;
     private final AiListingVerifier listingVerifier;
     private final StoreAuditDatasetService datasetService;
+    private final WorkflowCompletionValidator completionValidator;
 
     /**
      * Creates the native tool loop service.
@@ -85,6 +91,10 @@ public class NativeToolLoopService {
         this.webSearchQualityEvaluator = new WebSearchQualityEvaluator();
         this.marketObservationExtractor = new MarketObservationExtractor();
         this.listingVerifier = new AiListingVerifier(objectMapper);
+        // Store Audit is the only stateful workflow with a completion validator today; the agent
+        // loop below only ever talks to the generic WorkflowCompletionValidator interface, so a
+        // future stateful workflow can plug in its own implementation without the loop changing.
+        this.completionValidator = new StoreAuditWorkflowCompletionValidator(datasetService);
     }
 
     /**
@@ -126,6 +136,15 @@ public class NativeToolLoopService {
         Optional<StoreAuditDataset> existingDataset = datasetService.findLatestForConversation(request.conversationId());
         boolean datasetAvailable = existingDataset.isPresent();
         int rawGeocodeAddressCount = 0;
+        // Re-entrant agent loop bookkeeping: neither counter blocks progress on its own - each just
+        // bounds how many times this loop will push corrective guidance back to the model for the
+        // same class of problem before giving up and accepting whatever content it has, so a
+        // persistently confused model can never spin forever (the outer step/timeout bounds below
+        // are the hard backstop regardless).
+        boolean datasetTouchedThisLoop = false;
+        String activeDatasetId = existingDataset.map(StoreAuditDataset::datasetId).orElse("");
+        int malformedContinuationAttempts = 0;
+        int completionGateAttempts = 0;
         messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions, existingDataset)));
         messages.add(ModelMessage.user(request.userMessage(), request.images()));
 
@@ -155,6 +174,8 @@ public class NativeToolLoopService {
             }
             publishThinking(request, response);
             if (response.hasToolCalls()) {
+                LOGGER.info("[AGENT_LOOP] requestId={} turn={} action=TOOL_REQUEST calls={}",
+                        request.requestId(), step, response.toolCalls().size());
                 messages.add(ModelMessage.assistant(response.content(), response.toolCalls()));
                 for (ModelToolCall call : response.toolCalls()) {
                     publish(request, CognitiveEventType.NATIVE_TOOL_CALL_RECEIVED, "RECEIVED",
@@ -236,6 +257,16 @@ public class NativeToolLoopService {
                     if (result.success() && isCreateDataset(action)) {
                         datasetAvailable = true;
                     }
+                    if (isDatasetTouchingAction(action)) {
+                        datasetTouchedThisLoop = true;
+                        Object datasetIdValue = result.success() ? result.data().get("datasetId") : action.arguments().get("datasetId");
+                        if (datasetIdValue != null && !String.valueOf(datasetIdValue).isBlank()) {
+                            activeDatasetId = String.valueOf(datasetIdValue);
+                        }
+                        LOGGER.info("[WORKFLOW_STATE] requestId={} datasetId={} stage={} records={}",
+                                request.requestId(), activeDatasetId,
+                                result.data().getOrDefault("stage", ""), result.data().getOrDefault("count", ""));
+                    }
                     // Only the SEARCH_MARKETPLACE call itself is marketplace evidence - a collector
                     // existing elsewhere in the loop must never taint an unrelated result (e.g. a
                     // later SEARCH_WEB call for geocoding) with marketplaceResearch=true, or Core
@@ -283,6 +314,7 @@ public class NativeToolLoopService {
 
             String content = response.content().strip();
             if (!content.isBlank()) {
+                LOGGER.info("[AGENT_LOOP] requestId={} turn={} action=FINAL_CONTENT", request.requestId(), step);
                 if (marketplaceCollector != null && marketplaceCollector.needsMore() && drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages,
                         "marketplace-collector-" + step, step)) {
                     messages.add(ModelMessage.system("Marketplace listing collection is now "
@@ -291,6 +323,29 @@ public class NativeToolLoopService {
                             + ". Use the collected concrete marketplaceListings when answering. If fewer were found than requested, state the exact count found."));
                     continue;
                 }
+
+                // TOOL_REQUEST is a valid action at every stage of this loop, not just the first
+                // turn - a model that still needs another capability must never have that request
+                // silently swallowed just because it wrote it as JSON text instead of making an
+                // actual native tool call (this loop already has native tool-calling available, so
+                // there is never a legitimate reason for it to do that).
+                Optional<String> envelopeType = detectStructuredEnvelopeType(content);
+                if (envelopeType.isPresent() && "TOOL_REQUEST".equals(envelopeType.get())) {
+                    if (malformedContinuationAttempts < MAX_MALFORMED_CONTINUATION_ATTEMPTS) {
+                        malformedContinuationAttempts++;
+                        LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} REENTER_TOOL_LOOP reason=MODEL_WROTE_TOOL_REQUEST_AS_TEXT attempt={}",
+                                request.requestId(), step, malformedContinuationAttempts);
+                        publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
+                                "Model described another tool request as text instead of calling it natively", null, step,
+                                Map.of("reason", "MODEL_WROTE_TOOL_REQUEST_AS_TEXT", "attempt", malformedContinuationAttempts));
+                        messages.add(ModelMessage.assistant(content, List.of()));
+                        messages.add(ModelMessage.system(REENTER_AFTER_TEXT_TOOL_REQUEST_NOTE));
+                        continue;
+                    }
+                    LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} step={} malformed-continuation retries exhausted, treating text as final content",
+                            request.requestId(), step);
+                }
+
                 if (freshness == InformationFreshness.MUST_BE_LIVE && !hasLiveEvidence(results)) {
                     messages.add(ModelMessage.assistant(content, List.of()));
                     messages.add(ModelMessage.system("Live evidence is required. Use the available native web tools before answering."));
@@ -299,11 +354,38 @@ public class NativeToolLoopService {
                             Map.of("freshness", freshness.name()));
                     continue;
                 }
+
+                // FINAL_ANSWER (or genuine plain text) is not automatically "workflow complete" -
+                // if this loop actually engaged with a stateful workflow (e.g. a Store Audit
+                // dataset), that workflow's own completion validator gets the final say before this
+                // loop accepts the content as done.
+                WorkflowCompletionContext completionContext = new WorkflowCompletionContext(
+                        request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId);
+                CompletionAssessment assessment = completionValidator.assess(completionContext);
+                LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} COMPLETION_GATE complete={} reason={}",
+                        request.requestId(), step, assessment.complete(), assessment.reason());
+                if (!assessment.complete()) {
+                    if (completionGateAttempts < MAX_COMPLETION_GATE_ATTEMPTS) {
+                        completionGateAttempts++;
+                        LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} REENTER_TOOL_LOOP reason=WORKFLOW_NOT_COMPLETE attempt={}",
+                                request.requestId(), step, completionGateAttempts);
+                        publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
+                                "Workflow not complete yet, continuing tool loop", null, step,
+                                Map.of("reason", assessment.reason(), "attempt", completionGateAttempts));
+                        messages.add(ModelMessage.assistant(content, List.of()));
+                        messages.add(ModelMessage.system(assessment.guidance()));
+                        continue;
+                    }
+                    LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} completion-gate retries exhausted reason={}, accepting answer as-is",
+                            request.requestId(), assessment.reason());
+                }
+
                 saveDebug(request, intent, steps, "FINISHED", errors);
                 publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED",
                         "Native tool loop finished with model answer", null, step, Map.of("results", results.size()));
                 LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} phase=TOOL_LOOP_END toolCalls={} toolExecuted={} autoTriggered=false",
                         request.requestId(), results.size(), !results.isEmpty());
+                LOGGER.info("[AGENT_LOOP] requestId={} turn={} action=FINAL_ANSWER", request.requestId(), step);
                 return new ToolCallingResult(true, content, steps, results);
             }
 
@@ -916,6 +998,81 @@ public class NativeToolLoopService {
 
     private boolean isCreateDataset(ToolAction action) {
         return "storedataset".equalsIgnoreCase(action.tool()) && "CREATE_DATASET".equalsIgnoreCase(action.operation());
+    }
+
+    /**
+     * True for any operation that reads or mutates a canonical {@code storeDataset} - used to
+     * decide whether this loop actually engaged with a stateful workflow (as opposed to one merely
+     * being available via conversation continuity), which is what {@link WorkflowCompletionContext}
+     * gates on.
+     */
+    private boolean isDatasetTouchingAction(ToolAction action) {
+        return "storedataset".equalsIgnoreCase(action.tool())
+                || ("location".equalsIgnoreCase(action.tool()) && "GEOCODE_DATASET".equalsIgnoreCase(action.operation()));
+    }
+
+    /**
+     * Above this many consecutive turns where the model wrote a {@code TOOL_REQUEST}-shaped JSON
+     * envelope as plain content instead of making an actual native tool call, this loop stops
+     * pushing corrective guidance and accepts the text as final content - see {@link
+     * #detectStructuredEnvelopeType}.
+     */
+    private static final int MAX_MALFORMED_CONTINUATION_ATTEMPTS = 2;
+
+    /**
+     * Above this many consecutive turns where {@link #completionValidator} reports the workflow is
+     * not actually complete, this loop stops pushing corrective guidance and accepts the content
+     * as-is rather than nagging forever - the outer step/timeout budget is the hard backstop.
+     */
+    private static final int MAX_COMPLETION_GATE_ATTEMPTS = 3;
+
+    private static final String REENTER_AFTER_TEXT_TOOL_REQUEST_NOTE =
+            "You described a tool request as JSON/text instead of making an actual tool call. This loop has "
+                    + "native tool-calling available - call the tool you need directly through the native "
+                    + "tool-calling mechanism right now, not as JSON in your written content. Do not restate "
+                    + "your plan in text again; make the actual call.";
+
+    /**
+     * Sniffs whether {@code content} - the loop's plain-text turn - is actually a structured
+     * decision envelope (e.g. {@code {"type":"TOOL_REQUEST",...}}) written as text instead of a
+     * real native tool call, mirroring how {@code MainModelActionParser} extracts a JSON object
+     * out of prose one layer up. This loop cannot depend on that parser directly (jarvis-tools
+     * cannot depend on jarvis-memory), so it does the same minimal extraction locally - all it
+     * needs is the {@code "type"} field, never the rest of the envelope schema.
+     *
+     * @param content plain-text model turn content
+     * @return the uppercased {@code type} value, if any recognizable JSON object is present
+     */
+    private Optional<String> detectStructuredEnvelopeType(String content) {
+        String stripped = stripMarkdownFence(content.strip());
+        int start = stripped.indexOf('{');
+        int end = stripped.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            return Optional.empty();
+        }
+        try {
+            JsonNode node = objectMapper.readTree(stripped.substring(start, end + 1));
+            JsonNode type = node.path("type");
+            if (type.isMissingNode() || type.isNull() || type.asText("").isBlank()) {
+                return Optional.empty();
+            }
+            return Optional.of(type.asText("").toUpperCase(Locale.ROOT));
+        } catch (JsonProcessingException | RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private String stripMarkdownFence(String value) {
+        if (!value.startsWith("```")) {
+            return value;
+        }
+        int newline = value.indexOf('\n');
+        if (newline < 0) {
+            return value;
+        }
+        String withoutOpenFence = value.substring(newline + 1);
+        int closingFence = withoutOpenFence.lastIndexOf("```");
+        return closingFence >= 0 ? withoutOpenFence.substring(0, closingFence) : withoutOpenFence;
     }
 
     private int geocodeAddressCount(ToolAction action) {

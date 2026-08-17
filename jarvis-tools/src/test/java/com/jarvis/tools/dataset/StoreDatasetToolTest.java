@@ -73,6 +73,21 @@ class StoreDatasetToolTest {
     }
 
     @Test
+    void createDatasetWithAnEmptyRecordListReturnsEmptyDatasetErrorCodeAndNeverSucceeds() {
+        StoreDatasetTool tool = new StoreDatasetTool(new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        ToolResult result = tool.execute(new ToolRequest("storeDataset", "CREATE_DATASET", "conversation-1", "request-1",
+                "extraction", "", Map.of(
+                        "sourceImageCount", 2,
+                        "sourceAttachmentIds", List.of("att-1", "att-2"),
+                        "records", List.of()
+                )));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.errorCode()).isEqualTo("EMPTY_DATASET");
+    }
+
+    @Test
     void verifyDatasetWithWildlyDifferentCountFailsAsInvariantViolationAndDoesNotMutateTheDataset() {
         StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
         StoreDatasetTool tool = new StoreDatasetTool(service);

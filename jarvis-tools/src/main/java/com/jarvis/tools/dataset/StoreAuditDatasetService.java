@@ -127,7 +127,27 @@ public class StoreAuditDatasetService {
                         + "the current message - dataset was not created. Only attachments actually present on this "
                         + "message are valid provenance.";
                 LOGGER.warn("[STORE_AUDIT] requestId={} extraction rejected: unknown declared attachment ids={}", requestId, unknownDeclared);
-                return new CreateOutcome(false, null, 0, 0, List.of(), message);
+                return new CreateOutcome(false, null, 0, 0, List.of(), message, "STORE_DATASET_PROVENANCE_INVALID");
+            }
+        }
+
+        String conversationIdForRequest = known.map(AttachmentRegistration::conversationId).orElse("");
+        if (!declared.isEmpty() && !conversationIdForRequest.isBlank()) {
+            Set<String> declaredForDuplicateCheck = new HashSet<>(declared);
+            Optional<StoreAuditDataset> duplicate = datasets.values().stream()
+                    .filter(existing -> conversationIdForRequest.equals(existing.conversationId()))
+                    .filter(existing -> new HashSet<>(existing.sourceAttachmentIds()).equals(declaredForDuplicateCheck))
+                    .findFirst();
+            if (duplicate.isPresent()) {
+                StoreAuditDataset existingDataset = duplicate.get();
+                String message = "A dataset already exists for these exact source attachments (datasetId="
+                        + existingDataset.datasetId() + ", stage=" + existingDataset.stage() + ", "
+                        + existingDataset.stores().size() + " record(s)). Do not create a duplicate dataset for "
+                        + "the same source material - call storeDataset.GET_DATASET or storeDataset.VERIFY_DATASET "
+                        + "with that id instead.";
+                LOGGER.warn("[STORE_AUDIT] requestId={} extraction rejected: duplicate CREATE_DATASET for existing datasetId={}",
+                        requestId, existingDataset.datasetId());
+                return new CreateOutcome(false, existingDataset, 0, 0, List.of(), message, "STORE_DATASET_DUPLICATE_SOURCE");
             }
         }
 
@@ -170,8 +190,18 @@ public class StoreAuditDatasetService {
                     candidate.sourceRow(), VerificationStatus.UNVERIFIED, GeolocationStatus.PENDING, null, null));
         }
 
+        if (accepted.isEmpty()) {
+            String message = "Dataset creation rejected: the resulting record count would be 0 ("
+                    + rejected.size() + " candidate(s) rejected for missing/invalid provenance, "
+                    + duplicateCount + " duplicate(s) skipped). Re-read the currently available images/attachments "
+                    + "or user-typed list and call CREATE_DATASET again with the full, valid extracted record list.";
+            LOGGER.warn("[STORE_AUDIT] requestId={} extraction rejected: CREATE_DATASET would produce an empty dataset "
+                    + "(submitted={}, rejected={}, duplicates={})", requestId, source.size(), rejected.size(), duplicateCount);
+            return new CreateOutcome(false, null, 0, duplicateCount, rejected, message, "EMPTY_DATASET");
+        }
+
         Instant now = clock.instant();
-        String conversationId = known.map(AttachmentRegistration::conversationId).orElse("");
+        String conversationId = conversationIdForRequest;
         StoreAuditDataset dataset = new StoreAuditDataset(
                 UUID.randomUUID().toString(), requestId, conversationId, declared, sourceImageCount,
                 accepted, accepted.size(), DatasetStage.EXTRACTED, List.of(), now, now.plus(DATASET_TTL));
@@ -192,7 +222,7 @@ public class StoreAuditDatasetService {
         String message = "Dataset created with " + accepted.size() + " store record(s)."
                 + (rejected.isEmpty() ? "" : " " + rejected.size() + " candidate(s) rejected for missing/invalid provenance.")
                 + (duplicateCount > 0 ? " " + duplicateCount + " duplicate(s) skipped." : "");
-        return new CreateOutcome(true, dataset, accepted.size(), duplicateCount, rejected, message);
+        return new CreateOutcome(true, dataset, accepted.size(), duplicateCount, rejected, message, "");
     }
 
     /**

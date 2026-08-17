@@ -140,8 +140,13 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
         }
         CreateOutcome outcome = datasetService.createDataset(request.requestId(), sourceImageCount, sourceAttachmentIds, candidates);
         if (!outcome.success()) {
+            // On STORE_DATASET_DUPLICATE_SOURCE, outcome.dataset() is the pre-existing dataset the
+            // model should use instead - surface its data so the model can act on it directly
+            // (GET_DATASET/VERIFY_DATASET) rather than only reading the id out of free text.
+            Map<String, Object> data = outcome.dataset() == null ? Map.of() : datasetData(outcome.dataset());
+            String errorCode = outcome.errorCode().isBlank() ? "STORE_DATASET_PROVENANCE_INVALID" : outcome.errorCode();
             return new ToolResult(false, TOOL_NAME, "CREATE_DATASET", request.requestId(), request.conversationId(),
-                    false, List.of(), outcome.message(), Map.of(), "STORE_DATASET_PROVENANCE_INVALID", outcome.message(), false, "");
+                    false, List.of(), outcome.message(), data, errorCode, outcome.message(), false, "");
         }
         Map<String, Object> data = datasetData(outcome.dataset());
         data.put("acceptedCount", outcome.acceptedCount());

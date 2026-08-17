@@ -43,6 +43,15 @@ public class HeuristicComplexityAnalyzer implements ComplexityAnalyzer {
         if (contains(normalized, "analyze", "reason", "compare", "tradeoff", "debug")) {
             score += 2;
         }
+        int attachmentCount = request.attachments() == null ? 0 : request.attachments().size();
+        if (attachmentCount > 0) {
+            // Attachments (photos, documents, screenshots of lists) very often carry
+            // extraction/multi-step tool work a text-length-only heuristic never sees - e.g. reading
+            // a dozen rows off two photos and turning them into a dataset, geocoding, and scheduling.
+            // Scale with count but stay capped, so a single casual attachment question is never
+            // automatically treated as maximally complex.
+            score += Math.min(4, attachmentCount + 1);
+        }
 
         score = Math.max(1, Math.min(10, score));
         if (score >= 7) {

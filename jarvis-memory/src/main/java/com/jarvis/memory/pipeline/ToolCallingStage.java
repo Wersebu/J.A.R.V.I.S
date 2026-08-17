@@ -119,7 +119,19 @@ public class ToolCallingStage implements PipelineStage {
                 .withMetadata("toolCallingSteps", result.steps().size());
     }
 
+    /**
+     * Above this many times a final-synthesis call (the tool-less narration turn used when the
+     * native tool loop itself returned no final content) returns another {@code TOOL_REQUEST}
+     * envelope as text, this stage stops re-entering the tool runtime and falls through to the
+     * ordinary honest fallback text - see {@link #streamToolFinalSynthesis}.
+     */
+    private static final int MAX_FINAL_SYNTHESIS_REENTRIES = 1;
+
     private String streamToolFinalAnswer(PipelineContext context, ToolCallingResult result) {
+        return streamToolFinalAnswer(context, result, MAX_FINAL_SYNTHESIS_REENTRIES);
+    }
+
+    private String streamToolFinalAnswer(PipelineContext context, ToolCallingResult result, int synthesisRetriesLeft) {
         List<Map<String, Object>> verifiedListings = marketplaceListings(result);
         if (!verifiedListings.isEmpty()) {
             // Verified listings are strictly more trustworthy than freeform model text (price/URL
@@ -159,7 +171,7 @@ public class ToolCallingStage implements PipelineStage {
         String fallback = fallbackToolAnswer(context, result);
         String answer;
         try {
-            answer = streamPrompt(context, prompt, fallback);
+            answer = streamToolFinalSynthesis(context, prompt, fallback, synthesisRetriesLeft);
         } catch (AIProviderException exception) {
             answer = publishBufferedFallback(context, fallback, "tool-fallback");
         }
@@ -196,6 +208,75 @@ public class ToolCallingStage implements PipelineStage {
         });
         String answer = finishToolAnswerStream(context, streamState, fallback);
         return answer.isBlank() ? fallback : answer;
+    }
+
+    /**
+     * Streams the tool-less final-synthesis narration call, with one important difference from
+     * {@link #streamPrompt}: this call's whole reason for existing is that the native tool loop
+     * itself returned no final content, so if its own output turns out to be another {@code
+     * TOOL_REQUEST} envelope (a model habit, not a deliberate "give up" signal), that must be
+     * executed - re-entering the real tool runtime - rather than turned into an apology. Nothing is
+     * streamed to the user for a TOOL_REQUEST-typed structured response (see {@link
+     * StreamingStructuredResponseParser}, which only streams the answer/question field), so this
+     * check runs before anything has been shown to the user.
+     *
+     * @param context pipeline context
+     * @param prompt final-synthesis prompt
+     * @param fallback safe fallback text if nothing usable comes back
+     * @param retriesLeft remaining re-entry attempts, bounded by {@link #MAX_FINAL_SYNTHESIS_REENTRIES}
+     * @return final user-facing answer text
+     */
+    private String streamToolFinalSynthesis(PipelineContext context, String prompt, String fallback, int retriesLeft) {
+        ToolAnswerStreamState streamState = new ToolAnswerStreamState();
+        selectProvider(context).stream(context.conversationId(), context.brain(), prompt, AIJobType.MAIN_MODEL, event -> {
+            if (event instanceof TokenEvent tokenEvent) {
+                handleToolAnswerToken(context, tokenEvent.text(), streamState);
+            }
+            if (event instanceof GenerationFinishedEvent finishedEvent) {
+                streamState.finishedEvent = finishedEvent;
+            }
+        });
+        if (streamState.structured && streamState.answer.isEmpty() && retriesLeft > 0) {
+            // streamState.raw is only a pre-decision scratch buffer - it is cleared the moment
+            // structured mode is decided (see handleToolAnswerToken). The parser's own raw()
+            // accumulator is the one that keeps the full structured content across every token.
+            Optional<MainModelAction> reentry = detectToolRequestReentry(streamState.parser.raw());
+            if (reentry.isPresent()) {
+                MainModelAction action = reentry.get();
+                LOGGER.info("[TOOL_CALLING_STAGE] requestId={} REENTER_TOOL_LOOP reason=FINAL_SYNTHESIS_RETURNED_TOOL_REQUEST goal=\"{}\"",
+                        context.requestId(), action.goal());
+                publish(context, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
+                        "Final synthesis requested another tool action; re-entering the tool loop", Map.of(
+                                "goal", action.goal(), "reason", action.reason()));
+                ToolCallingResult reentryResult = toolCallingRuntime.execute(new ToolCallingRequest(
+                        context.requestId(), context.conversationId(), context.request().message(),
+                        action.goal(), action.reason(), toolBasePrompt(context),
+                        context.brain(), context.effectiveKnowledgeMode(), context.images()));
+                if (reentryResult.handled()) {
+                    publishAnswerSources(context, reentryResult);
+                    return streamToolFinalAnswer(context, reentryResult, retriesLeft - 1);
+                }
+            }
+        }
+        String answer = finishToolAnswerStream(context, streamState, fallback);
+        return answer.isBlank() ? fallback : answer;
+    }
+
+    /**
+     * Returns the parsed action only when {@code raw} is a {@code TOOL_REQUEST} envelope - used to
+     * decide whether a final-synthesis turn should re-enter the tool runtime instead of being
+     * treated as (or converted into) user-facing text.
+     *
+     * @param raw raw structured model output
+     * @return the parsed TOOL_REQUEST action, if that is what {@code raw} is
+     */
+    private Optional<MainModelAction> detectToolRequestReentry(String raw) {
+        try {
+            MainModelAction action = actionParser.parse(raw);
+            return action.type() == MainModelActionType.TOOL_REQUEST ? Optional.of(action) : Optional.empty();
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
     }
 
     private void handleToolAnswerToken(PipelineContext context, String token, ToolAnswerStreamState streamState) {
@@ -273,7 +354,10 @@ public class ToolCallingStage implements PipelineStage {
     private String finishToolAnswerStream(PipelineContext context, ToolAnswerStreamState streamState, String fallback) {
         String answer = streamState.answer.toString();
         if (streamState.structured && answer.isBlank()) {
-            answer = parsedStructuredToolAnswer(streamState.raw.toString(), fallback);
+            // streamState.raw is only a pre-decision scratch buffer, cleared the moment structured
+            // mode is decided (see handleToolAnswerToken) - parser.raw() is what actually holds the
+            // full structured content accumulated across every token, single- or multi-token alike.
+            answer = parsedStructuredToolAnswer(streamState.parser.raw(), fallback);
             if (!answer.isBlank()) {
                 streamToolAnswerChunk(context, answer, streamState);
             }
@@ -397,7 +481,11 @@ public class ToolCallingStage implements PipelineStage {
 
     private String toolFinalAnswerPrompt(PipelineContext context, ToolCallingResult result) {
         return toolBasePrompt(context)
-                + "\n\nYou just completed the tool workflow. Now write the final user-facing answer."
+                + "\n\nTool execution returned control. Determine whether the user's task is actually complete "
+                + "based on verified state and tool observations below - do not assume it is just because tools "
+                + "ran. If another external action is still required to finish the task, say in plain text "
+                + "exactly what remains and why you cannot finish yet, instead of presenting an incomplete "
+                + "result as done."
                 + "\nDo not reveal hidden chain-of-thought. You may briefly mention what was done."
                 + "\nIf approval is required, clearly tell the user that a draft is waiting for approval."
                 + "\nIf WebSearchTool results are present, answer only from those observations."

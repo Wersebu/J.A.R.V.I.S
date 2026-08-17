@@ -44,8 +44,10 @@ public class RuleBasedTaskAnalyzer implements TaskAnalyzer {
         if (matches(query, "analyze", "analyse", "analiza", "przeanalizuj", "compare", "porownaj")) {
             return new TaskAnalysis(TaskType.ANALYSIS, 0.87, "Analysis detected");
         }
-        if (matches(query, "write", "generate", "create", "stworz", "napisz", "wygeneruj")) {
-            if (matches(query, "exam", "exams", "test", "tests", "article", "plan", "document", "five", "5")) {
+        if (matches(query, "write", "generate", "create", "stworz", "napisz", "wygeneruj",
+                "przygotuj", "zaplanuj", "zorganizuj")) {
+            if (matches(query, "exam", "exams", "test", "tests", "article", "plan", "document", "five", "5",
+                    "grafik", "harmonogram", "raport", "zestawienie", "trasa", "trase")) {
                 return new TaskAnalysis(TaskType.CONTENT_GENERATION, 0.90, "Large content generation request");
             }
             return new TaskAnalysis(TaskType.CREATIVE_WRITING, 0.82, "Creative writing request");

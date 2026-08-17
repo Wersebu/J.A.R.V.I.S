@@ -1,16 +1,22 @@
 package com.jarvis.memory.pipeline;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.Brain;
 import com.jarvis.common.ai.BrainType;
 import com.jarvis.common.ai.ImageAttachment;
 import com.jarvis.common.ai.ReasoningLevel;
 import com.jarvis.common.dto.ChatRequest;
+import com.jarvis.common.dto.ChatResponse;
+import com.jarvis.common.event.ChatEventSink;
 import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
+import com.jarvis.common.event.GenerationFinishedEvent;
+import com.jarvis.common.event.TokenEvent;
 import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
+import com.jarvis.tools.runtime.ToolCallingRequest;
 import com.jarvis.tools.runtime.ToolCallingResult;
 import com.jarvis.tools.runtime.ToolRuntimeStep;
 import org.junit.jupiter.api.Test;
@@ -385,6 +391,91 @@ class ToolCallingStageTest {
 
         assertThat(captured.get()).isNotNull();
         assertThat(captured.get().images()).isEmpty();
+    }
+
+    // Regression for the second half of the reported bug: the native tool loop exhausted its
+    // budget with no final text, ToolCallingStage's own tool-less "final synthesis" call ran, and
+    // that call's answer was itself a {"type":"TOOL_REQUEST",...} envelope written as text - Core
+    // must execute that request (re-enter the real tool runtime), not turn it into an apology.
+    @Test
+    void streamToolFinalAnswerReentersTheToolRuntimeWhenFinalSynthesisReturnsATextToolRequest() throws Exception {
+        AtomicReference<ToolCallingRequest> reentryRequest = new AtomicReference<>();
+        ToolCallingStage stage = new ToolCallingStage(
+                request -> {
+                    reentryRequest.set(request);
+                    return new ToolCallingResult(true, "Real answer after reentry.", List.of(), List.of());
+                },
+                List.of(new StubToolRequestStreamingProvider()),
+                new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        ToolResult knowledgeRead = new ToolResult(true, "knowledge", "READ_DOCUMENT", "request-1", "conversation-1",
+                false, List.of(), "Document read", Map.of("content", "..."), "", "", false, "");
+        // Blank finalAnswer simulates the native loop exhausting its budget mid-task with tool
+        // results but no final text - exactly when this tool-less synthesis call runs.
+        ToolCallingResult loopResult = new ToolCallingResult(true, "", List.of(), List.of(knowledgeRead));
+
+        ChatRequest request = new ChatRequest("conversation-1", "przygotuj harmonogram wizyt", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { })
+                .withExecution(null, new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW));
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("streamToolFinalAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).isEqualTo("Real answer after reentry.");
+        assertThat(reentryRequest.get()).isNotNull();
+        assertThat(reentryRequest.get().goal()).isEqualTo("Geocode the extracted store addresses");
+    }
+
+    // The re-entry above must be bounded: if even the re-entered call keeps returning another
+    // TOOL_REQUEST-as-text, this stage must eventually stop and fall back to the honest apology
+    // rather than recursing forever.
+    @Test
+    void streamToolFinalAnswerStopsReenteringAfterTheBoundedRetryLimitAndFallsBackToAnHonestApology() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(
+                request -> new ToolCallingResult(true, "", List.of(), List.of()), // reentry also returns blank
+                List.of(new StubToolRequestStreamingProvider()),
+                new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        ToolResult knowledgeRead = new ToolResult(true, "knowledge", "READ_DOCUMENT", "request-1", "conversation-1",
+                false, List.of(), "Document read", Map.of("content", "..."), "", "", false, "");
+        ToolCallingResult loopResult = new ToolCallingResult(true, "", List.of(), List.of(knowledgeRead));
+
+        ChatRequest request = new ChatRequest("conversation-1", "przygotuj harmonogram wizyt", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { })
+                .withExecution(null, new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW));
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("streamToolFinalAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).isEqualTo("Zakonczylem prace z narzedziami, ale nie otrzymalem czytelnej tresci koncowej odpowiedzi.");
+    }
+
+    /**
+     * Streams a single-token {@code {"type":"TOOL_REQUEST",...}} envelope as the whole model
+     * answer, exactly like a model that wrote its next intended tool call as text instead of
+     * making a real native tool call.
+     */
+    private static final class StubToolRequestStreamingProvider implements AIProvider {
+
+        @Override
+        public String provider() {
+            return "stub";
+        }
+
+        @Override
+        public ChatResponse chat(Brain brain, String prompt) {
+            return new ChatResponse("");
+        }
+
+        @Override
+        public void stream(String conversationId, Brain brain, String prompt, ChatEventSink eventSink) {
+            String json = "{\"type\":\"TOOL_REQUEST\",\"goal\":\"Geocode the extracted store addresses\","
+                    + "\"reason\":\"Need coordinates.\"}";
+            eventSink.publish(TokenEvent.create(conversationId, json));
+            eventSink.publish(GenerationFinishedEvent.create(conversationId, 0, BrainType.FAST, "stub-model", 0, 0, 0.0d));
+        }
     }
 
     private static final class NoopCognitiveEventBus implements CognitiveEventBus {
