@@ -40,6 +40,8 @@ public class ToolCallingStage implements PipelineStage {
     );
     private static final String MARKETPLACE_NO_LISTINGS_MESSAGE =
             "Nie udalo mi sie zweryfikowac aktualnych ofert spelniajacych te kryteria.";
+    private static final Pattern LEADING_MARKDOWN_FENCE = Pattern.compile("^```[a-zA-Z0-9_-]*\\r?\\n?");
+    private static final int FENCE_DETECTION_PROBE_CHARS = 24;
 
     private final ToolCallingRuntime toolCallingRuntime;
     private final List<AIProvider> aiProviders;
@@ -184,24 +186,38 @@ public class ToolCallingStage implements PipelineStage {
         if (token == null || token.isEmpty()) {
             return;
         }
-        streamState.raw.append(token);
         if (!streamState.modeDecided) {
-            String raw = streamState.raw.toString();
-            String stripped = raw.stripLeading();
+            streamState.raw.append(token);
+            String stripped = streamState.raw.toString().stripLeading();
             if (stripped.isEmpty()) {
                 return;
             }
-            streamState.structured = stripped.startsWith("{");
-            streamState.modeDecided = true;
-            if (!streamState.structured) {
-                streamToolAnswerChunk(context, raw, streamState);
-                streamState.raw.setLength(0);
+            if (!stripped.startsWith("{") && isUnresolvedFencePrefix(stripped)) {
+                // A leading markdown code fence (```json, ``` ...) is a common way models wrap
+                // the structured FINAL_ANSWER envelope despite being told to return raw JSON -
+                // wait for a few more characters before committing to "plain text" mode, or the
+                // fence and raw JSON leak straight into the chat as a rendered code block instead
+                // of the actual answer text.
                 return;
             }
+            String unfenced = LEADING_MARKDOWN_FENCE.matcher(stripped).replaceFirst("");
+            streamState.structured = unfenced.startsWith("{");
+            streamState.modeDecided = true;
+            if (streamState.structured) {
+                StreamingStructuredResponseParser.ParserUpdate update = streamState.parser.accept(streamState.raw.toString());
+                streamState.raw.setLength(0);
+                update.detectedType().ifPresent(type -> publishStructuredToolAnswerDetected(context, type));
+                if (update.streamedText() != null && !update.streamedText().isEmpty()) {
+                    streamToolAnswerChunk(context, update.streamedText(), streamState);
+                }
+                return;
+            }
+            streamToolAnswerChunk(context, streamState.raw.toString(), streamState);
+            streamState.raw.setLength(0);
+            return;
         }
         if (!streamState.structured) {
             streamToolAnswerChunk(context, token, streamState);
-            streamState.raw.setLength(0);
             return;
         }
         StreamingStructuredResponseParser.ParserUpdate update = streamState.parser.accept(token);
@@ -209,6 +225,33 @@ public class ToolCallingStage implements PipelineStage {
         if (update.streamedText() != null && !update.streamedText().isEmpty()) {
             streamToolAnswerChunk(context, update.streamedText(), streamState);
         }
+    }
+
+    /**
+     * Returns true while {@code stripped} could still turn into a leading markdown code fence
+     * (e.g. {@code ```json\n{...}}) as more tokens arrive, so the caller should keep waiting
+     * instead of deciding "not structured" too early.
+     *
+     * @param stripped accumulated answer text so far, leading-whitespace-stripped, known not to
+     *         start with {@code {}
+     * @return true when the fence opening is still unresolved
+     */
+    private boolean isUnresolvedFencePrefix(String stripped) {
+        int backticks = 0;
+        while (backticks < stripped.length() && backticks < 3 && stripped.charAt(backticks) == '`') {
+            backticks++;
+        }
+        if (backticks < 3) {
+            return backticks == stripped.length() && stripped.length() < 3;
+        }
+        int newlineIndex = stripped.indexOf('\n', 3);
+        if (newlineIndex < 0) {
+            return stripped.length() < FENCE_DETECTION_PROBE_CHARS;
+        }
+        // The fence-open line's newline arrived, but nothing after it has streamed in yet -
+        // keep waiting for at least one more character instead of deciding based on an empty
+        // remainder (which would otherwise always look like "not structured").
+        return newlineIndex + 1 >= stripped.length() && stripped.length() < FENCE_DETECTION_PROBE_CHARS;
     }
 
     private String finishToolAnswerStream(PipelineContext context, ToolAnswerStreamState streamState, String fallback) {

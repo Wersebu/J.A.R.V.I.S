@@ -2,7 +2,7 @@
 
 Jarvis (J.A.R.V.I.S. Core) is a long-term AI operating system backend foundation: a headless Spring Boot service that orchestrates local Ollama models behind a provider-independent AI contract, with brain routing, native tool calling, a Knowledge Workspace, web/marketplace/location tools, cognitive memory, and real-time streaming to a separate desktop client.
 
-Current version: **`2.8.1`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
+Current version: **`2.8.2`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
 
 ## Requirements
 
@@ -77,7 +77,7 @@ All configuration lives under the `jarvis:` root key in `jarvis-core/src/main/re
 
 ```yaml
 jarvis:
-  version: "2.8.1"
+  version: "2.8.2"
   ai:
     identity-file: file:config/jarvis.md
     context-window: 16384
@@ -135,7 +135,8 @@ See `jarvis-core/src/main/resources/application.yml` for every key and its defau
 |---|---|
 | `GET /api/health` | Liveness/version check |
 | `POST /api/v1/chat` | Send a chat message, get a full response |
-| `GET /api/v1/chat/stream` | Server-Sent Events streaming chat |
+| `POST /api/v1/chat/stream` | Submit a chat request body ahead of streaming; returns a short-lived token |
+| `GET /api/v1/chat/stream?token=...` | Server-Sent Events streaming chat, for a request submitted via the `POST` above |
 | `WS /ws/jarvis` | WebSocket streaming chat (used by the Windows client's live connection) |
 | `GET/POST /api/models`, `POST /api/models/active` | List installed Ollama models and switch the active one |
 | `GET/POST /api/v1/knowledge/*` | Knowledge Workspace CRUD, search, retrieval, drafts |
@@ -158,6 +159,15 @@ See `jarvis-core/src/main/resources/application.yml` for every key and its defau
 ### Vision / Image Attachments
 
 Chat requests may attach images (resolved through the same temporary-workspace mechanism as file attachments). `ImageAttachmentStage` loads them into the pipeline, and `ModelExecutionStage` gates the call behind the active model's detected `VISION` capability - a non-vision model never silently receives image bytes it can't use. Vision-capable requests are sent through Ollama's `/api/chat` transport (per-message `images` field), not `/api/generate`, because at least one real chat-templated multimodal model has been observed to silently ignore `/api/generate`'s top-level `images` field. When an image is attached, the prompt also carries an explicit `=== ATTACHED IMAGES ===` note, so a model reasoning strictly from prompt text doesn't talk itself into concluding no image was provided.
+
+### Current-Message Attachments vs Knowledge Workspace
+
+Images attached to the *current* user message and documents persisted in the *Knowledge Workspace* are two structurally separate data sources, and the model is explicitly told so:
+
+- The current-message-attachments policy is injected into the main model's decision prompt only when the request actually has images (`MainModelIntegratedToolTrigger`), and the same rule is restated in the base identity prompt (`config/jarvis.md`): read attached images directly with your own vision; never ask a tool to fetch/load/analyze a current-message image; never use `KnowledgeTool` to locate one - it only searches persisted documents.
+- Images are only ever sent to the model on the single main-model decision call (`ModelExecutionStage`) - by design, they never travel into the native tool loop (`ModelMessage`/`AIProvider.toolChat` are text-only). This is intentional, not a limitation to work around: the model is instructed to extract whatever data a subsequent tool call needs (e.g. a list of addresses read off an attached table) and put that *extracted text* into the `TOOL_REQUEST` goal, which does reach the tool loop's system prompt (`Tool goal: ...`) - so no information is lost, without needing to resend image bytes on every loop iteration.
+- **Defensive routing**: if the model still emits a `TOOL_REQUEST` whose goal reads as "fetch/retrieve/analyze the attached image" while the current message actually has images (`AttachmentRetrievalIntentDetector` - an action-word + attachment-noun match, not a fixed phrase list, so it generalizes across languages/wording without being tied to any one workflow), `ModelExecutionStage` does not hand that off to the tool loop. It re-asks the main model once, with a short internal corrective note appended to the prompt ("images are already in your multimodal context, do not use a tool to retrieve them"), and uses the corrected decision. This retry is capped at one attempt (`MAX_ATTACHMENT_ROUTING_RETRIES`) - if the model still gets it wrong, Core lets the request proceed rather than looping forever, relying on `KnowledgeTool`'s honest not-found reporting (see below) to keep things visible instead of silently retrying indefinitely. Diagnostics are logged under `[ATTACHMENT_ROUTING]` (attachment counts, retry attempts, recovery outcome - never image bytes/base64).
+- `KnowledgeTool` itself is unchanged and still the correct tool whenever the user is actually asking about persisted knowledge (e.g. "sprawdz w zapisanej wiedzy...") - this mechanism only concerns the images attached to the current message.
 
 ### File Workspace & Attachments
 
@@ -200,6 +210,7 @@ Every native tool is a Spring bean implementing `JarvisTool` (`getName`/`getDesc
 - **No-progress guard**: the same `tool.OPERATION` called repeatedly with *different* arguments (e.g. a rewording of the same query) is blocked once it exceeds `max-consecutive-operation-repeats` (default 5), with a message telling the model to try something else or answer with what it already has.
 - **Call budget**: `max-calls-fast`/`max-calls-research` cap total tool calls per turn (bumped automatically for `SEARCH_WEB`/`LOCATION`-flavored requests, which legitimately need more steps).
 - **Hard timeout**: `timeout-seconds` (default 180s) bounds the whole loop regardless of call count.
+- **Redundant attachment-retrieval recovery**: a `TOOL_REQUEST` asking to fetch/analyze a current-message image never reaches the tool loop at all - see [Current-Message Attachments vs Knowledge Workspace](#current-message-attachments-vs-knowledge-workspace) for the one-retry recovery that happens one layer up, in `ModelExecutionStage`, before any tool is selected.
 
 `ToolIntent` (`jarvis-tools/.../runtime/ToolIntent.java`) is a lightweight, **advisory-only** classifier (`DefaultToolIntentDetector`) used purely to tune the call budget and freshness heuristics - it never narrows which tools the model is allowed to see or call.
 
@@ -300,6 +311,8 @@ curl http://localhost:8080/api/v1/events/sample
 
 The streaming chat endpoint (`GET /api/v1/chat/stream`, and the `/ws/jarvis` WebSocket) emits unified `CognitiveEvent` payloads for request, routing, retrieval, context, prompt, model, tool, and token/completion steps. Each event includes `requestId`, `conversationId`, `timestamp`, and an optional `nodeId`; `GET /api/v1/cognitive-graph` renders the accumulated event graph for diagnostics tooling.
 
+Server-Sent Events is GET-only by specification, so the SSE chat stream is a two-call handoff instead of putting the message body in the GET's URL: `POST /api/v1/chat/stream` submits the full `ChatRequest` (message text + attachments) and returns a short-lived, single-use `{"token": "..."}`; the client immediately opens `GET /api/v1/chat/stream?token=...` to receive the events for that exact request. `PendingChatStreamStore` holds the request server-side for up to 30 seconds between the two calls. This exists so a long message never has to travel as a URL query parameter, which would risk exceeding the embedded servlet container's default max request-line/header size (~8KB) and fail before the stream even opens. The WebSocket path is unaffected - it already sends the full request as a JSON frame body.
+
 ## Windows Desktop Client
 
 A separate JavaFX desktop client (independently versioned; see its own `README.md`) talks to Core purely over the documented HTTP/SSE/WebSocket surface above - no shared code, no private API. It provides the chat UI, a live "Thinking" panel, the MODEL PERFORMANCE dashboard, a model selector backed by `GET/POST /api/models*`, drag-and-drop/clipboard file and image attachments, and clickable source/marketplace-listing chips for web/marketplace answers.
@@ -312,3 +325,4 @@ A separate JavaFX desktop client (independently versioned; see its own `README.m
 - Candidate-based geocoding validation reduces but does not eliminate the risk of an incorrect match - it only evaluates address details actually present in both the query text and the provider's structured response; a query with no postal code, street, or region to disambiguate a common place name can still land on `AMBIGUOUS`/`NOT_CONFIDENTLY_RESOLVED` rather than a wrong-but-confident answer, which is the intended fail-safe behavior.
 - Ollama thinking-token counts are estimated (characters/4), not exact tokenizer counts, everywhere in this codebase - reported fields are explicitly labeled as estimates where relevant.
 - There is no cross-repository version compatibility matrix between this backend and the Windows client; they are versioned and released independently.
+- `AttachmentRetrievalIntentDetector` (see [Current-Message Attachments vs Knowledge Workspace](#current-message-attachments-vs-knowledge-workspace)) matches on action-word + attachment-noun combinations, not full NLU - an unusually phrased redundant-retrieval request could in theory slip through undetected (falls back to normal tool routing/honest not-found reporting), and a legitimate goal that happens to combine both word categories without meaning "fetch the image" could in theory trigger one unnecessary internal retry; the one-retry budget bounds the cost of either case.

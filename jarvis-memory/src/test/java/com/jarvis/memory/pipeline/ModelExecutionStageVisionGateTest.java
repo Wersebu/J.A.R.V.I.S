@@ -91,7 +91,8 @@ class ModelExecutionStageVisionGateTest {
                 context -> "PROMPT",
                 new MainModelActionParser(new ObjectMapper()),
                 new NoOpCognitiveEventBus(),
-                activeModelService
+                activeModelService,
+                new AttachmentRetrievalIntentDetector()
         );
     }
 

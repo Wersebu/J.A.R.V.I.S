@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.8.1"
+  version: "2.8.2"
   workspace:
     root: ./temp-workspaces
     ttl: 60m

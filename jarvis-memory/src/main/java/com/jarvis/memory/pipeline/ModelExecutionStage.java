@@ -29,30 +29,48 @@ public class ModelExecutionStage implements PipelineStage {
 
     private static final Logger TELEMETRY_LOGGER = LoggerFactory.getLogger(ModelExecutionStage.class);
 
+    /**
+     * A model that asks a tool to fetch an image already attached to the current message gets one
+     * corrective retry with an internal note before Core gives up trying to steer it and lets the
+     * request through as-is - bounded so a persistently confused model can never loop forever here.
+     */
+    private static final int MAX_ATTACHMENT_ROUTING_RETRIES = 1;
+
+    private static final String ATTACHMENT_ALREADY_AVAILABLE_NOTE =
+            "The images attached to the current user message are already available in your "
+                    + "multimodal context. Do not use a tool to retrieve them. Read the required "
+                    + "information directly from the attached images and request only the external "
+                    + "operation that must actually be performed.";
+
     private final List<AIProvider> aiProviders;
     private final ToolTriggerStrategy toolTriggerStrategy;
     private final MainModelActionParser actionParser;
     private final CognitiveEventBus cognitiveEventBus;
     private final ActiveModelService activeModelService;
+    private final AttachmentRetrievalIntentDetector attachmentRetrievalIntentDetector;
 
     /**
      * Creates the model execution stage.
      *
      * @param aiProviders available providers
      * @param activeModelService active model capability lookup, used to gate vision requests
+     * @param attachmentRetrievalIntentDetector detects a TOOL_REQUEST that redundantly asks a tool
+     *         to fetch a current-message attachment instead of reading it directly
      */
     public ModelExecutionStage(
             List<AIProvider> aiProviders,
             ToolTriggerStrategy toolTriggerStrategy,
             MainModelActionParser actionParser,
             CognitiveEventBus cognitiveEventBus,
-            ActiveModelService activeModelService
+            ActiveModelService activeModelService,
+            AttachmentRetrievalIntentDetector attachmentRetrievalIntentDetector
     ) {
         this.aiProviders = List.copyOf(aiProviders);
         this.toolTriggerStrategy = toolTriggerStrategy;
         this.actionParser = actionParser;
         this.cognitiveEventBus = cognitiveEventBus;
         this.activeModelService = activeModelService;
+        this.attachmentRetrievalIntentDetector = attachmentRetrievalIntentDetector;
     }
 
     @Override
@@ -68,12 +86,63 @@ public class ModelExecutionStage implements PipelineStage {
         if (!context.images().isEmpty() && !activeModelService.activeModelCapabilities().contains(ModelCapability.VISION)) {
             return respondNoVisionSupport(context);
         }
+
+        boolean hasImages = !context.images().isEmpty();
+        TELEMETRY_LOGGER.info("[ATTACHMENT_ROUTING] requestId={} currentMessageImages={} forwardedToMainModel={}",
+                context.requestId(), context.images().size(), hasImages);
+
+        String correctiveNote = null;
+        int attempt = 0;
+        while (true) {
+            DecisionOutcome outcome = decide(context, correctiveNote);
+            MainModelAction action = outcome.action();
+            boolean redundantAttachmentRetrieval = hasImages
+                    && action.type() == MainModelActionType.TOOL_REQUEST
+                    && attachmentRetrievalIntentDetector.looksLikeCurrentAttachmentRetrieval(action.goal(), action.reason());
+            if (!redundantAttachmentRetrieval) {
+                return finalizeDecision(context, outcome);
+            }
+            if (attempt >= MAX_ATTACHMENT_ROUTING_RETRIES) {
+                TELEMETRY_LOGGER.warn(
+                        "[ATTACHMENT_ROUTING] requestId={} redundantAttachmentRetrieval=true attempt={} recoveryExhausted=true "
+                                + "proceedingAnyway=true goal=\"{}\"",
+                        context.requestId(), attempt, action.goal());
+                return finalizeDecision(context, outcome);
+            }
+            attempt++;
+            TELEMETRY_LOGGER.info(
+                    "[ATTACHMENT_ROUTING] requestId={} redundantAttachmentRetrieval=true attempt={} internalRecovery=true goal=\"{}\"",
+                    context.requestId(), attempt, action.goal());
+            cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "REDUNDANT_ATTACHMENT_RETRIEVAL",
+                    "Model requested a tool to retrieve a current-message attachment; retrying with an internal correction", null, Map.of(
+                            "goal", action.goal(),
+                            "images", context.images().size(),
+                            "attempt", attempt
+                    ));
+            correctiveNote = ATTACHMENT_ALREADY_AVAILABLE_NOTE;
+        }
+    }
+
+    /**
+     * Runs one main-model decision call (FINAL_ANSWER / TOOL_REQUEST / CLARIFICATION), optionally
+     * with an internal corrective note appended after a redundant attachment-retrieval attempt.
+     *
+     * @param context pipeline context
+     * @param correctiveNote internal note to append to the prompt, or null on the first attempt
+     * @return decision outcome, including everything needed to finalize or discard it
+     */
+    private DecisionOutcome decide(PipelineContext context, String correctiveNote) {
         String mainPrompt = toolTriggerStrategy.buildMainModelPrompt(context);
+        if (correctiveNote != null && !correctiveNote.isBlank()) {
+            mainPrompt = mainPrompt + "\n\n=== INTERNAL ROUTING CORRECTION (not visible to the user) ===\n"
+                    + correctiveNote + "\n=== END INTERNAL ROUTING CORRECTION ===\n";
+        }
         recordPromptMetrics(context, mainPrompt);
         cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_REQUEST, "REQUESTING", "Main model action request started", null, Map.of(
                 "model", context.model(),
                 "reasoningLevel", context.brain().reasoningLevel().name(),
-                "hasImages", !context.images().isEmpty()
+                "hasImages", !context.images().isEmpty(),
+                "correctiveRetry", correctiveNote != null
         ));
         long startedNano = System.nanoTime();
         StreamingStructuredResponseParser streamingParser = new StreamingStructuredResponseParser();
@@ -92,22 +161,51 @@ public class ModelExecutionStage implements PipelineStage {
         });
         MainModelAction action = parseAction(context, streamingParser, streamState.thinking.toString());
         long durationMs = (System.nanoTime() - startedNano) / 1_000_000L;
-        publishMainModelAction(context, action, durationMs);
+        return new DecisionOutcome(action, streamingParser, streamState, durationMs);
+    }
+
+    /**
+     * Publishes telemetry for the accepted decision and applies it to the pipeline context.
+     *
+     * @param context pipeline context
+     * @param outcome the decision outcome to finalize
+     * @return updated pipeline context
+     */
+    private PipelineContext finalizeDecision(PipelineContext context, DecisionOutcome outcome) {
+        MainModelAction action = outcome.action();
+        publishMainModelAction(context, action, outcome.durationMs());
         TELEMETRY_LOGGER.info(
                 "[JARVIS_TOOL_DECISION] requestId={} initialModelDecision={} toolRequestedByModel={} autoTriggered=false reason={} modelCalls=1 durationMs={}",
-                context.requestId(), action.type(), action.type() == MainModelActionType.TOOL_REQUEST, action.reason(), durationMs);
+                context.requestId(), action.type(), action.type() == MainModelActionType.TOOL_REQUEST, action.reason(), outcome.durationMs());
         return switch (action.type()) {
-            case FINAL_ANSWER -> finishStreamedUserFacingResponse(context, streamedOrParsed(streamingParser, action.answer()), streamState)
+            case FINAL_ANSWER -> finishStreamedUserFacingResponse(context, streamedOrParsed(outcome.streamingParser(), action.answer()), outcome.streamState())
                     .withMetadata("mainModelAction", action.type().name());
-            case CLARIFICATION -> finishStreamedUserFacingResponse(context, streamedOrParsed(streamingParser, action.question()), streamState)
+            case CLARIFICATION -> finishStreamedUserFacingResponse(context, streamedOrParsed(outcome.streamingParser(), action.question()), outcome.streamState())
                     .withMetadata("mainModelAction", action.type().name());
             case TOOL_REQUEST -> context
                     .withMetadata("mainModelAction", action.type().name())
                     .withMetadata("toolGoal", action.goal())
                     .withMetadata("toolReason", action.reason())
                     .withMetadata("toolContext", action.context())
-                    .withMetadata("mainModelDurationMs", durationMs);
+                    .withMetadata("mainModelDurationMs", outcome.durationMs());
         };
+    }
+
+    /**
+     * Result of one main-model decision call.
+     *
+     * @param action parsed action
+     * @param streamingParser structured-response parser used during this call, needed to recover
+     *         any already-streamed answer/question text
+     * @param streamState live streaming state accumulated during this call
+     * @param durationMs call duration
+     */
+    private record DecisionOutcome(
+            MainModelAction action,
+            StreamingStructuredResponseParser streamingParser,
+            StreamState streamState,
+            long durationMs
+    ) {
     }
 
     /**
