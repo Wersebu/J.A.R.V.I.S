@@ -100,7 +100,8 @@ public class ToolCallingStage implements PipelineStage {
                 String.valueOf(context.metadata().getOrDefault("toolReason", "")),
                 toolBasePrompt(context),
                 context.brain(),
-                context.effectiveKnowledgeMode()
+                context.effectiveKnowledgeMode(),
+                context.images()
         ));
         String answer;
         if (!result.handled()) {

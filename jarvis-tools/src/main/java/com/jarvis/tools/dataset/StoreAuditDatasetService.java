@@ -11,6 +11,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -60,24 +61,41 @@ public class StoreAuditDatasetService {
         this.clock = clock;
     }
 
-    private record AttachmentRegistration(List<String> attachmentIds, Instant expiresAt) {
+    private record AttachmentRegistration(List<String> attachmentIds, String conversationId, Instant expiresAt) {
     }
 
     /**
      * Registers the real current-message attachment ids Core knows about for a request, so
      * {@link #createDataset} can cross-check the model's declared source attachments against
-     * ground truth instead of trusting the model's self-report alone.
+     * ground truth instead of trusting the model's self-report alone. Equivalent to calling
+     * {@link #registerAttachments(String, String, List)} with a blank conversation id.
      *
      * @param requestId pipeline request id
      * @param attachmentIds real attachment ids resolved by Core for this request's current message
      */
     public void registerAttachments(String requestId, List<String> attachmentIds) {
+        registerAttachments(requestId, "", attachmentIds);
+    }
+
+    /**
+     * Registers the real current-message attachment ids Core knows about for a request, so
+     * {@link #createDataset} can cross-check the model's declared source attachments against
+     * ground truth instead of trusting the model's self-report alone. Also records which
+     * conversation this request belongs to, so any dataset created for this request can later be
+     * found again in a following turn via {@link #findLatestForConversation}.
+     *
+     * @param requestId pipeline request id
+     * @param conversationId owning conversation id, blank if unknown
+     * @param attachmentIds real attachment ids resolved by Core for this request's current message
+     */
+    public void registerAttachments(String requestId, String conversationId, List<String> attachmentIds) {
         if (requestId == null || requestId.isBlank()) {
             return;
         }
         sweepExpired();
         attachmentsByRequest.put(requestId, new AttachmentRegistration(
                 attachmentIds == null ? List.of() : List.copyOf(attachmentIds),
+                conversationId == null ? "" : conversationId,
                 clock.instant().plus(ATTACHMENT_REGISTRY_TTL)));
     }
 
@@ -153,9 +171,10 @@ public class StoreAuditDatasetService {
         }
 
         Instant now = clock.instant();
+        String conversationId = known.map(AttachmentRegistration::conversationId).orElse("");
         StoreAuditDataset dataset = new StoreAuditDataset(
-                UUID.randomUUID().toString(), requestId, declared, sourceImageCount,
-                accepted, accepted.size(), DatasetStage.EXTRACTED, now, now.plus(DATASET_TTL));
+                UUID.randomUUID().toString(), requestId, conversationId, declared, sourceImageCount,
+                accepted, accepted.size(), DatasetStage.EXTRACTED, List.of(), now, now.plus(DATASET_TTL));
         datasets.put(dataset.datasetId(), dataset);
 
         LOGGER.info("[STORE_AUDIT] requestId={} extraction pass1 count={} rejected={} duplicates={}",
@@ -258,6 +277,26 @@ public class StoreAuditDatasetService {
     }
 
     /**
+     * Finds the most recently created, non-expired dataset for a conversation - so a later turn
+     * ("polacz dzien 3 i 4") can continue working against the same canonical records without the
+     * user resending attachments. Never returns a dataset created for a different conversation, and
+     * never matches on a blank conversation id (which would otherwise match every dataset created
+     * without one, e.g. in tests that never call {@link #registerAttachments}).
+     *
+     * @param conversationId owning conversation id
+     * @return the latest dataset for that conversation, if any
+     */
+    public Optional<StoreAuditDataset> findLatestForConversation(String conversationId) {
+        sweepExpired();
+        if (conversationId == null || conversationId.isBlank()) {
+            return Optional.empty();
+        }
+        return datasets.values().stream()
+                .filter(dataset -> conversationId.equals(dataset.conversationId()))
+                .max(Comparator.comparing(StoreAuditDataset::createdAt));
+    }
+
+    /**
      * Applies geolocation results to existing records by id. Can never create or remove a record -
      * entries referencing an unknown record id are reported, not applied.
      *
@@ -314,6 +353,96 @@ public class StoreAuditDatasetService {
         String message = "Updated " + updatedCount + " record(s)."
                 + (unknownIds.isEmpty() ? "" : " " + unknownIds.size() + " unknown record id(s) ignored (no record created).");
         return new GeolocationUpdateOutcome(true, newDataset, updatedCount, unknownIds, message);
+    }
+
+    /**
+     * Validates and applies a proposed day-by-day schedule against the locked dataset: every
+     * canonical record id must appear in exactly one day - no missing store, no duplicate, no
+     * unknown/hallucinated id. Rejects the whole submission (applying nothing) otherwise, exactly
+     * the count-invariant guarantee this mechanism exists to enforce - a locked 23-record dataset
+     * can never silently turn into a "22 of 23" or "24 of 23" schedule presented as valid.
+     *
+     * @param datasetId dataset id
+     * @param days proposed day-by-day grouping
+     * @return outcome describing success, or exactly which ids are missing/unknown/duplicated
+     */
+    public ScheduleSubmitOutcome submitSchedule(String datasetId, List<ScheduleDay> days) {
+        sweepExpired();
+        StoreAuditDataset dataset = datasets.get(datasetId);
+        if (dataset == null) {
+            return new ScheduleSubmitOutcome(false, null, false, List.of(), List.of(), List.of(),
+                    "Unknown or expired dataset id: " + datasetId);
+        }
+        List<ScheduleDay> proposedDays = days == null ? List.of() : days;
+        Set<String> knownIds = new LinkedHashSet<>();
+        for (StoreRecord record : dataset.stores()) {
+            knownIds.add(record.id());
+        }
+
+        List<String> flatIds = new ArrayList<>();
+        for (ScheduleDay day : proposedDays) {
+            flatIds.addAll(day.storeIds());
+        }
+
+        List<String> unknownIds = new ArrayList<>();
+        Set<String> seenUnknown = new LinkedHashSet<>();
+        Set<String> seenKnown = new HashSet<>();
+        List<String> duplicateIds = new ArrayList<>();
+        for (String id : flatIds) {
+            if (!knownIds.contains(id)) {
+                if (seenUnknown.add(id)) {
+                    unknownIds.add(id);
+                }
+                continue;
+            }
+            if (!seenKnown.add(id)) {
+                duplicateIds.add(id);
+            }
+        }
+        List<String> missingIds = new ArrayList<>();
+        for (String id : knownIds) {
+            if (!seenKnown.contains(id)) {
+                missingIds.add(id);
+            }
+        }
+
+        boolean valid = unknownIds.isEmpty() && duplicateIds.isEmpty() && missingIds.isEmpty();
+        LOGGER.info("[STORE_AUDIT_VALIDATION] requestId={} datasetId={} datasetStores={} scheduledUniqueStores={} duplicates={} missing={} unknown={} valid={}",
+                dataset.requestId(), datasetId, dataset.expectedStoreCount(), seenKnown.size(),
+                duplicateIds.size(), missingIds.size(), unknownIds.size(), valid);
+
+        if (!valid) {
+            LOGGER.warn("[STORE_AUDIT][INVARIANT_VIOLATION] requestId={} datasetId={} stage=SCHEDULE missing={} unknown={} duplicates={}",
+                    dataset.requestId(), datasetId, missingIds, unknownIds, duplicateIds);
+            cognitiveEventBus.publish(CognitiveEventType.WORKFLOW_DATASET_INVARIANT_VIOLATION, "SCHEDULE",
+                    "Store Audit schedule invariant violated", datasetId, Map.of(
+                            "datasetId", datasetId,
+                            "requestId", dataset.requestId(),
+                            "expected", dataset.expectedStoreCount(),
+                            "missingStoreIds", missingIds,
+                            "unknownStoreIds", unknownIds,
+                            "duplicateStoreIds", duplicateIds
+                    ));
+            String message = "Schedule rejected: expected exactly " + dataset.expectedStoreCount()
+                    + " unique store id(s), each exactly once."
+                    + (missingIds.isEmpty() ? "" : " Missing from schedule: " + missingIds + ".")
+                    + (unknownIds.isEmpty() ? "" : " Unknown/hallucinated id(s): " + unknownIds + ".")
+                    + (duplicateIds.isEmpty() ? "" : " Duplicated id(s): " + duplicateIds + ".")
+                    + " Call GET_DATASET and resubmit a corrected schedule referencing only existing record ids, each exactly once.";
+            return new ScheduleSubmitOutcome(false, dataset, true, missingIds, unknownIds, duplicateIds, message);
+        }
+
+        StoreAuditDataset scheduled = dataset.withSchedule(proposedDays);
+        datasets.put(datasetId, scheduled);
+        cognitiveEventBus.publish(CognitiveEventType.WORKFLOW_DATASET_UPDATED, DatasetStage.SCHEDULED.name(),
+                "Store Audit schedule validated and applied", datasetId, Map.of(
+                        "datasetId", datasetId,
+                        "requestId", dataset.requestId(),
+                        "days", proposedDays.size(),
+                        "count", dataset.stores().size()
+                ));
+        return new ScheduleSubmitOutcome(true, scheduled, false, List.of(), List.of(), List.of(),
+                "Schedule accepted: " + proposedDays.size() + " day(s), " + seenKnown.size() + " store(s), each exactly once.");
     }
 
     private int indexOf(List<StoreRecord> records, String recordId) {

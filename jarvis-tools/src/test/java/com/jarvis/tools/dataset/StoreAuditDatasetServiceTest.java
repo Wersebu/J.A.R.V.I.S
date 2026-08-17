@@ -196,6 +196,119 @@ class StoreAuditDatasetServiceTest {
         assertThat(geo.dataset().stores()).hasSize(23);
     }
 
+    // TEST 9 (count invariant): a valid schedule referencing every store id exactly once is accepted.
+    @Test
+    void submitScheduleAcceptsAValidCompleteGrouping() {
+        StoreAuditDatasetService service = service();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(
+                new ScheduleDay(1, ids.subList(0, 12)),
+                new ScheduleDay(2, ids.subList(12, 23))
+        ));
+
+        assertThat(outcome.success()).isTrue();
+        assertThat(outcome.dataset().stage()).isEqualTo(DatasetStage.SCHEDULED);
+        assertThat(outcome.dataset().schedule()).hasSize(2);
+    }
+
+    // TEST 5: 23 stores, schedule contains only 22 -> rejected as invalid, nothing applied.
+    @Test
+    void submitScheduleRejectsAGroupingMissingAStore() {
+        StoreAuditDatasetService service = service();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        List<String> ids = new java.util.ArrayList<>(dataset.stores().stream().map(StoreRecord::id).toList());
+        String omitted = ids.remove(22);
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(new ScheduleDay(1, ids)));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.invariantViolation()).isTrue();
+        assertThat(outcome.missingStoreIds()).containsExactly(omitted);
+        assertThat(service.getDataset(dataset.datasetId()).orElseThrow().stage()).isEqualTo(DatasetStage.EXTRACTED);
+    }
+
+    // TEST 6: 23 stores, schedule references an unknown/hallucinated id -> rejected.
+    @Test
+    void submitScheduleRejectsAnUnknownHallucinatedStoreId() {
+        StoreAuditDatasetService service = service();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        List<String> ids = new java.util.ArrayList<>(dataset.stores().stream().map(StoreRecord::id).toList());
+        ids.add("store-999");
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(new ScheduleDay(1, ids)));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.unknownStoreIds()).containsExactly("store-999");
+    }
+
+    // TEST 4: the same store id scheduled twice -> rejected as a duplicate.
+    @Test
+    void submitScheduleRejectsADuplicateStoreIdAcrossDays() {
+        StoreAuditDatasetService service = service();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset();
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(
+                new ScheduleDay(1, List.of(ids.get(0), ids.get(1))),
+                new ScheduleDay(2, List.of(ids.get(1), ids.get(2)))
+        ));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.duplicateStoreIds()).containsExactly(ids.get(1));
+    }
+
+    @Test
+    void submitScheduleUnknownDatasetIdFails() {
+        StoreAuditDatasetService service = service();
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule("does-not-exist", List.of(new ScheduleDay(1, List.of("store-001"))));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.dataset()).isNull();
+    }
+
+    // TEST 7 (conversation continuity): a dataset registered against a conversation can be found
+    // again in a later turn without knowing its exact datasetId, the same way a second chat message
+    // in the same conversation would look it up.
+    @Test
+    void findLatestForConversationLocatesADatasetCreatedInAnEarlierTurnWithoutResendingAttachments() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-42", List.of("att-1"));
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+
+        Optional<StoreAuditDataset> found = service.findLatestForConversation("conversation-42");
+
+        assertThat(found).isPresent();
+        assertThat(found.get().datasetId()).isEqualTo(dataset.datasetId());
+        assertThat(found.get().stores()).hasSize(23);
+    }
+
+    @Test
+    void findLatestForConversationReturnsTheMostRecentDatasetWhenSeveralExistForTheSameConversation() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-42", List.of("att-1"));
+        service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1"));
+        service.registerAttachments("request-2", "conversation-42", List.of("att-2"));
+        StoreAuditDataset second = service.createDataset("request-2", 1, List.of("att-2"), candidates(5, "att-2")).dataset();
+
+        Optional<StoreAuditDataset> found = service.findLatestForConversation("conversation-42");
+
+        assertThat(found).isPresent();
+        assertThat(found.get().datasetId()).isEqualTo(second.datasetId());
+    }
+
+    @Test
+    void findLatestForConversationNeverMatchesADatasetFromADifferentConversation() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-A", List.of("att-1"));
+        service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1"));
+
+        assertThat(service.findLatestForConversation("conversation-B")).isEmpty();
+        assertThat(service.findLatestForConversation("")).isEmpty();
+    }
+
     @Test
     void expiredDatasetIsSweptAndNoLongerRetrievable() {
         MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));

@@ -37,7 +37,8 @@ class NativeToolLoopServiceCompactionTest {
                 List.of(), new NoopToolManager(), query -> ToolIntent.NO_TOOL,
                 new ToolRuntimeProperties(true, 2, 8, 2, 30, "native"),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
-                new NativeToolSchemaMapper(emptyRegistry())
+                new NativeToolSchemaMapper(emptyRegistry()),
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus())
         );
 
         Map<String, Object> data = Map.of(
@@ -64,7 +65,8 @@ class NativeToolLoopServiceCompactionTest {
                 List.of(), new NoopToolManager(), query -> ToolIntent.NO_TOOL,
                 new ToolRuntimeProperties(true, 2, 8, 2, 30, "native"),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
-                new NativeToolSchemaMapper(emptyRegistry())
+                new NativeToolSchemaMapper(emptyRegistry()),
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus())
         );
 
         String longContent = "x".repeat(5000);

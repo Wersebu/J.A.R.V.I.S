@@ -10,5 +10,7 @@ public enum DatasetStage {
     /** Verification pass complete and consistent with the extracted count. */
     LOCKED,
     /** Every record has been through at least one geolocation attempt. */
-    GEOLOCATED
+    GEOLOCATED,
+    /** A day-by-day schedule was submitted and passed the count-invariant validation. */
+    SCHEDULED
 }

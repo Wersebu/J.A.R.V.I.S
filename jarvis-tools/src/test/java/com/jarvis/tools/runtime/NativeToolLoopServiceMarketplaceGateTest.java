@@ -66,7 +66,8 @@ class NativeToolLoopServiceMarketplaceGateTest {
                 List.of(provider), toolManager, query -> ToolIntent.SEARCH_WEB,
                 new ToolRuntimeProperties(true, 4, 8, 2, 30, "native"),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
-                new NativeToolSchemaMapper(webRegistry())
+                new NativeToolSchemaMapper(webRegistry()),
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus())
         );
 
         ToolCallingResult result = service.execute(new ToolCallingRequest(
@@ -106,7 +107,8 @@ class NativeToolLoopServiceMarketplaceGateTest {
                 List.of(provider), toolManager, query -> ToolIntent.SEARCH_WEB,
                 new ToolRuntimeProperties(true, 4, 8, 2, 30, "native"),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
-                new NativeToolSchemaMapper(webRegistry())
+                new NativeToolSchemaMapper(webRegistry()),
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus())
         );
 
         ToolCallingResult result = service.execute(new ToolCallingRequest(
@@ -152,7 +154,8 @@ class NativeToolLoopServiceMarketplaceGateTest {
                 List.of(provider), toolManager, query -> ToolIntent.SEARCH_WEB,
                 new ToolRuntimeProperties(true, 4, 8, 2, 30, "native"),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
-                new NativeToolSchemaMapper(webRegistry())
+                new NativeToolSchemaMapper(webRegistry()),
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus())
         );
 
         ToolCallingResult result = service.execute(new ToolCallingRequest(

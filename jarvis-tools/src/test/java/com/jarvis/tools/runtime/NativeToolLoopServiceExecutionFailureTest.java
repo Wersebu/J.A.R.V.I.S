@@ -59,7 +59,8 @@ class NativeToolLoopServiceExecutionFailureTest {
                 List.of(provider), toolManager, query -> ToolIntent.NO_TOOL,
                 new ToolRuntimeProperties(true, 4, 8, 2, 30, "native"),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
-                new NativeToolSchemaMapper(registry())
+                new NativeToolSchemaMapper(registry()),
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus())
         );
 
         ToolCallingResult result = service.execute(new ToolCallingRequest(

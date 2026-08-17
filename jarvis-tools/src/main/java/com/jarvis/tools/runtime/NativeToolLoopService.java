@@ -17,6 +17,8 @@ import com.jarvis.tools.ToolManager;
 import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.ToolRuntimeProperties;
+import com.jarvis.tools.dataset.StoreAuditDataset;
+import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -54,6 +56,7 @@ public class NativeToolLoopService {
     private final WebSearchQualityEvaluator webSearchQualityEvaluator;
     private final MarketObservationExtractor marketObservationExtractor;
     private final AiListingVerifier listingVerifier;
+    private final StoreAuditDatasetService datasetService;
 
     /**
      * Creates the native tool loop service.
@@ -66,7 +69,8 @@ public class NativeToolLoopService {
             CognitiveEventBus cognitiveEventBus,
             ToolRuntimeDebugService debugService,
             ObjectMapper objectMapper,
-            NativeToolSchemaMapper schemaMapper
+            NativeToolSchemaMapper schemaMapper,
+            StoreAuditDatasetService datasetService
     ) {
         this.aiProviders = List.copyOf(aiProviders);
         this.toolManager = toolManager;
@@ -76,6 +80,7 @@ public class NativeToolLoopService {
         this.debugService = debugService;
         this.objectMapper = objectMapper;
         this.schemaMapper = schemaMapper;
+        this.datasetService = datasetService;
         this.freshnessEvaluator = new InformationFreshnessEvaluator();
         this.webSearchQualityEvaluator = new WebSearchQualityEvaluator();
         this.marketObservationExtractor = new MarketObservationExtractor();
@@ -113,8 +118,9 @@ public class NativeToolLoopService {
         List<String> errors = new ArrayList<>();
         Set<String> callFingerprints = new LinkedHashSet<>();
         Map<String, Integer> operationRepeatCounts = new LinkedHashMap<>();
-        messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions)));
-        messages.add(ModelMessage.user(request.userMessage()));
+        Optional<StoreAuditDataset> existingDataset = datasetService.findLatestForConversation(request.conversationId());
+        messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions, existingDataset)));
+        messages.add(ModelMessage.user(request.userMessage(), request.images()));
 
         publish(request, CognitiveEventType.TOOL_LOOP_STARTED, "STARTED", "Native tool loop started", null, 0,
                 Map.of("runtime", "native", "intent", intent.name(), "freshness", freshness.name(), "tools", definitions.size()));
@@ -122,6 +128,12 @@ public class NativeToolLoopService {
                 request.requestId(), intent, freshness, definitions.size());
         LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} phase=TOOL_LOOP_START availableTools={} intentHint={} autoTriggered=false",
                 request.requestId(), definitions.stream().map(NativeToolDefinition::name).distinct().toList(), intent);
+        LOGGER.info("[AGENT_CONTEXT] requestId={} conversationId={} model={} images={} datasetId={} datasetStores={} nativeTools=true vision={}",
+                request.requestId(), request.conversationId(), request.brain() == null ? "" : request.brain().model(),
+                request.images().size(),
+                existingDataset.map(StoreAuditDataset::datasetId).orElse(""),
+                existingDataset.map(dataset -> dataset.stores().size()).orElse(0),
+                !request.images().isEmpty());
 
         for (int step = 1; step <= maxCalls; step++) {
             if (Duration.between(started, Instant.now()).toSeconds() > properties.timeoutSeconds()) {
@@ -191,8 +203,10 @@ public class NativeToolLoopService {
                         LOGGER.info("[MARKETPLACE_MODE] requestId={} enabled=true source=MODEL_TOOL_REQUEST searchTarget=\"{}\"",
                                 request.requestId(), marketplaceRequirements.productQuery());
                     }
+                    Optional<Integer> datasetStoresBeforeCall = datasetStoresBefore(action);
                     ToolResult result = executeAction(request, action, step);
                     result = enrichIfNeeded(request, action, result, step);
+                    logDatasetContinuity(request, action, datasetStoresBeforeCall);
                     // Only the SEARCH_MARKETPLACE call itself is marketplace evidence - a collector
                     // existing elsewhere in the loop must never taint an unrelated result (e.g. a
                     // later SEARCH_WEB call for geocoding) with marketplaceResearch=true, or Core
@@ -541,8 +555,13 @@ public class NativeToolLoopService {
         return false;
     }
 
-    private String systemPrompt(ToolCallingRequest request, InformationFreshness freshness, List<NativeToolDefinition> definitions) {
-        return """
+    private String systemPrompt(
+            ToolCallingRequest request,
+            InformationFreshness freshness,
+            List<NativeToolDefinition> definitions,
+            Optional<StoreAuditDataset> existingDataset
+    ) {
+        String base = """
                 You are J.A.R.V.I.S. inside a native tool-calling loop.
 
                 Use the available native tools when external evidence, current facts, live prices, knowledge operations, or approved actions are needed.
@@ -563,6 +582,12 @@ public class NativeToolLoopService {
                 with one short message, then immediately keep calling tools - it does not end your turn and is
                 never a substitute for finishing the task.
 
+                If a task requires extracting many records from source material (e.g. many rows read off an
+                image, document, or list) rather than deriving a handful of facts, use the storeDataset tool to
+                hold the canonical record list instead of re-deriving or re-counting it from memory at every
+                turn - storeDataset.CREATE_DATASET locks the record count once, and later calls reference
+                records by id so the count can never silently drift across the rest of this loop.
+
                 Freshness: %s
                 User request: %s
                 Tool goal: %s
@@ -575,6 +600,66 @@ public class NativeToolLoopService {
                 request.reason(),
                 definitions.stream().map(NativeToolDefinition::name).toList()
         );
+        if (request.images().isEmpty() && existingDataset.isEmpty()) {
+            return base;
+        }
+        StringBuilder builder = new StringBuilder(base);
+        if (!request.images().isEmpty()) {
+            builder.append("""
+
+                    %d image(s) attached to the current user message are included directly in this same user
+                    turn below - they persist for the rest of this loop, you do not need to ask the user to
+                    resend them and no tool can "fetch" them. Read whatever data you need from them yourself.
+                    """.formatted(request.images().size()));
+        }
+        existingDataset.ifPresent(dataset -> builder.append("""
+
+                An existing dataset from earlier in this conversation is already available: datasetId=%s,
+                stage=%s, %d record(s). Call storeDataset.GET_DATASET with this id to continue working with it
+                instead of asking the user to resend the original attachments or re-extracting from scratch.
+                """.formatted(dataset.datasetId(), dataset.stage(), dataset.stores().size())));
+        return builder.toString();
+    }
+
+    /**
+     * Reads the current record count of the {@code storeDataset} the model is about to call, before
+     * it runs - so {@link #logDatasetContinuity} can prove the count did not silently drift.
+     *
+     * @param action tool action about to execute
+     * @return current record count, when this is a {@code storeDataset} call naming a known dataset
+     */
+    private Optional<Integer> datasetStoresBefore(ToolAction action) {
+        if (!"storedataset".equalsIgnoreCase(action.tool())) {
+            return Optional.empty();
+        }
+        Object datasetId = action.arguments().get("datasetId");
+        if (datasetId == null) {
+            return Optional.empty();
+        }
+        return datasetService.getDataset(String.valueOf(datasetId)).map(dataset -> dataset.stores().size());
+    }
+
+    /**
+     * Logs the before/after canonical record count around a {@code storeDataset} tool call, so a
+     * silent drift (records appearing or disappearing across a tool call) is visible in the logs
+     * even when nothing else in the request fails.
+     *
+     * @param request tool-calling request
+     * @param action tool action that just executed
+     * @param before record count captured by {@link #datasetStoresBefore} prior to execution
+     */
+    private void logDatasetContinuity(ToolCallingRequest request, ToolAction action, Optional<Integer> before) {
+        if (!"storedataset".equalsIgnoreCase(action.tool())) {
+            return;
+        }
+        Object datasetId = action.arguments().get("datasetId");
+        Optional<Integer> after = datasetId == null
+                ? Optional.empty()
+                : datasetService.getDataset(String.valueOf(datasetId)).map(dataset -> dataset.stores().size());
+        LOGGER.info(
+                "[AGENT_CONTEXT_CONTINUITY] requestId={} operation={} beforeToolDatasetStores={} afterToolDatasetStores={} attachmentsPreserved=true",
+                request.requestId(), action.operation(),
+                before.map(String::valueOf).orElse("n/a"), after.map(String::valueOf).orElse("n/a"));
     }
 
     private void publishThinking(ToolCallingRequest request, ModelResponse response) {

@@ -61,7 +61,8 @@ class NativeToolLoopServiceNoProgressGuardTest {
                 List.of(provider), toolManager, query -> ToolIntent.LOCATION,
                 new ToolRuntimeProperties(true, 10, 10, 2, 30, "native", 5),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
-                new NativeToolSchemaMapper(webRegistry())
+                new NativeToolSchemaMapper(webRegistry()),
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus())
         );
 
         ToolCallingResult result = service.execute(new ToolCallingRequest(
@@ -96,7 +97,8 @@ class NativeToolLoopServiceNoProgressGuardTest {
                 List.of(provider), toolManager, query -> ToolIntent.LOCATION,
                 new ToolRuntimeProperties(true, 10, 10, 2, 30, "native", 5),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
-                new NativeToolSchemaMapper(webRegistry())
+                new NativeToolSchemaMapper(webRegistry()),
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus())
         );
 
         ToolCallingResult result = service.execute(new ToolCallingRequest(

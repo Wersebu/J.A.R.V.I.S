@@ -8,3 +8,9 @@ javac-output-test/
 .env
 .DS_Store
 data/
+
+# Runtime-generated, request-scoped state - never source content. Scoped narrowly: knowledge/ itself
+# stays tracked, only its own runtime subfolders are excluded.
+**/temp-workspaces/
+knowledge/.drafts/
+knowledge/.history/

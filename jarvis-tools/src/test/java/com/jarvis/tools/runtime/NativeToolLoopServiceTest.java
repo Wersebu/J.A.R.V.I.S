@@ -48,7 +48,8 @@ class NativeToolLoopServiceTest {
                 new NoopCognitiveEventBus(),
                 new ToolRuntimeDebugService(),
                 new ObjectMapper(),
-                new NativeToolSchemaMapper(webRegistry())
+                new NativeToolSchemaMapper(webRegistry()),
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus())
         );
 
         ToolCallingResult result = service.execute(new ToolCallingRequest(

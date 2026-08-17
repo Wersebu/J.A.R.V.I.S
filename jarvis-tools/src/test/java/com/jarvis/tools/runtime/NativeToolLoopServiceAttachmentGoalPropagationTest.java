@@ -45,7 +45,8 @@ class NativeToolLoopServiceAttachmentGoalPropagationTest {
                 List.of(provider), new NoopToolManager(), query -> ToolIntent.LOCATION,
                 new com.jarvis.tools.ToolRuntimeProperties(true, 4, 8, 2, 30, "native"),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
-                new NativeToolSchemaMapper(registry())
+                new NativeToolSchemaMapper(registry()),
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus())
         );
 
         service.execute(new ToolCallingRequest(

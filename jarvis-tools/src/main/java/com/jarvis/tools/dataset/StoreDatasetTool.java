@@ -93,10 +93,24 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                         arg("verifications", "array", true, "[{recordId,status,correctedFullAddress,correctedPostalCode}], status is VERIFIED or CORRECTED")),
                 operation("GET_DATASET",
                         "Returns the current canonical dataset (all records with their ids, addresses, "
-                                + "verification/geolocation status). Use this whenever you need to check the "
-                                + "exact current record list/ids instead of relying on memory of an earlier turn.",
+                                + "verification/geolocation status, and any previously accepted schedule). Use "
+                                + "this whenever you need to check the exact current record list/ids instead of "
+                                + "relying on memory of an earlier turn, or to continue a dataset from an earlier "
+                                + "turn in this same conversation.",
                         false, ToolSafetyLevel.READ,
-                        arg("datasetId", "string", true, "Dataset id returned by CREATE_DATASET"))
+                        arg("datasetId", "string", true, "Dataset id returned by CREATE_DATASET")),
+                operation("SUBMIT_SCHEDULE",
+                        "Submits a proposed day-by-day grouping of the locked dataset's records for validation. "
+                                + "Every record id in the dataset must appear in exactly one day, exactly once - no "
+                                + "record missing, none duplicated, no unknown/invented id. The whole submission is "
+                                + "rejected (nothing applied) if any of that is violated, with the exact missing/"
+                                + "duplicate/unknown ids listed so you can resubmit a corrected grouping. Call "
+                                + "GET_DATASET first if you are not certain of the exact current record ids. This "
+                                + "is required before presenting a final schedule to the user - never hand-count "
+                                + "or eyeball that every store was scheduled exactly once.",
+                        true, ToolSafetyLevel.WRITE,
+                        arg("datasetId", "string", true, "Dataset id returned by CREATE_DATASET"),
+                        arg("days", "array", true, "[{day: number, storeIds: [string]}] - every dataset record id exactly once across all days"))
         ));
     }
 
@@ -108,6 +122,7 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
             case CREATE_DATASET -> create(request);
             case VERIFY_DATASET -> verify(request);
             case GET_DATASET -> get(request);
+            case SUBMIT_SCHEDULE -> submitSchedule(request);
         };
     }
 
@@ -172,15 +187,49 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                 datasetData(dataset.get()), "", "", false, "");
     }
 
+    private ToolResult submitSchedule(ToolRequest request) {
+        String datasetId = arg(request, "datasetId");
+        List<ScheduleDay> days = new ArrayList<>();
+        for (Object raw : listArg(request, "days")) {
+            if (raw instanceof Map<?, ?> map) {
+                days.add(new ScheduleDay(intField(map, "day"), stringListField(map, "storeIds")));
+            }
+        }
+        ScheduleSubmitOutcome outcome = datasetService.submitSchedule(datasetId, days);
+        if (!outcome.success()) {
+            String errorCode = outcome.invariantViolation() ? "STORE_DATASET_INVARIANT_VIOLATION" : "STORE_DATASET_NOT_FOUND";
+            Map<String, Object> data = outcome.dataset() == null ? Map.of() : datasetData(outcome.dataset());
+            data = new HashMap<>(data);
+            data.put("missingStoreIds", outcome.missingStoreIds());
+            data.put("unknownStoreIds", outcome.unknownStoreIds());
+            data.put("duplicateStoreIds", outcome.duplicateStoreIds());
+            return new ToolResult(false, TOOL_NAME, "SUBMIT_SCHEDULE", request.requestId(), request.conversationId(),
+                    false, List.of(), outcome.message(), data, errorCode, outcome.message(), false, "");
+        }
+        return new ToolResult(true, TOOL_NAME, "SUBMIT_SCHEDULE", request.requestId(), request.conversationId(),
+                true, List.of(datasetId), outcome.message(), datasetData(outcome.dataset()), "", "", false, "");
+    }
+
     private Map<String, Object> datasetData(StoreAuditDataset dataset) {
         Map<String, Object> data = new HashMap<>();
         data.put("datasetId", dataset.datasetId());
+        data.put("conversationId", dataset.conversationId());
         data.put("stage", dataset.stage().name());
         data.put("count", dataset.stores().size());
         data.put("sourceImageCount", dataset.sourceImageCount());
         data.put("sourceAttachmentIds", dataset.sourceAttachmentIds());
         data.put("records", dataset.stores().stream().map(this::recordMap).toList());
+        if (!dataset.schedule().isEmpty()) {
+            data.put("schedule", dataset.schedule().stream().map(this::scheduleDayMap).toList());
+        }
         return data;
+    }
+
+    private Map<String, Object> scheduleDayMap(ScheduleDay day) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("day", day.day());
+        map.put("storeIds", day.storeIds());
+        return map;
     }
 
     private Map<String, Object> recordMap(StoreRecord record) {
@@ -245,6 +294,19 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     private int intField(Map<?, ?> map, String key) {
         Object value = map.get(key);
         return value instanceof Number number ? number.intValue() : 0;
+    }
+
+    private List<String> stringListField(Map<?, ?> map, String key) {
+        Object value = map.get(key);
+        List<String> result = new ArrayList<>();
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                if (item != null && !String.valueOf(item).isBlank()) {
+                    result.add(String.valueOf(item).strip());
+                }
+            }
+        }
+        return result;
     }
 
     // ---------------------------------------------------------------------

@@ -868,7 +868,8 @@ public class OllamaProvider implements AIProvider {
                         message.content(),
                         "",
                         toOllamaToolCalls(message.toolCalls()),
-                        message.toolCallId()
+                        message.toolCallId(),
+                        message.images().stream().map(ImageAttachment::base64Data).toList()
                 ))
                 .toList();
     }
