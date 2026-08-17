@@ -153,6 +153,73 @@ class NativeToolLoopServiceReentrantWorkflowTest {
         assertThat(provider.callCount()).isLessThanOrEqualTo(4);
     }
 
+    // A model that briefly returns neither a tool call nor any text content (a transient model
+    // hiccup on a large multimodal/many-tool prompt) must get a bounded chance to recover instead
+    // of the whole task failing on the very first empty turn.
+    @Test
+    void theLoopRecoversFromATransientEmptyModelResponseBeforeTheModelFinallyAnswers() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(emptyTurn());
+        turns.add(emptyTurn());
+        turns.add(textTurn("Oto odpowiedz po odzyskaniu."));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        FakeSimpleToolManager toolManager = new FakeSimpleToolManager();
+
+        NativeToolLoopService service = new NativeToolLoopService(
+                List.of(provider), toolManager, query -> ToolIntent.NO_TOOL,
+                new ToolRuntimeProperties(true, 10, 10, 2, 30, "native", 10),
+                new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
+                new NativeToolSchemaMapper(knowledgeOnlyRegistry()),
+                new StoreAuditDatasetService(new NoopCognitiveEventBus())
+        );
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1", "test",
+                "test goal", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(result.finalAnswer()).isEqualTo("Oto odpowiedz po odzyskaniu.");
+    }
+
+    // If the model never recovers, the loop must still terminate with a controlled, honest
+    // failure rather than hanging or throwing.
+    @Test
+    void repeatedEmptyModelResponsesAreBoundedAndTheLoopTerminatesWithAControlledFailure() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        for (int i = 0; i < 5; i++) {
+            turns.add(emptyTurn());
+        }
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        FakeSimpleToolManager toolManager = new FakeSimpleToolManager();
+
+        NativeToolLoopService service = new NativeToolLoopService(
+                List.of(provider), toolManager, query -> ToolIntent.NO_TOOL,
+                new ToolRuntimeProperties(true, 10, 10, 2, 30, "native", 10),
+                new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
+                new NativeToolSchemaMapper(knowledgeOnlyRegistry()),
+                new StoreAuditDatasetService(new NoopCognitiveEventBus())
+        );
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1", "test",
+                "test goal", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(result.finalAnswer()).contains("EMPTY_MODEL_RESPONSE_WITHOUT_TOOL_CALL");
+        // Bounded: at most 1 initial + MAX_EMPTY_RESPONSE_RETRIES(2) retries were consumed.
+        assertThat(provider.callCount()).isLessThanOrEqualTo(3);
+    }
+
+    private static ModelResponse emptyTurn() {
+        return new ModelResponse("", "", List.of(), "stop", new ModelUsage(0, 0, 0));
+    }
+
     // A model that never stops requesting distinct tool calls must still be bounded by the outer
     // step budget, never spin forever.
     @Test

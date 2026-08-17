@@ -217,6 +217,8 @@ Every native tool is a Spring bean implementing `JarvisTool` (`getName`/`getDesc
 
 Every re-entry/gate decision is logged for one requestId as `[AGENT_LOOP] turn=N action=TOOL_REQUEST|FINAL_CONTENT|FINAL_ANSWER`, `[WORKFLOW_STATE] datasetId=... stage=... records=...`, `[NATIVE_TOOL_LOOP] ... COMPLETION_GATE complete=false reason=...`, and `[NATIVE_TOOL_LOOP] ... REENTER_TOOL_LOOP reason=...`.
 
+**A model turn with neither a tool call nor any text content** (observed in production: a large multimodal + many-native-tool prompt the model briefly produced nothing for, after tens of seconds of "thinking") previously failed the whole task immediately on the very first empty turn, surfacing as "Nie udalo mi sie teraz zebrac wystarczajacych danych: EMPTY_MODEL_RESPONSE_WITHOUT_TOOL_CALL". This is now retried with an explicit corrective system message (`MAX_EMPTY_RESPONSE_RETRIES`, currently 2) before falling back to that same honest failure message - most transient empty turns now self-recover within the same request instead of failing outright.
+
 Further loop safety:
 
 - **Exact-duplicate blocking**: an identical `tool.OPERATION` call with identical arguments is blocked immediately (no re-execution).

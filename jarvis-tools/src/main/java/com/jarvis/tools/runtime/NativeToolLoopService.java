@@ -145,6 +145,7 @@ public class NativeToolLoopService {
         String activeDatasetId = existingDataset.map(StoreAuditDataset::datasetId).orElse("");
         int malformedContinuationAttempts = 0;
         int completionGateAttempts = 0;
+        int emptyResponseRetries = 0;
         messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions, existingDataset)));
         messages.add(ModelMessage.user(request.userMessage(), request.images()));
 
@@ -394,6 +395,21 @@ public class NativeToolLoopService {
                 publish(request, CognitiveEventType.FINAL_SYNTHESIS_STARTED, "STARTED",
                         "Final synthesis fallback requested", null, step, Map.of("results", results.size()));
                 return new ToolCallingResult(true, "", steps, results);
+            }
+            // A model turn with neither a tool call nor any text content (no results yet either,
+            // so there is nothing to fall back to) is most often a transient model-level hiccup -
+            // e.g. a large multimodal + many-tool prompt the model briefly chokes on - not a
+            // structural problem with the request. Give it a bounded chance to recover with an
+            // explicit nudge before treating it as a hard failure.
+            if (emptyResponseRetries < MAX_EMPTY_RESPONSE_RETRIES) {
+                emptyResponseRetries++;
+                LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} step={} EMPTY_MODEL_RESPONSE_WITHOUT_TOOL_CALL attempt={} retrying",
+                        request.requestId(), step, emptyResponseRetries);
+                publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "EMPTY_MODEL_RESPONSE_RETRY",
+                        "Model returned neither a tool call nor content; retrying with a corrective note", null, step,
+                        Map.of("attempt", emptyResponseRetries));
+                messages.add(ModelMessage.system(EMPTY_RESPONSE_RETRY_NOTE));
+                continue;
             }
             errors.add("EMPTY_MODEL_RESPONSE_WITHOUT_TOOL_CALL");
             break;
@@ -1031,6 +1047,18 @@ public class NativeToolLoopService {
                     + "native tool-calling available - call the tool you need directly through the native "
                     + "tool-calling mechanism right now, not as JSON in your written content. Do not restate "
                     + "your plan in text again; make the actual call.";
+
+    /**
+     * Above this many consecutive turns where the model returns neither a tool call nor any text
+     * content, this loop gives up rather than retrying again - see the empty-response recovery
+     * branch in {@link #execute}.
+     */
+    private static final int MAX_EMPTY_RESPONSE_RETRIES = 2;
+
+    private static final String EMPTY_RESPONSE_RETRY_NOTE =
+            "Your last turn returned neither a tool call nor any text content. You must do exactly one of: "
+                    + "call a native tool if you still need one, or write your final answer as plain text. "
+                    + "Do not return an empty response again.";
 
     /**
      * Sniffs whether {@code content} - the loop's plain-text turn - is actually a structured
