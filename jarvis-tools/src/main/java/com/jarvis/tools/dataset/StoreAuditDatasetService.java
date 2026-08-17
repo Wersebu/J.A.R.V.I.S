@@ -4,6 +4,7 @@ import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -49,6 +50,7 @@ public class StoreAuditDatasetService {
      *
      * @param cognitiveEventBus event bus for dataset lifecycle diagnostics
      */
+    @Autowired
     public StoreAuditDatasetService(CognitiveEventBus cognitiveEventBus) {
         this(cognitiveEventBus, Clock.systemUTC());
     }
