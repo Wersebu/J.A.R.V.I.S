@@ -132,6 +132,125 @@ class StoreAuditDatasetServiceTest {
         assertThat(second.dataset().datasetId()).isNotEqualTo(first.datasetId());
     }
 
+    // Regression for the exact reported bug: a single CREATE_DATASET call with a large record
+    // array can fail (the model emits an empty records array despite intending to fill it) -
+    // START_DATASET/APPEND_RECORDS/FINALIZE_DATASET let the same dataset be built incrementally.
+    @Test
+    void startAppendFinalizeBuildsTheSameCanonicalDatasetAsOneShotCreate() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-1", List.of("att-1"));
+
+        CreateOutcome started = service.startDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1"));
+        assertThat(started.success()).isTrue();
+        assertThat(started.dataset().stage()).isEqualTo(DatasetStage.BUILDING);
+        assertThat(started.dataset().stores()).hasSize(3);
+        String datasetId = started.dataset().datasetId();
+
+        List<CandidateRecord> nextBatch = new java.util.ArrayList<>();
+        for (int index = 4; index <= 6; index++) {
+            nextBatch.add(new CandidateRecord("Biedronka", "Miasto Testowe", "Ulica Testowa", String.valueOf(index),
+                    "00-00" + (index % 10), "Ulica Testowa " + index + ", Miasto Testowe", "att-1", index));
+        }
+        AppendOutcome appended = service.appendRecords(datasetId, nextBatch);
+        assertThat(appended.success()).isTrue();
+        assertThat(appended.acceptedCount()).isEqualTo(3);
+        assertThat(appended.dataset().stage()).isEqualTo(DatasetStage.BUILDING);
+        assertThat(appended.dataset().stores()).hasSize(6);
+
+        FinalizeOutcome finalized = service.finalizeDataset(datasetId);
+        assertThat(finalized.success()).isTrue();
+        assertThat(finalized.dataset().stage()).isEqualTo(DatasetStage.EXTRACTED);
+        assertThat(finalized.dataset().stores()).hasSize(6);
+        assertThat(finalized.dataset().expectedStoreCount()).isEqualTo(6);
+        assertThat(service.getDataset(datasetId).orElseThrow().stores()).extracting(StoreRecord::id)
+                .containsExactly("store-001", "store-002", "store-003", "store-004", "store-005", "store-006");
+    }
+
+    @Test
+    void appendRecordsRejectsAnEmptyBatch() {
+        StoreAuditDatasetService service = service();
+        String datasetId = service.startDataset("request-1", 1, List.of(), candidates(2, "att-1")).dataset().datasetId();
+
+        AppendOutcome outcome = service.appendRecords(datasetId, List.of());
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.errorCode()).isEqualTo("EMPTY_APPEND");
+        assertThat(service.getDataset(datasetId).orElseThrow().stores()).hasSize(2);
+    }
+
+    @Test
+    void appendRecordsRejectsATargetThatIsAlreadyFinalized() {
+        StoreAuditDatasetService service = service();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset();
+
+        AppendOutcome outcome = service.appendRecords(dataset.datasetId(), candidates(1, "att-1"));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.errorCode()).isEqualTo("STORE_DATASET_NOT_BUILDING");
+        assertThat(service.getDataset(dataset.datasetId()).orElseThrow().stores()).hasSize(3);
+    }
+
+    // START_DATASET already refuses to create an empty BUILDING dataset (same EMPTY_DATASET
+    // invariant as CREATE_DATASET), so a BUILDING dataset can never legitimately reach
+    // FINALIZE_DATASET with 0 records through the public API - this proves that upstream guard.
+    @Test
+    void startDatasetRejectsAnEmptyFirstBatchTheSameWayCreateDatasetDoes() {
+        StoreAuditDatasetService service = service();
+
+        CreateOutcome outcome = service.startDataset("request-1", 1, List.of("att-1"), List.of());
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.errorCode()).isEqualTo("EMPTY_DATASET");
+        assertThat(outcome.dataset()).isNull();
+    }
+
+    @Test
+    void finalizeDatasetIsIdempotentWhenAlreadyFinalized() {
+        StoreAuditDatasetService service = service();
+        String datasetId = service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset().datasetId();
+
+        FinalizeOutcome first = service.finalizeDataset(datasetId);
+        FinalizeOutcome second = service.finalizeDataset(datasetId);
+
+        assertThat(first.success()).isTrue();
+        assertThat(second.success()).isTrue();
+        assertThat(second.dataset().stage()).isEqualTo(DatasetStage.EXTRACTED);
+        assertThat(second.dataset().stores()).hasSize(3);
+    }
+
+    @Test
+    void verifyGeolocationAndScheduleAllRejectAStillBuildingDataset() {
+        StoreAuditDatasetService service = service();
+        String datasetId = service.startDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset().datasetId();
+
+        VerifyOutcome verify = service.verifyDataset(datasetId, List.of(new VerificationEntry("store-001", "VERIFIED", "", "")));
+        GeolocationUpdateOutcome geo = service.updateGeolocation(datasetId,
+                List.of(new GeolocationEntry("store-001", GeolocationStatus.RESOLVED, 52.0, 21.0)));
+        ScheduleSubmitOutcome schedule = service.submitSchedule(datasetId, List.of(new ScheduleDay(1, List.of("store-001"))));
+
+        assertThat(verify.success()).isFalse();
+        assertThat(verify.message()).contains("BUILDING");
+        assertThat(geo.success()).isFalse();
+        assertThat(geo.message()).contains("BUILDING");
+        assertThat(schedule.success()).isFalse();
+        assertThat(schedule.message()).contains("BUILDING");
+        assertThat(service.getDataset(datasetId).orElseThrow().stage()).isEqualTo(DatasetStage.BUILDING);
+    }
+
+    @Test
+    void startDatasetAppliesTheSameDuplicateSourceCheckAsCreateDataset() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-1", List.of("att-1"));
+        StoreAuditDataset first = service.startDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset();
+
+        service.registerAttachments("request-2", "conversation-1", List.of("att-1"));
+        CreateOutcome second = service.startDataset("request-2", 1, List.of("att-1"), candidates(3, "att-1"));
+
+        assertThat(second.success()).isFalse();
+        assertThat(second.errorCode()).isEqualTo("STORE_DATASET_DUPLICATE_SOURCE");
+        assertThat(second.dataset().datasetId()).isEqualTo(first.datasetId());
+    }
+
     // TEST C: GeoLocation returns 23 results -> dataset remains 23 records.
     @Test
     void geolocationUpdatesResolveExistingRecordsWithoutChangingCount() {

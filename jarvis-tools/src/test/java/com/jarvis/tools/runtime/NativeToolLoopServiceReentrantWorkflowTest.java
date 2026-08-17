@@ -120,6 +120,57 @@ class NativeToolLoopServiceReentrantWorkflowTest {
         assertThat(result.finalAnswer()).isNotEqualTo("Oto harmonogram wizyt.");
     }
 
+    // Regression for the follow-up reported bug: a single CREATE_DATASET call with a large record
+    // array can fail outright (model emits an empty records array despite intending to fill it).
+    // The incremental START_DATASET/APPEND_RECORDS/FINALIZE_DATASET path must integrate with the
+    // same re-entrant loop and completion gate exactly like the one-shot CREATE_DATASET path does.
+    @Test
+    void theLoopCompletesAWorkflowBuiltIncrementallyViaStartAppendFinalize() {
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool storeDatasetTool = new StoreDatasetTool(datasetService);
+        datasetService.registerAttachments("request-1", "conversation-1", List.of());
+
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn("storedataset__start_dataset", Map.of(
+                "sourceImageCount", 1, "sourceAttachmentIds", List.of(),
+                "records", List.of(
+                        Map.of("network", "Siec", "fullAddress", "Adres 1", "sourceRow", 1),
+                        Map.of("network", "Siec", "fullAddress", "Adres 2", "sourceRow", 2)
+                ))));
+        turns.add(toolCallTurn("storedataset__append_records", Map.of(
+                "datasetId", "PLACEHOLDER",
+                "records", List.of(Map.of("network", "Siec", "fullAddress", "Adres 3", "sourceRow", 3)))));
+        turns.add(toolCallTurn("storedataset__finalize_dataset", Map.of("datasetId", "PLACEHOLDER")));
+        turns.add(toolCallTurn("location__geocode_dataset", Map.of("datasetId", "PLACEHOLDER")));
+        turns.add(toolCallTurn("storedataset__submit_schedule", Map.of("datasetId", "PLACEHOLDER")));
+        turns.add(textTurn("Oto harmonogram wizyt zbudowany przyrostowo."));
+
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        FullWorkflowToolManager toolManager = new FullWorkflowToolManager(datasetService, storeDatasetTool);
+
+        NativeToolLoopService service = new NativeToolLoopService(
+                List.of(provider), toolManager, query -> ToolIntent.LOCATION,
+                new ToolRuntimeProperties(true, 20, 20, 5, 60, "native", 10),
+                new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
+                new NativeToolSchemaMapper(incrementalRegistry()),
+                datasetService
+        );
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1", "przygotuj harmonogram wizyt",
+                "Prepare the audit visit schedule incrementally.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        assertThat(result.finalAnswer()).isEqualTo("Oto harmonogram wizyt zbudowany przyrostowo.");
+
+        StoreAuditDataset dataset = datasetService.findLatestForConversation("conversation-1").orElseThrow();
+        assertThat(dataset.stage()).isEqualTo(DatasetStage.SCHEDULED);
+        assertThat(dataset.stores()).hasSize(3);
+    }
+
     // A model that keeps writing the same TOOL_REQUEST-shaped text instead of ever making a real
     // tool call must not be nagged forever - after the bounded number of corrective retries, the
     // loop accepts the text as final content rather than hanging.
@@ -283,6 +334,33 @@ class NativeToolLoopServiceReentrantWorkflowTest {
                 ), true, ToolSafetyLevel.WRITE)
         ));
         return registryOf(knowledge, system, location, storeDataset);
+    }
+
+    private static ToolRegistry incrementalRegistry() {
+        ToolDefinition location = new ToolDefinition("location", "Geocoding.", List.of(
+                new ToolOperationDefinition("GEOCODE_DATASET", "Geocode dataset records.", List.of(
+                        new ToolArgumentDefinition("datasetId", "string", true, "Dataset id")
+                ), true, ToolSafetyLevel.WRITE)
+        ));
+        ToolDefinition storeDataset = new ToolDefinition("storedataset", "Canonical dataset.", List.of(
+                new ToolOperationDefinition("START_DATASET", "Start dataset.", List.of(
+                        new ToolArgumentDefinition("sourceImageCount", "number", true, "Count"),
+                        new ToolArgumentDefinition("sourceAttachmentIds", "array", true, "Ids"),
+                        new ToolArgumentDefinition("records", "array", true, "Records")
+                ), true, ToolSafetyLevel.WRITE),
+                new ToolOperationDefinition("APPEND_RECORDS", "Append records.", List.of(
+                        new ToolArgumentDefinition("datasetId", "string", true, "Dataset id"),
+                        new ToolArgumentDefinition("records", "array", true, "Records")
+                ), true, ToolSafetyLevel.WRITE),
+                new ToolOperationDefinition("FINALIZE_DATASET", "Finalize dataset.", List.of(
+                        new ToolArgumentDefinition("datasetId", "string", true, "Dataset id")
+                ), true, ToolSafetyLevel.WRITE),
+                new ToolOperationDefinition("SUBMIT_SCHEDULE", "Submit schedule.", List.of(
+                        new ToolArgumentDefinition("datasetId", "string", true, "Dataset id"),
+                        new ToolArgumentDefinition("days", "array", true, "Days")
+                ), true, ToolSafetyLevel.WRITE)
+        ));
+        return registryOf(location, storeDataset);
     }
 
     private static ToolRegistry knowledgeOnlyRegistry() {

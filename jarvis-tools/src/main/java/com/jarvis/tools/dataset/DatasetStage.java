@@ -5,6 +5,8 @@ package com.jarvis.tools.dataset;
  * guess which stage of the workflow it is currently in.
  */
 public enum DatasetStage {
+    /** Incremental extraction in progress via START_DATASET/APPEND_RECORDS; record count not yet locked. */
+    BUILDING,
     /** Extraction pass complete, record count locked; awaiting verification. */
     EXTRACTED,
     /** Verification pass complete and consistent with the extracted count. */

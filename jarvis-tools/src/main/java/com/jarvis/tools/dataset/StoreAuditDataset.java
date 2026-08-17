@@ -76,4 +76,32 @@ public record StoreAuditDataset(
         return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
                 stores, expectedStoreCount, DatasetStage.SCHEDULED, newSchedule, createdAt, expiresAt);
     }
+
+    /**
+     * Returns a copy with only the stage changed - record list and {@code expectedStoreCount}
+     * carry over unchanged. Used for transitions where the record count is already correct and
+     * only the lifecycle stage moves forward (e.g. {@link DatasetStage#BUILDING} to {@link
+     * DatasetStage#EXTRACTED} on finalize).
+     *
+     * @param newStage new workflow stage
+     * @return updated dataset
+     */
+    public StoreAuditDataset withStage(DatasetStage newStage) {
+        return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
+                stores, expectedStoreCount, newStage, schedule, createdAt, expiresAt);
+    }
+
+    /**
+     * Returns a copy with a grown record list while still {@link DatasetStage#BUILDING} - unlike
+     * {@link #withStores}, this recalculates {@code expectedStoreCount} from the new list size,
+     * since an in-progress incremental build is expected to grow across multiple {@code
+     * APPEND_RECORDS} calls rather than staying a fixed size like every other mutation.
+     *
+     * @param newStores grown record list (superset of the current one)
+     * @return updated, still-{@code BUILDING} dataset
+     */
+    public StoreAuditDataset withAppendedStores(List<StoreRecord> newStores) {
+        return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
+                newStores, newStores.size(), DatasetStage.BUILDING, schedule, createdAt, expiresAt);
+    }
 }

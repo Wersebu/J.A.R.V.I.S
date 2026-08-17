@@ -76,11 +76,43 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "workflow documentation, Knowledge examples, or conversation history - only "
                                 + "from the current message's own attachments or an explicit user-typed list. "
                                 + "Returns the locked dataset with assigned record ids - use those ids in all "
-                                + "later storeDataset/location calls for this task.",
+                                + "later storeDataset/location calls for this task. For a LARGE extraction "
+                                + "(roughly more than 10 records), submitting the entire list as one call's "
+                                + "argument can fail outright - prefer START_DATASET with a smaller first batch, "
+                                + "then APPEND_RECORDS for the rest, then FINALIZE_DATASET instead.",
                         true, ToolSafetyLevel.WRITE,
                         arg("sourceImageCount", "number", true, "Number of image attachments read during extraction"),
                         arg("sourceAttachmentIds", "array", true, "Current-message attachment ids the records were extracted from"),
                         arg("records", "array", true, "Extracted records: [{network,city,street,buildingNumber,postalCode,fullAddress,sourceAttachmentId,sourceRow}]")),
+                operation("START_DATASET",
+                        "Starts building a dataset incrementally with the FIRST batch of extracted records "
+                                + "(e.g. 5-8 at a time), for extractions too large to reliably submit in one "
+                                + "CREATE_DATASET call. The dataset stays in stage=BUILDING - not yet usable by "
+                                + "VERIFY_DATASET/GEOCODE_DATASET/SUBMIT_SCHEDULE - until FINALIZE_DATASET is "
+                                + "called. Same arguments and provenance rules as CREATE_DATASET; only call this "
+                                + "once per extraction (use APPEND_RECORDS with the returned datasetId for every "
+                                + "further batch).",
+                        true, ToolSafetyLevel.WRITE,
+                        arg("sourceImageCount", "number", true, "Number of image attachments read during extraction"),
+                        arg("sourceAttachmentIds", "array", true, "Current-message attachment ids the records were extracted from"),
+                        arg("records", "array", true, "First batch of extracted records: [{network,city,street,buildingNumber,postalCode,fullAddress,sourceAttachmentId,sourceRow}]")),
+                operation("APPEND_RECORDS",
+                        "Appends another batch of extracted records to a dataset still in stage=BUILDING "
+                                + "(started with START_DATASET). Call this as many times as needed with small "
+                                + "batches until every record from the source material has been submitted, then "
+                                + "call FINALIZE_DATASET. Fails if the dataset is already finalized - use "
+                                + "VERIFY_DATASET to correct a finalized dataset instead.",
+                        true, ToolSafetyLevel.WRITE,
+                        arg("datasetId", "string", true, "Dataset id returned by START_DATASET"),
+                        arg("records", "array", true, "Next batch of extracted records: [{network,city,street,buildingNumber,postalCode,fullAddress,sourceAttachmentId,sourceRow}]")),
+                operation("FINALIZE_DATASET",
+                        "Locks the record count of a dataset still in stage=BUILDING, once every batch from "
+                                + "the source material has been submitted via START_DATASET/APPEND_RECORDS. "
+                                + "After this, the dataset behaves exactly like one created with CREATE_DATASET - "
+                                + "VERIFY_DATASET/GEOCODE_DATASET/SUBMIT_SCHEDULE all become usable. Rejected if "
+                                + "the dataset has 0 records. Safe to call again if already finalized.",
+                        true, ToolSafetyLevel.WRITE,
+                        arg("datasetId", "string", true, "Dataset id returned by START_DATASET")),
                 operation("VERIFY_DATASET",
                         "Submits a second-pass verification of the ALREADY-LOCKED dataset - reports "
                                 + "per-record status/corrections by record id, never a new independently "
@@ -120,6 +152,9 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
         LOGGER.info("[STORE_AUDIT] requestId={} storeDataset operation={}", request.requestId(), operation);
         return switch (operation) {
             case CREATE_DATASET -> create(request);
+            case START_DATASET -> start(request);
+            case APPEND_RECORDS -> append(request);
+            case FINALIZE_DATASET -> finalizeDataset(request);
             case VERIFY_DATASET -> verify(request);
             case GET_DATASET -> get(request);
             case SUBMIT_SCHEDULE -> submitSchedule(request);
@@ -129,6 +164,71 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     private ToolResult create(ToolRequest request) {
         int sourceImageCount = intArg(request, "sourceImageCount");
         List<String> sourceAttachmentIds = stringListArg(request, "sourceAttachmentIds");
+        List<CandidateRecord> candidates = candidatesFromRecordsArg(request);
+        CreateOutcome outcome = datasetService.createDataset(request.requestId(), sourceImageCount, sourceAttachmentIds, candidates);
+        return createOutcomeResult(request, "CREATE_DATASET", outcome);
+    }
+
+    private ToolResult start(ToolRequest request) {
+        int sourceImageCount = intArg(request, "sourceImageCount");
+        List<String> sourceAttachmentIds = stringListArg(request, "sourceAttachmentIds");
+        List<CandidateRecord> candidates = candidatesFromRecordsArg(request);
+        CreateOutcome outcome = datasetService.startDataset(request.requestId(), sourceImageCount, sourceAttachmentIds, candidates);
+        return createOutcomeResult(request, "START_DATASET", outcome);
+    }
+
+    private ToolResult createOutcomeResult(ToolRequest request, String operationName, CreateOutcome outcome) {
+        if (!outcome.success()) {
+            // On STORE_DATASET_DUPLICATE_SOURCE, outcome.dataset() is the pre-existing dataset the
+            // model should use instead - surface its data so the model can act on it directly
+            // (GET_DATASET/VERIFY_DATASET) rather than only reading the id out of free text.
+            Map<String, Object> data = outcome.dataset() == null ? Map.of() : datasetData(outcome.dataset());
+            String errorCode = outcome.errorCode().isBlank() ? "STORE_DATASET_PROVENANCE_INVALID" : outcome.errorCode();
+            return new ToolResult(false, TOOL_NAME, operationName, request.requestId(), request.conversationId(),
+                    false, List.of(), outcome.message(), data, errorCode, outcome.message(), false, "");
+        }
+        Map<String, Object> data = datasetData(outcome.dataset());
+        data.put("acceptedCount", outcome.acceptedCount());
+        data.put("duplicateCount", outcome.duplicateCount());
+        data.put("rejected", outcome.rejected().stream()
+                .map(candidate -> Map.<String, Object>of("index", candidate.index(), "reason", candidate.reason()))
+                .toList());
+        return new ToolResult(true, TOOL_NAME, operationName, request.requestId(), request.conversationId(),
+                true, List.of(outcome.dataset().datasetId()), outcome.message(), data, "", "", false, "");
+    }
+
+    private ToolResult append(ToolRequest request) {
+        String datasetId = arg(request, "datasetId");
+        List<CandidateRecord> candidates = candidatesFromRecordsArg(request);
+        AppendOutcome outcome = datasetService.appendRecords(datasetId, candidates);
+        if (!outcome.success()) {
+            Map<String, Object> data = outcome.dataset() == null ? Map.of() : datasetData(outcome.dataset());
+            return new ToolResult(false, TOOL_NAME, "APPEND_RECORDS", request.requestId(), request.conversationId(),
+                    false, List.of(), outcome.message(), data, outcome.errorCode(), outcome.message(), false, "");
+        }
+        Map<String, Object> data = datasetData(outcome.dataset());
+        data.put("acceptedCount", outcome.acceptedCount());
+        data.put("duplicateCount", outcome.duplicateCount());
+        data.put("rejected", outcome.rejected().stream()
+                .map(candidate -> Map.<String, Object>of("index", candidate.index(), "reason", candidate.reason()))
+                .toList());
+        return new ToolResult(true, TOOL_NAME, "APPEND_RECORDS", request.requestId(), request.conversationId(),
+                true, List.of(datasetId), outcome.message(), data, "", "", false, "");
+    }
+
+    private ToolResult finalizeDataset(ToolRequest request) {
+        String datasetId = arg(request, "datasetId");
+        FinalizeOutcome outcome = datasetService.finalizeDataset(datasetId);
+        if (!outcome.success()) {
+            Map<String, Object> data = outcome.dataset() == null ? Map.of() : datasetData(outcome.dataset());
+            return new ToolResult(false, TOOL_NAME, "FINALIZE_DATASET", request.requestId(), request.conversationId(),
+                    false, List.of(), outcome.message(), data, outcome.errorCode(), outcome.message(), false, "");
+        }
+        return new ToolResult(true, TOOL_NAME, "FINALIZE_DATASET", request.requestId(), request.conversationId(),
+                true, List.of(datasetId), outcome.message(), datasetData(outcome.dataset()), "", "", false, "");
+    }
+
+    private List<CandidateRecord> candidatesFromRecordsArg(ToolRequest request) {
         List<CandidateRecord> candidates = new ArrayList<>();
         for (Object raw : listArg(request, "records")) {
             if (raw instanceof Map<?, ?> map) {
@@ -138,24 +238,7 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                         textField(map, "sourceAttachmentId"), intField(map, "sourceRow")));
             }
         }
-        CreateOutcome outcome = datasetService.createDataset(request.requestId(), sourceImageCount, sourceAttachmentIds, candidates);
-        if (!outcome.success()) {
-            // On STORE_DATASET_DUPLICATE_SOURCE, outcome.dataset() is the pre-existing dataset the
-            // model should use instead - surface its data so the model can act on it directly
-            // (GET_DATASET/VERIFY_DATASET) rather than only reading the id out of free text.
-            Map<String, Object> data = outcome.dataset() == null ? Map.of() : datasetData(outcome.dataset());
-            String errorCode = outcome.errorCode().isBlank() ? "STORE_DATASET_PROVENANCE_INVALID" : outcome.errorCode();
-            return new ToolResult(false, TOOL_NAME, "CREATE_DATASET", request.requestId(), request.conversationId(),
-                    false, List.of(), outcome.message(), data, errorCode, outcome.message(), false, "");
-        }
-        Map<String, Object> data = datasetData(outcome.dataset());
-        data.put("acceptedCount", outcome.acceptedCount());
-        data.put("duplicateCount", outcome.duplicateCount());
-        data.put("rejected", outcome.rejected().stream()
-                .map(candidate -> Map.<String, Object>of("index", candidate.index(), "reason", candidate.reason()))
-                .toList());
-        return new ToolResult(true, TOOL_NAME, "CREATE_DATASET", request.requestId(), request.conversationId(),
-                true, List.of(outcome.dataset().datasetId()), outcome.message(), data, "", "", false, "");
+        return candidates;
     }
 
     private ToolResult verify(ToolRequest request) {

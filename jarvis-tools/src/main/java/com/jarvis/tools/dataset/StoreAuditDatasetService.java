@@ -100,7 +100,12 @@ public class StoreAuditDatasetService {
     }
 
     /**
-     * Creates and locks a new canonical dataset from extracted candidate records.
+     * Creates and locks a new canonical dataset from extracted candidate records, in one call.
+     * Best for a modest record count; for a large extraction (roughly more than ~10 records) a
+     * single native tool call asking the model to populate one huge array argument has been
+     * observed to fail outright (the model emits an empty {@code records} array despite intending
+     * to fill it) - {@link #startDataset}/{@link #appendRecords}/{@link #finalizeDataset} let the
+     * model build the same dataset across several smaller calls instead.
      *
      * @param requestId pipeline request id
      * @param sourceImageCount number of image attachments read during extraction
@@ -113,6 +118,39 @@ public class StoreAuditDatasetService {
             int sourceImageCount,
             List<String> declaredAttachmentIds,
             List<CandidateRecord> candidates
+    ) {
+        return buildDataset(requestId, sourceImageCount, declaredAttachmentIds, candidates, DatasetStage.EXTRACTED);
+    }
+
+    /**
+     * Starts a new incremental dataset build with the first batch of extracted candidate records,
+     * left in {@link DatasetStage#BUILDING} (record count not yet locked). Use {@link
+     * #appendRecords} for further batches and {@link #finalizeDataset} once extraction is
+     * complete. Subject to the same provenance and duplicate-source checks as {@link
+     * #createDataset} - starting a second incremental build (or a one-shot {@link #createDataset})
+     * for the same conversation and source attachments is rejected the same way.
+     *
+     * @param requestId pipeline request id
+     * @param sourceImageCount number of image attachments read during extraction
+     * @param declaredAttachmentIds attachment ids the model claims it extracted records from
+     * @param candidates first batch of extracted candidate records
+     * @return outcome describing what was accepted, rejected, or deduplicated
+     */
+    public CreateOutcome startDataset(
+            String requestId,
+            int sourceImageCount,
+            List<String> declaredAttachmentIds,
+            List<CandidateRecord> candidates
+    ) {
+        return buildDataset(requestId, sourceImageCount, declaredAttachmentIds, candidates, DatasetStage.BUILDING);
+    }
+
+    private CreateOutcome buildDataset(
+            String requestId,
+            int sourceImageCount,
+            List<String> declaredAttachmentIds,
+            List<CandidateRecord> candidates,
+            DatasetStage targetStage
     ) {
         sweepExpired();
         List<String> declared = declaredAttachmentIds == null ? List.of() : List.copyOf(declaredAttachmentIds);
@@ -190,13 +228,17 @@ public class StoreAuditDatasetService {
                     candidate.sourceRow(), VerificationStatus.UNVERIFIED, GeolocationStatus.PENDING, null, null));
         }
 
+        boolean building = targetStage == DatasetStage.BUILDING;
         if (accepted.isEmpty()) {
             String message = "Dataset creation rejected: the resulting record count would be 0 ("
                     + rejected.size() + " candidate(s) rejected for missing/invalid provenance, "
                     + duplicateCount + " duplicate(s) skipped). Re-read the currently available images/attachments "
-                    + "or user-typed list and call CREATE_DATASET again with the full, valid extracted record list.";
-            LOGGER.warn("[STORE_AUDIT] requestId={} extraction rejected: CREATE_DATASET would produce an empty dataset "
-                    + "(submitted={}, rejected={}, duplicates={})", requestId, source.size(), rejected.size(), duplicateCount);
+                    + "or user-typed list and call " + (building ? "START_DATASET" : "CREATE_DATASET")
+                    + " again with at least one valid record"
+                    + (building ? "" : " - or, for a large extraction, use START_DATASET with a smaller first batch") + ".";
+            LOGGER.warn("[STORE_AUDIT] requestId={} extraction rejected: {} would produce an empty dataset "
+                            + "(submitted={}, rejected={}, duplicates={})",
+                    requestId, building ? "START_DATASET" : "CREATE_DATASET", source.size(), rejected.size(), duplicateCount);
             return new CreateOutcome(false, null, 0, duplicateCount, rejected, message, "EMPTY_DATASET");
         }
 
@@ -204,12 +246,12 @@ public class StoreAuditDatasetService {
         String conversationId = conversationIdForRequest;
         StoreAuditDataset dataset = new StoreAuditDataset(
                 UUID.randomUUID().toString(), requestId, conversationId, declared, sourceImageCount,
-                accepted, accepted.size(), DatasetStage.EXTRACTED, List.of(), now, now.plus(DATASET_TTL));
+                accepted, accepted.size(), targetStage, List.of(), now, now.plus(DATASET_TTL));
         datasets.put(dataset.datasetId(), dataset);
 
-        LOGGER.info("[STORE_AUDIT] requestId={} extraction pass1 count={} rejected={} duplicates={}",
-                requestId, accepted.size(), rejected.size(), duplicateCount);
-        cognitiveEventBus.publish(CognitiveEventType.WORKFLOW_DATASET_CREATED, "EXTRACTED",
+        LOGGER.info("[STORE_AUDIT] requestId={} extraction pass1 count={} rejected={} duplicates={} stage={}",
+                requestId, accepted.size(), rejected.size(), duplicateCount, targetStage);
+        cognitiveEventBus.publish(CognitiveEventType.WORKFLOW_DATASET_CREATED, targetStage.name(),
                 "Store Audit dataset created", dataset.datasetId(), Map.of(
                         "datasetId", dataset.datasetId(),
                         "requestId", requestId,
@@ -219,10 +261,151 @@ public class StoreAuditDatasetService {
                         "sourceImageCount", sourceImageCount
                 ));
 
-        String message = "Dataset created with " + accepted.size() + " store record(s)."
+        String message = (building
+                ? "Dataset started with " + accepted.size() + " store record(s) so far (not yet finalized)."
+                : "Dataset created with " + accepted.size() + " store record(s).")
+                + (rejected.isEmpty() ? "" : " " + rejected.size() + " candidate(s) rejected for missing/invalid provenance.")
+                + (duplicateCount > 0 ? " " + duplicateCount + " duplicate(s) skipped." : "")
+                + (building ? " Call storeDataset.APPEND_RECORDS with the next batch, then storeDataset.FINALIZE_DATASET "
+                + "once every record has been submitted." : "");
+        return new CreateOutcome(true, dataset, accepted.size(), duplicateCount, rejected, message, "");
+    }
+
+    /**
+     * Appends another batch of extracted candidate records to a dataset still in {@link
+     * DatasetStage#BUILDING} - the record count is not locked until {@link #finalizeDataset}.
+     * Subject to the same per-record provenance checks as {@link #createDataset}, using the source
+     * attachment ids declared when the dataset was started; duplicates are detected across every
+     * batch appended so far, not just within this one.
+     *
+     * @param datasetId dataset id, from {@link #startDataset}
+     * @param candidates next batch of extracted candidate records
+     * @return outcome describing what was accepted, rejected, or deduplicated
+     */
+    public AppendOutcome appendRecords(String datasetId, List<CandidateRecord> candidates) {
+        sweepExpired();
+        StoreAuditDataset dataset = datasets.get(datasetId);
+        if (dataset == null) {
+            return new AppendOutcome(false, null, 0, 0, List.of(), "Unknown or expired dataset id: " + datasetId,
+                    "STORE_DATASET_NOT_FOUND");
+        }
+        if (dataset.stage() != DatasetStage.BUILDING) {
+            String message = "Dataset " + datasetId + " is already finalized (stage=" + dataset.stage() + ") - "
+                    + "APPEND_RECORDS only works on a dataset still being built. Start a new dataset with "
+                    + "storeDataset.START_DATASET if this is genuinely new source material, or use "
+                    + "storeDataset.VERIFY_DATASET to correct an already-finalized one.";
+            return new AppendOutcome(false, dataset, 0, 0, List.of(), message, "STORE_DATASET_NOT_BUILDING");
+        }
+
+        List<CandidateRecord> source = candidates == null ? List.of() : candidates;
+        List<String> declared = dataset.sourceAttachmentIds();
+        Set<String> declaredSet = new HashSet<>(declared);
+        Set<String> seenSourceKeys = new LinkedHashSet<>();
+        for (StoreRecord existing : dataset.stores()) {
+            seenSourceKeys.add(existing.sourceAttachmentId() + "::" + existing.sourceRow());
+        }
+        List<StoreRecord> accepted = new ArrayList<>();
+        List<RejectedCandidate> rejected = new ArrayList<>();
+        int duplicateCount = 0;
+        int sequence = dataset.stores().size();
+
+        for (int index = 0; index < source.size(); index++) {
+            CandidateRecord candidate = source.get(index);
+            String fullAddress = safe(candidate.fullAddress());
+            if (fullAddress.isBlank()) {
+                rejected.add(new RejectedCandidate(index, "Missing fullAddress"));
+                continue;
+            }
+            String sourceAttachmentId = safe(candidate.sourceAttachmentId());
+            if (!declared.isEmpty()) {
+                if (sourceAttachmentId.isBlank() || !declaredSet.contains(sourceAttachmentId)) {
+                    rejected.add(new RejectedCandidate(index,
+                            "Missing or invalid source provenance - sourceAttachmentId must be one of the dataset's "
+                                    + "declared current-message attachment ids"));
+                    continue;
+                }
+            }
+            String dedupeKey = sourceAttachmentId + "::" + candidate.sourceRow();
+            if (!seenSourceKeys.add(dedupeKey)) {
+                duplicateCount++;
+                continue;
+            }
+            sequence++;
+            accepted.add(new StoreRecord(
+                    recordId(sequence), safe(candidate.network()), safe(candidate.city()), safe(candidate.street()),
+                    safe(candidate.buildingNumber()), safe(candidate.postalCode()), fullAddress, sourceAttachmentId,
+                    candidate.sourceRow(), VerificationStatus.UNVERIFIED, GeolocationStatus.PENDING, null, null));
+        }
+
+        if (accepted.isEmpty()) {
+            String message = "Append rejected: no valid new records in this batch (" + rejected.size()
+                    + " candidate(s) rejected for missing/invalid provenance, " + duplicateCount + " already in the "
+                    + "dataset). Supply at least one new, valid record, or call storeDataset.FINALIZE_DATASET if "
+                    + "every record has already been submitted.";
+            return new AppendOutcome(false, dataset, 0, duplicateCount, rejected, message, "EMPTY_APPEND");
+        }
+
+        List<StoreRecord> updatedStores = new ArrayList<>(dataset.stores());
+        updatedStores.addAll(accepted);
+        StoreAuditDataset updated = dataset.withAppendedStores(updatedStores);
+        datasets.put(datasetId, updated);
+
+        LOGGER.info("[STORE_AUDIT] requestId={} datasetId={} append accepted={} rejected={} duplicates={} totalNow={}",
+                dataset.requestId(), datasetId, accepted.size(), rejected.size(), duplicateCount, updated.stores().size());
+        cognitiveEventBus.publish(CognitiveEventType.WORKFLOW_DATASET_UPDATED, "BUILDING",
+                "Store Audit dataset records appended", datasetId, Map.of(
+                        "datasetId", datasetId,
+                        "requestId", dataset.requestId(),
+                        "appended", accepted.size(),
+                        "count", updated.stores().size()
+                ));
+
+        String message = "Appended " + accepted.size() + " record(s); dataset now has " + updated.stores().size()
+                + " record(s) total (not yet finalized)."
                 + (rejected.isEmpty() ? "" : " " + rejected.size() + " candidate(s) rejected for missing/invalid provenance.")
                 + (duplicateCount > 0 ? " " + duplicateCount + " duplicate(s) skipped." : "");
-        return new CreateOutcome(true, dataset, accepted.size(), duplicateCount, rejected, message, "");
+        return new AppendOutcome(true, updated, accepted.size(), duplicateCount, rejected, message, "");
+    }
+
+    /**
+     * Locks the record count of a dataset still in {@link DatasetStage#BUILDING}, advancing it to
+     * {@link DatasetStage#EXTRACTED} - from this point on it behaves exactly like a dataset created
+     * in one call via {@link #createDataset}. Rejects finalizing an empty dataset (nothing was ever
+     * successfully appended) the same way {@link #createDataset} rejects an empty submission.
+     * Calling this again on an already-finalized dataset is a safe no-op, not an error.
+     *
+     * @param datasetId dataset id
+     * @return outcome describing the finalized dataset, or why it could not be finalized
+     */
+    public FinalizeOutcome finalizeDataset(String datasetId) {
+        sweepExpired();
+        StoreAuditDataset dataset = datasets.get(datasetId);
+        if (dataset == null) {
+            return new FinalizeOutcome(false, null, "Unknown or expired dataset id: " + datasetId, "STORE_DATASET_NOT_FOUND");
+        }
+        if (dataset.stage() != DatasetStage.BUILDING) {
+            return new FinalizeOutcome(true, dataset,
+                    "Dataset " + datasetId + " was already finalized (stage=" + dataset.stage() + ", "
+                            + dataset.stores().size() + " record(s)).", "");
+        }
+        if (dataset.stores().isEmpty()) {
+            String message = "Finalize rejected: dataset has 0 records. Call storeDataset.APPEND_RECORDS with at "
+                    + "least one valid record before finalizing.";
+            LOGGER.warn("[STORE_AUDIT] requestId={} datasetId={} finalize rejected: 0 records", dataset.requestId(), datasetId);
+            return new FinalizeOutcome(false, dataset, message, "EMPTY_DATASET");
+        }
+        StoreAuditDataset finalized = dataset.withStage(DatasetStage.EXTRACTED);
+        datasets.put(datasetId, finalized);
+        LOGGER.info("[STORE_AUDIT] requestId={} datasetId={} finalized count={}",
+                dataset.requestId(), datasetId, finalized.stores().size());
+        cognitiveEventBus.publish(CognitiveEventType.WORKFLOW_DATASET_CREATED, "EXTRACTED",
+                "Store Audit dataset finalized", datasetId, Map.of(
+                        "datasetId", datasetId,
+                        "requestId", dataset.requestId(),
+                        "count", finalized.stores().size()
+                ));
+        String message = "Dataset finalized with " + finalized.stores().size() + " record(s). Record count is now locked.";
+        return new FinalizeOutcome(true, finalized, message, "");
     }
 
     /**
@@ -240,6 +423,11 @@ public class StoreAuditDatasetService {
         StoreAuditDataset dataset = datasets.get(datasetId);
         if (dataset == null) {
             return new VerifyOutcome(false, null, false, List.of(), "Unknown or expired dataset id: " + datasetId);
+        }
+        if (dataset.stage() == DatasetStage.BUILDING) {
+            return new VerifyOutcome(false, dataset, false, List.of(),
+                    "Dataset " + datasetId + " is still being built (stage=BUILDING, " + dataset.stores().size()
+                            + " record(s) so far). Call storeDataset.FINALIZE_DATASET before verifying it.");
         }
         List<VerificationEntry> entries = verifications == null ? List.of() : verifications;
         Map<String, StoreRecord> byId = new LinkedHashMap<>();
@@ -340,6 +528,11 @@ public class StoreAuditDatasetService {
         if (dataset == null) {
             return new GeolocationUpdateOutcome(false, null, 0, List.of(), "Unknown or expired dataset id: " + datasetId);
         }
+        if (dataset.stage() == DatasetStage.BUILDING) {
+            return new GeolocationUpdateOutcome(false, dataset, 0, List.of(),
+                    "Dataset " + datasetId + " is still being built (stage=BUILDING, " + dataset.stores().size()
+                            + " record(s) so far). Call storeDataset.FINALIZE_DATASET before geocoding it.");
+        }
         List<GeolocationEntry> entries = results == null ? List.of() : results;
         List<StoreRecord> updated = new ArrayList<>(dataset.stores());
         List<String> unknownIds = new ArrayList<>();
@@ -402,6 +595,11 @@ public class StoreAuditDatasetService {
         if (dataset == null) {
             return new ScheduleSubmitOutcome(false, null, false, List.of(), List.of(), List.of(),
                     "Unknown or expired dataset id: " + datasetId);
+        }
+        if (dataset.stage() == DatasetStage.BUILDING) {
+            return new ScheduleSubmitOutcome(false, dataset, false, List.of(), List.of(), List.of(),
+                    "Dataset " + datasetId + " is still being built (stage=BUILDING, " + dataset.stores().size()
+                            + " record(s) so far). Call storeDataset.FINALIZE_DATASET before submitting a schedule.");
         }
         List<ScheduleDay> proposedDays = days == null ? List.of() : days;
         Set<String> knownIds = new LinkedHashSet<>();

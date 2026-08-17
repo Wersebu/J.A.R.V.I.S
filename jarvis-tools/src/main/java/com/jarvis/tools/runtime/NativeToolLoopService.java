@@ -715,13 +715,19 @@ public class NativeToolLoopService {
                 tool that operates on those records (e.g. location__geocode). Do this even if it feels faster to
                 geocode the raw address list directly - a batch geocode/location call is never a substitute for
                 storeDataset, because nothing then locks the record count or checks it for drift.
-                Once storeDataset.CREATE_DATASET has been called in this loop, or an existing dataset id is given
-                to you below, that dataset is now the single source of truth for those records: call
-                storeDataset.GET_DATASET to see the exact current list instead of re-reading the original
-                images/documents and re-deriving a list from scratch again. Never silently discard a dataset you
-                already created and produce a second, different list later in the same loop - if you are unsure
-                the extraction was complete or correct, use storeDataset.VERIFY_DATASET to correct it in place,
-                never a fresh CREATE_DATASET call for the same source material.
+                For a LARGE extraction (roughly more than 10 records), submitting the entire list as one
+                CREATE_DATASET call's argument can fail outright - the array is too big to reliably populate in
+                one native tool call. In that case call storeDataset.START_DATASET with a first small batch
+                (e.g. 5-8 records), then storeDataset.APPEND_RECORDS one or more times with the rest in similarly
+                small batches, then storeDataset.FINALIZE_DATASET once every record has been submitted - this
+                produces the exact same locked dataset as CREATE_DATASET, just built incrementally.
+                Once storeDataset.CREATE_DATASET/FINALIZE_DATASET has locked a dataset in this loop, or an
+                existing dataset id is given to you below, that dataset is now the single source of truth for
+                those records: call storeDataset.GET_DATASET to see the exact current list instead of re-reading
+                the original images/documents and re-deriving a list from scratch again. Never silently discard a
+                dataset you already created and produce a second, different list later in the same loop - if you
+                are unsure the extraction was complete or correct, use storeDataset.VERIFY_DATASET to correct it
+                in place, never a fresh CREATE_DATASET/START_DATASET call for the same source material.
 
                 Freshness: %s
                 User request: %s
@@ -1013,7 +1019,10 @@ public class NativeToolLoopService {
     }
 
     private boolean isCreateDataset(ToolAction action) {
-        return "storedataset".equalsIgnoreCase(action.tool()) && "CREATE_DATASET".equalsIgnoreCase(action.operation());
+        // START_DATASET counts too: once an incremental build has genuinely begun, a dataset
+        // exists for the raw-geocode guard's purposes even before FINALIZE_DATASET locks it.
+        return "storedataset".equalsIgnoreCase(action.tool())
+                && ("CREATE_DATASET".equalsIgnoreCase(action.operation()) || "START_DATASET".equalsIgnoreCase(action.operation()));
     }
 
     /**

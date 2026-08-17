@@ -52,6 +52,8 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
 
     private String nextStepGuidance(DatasetStage stage) {
         return switch (stage) {
+            case BUILDING -> "Call storeDataset.APPEND_RECORDS with the remaining records, then "
+                    + "storeDataset.FINALIZE_DATASET once every record has been submitted.";
             case EXTRACTED -> "Call storeDataset.VERIFY_DATASET to lock verification, then "
                     + "location.GEOCODE_DATASET, then storeDataset.SUBMIT_SCHEDULE.";
             case LOCKED -> "Call location.GEOCODE_DATASET for the locked records, then storeDataset.SUBMIT_SCHEDULE.";
