@@ -418,6 +418,12 @@ public class ToolCallingStage implements PipelineStage {
                 + "\nNever answer with internal tool status text such as \"Web search finished\", \"Web page read finished\", or \"Tool finished\"."
                 + "\nFor READ_WEB_PAGE observations, extract the user-facing answer from the page title/content/data, not from the tool status message."
                 + "\nDo not invent, rewrite, or append source URLs. Use only URLs present in tool observations."
+                + "\nIf any GEOCODE/GEOCODE_DATASET observation reported an address as ambiguous, not confidently "
+                + "resolved, or not found, name that exact address in the answer and say it needs the user's "
+                + "confirmation - never silently pick one of the candidates and present it as settled."
+                + "\nIf a storeDataset was used, state the exact record count from the dataset (e.g. \"23/23 "
+                + "sklepow\") and explicitly name any record that ended up unresolved, unscheduled, or excluded - "
+                + "never present a schedule as complete without checking it against the dataset's real count."
                 + "\nKeep the answer concise, natural, and in the user's language."
                 + "\nReturn plain text only."
                 + "\n\nUser request:\n" + context.request().message()

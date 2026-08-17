@@ -124,6 +124,8 @@ public class NativeToolLoopService {
         Set<String> callFingerprints = new LinkedHashSet<>();
         Map<String, Integer> operationRepeatCounts = new LinkedHashMap<>();
         Optional<StoreAuditDataset> existingDataset = datasetService.findLatestForConversation(request.conversationId());
+        boolean datasetAvailable = existingDataset.isPresent();
+        int rawGeocodeAddressCount = 0;
         messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions, existingDataset)));
         messages.add(ModelMessage.user(request.userMessage(), request.images()));
 
@@ -197,6 +199,23 @@ public class NativeToolLoopService {
                                         "tool", action.tool(), "operation", action.operation(), "repeatCount", repeatCount));
                         continue;
                     }
+                    if (!datasetAvailable && isRawGeocode(action)) {
+                        int addressesInCall = geocodeAddressCount(action);
+                        int projectedTotal = rawGeocodeAddressCount + addressesInCall;
+                        if (projectedTotal > RAW_GEOCODE_ADDRESS_LIMIT) {
+                            ToolResult blocked = rawGeocodeLimitResult(request, action, projectedTotal);
+                            results.add(blocked);
+                            steps.add(new ToolRuntimeStep(step, "RAW_GEOCODE_WITHOUT_DATASET_BLOCKED", action.tool(), action.operation(), "BLOCKED", blocked));
+                            messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(blocked)));
+                            publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "RAW_GEOCODE_WITHOUT_DATASET_BLOCKED",
+                                    "Raw batch geocoding blocked without a storeDataset", null, step, Map.of(
+                                            "tool", action.tool(), "operation", action.operation(), "projectedTotal", projectedTotal));
+                            LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} step={} blocked raw location.GEOCODE at {} cumulative addresses without a storeDataset",
+                                    request.requestId(), step, projectedTotal);
+                            continue;
+                        }
+                        rawGeocodeAddressCount = projectedTotal;
+                    }
                     if ("web".equalsIgnoreCase(action.tool())) {
                         LOGGER.info("[WEB_DECISION] requestId={} requestedBy=MODEL tool={} mode={}",
                                 request.requestId(), action.tool(), action.operation());
@@ -214,6 +233,9 @@ public class NativeToolLoopService {
                     ToolResult result = executeAction(request, action, step);
                     result = enrichIfNeeded(request, action, result, step);
                     logDatasetContinuity(request, action, datasetStoresBeforeCall);
+                    if (result.success() && isCreateDataset(action)) {
+                        datasetAvailable = true;
+                    }
                     // Only the SEARCH_MARKETPLACE call itself is marketplace evidence - a collector
                     // existing elsewhere in the loop must never taint an unrelated result (e.g. a
                     // later SEARCH_WEB call for geocoding) with marketplaceResearch=true, or Core
@@ -876,6 +898,51 @@ public class NativeToolLoopService {
         return new ToolResult(false, toolName(call), operationName(call), request.requestId(), request.conversationId(),
                 false, List.of(), "Invalid native tool call", Map.of("error", error == null ? "" : error),
                 "INVALID_TOOL_CALL", error == null ? "" : error, false, "");
+    }
+
+    /**
+     * Above this many cumulative addresses geocoded via plain {@code location.GEOCODE} in one loop
+     * without a {@code storeDataset} behind them, further raw geocode calls are blocked - see
+     * {@link #rawGeocodeLimitResult}. Small legitimate batches (e.g. "route through these 3-4
+     * stops") stay well under this; it exists for the case a model tries to geocode a large
+     * extracted list address-by-address instead of creating a dataset first, which leaves nothing
+     * checking whether the resulting "schedule" silently covers only a fraction of the real list.
+     */
+    private static final int RAW_GEOCODE_ADDRESS_LIMIT = 4;
+
+    private boolean isRawGeocode(ToolAction action) {
+        return "location".equalsIgnoreCase(action.tool()) && "GEOCODE".equalsIgnoreCase(action.operation());
+    }
+
+    private boolean isCreateDataset(ToolAction action) {
+        return "storedataset".equalsIgnoreCase(action.tool()) && "CREATE_DATASET".equalsIgnoreCase(action.operation());
+    }
+
+    private int geocodeAddressCount(ToolAction action) {
+        int count = 0;
+        Object single = action.arguments().get("query");
+        if (single != null && !String.valueOf(single).isBlank()) {
+            count++;
+        }
+        Object batch = action.arguments().get("queries");
+        if (batch instanceof List<?> list) {
+            count += list.size();
+        }
+        return count;
+    }
+
+    private ToolResult rawGeocodeLimitResult(ToolCallingRequest request, ToolAction action, int projectedTotal) {
+        return new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
+                false, List.of(), "Raw geocoding blocked without a storeDataset",
+                Map.of("reason", "RAW_GEOCODE_WITHOUT_DATASET_BLOCKED", "projectedTotal", projectedTotal,
+                        "limit", RAW_GEOCODE_ADDRESS_LIMIT),
+                "RAW_GEOCODE_WITHOUT_DATASET_BLOCKED",
+                "This would bring raw location.GEOCODE calls in this task to " + projectedTotal + " addresses "
+                        + "without a storeDataset behind them - nothing would then check whether the final "
+                        + "result actually covers every extracted record. Call storeDataset.CREATE_DATASET with "
+                        + "the FULL extracted record list first, then use location.GEOCODE_DATASET on that "
+                        + "locked dataset instead of geocoding addresses one by one.",
+                false, "");
     }
 
     private String fallbackAnswer(List<ToolResult> results, List<String> errors) {
