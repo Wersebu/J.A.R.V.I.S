@@ -1,200 +1,332 @@
-# STORE AUDIT SCHEDULE WORKFLOW
+# J.A.R.V.I.S. — PROCEDURA PLANOWANIA GRAFIKU AUDYTÓW SKLEPÓW
 
-## 0. STATUS OF THIS DOCUMENT
 
-This document is an INSTRUCTION SOURCE. It defines the PROCEDURE for
-building a store-audit visit schedule.
+## 1. CEL
 
-It is NEVER a DATA SOURCE. Any address, store name or record shown in this
-document as an example is illustrative only, clearly marked as an example,
-and MUST NOT be treated as a store the user actually wants visited.
+Ta procedura określa sposób tworzenia miesięcznego grafiku wizyt/audytów
+w sklepach na podstawie listy lokalizacji przekazanej przez użytkownika.
 
-The user's actual data always comes from the current message's attachments
-(screenshots, photos, tables) or an explicit typed list - never from this
-file.
+Główne cele planowania, w kolejności ważności:
 
----
+1. Wszystkie przekazane lokalizacje muszą zostać odwiedzone dokładnie raz
+   w ramach planowanego miesiąca.
+2. Minimalizować liczbę dni potrzebnych do wykonania wszystkich wizyt.
+3. Minimalizować łączną liczbę przejechanych kilometrów.
+4. Unikać ponownych wyjazdów do tego samego odległego regionu.
+5. Grupować sklepy przede wszystkim według rzeczywistego położenia
+   geograficznego i trasy, a nie tylko nazwy miasta, powiatu lub kodu pocztowego.
+6. Nie przekraczać rozsądnego dziennego obciążenia pracą.
+7. W przypadkach granicznych zapytać użytkownika o decyzję zamiast
+   automatycznie tworzyć nieefektywny grafik.
 
-## 1. WORKFLOW STAGES
 
-Follow these stages in order. Do not skip a stage. Do not guess which
-stage you are in - the `storeDataset` tool's responses always tell you the
-dataset's current stage (`EXTRACTED`, `LOCKED`, `GEOLOCATED`), so check
-`storeDataset.GET_DATASET` if you are unsure instead of assuming.
+## 2. FORMAT DANYCH WEJŚCIOWYCH
 
-```
-READ_INPUT        - read every relevant attachment in full
-EXTRACT           - build the record list, submit via CREATE_DATASET
-VERIFY            - second pass: verify the locked list, submit via VERIFY_DATASET
-GEOLOCATE         - resolve coordinates via GEOCODE_DATASET, by record id
-RECHECK_FAILED    - retry only the records that failed geolocation
-OPTIMIZE          - group/order stores using the geolocated coordinates
-PRELIMINARY       - present the preliminary schedule table to the user
-WAIT_USER_APPROVAL
-```
+Użytkownik może przekazać lokalizacje jako:
 
----
+- tekst,
+- listę,
+- tabelę,
+- screenshot tabeli,
+- zdjęcie tabeli,
+- kilka obrazów,
+- kombinację powyższych.
 
-## 2. READ_INPUT
+Lista może zawierać sklepy różnych sieci, w szczególności:
 
-Read the ENTIRE content of every attachment relevant to this task before
-extracting anything. Do not start extraction after reading only part of a
-table or only one of several images.
+- Biedronka,
+- Stokrotka,
+- Żabka.
 
-If several screenshots/images are supplied, treat them together as parts
-of ONE dataset unless the user explicitly says otherwise.
+Każdy sklep należy traktować jako osobną lokalizację.
 
----
 
-## 3. EXTRACT
+## 3. ETAP 1 — ODCZYTANIE I NORMALIZACJA DANYCH
 
-For every visible store row, record:
+Najpierw odczytaj CAŁY materiał wejściowy.
 
-* network (e.g. Biedronka, Stokrotka, Żabka),
-* city,
-* street,
-* building number,
-* postal code,
-* full address (as one string),
-* the id of the attachment it came from,
-* its row/position within that attachment.
+Nie rozpoczynaj planowania trasy po odczytaniu tylko części tabeli.
 
-ONE VISIBLE STORE ROW = ONE RECORD. Never merge two rows into one record
-and never split one row into two records.
+Dla każdego sklepu przygotuj osobny rekord zawierający, jeśli dane są dostępne:
 
-Do not omit a row because it looks difficult or uncertain - extract it and
-let verification/geolocation flag it if it truly cannot be resolved.
+- sieć,
+- miejscowość,
+- ulicę,
+- numer budynku,
+- kod pocztowy,
+- pełny adres.
 
-Do not invent a row that is not visible.
+Przykład:
 
-Once extraction is complete, submit the full list in a single
-`storeDataset.CREATE_DATASET` call, with `sourceAttachmentIds` listing every
-attachment id you read from and `sourceImageCount` set to how many image
-attachments you read. Every record's `sourceAttachmentId` must be one of
-those declared ids - a record without a valid one is rejected by Core.
+1.
+Sieć: Biedronka
+Miejscowość: Garwolin
+Ulica: Korczaka 7
+Kod pocztowy: 08-400
+Pełny adres: Korczaka 7, 08-400 Garwolin
 
-This call locks the canonical record count. From this point on, the
-dataset's size does not change on its own.
+2.
+Sieć: Biedronka
+Miejscowość: Garwolin
+Ulica: Targowa 1
+Kod pocztowy: 08-400
+Pełny adres: Targowa 1, 08-400 Garwolin
 
-**Example of the expected shape (illustrative only - not real data):**
+Nie pomijaj lokalizacji tylko dlatego, że kilka sklepów znajduje się
+w tej samej miejscowości.
 
-```
-network: "Biedronka"
-city: "Miasto Testowe"
-street: "Ulica Testowa"
-buildingNumber: "1"
-postalCode: "00-001"
-fullAddress: "Ulica Testowa 1, 00-001 Miasto Testowe"
-sourceAttachmentId: "<the real attachment id you read this from>"
-sourceRow: 1
-```
 
----
+## 4. ETAP 2 — WALIDACJA ODCZYTU
 
-## 4. VERIFY
+Przed geokodowaniem sprawdź:
 
-Perform a second visual pass over the same attachments, but this pass
-VERIFIES the already-locked dataset - it does not produce a new
-independent list.
+- czy wszystkie widoczne w materiale sklepy zostały odczytane,
+- czy nie powstały duplikaty,
+- czy miejscowość została przypisana do właściwej ulicy,
+- czy kod pocztowy został przypisany do właściwego sklepu,
+- czy sieć została poprawnie rozpoznana.
 
-For each record already in the dataset, confirm it matches the image, or
-report a correction (e.g. a misread postal code) tied to that exact
-record id via `storeDataset.VERIFY_DATASET`.
+Jeżeli fragment obrazu jest nieczytelny, nie zgaduj danych.
 
-Do not invent new records during verification. Do not omit existing
-records from your verification pass merely because you are re-checking a
-subset - Core keeps every record that is not explicitly reported as
-incorrect.
+Poproś użytkownika o doprecyzowanie tylko tych pozycji, których
+nie można wiarygodnie odczytać.
 
-If your second pass genuinely disagrees with the locked count (e.g. you
-now count a very different number of rows than what was locked), do not
-silently submit a mismatched list. Call `storeDataset.GET_DATASET` first,
-re-read the attachments against that exact list, and report specific
-corrections instead of a new count.
 
----
+## 5. ETAP 3 — GEOLOKALIZACJA
 
-## 5. GEOLOCATE
+Po przygotowaniu kompletnej listy użyj narzędzia GeoLocation
+dla wszystkich lokalizacji.
 
-Once the dataset is locked, call `location.GEOCODE_DATASET` with the
-dataset id and the list of `{recordId, fullAddress}` pairs - in as few
-batch calls as practical, not one call per store.
+Pobierz współrzędne geograficzne każdego sklepu.
 
-Core updates each record's coordinates and geolocation status in place.
-This can never add or remove a record from the dataset, regardless of how
-many results come back.
+Do geokodowania wykorzystuj możliwie pełny adres:
 
----
+ulica + numer + kod pocztowy + miejscowość.
 
-## 6. RECHECK_FAILED
+Nie opieraj lokalizacji wyłącznie na nazwie miejscowości.
 
-If some records come back unresolved/ambiguous, retry only those specific
-record ids (e.g. with a fuller address, or after asking the user for the
-missing detail). Do not resubmit the whole dataset and do not create a new
-record for a retried address - the same record id gets updated again.
+Każdy sklep musi posiadać wiarygodnie ustaloną lokalizację przed
+rozpoczęciem właściwej optymalizacji grafiku.
 
----
+Jeżeli GeoLocation zgłosi wynik niejednoznaczny lub niewiarygodny,
+nie zgaduj lokalizacji.
 
-## 7. OPTIMIZE
 
-Default starting point for every route, unless the user specifies another
-one: **Nowa Wola, 05-500, Polska**.
+## 6. PUNKT STARTOWY
 
-Approximate visit durations:
+Domyślnym i stałym punktem startowym wszystkich tras jest:
 
-* Biedronka: 90-120 minutes per location,
-* Stokrotka / Żabka / similar short audits: 5-10 minutes per location.
+Nowa Wola, 05-500, Polska
 
-Standard daily guideline (not a hard limit):
+Każdy dzień roboczy traktuj jako osobny wyjazd rozpoczynający się
+z tego punktu.
 
-* up to 4 Biedronka locations per day,
-* up to 7 short-audit locations per day.
+Przy obliczaniu opłacalności grupowania lokalizacji należy brać pod uwagę
+konieczność dojazdu z Nowej Woli.
 
-Minimize unnecessary return trips to the same distant region across
-multiple days - a small, deliberate excess over the daily guideline that
-avoids a second long trip is usually better than a strictly limit-abiding
-plan that requires driving back to the same area again. When the trade-off
-is genuinely borderline, generate the preliminary schedule anyway, mark
-the borderline day, explain the trade-off, and let the user decide - do
-not block the whole schedule on this decision.
+Szczególnie unikaj sytuacji, w której użytkownik jedzie dużą odległość
+do danego regionu, wykonuje część znajdujących się tam audytów,
+a następnie musi ponownie jechać w ten sam region innego dnia.
 
-Use `location.OPTIMIZE_ROUTE` (or `location.ROUTE_MATRIX` plus your own
-grouping) on the already-geolocated coordinates. This step only orders or
-groups the existing records - it can never create a new store.
 
----
+## 7. CZAS WIZYT
 
-## 8. PRELIMINARY
+Przyjmij następujące orientacyjne czasy:
 
-Present the result as a table Damian can review immediately:
+Biedronka:
+90–120 minut na lokalizację.
 
-| Dzień | Kolejność wizyt | Biedronka | Inne | Audyty | Trasa / dystans | Uwagi |
-|------|------------------|-----------|------|--------|-----------------|-------|
-| 1 | ... | 4 | 0 | ... | ... | ... |
-| 2 | ... | 3 | 2 | ... | ... | ... |
+Stokrotka:
+5–10 minut na lokalizację.
 
-After the table, mention only what materially helps evaluate the plan
-(borderline days, unresolved locations). Do not bury the table under a long
-description of how it was produced.
+Żabka:
+5–10 minut na lokalizację.
 
----
+Czas przejazdu pomiędzy lokalizacjami należy traktować oddzielnie.
 
-## 9. WAIT_USER_APPROVAL
 
-Only after the preliminary table is presented should you continue to a
-final/confirmed schedule or any external calendar action. Do not ask for
-confirmation before every intermediate stage above - reaching the
-preliminary table is the natural checkpoint.
+## 8. STANDARDOWE LIMITY DZIENNE
 
----
+Standardowy górny limit:
 
-## 10. WHAT NEVER HAPPENS IN THIS WORKFLOW
+Biedronka:
+4 lokalizacje dziennie.
 
-* GeoLocation never creates a new store record - it only updates existing
-  ones by id.
-* Route optimization never creates a new store record - it only orders the
-  records it is given.
-* A record without a valid current-message attachment id as its source is
-  never added to the dataset.
-* Examples shown in this document are never added to the dataset.
-* The dataset's record count never changes silently between stages.
+Pozostałe krótkie audyty, np. Żabka/Stokrotka:
+7 lokalizacji dziennie.
+
+Limity te są wytycznymi, a NIE bezwzględnymi ograniczeniami.
+
+
+## 9. GRUPOWANIE GEOGRAFICZNE
+
+Po uzyskaniu współrzędnych wszystkich punktów pogrupuj lokalizacje
+w logiczne klastry wyjazdowe.
+
+Grupowanie powinno uwzględniać przede wszystkim:
+
+- rzeczywiste współrzędne,
+- odległość od Nowej Woli,
+- odległości między sklepami,
+- naturalny kierunek przejazdu,
+- liczbę sklepów w danym regionie,
+- sieć sklepu i przewidywany czas audytu.
+
+Nie grupuj lokalizacji wyłącznie według granic administracyjnych.
+
+Sklep znajdujący się w innej miejscowości, ale kilka kilometrów od
+pozostałych punktów, może należeć do tego samego dnia.
+
+
+## 10. MINIMALIZACJA POWROTÓW
+
+To jedna z najważniejszych zasad procedury.
+
+Jeżeli odległy region zawiera liczbę sklepów nieznacznie przekraczającą
+standardowy limit dnia, NIE rozdzielaj automatycznie tego regionu.
+
+Przykład:
+
+W Garwolinie znajdują się 4 Biedronki.
+
+Kilka kilometrów dalej znajduje się piąta Biedronka.
+
+Standardowy limit wynosi 4 Biedronki.
+
+Nie twórz automatycznie:
+
+DZIEŃ 1:
+4 × Garwolin
+
+DZIEŃ 2:
+ponowny wyjazd ~70 km w ten sam region tylko dla jednej Biedronki.
+
+Taki plan może być znacznie mniej efektywny niż wykonanie 5 sklepów
+podczas jednego wyjazdu.
+
+
+## 11. PRZYPADKI GRANICZNE
+
+Jeżeli niewielkie przekroczenie standardowego limitu pozwala uniknąć
+długiego ponownego wyjazdu, przedstaw użytkownikowi wybór.
+
+Przykład:
+
+"Region Garwolin zawiera 5 Biedronek położonych blisko siebie.
+
+Standardowy limit to 4 Biedronki dziennie.
+
+Rozdzielenie ich spowoduje konieczność drugiego wyjazdu z Nowej Woli
+w ten sam region.
+
+Proponuję wykonanie wszystkich 5 podczas jednego dnia.
+
+Czy:
+A) ściskamy 5 sklepów w jeden dzień,
+B) rozbijamy region na dwa dni?"
+
+Nie podejmuj samodzielnie decyzji o znacznym przekroczeniu limitu.
+
+
+## 12. PRIORYTETY OPTYMALIZACJI
+
+Podczas tworzenia grafiku optymalizuj rozwiązanie według następującej
+kolejności:
+
+PRIORYTET 1:
+uniknięcie niepotrzebnych powrotów do odległych regionów,
+
+PRIORYTET 2:
+minimalizacja liczby dni wyjazdowych,
+
+PRIORYTET 3:
+minimalizacja całkowitego dystansu,
+
+PRIORYTET 4:
+rozsądne obciążenie każdego dnia,
+
+PRIORYTET 5:
+wygodna kolejność sklepów wewnątrz każdego dnia.
+
+
+## 13. PLAN WSTĘPNY
+
+Po przeprowadzeniu analizy NIE zapisuj od razu finalnego grafiku.
+
+Najpierw przedstaw użytkownikowi plan wstępny.
+
+Dla każdego dnia pokaż przynajmniej:
+
+DZIEŃ X
+
+Start:
+Nowa Wola 05-500
+
+Lokalizacje:
+1. [sieć] [adres]
+2. [sieć] [adres]
+3. [sieć] [adres]
+
+Liczba sklepów:
+X
+
+W tym:
+- Biedronka: X
+- Stokrotka: X
+- Żabka: X
+
+Szacowany czas audytów:
+X
+
+Szacowany dystans / czas przejazdu:
+jeżeli dostępne z narzędzi lokalizacyjnych.
+
+Powód takiego grupowania:
+krótkie wyjaśnienie.
+
+
+## 14. POTWIERDZENIE UŻYTKOWNIKA
+
+Po przedstawieniu planu wstępnego poczekaj na akceptację użytkownika.
+
+Użytkownik może:
+
+- zaakceptować plan,
+- zmienić konkretny dzień,
+- przenieść sklep,
+- połączyć dwa dni,
+- rozdzielić dzień,
+- zaakceptować przekroczenie limitu,
+- zażądać ponownej optymalizacji.
+
+Dopiero po zaakceptowaniu struktury grafiku przejdź do dalszych działań,
+np. tworzenia finalnego pliku lub późniejszego zapisu do kalendarza.
+
+
+## 15. ZASADY BEZPIECZEŃSTWA DANYCH
+
+Nigdy:
+
+- nie wymyślaj brakujących adresów,
+- nie wymyślaj współrzędnych,
+- nie zakładaj lokalizacji wyłącznie na podstawie nazwy miejscowości,
+- nie pomijaj sklepów w celu dopasowania grafiku do limitu,
+- nie dodawaj sklepów, których nie było w danych użytkownika,
+- nie uznawaj niepewnej geolokalizacji za potwierdzoną.
+
+Jeżeli czegoś nie można wiarygodnie ustalić, zgłoś problem użytkownikowi.
+
+
+## 16. GŁÓWNA ZASADA
+
+Grafik ma być praktyczny dla człowieka wykonującego audyty.
+
+Matematyczne przestrzeganie limitu 4 sklepów nie jest ważniejsze
+od uniknięcia bezsensownego dodatkowego przejazdu kilkudziesięciu
+kilometrów.
+
+Jednocześnie J.A.R.V.I.S. nie powinien samowolnie tworzyć ekstremalnie
+długiego dnia pracy.
+
+W sytuacjach granicznych:
+POLICZ -> PORÓWNAJ -> ZAPROPONUJ -> ZAPYTAJ UŻYTKOWNIKA.
