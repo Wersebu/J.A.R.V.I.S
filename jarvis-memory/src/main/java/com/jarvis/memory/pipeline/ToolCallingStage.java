@@ -618,6 +618,14 @@ public class ToolCallingStage implements PipelineStage {
             if (toolResult.requiresApproval()) {
                 return "Przygotowalem szkic zmiany. Czeka na zatwierdzenie.";
             }
+            // KnowledgeTool's "message" is always a generic operation-status label ("Document
+            // read", "Search finished", "Folder listed", ...), never real user-facing content -
+            // it must never be surfaced as if it were an actual answer. Other tools (web,
+            // location, storeDataset) put genuinely informative text in "message", so only they
+            // are eligible fallback candidates here.
+            if ("knowledge".equalsIgnoreCase(toolResult.tool())) {
+                continue;
+            }
             if (!toolResult.message().isBlank() && !isTechnicalToolMessage(toolResult.message())) {
                 return toolResult.message();
             }

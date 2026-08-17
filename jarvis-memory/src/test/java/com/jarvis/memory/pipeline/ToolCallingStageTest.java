@@ -135,6 +135,35 @@ class ToolCallingStageTest {
     }
 
     @Test
+    void fallbackToolAnswerNeverSurfacesAKnowledgeToolStatusLabelAsARealAnswer() throws Exception {
+        // Regression test: when the native tool loop ends without the model producing any real
+        // text (e.g. it goes silent after reading a document) and every tool result so far is a
+        // KnowledgeTool operation, the fallback must never pick up KnowledgeTool's generic
+        // operation-status "message" (e.g. "Document read", "Search finished") and present it to
+        // the user as if it were an actual answer.
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        ToolResult searchDocument = new ToolResult(true, "knowledge", "SEARCH_DOCUMENT", "request-1", "conversation-1",
+                false, List.of(), "Search finished", Map.of(), "", "", false, "");
+        ToolResult readDocument = new ToolResult(true, "knowledge", "READ_DOCUMENT", "request-1", "conversation-1",
+                false, List.of(), "Document read", Map.of("content", "..."), "", "", false, "");
+        // Blank finalAnswer simulates the native loop exiting via EMPTY_MODEL_RESPONSE_WITHOUT_TOOL_CALL.
+        ToolCallingResult loopResult = new ToolCallingResult(true, "", List.of(), List.of(searchDocument, readDocument));
+
+        ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("fallbackToolAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).isNotEqualTo("Document read");
+        assertThat(answer).isNotEqualTo("Search finished");
+        assertThat(answer).isEqualTo("Zakonczylem prace z narzedziami, ale model nie zwrocil tresci odpowiedzi.");
+    }
+
+    @Test
     void handleToolAnswerTokenUnwrapsAMarkdownFencedStructuredEnvelopeStreamedCharacterByCharacter() throws Exception {
         // Regression test: models sometimes wrap the FINAL_ANSWER JSON envelope in a ```json
         // fence despite being told to return raw JSON. Before this fix, the streaming detector
