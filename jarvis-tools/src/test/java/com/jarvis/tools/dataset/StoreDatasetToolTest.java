@@ -104,6 +104,41 @@ class StoreDatasetToolTest {
         assertThat(getResult.data().get("count")).isEqualTo(3);
     }
 
+    @Test
+    void submitScheduleAcceptsAValidGroupingAndRejectsAScheduleMissingAStore() {
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool tool = new StoreDatasetTool(service);
+
+        ToolResult created = tool.execute(new ToolRequest("storeDataset", "CREATE_DATASET", "conversation-1", "request-1",
+                "extraction", "", Map.of(
+                        "sourceImageCount", 1,
+                        "sourceAttachmentIds", List.of("att-1"),
+                        "records", List.of(
+                                Map.of("fullAddress", "A 1", "sourceAttachmentId", "att-1", "sourceRow", 1),
+                                Map.of("fullAddress", "A 2", "sourceAttachmentId", "att-1", "sourceRow", 2),
+                                Map.of("fullAddress", "A 3", "sourceAttachmentId", "att-1", "sourceRow", 3)
+                        )
+                )));
+        String datasetId = (String) created.data().get("datasetId");
+
+        ToolResult validSchedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
+                "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
+                        Map.of("day", 1, "storeIds", List.of("store-001", "store-002", "store-003"))
+                ))));
+        assertThat(validSchedule.success()).isTrue();
+        assertThat(validSchedule.data().get("stage")).isEqualTo("SCHEDULED");
+
+        ToolResult incompleteSchedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
+                "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
+                        Map.of("day", 1, "storeIds", List.of("store-001", "store-002"))
+                ))));
+        assertThat(incompleteSchedule.success()).isFalse();
+        assertThat(incompleteSchedule.errorCode()).isEqualTo("STORE_DATASET_INVARIANT_VIOLATION");
+        @SuppressWarnings("unchecked")
+        List<String> missing = (List<String>) incompleteSchedule.data().get("missingStoreIds");
+        assertThat(missing).containsExactly("store-003");
+    }
+
     private static final class NoopCognitiveEventBus implements CognitiveEventBus {
 
         @Override

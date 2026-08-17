@@ -2,7 +2,7 @@
 
 Jarvis (J.A.R.V.I.S. Core) is a long-term AI operating system backend foundation: a headless Spring Boot service that orchestrates local Ollama models behind a provider-independent AI contract, with brain routing, native tool calling, a Knowledge Workspace, web/marketplace/location tools, cognitive memory, and real-time streaming to a separate desktop client.
 
-Current version: **`2.8.2`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
+Current version: **`2.9.0`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
 
 ## Requirements
 
@@ -77,7 +77,7 @@ All configuration lives under the `jarvis:` root key in `jarvis-core/src/main/re
 
 ```yaml
 jarvis:
-  version: "2.8.2"
+  version: "2.9.0"
   ai:
     identity-file: file:config/jarvis.md
     context-window: 16384
@@ -165,7 +165,7 @@ Chat requests may attach images (resolved through the same temporary-workspace m
 Images attached to the *current* user message and documents persisted in the *Knowledge Workspace* are two structurally separate data sources, and the model is explicitly told so:
 
 - The current-message-attachments policy is injected into the main model's decision prompt only when the request actually has images (`MainModelIntegratedToolTrigger`), and the same rule is restated in the base identity prompt (`config/jarvis.md`): read attached images directly with your own vision; never ask a tool to fetch/load/analyze a current-message image; never use `KnowledgeTool` to locate one - it only searches persisted documents.
-- Images are only ever sent to the model on the single main-model decision call (`ModelExecutionStage`) - by design, they never travel into the native tool loop (`ModelMessage`/`AIProvider.toolChat` are text-only). This is intentional, not a limitation to work around: the model is instructed to extract whatever data a subsequent tool call needs (e.g. a list of addresses read off an attached table) and put that *extracted text* into the `TOOL_REQUEST` goal, which does reach the tool loop's system prompt (`Tool goal: ...`) - so no information is lost, without needing to resend image bytes on every loop iteration.
+- Images attached to the current message travel *with* the request into the native tool loop, not just the single main-model decision call: `ModelMessage` carries an `images` field (by reference to the same `ImageAttachment`s `ImageAttachmentStage` resolved once - never copied), `ToolCallingRequest`/`ToolCallingStage` forward `PipelineContext#images()` into it, and `NativeToolLoopService` attaches them to the loop's initial user turn. Because the tool loop's message list is append-only and resent in full on every turn, the images only need to be attached once - they are still present on that same user message after any number of tool calls, with no separate multimodal-context object and no re-encoding per turn. `OllamaProvider.toolChat` forwards them through Ollama's `/api/chat` per-message `images` field, the same transport the plain (non-tool) vision path already uses. This replaced an earlier design where images were deliberately dropped once the native tool loop started (the model was expected to extract everything it needed into the `TOOL_REQUEST` goal text) - that broke down for high-cardinality extraction (e.g. 23 store rows read off a table don't fit losslessly into a short goal string), so the model would ask the user to resend images it had already read seconds earlier. See [Store Audit Dataset](#store-audit-dataset) for how extracted records are kept as structured state instead of prompt text, which is the other half of the same fix.
 - **Defensive routing**: if the model still emits a `TOOL_REQUEST` whose goal reads as "fetch/retrieve/analyze the attached image" while the current message actually has images (`AttachmentRetrievalIntentDetector` - an action-word + attachment-noun match, not a fixed phrase list, so it generalizes across languages/wording without being tied to any one workflow), `ModelExecutionStage` does not hand that off to the tool loop. It re-asks the main model once, with a short internal corrective note appended to the prompt ("images are already in your multimodal context, do not use a tool to retrieve them"), and uses the corrected decision. This retry is capped at one attempt (`MAX_ATTACHMENT_ROUTING_RETRIES`) - if the model still gets it wrong, Core lets the request proceed rather than looping forever, relying on `KnowledgeTool`'s honest not-found reporting (see below) to keep things visible instead of silently retrying indefinitely. Diagnostics are logged under `[ATTACHMENT_ROUTING]` (attachment counts, retry attempts, recovery outcome - never image bytes/base64).
 - `KnowledgeTool` itself is unchanged and still the correct tool whenever the user is actually asking about persisted knowledge (e.g. "sprawdz w zapisanej wiedzy...") - this mechanism only concerns the images attached to the current message.
 
@@ -213,6 +213,19 @@ Every native tool is a Spring bean implementing `JarvisTool` (`getName`/`getDesc
 - **Redundant attachment-retrieval recovery**: a `TOOL_REQUEST` asking to fetch/analyze a current-message image never reaches the tool loop at all - see [Current-Message Attachments vs Knowledge Workspace](#current-message-attachments-vs-knowledge-workspace) for the one-retry recovery that happens one layer up, in `ModelExecutionStage`, before any tool is selected.
 
 `ToolIntent` (`jarvis-tools/.../runtime/ToolIntent.java`) is a lightweight, **advisory-only** classifier (`DefaultToolIntentDetector`) used purely to tune the call budget and freshness heuristics - it never narrows which tools the model is allowed to see or call.
+
+Diagnostics: `[AGENT_CONTEXT]` logs the multimodal/dataset state a tool loop starts with (image count, an existing dataset for the conversation if found, capability flags). `[AGENT_CONTEXT_CONTINUITY]` logs the canonical dataset's record count immediately before and after every `storeDataset` call, so a silent drift is visible in the logs even when nothing else fails.
+
+### Store Audit Dataset
+
+Multi-step extraction tasks (the motivating case: reading store lists off attached photos to build a monthly audit schedule) must never rely on the model re-deriving *how many* records exist from memory or from its own "thinking" text at every tool-loop turn - that is exactly how a genuine 23-record extraction has previously drifted to a different count several tool calls later. `StoreAuditDatasetService`/`StoreDatasetTool` (native tool `storeDataset`, `jarvis-tools/.../dataset/`) hold that count as actual application state instead:
+
+- **`CREATE_DATASET`** locks the extracted record list once, assigning stable ids (`store-001`, ...). Every record must carry the id of a real current-message attachment (`registerAttachments` cross-checks the model's declared source against attachments Core actually resolved) - a record without valid provenance is rejected, not silently accepted, and duplicate submissions for the same source row are deduplicated rather than growing the dataset.
+- **`VERIFY_DATASET`** submits a second visual-check pass by record id. A pass reporting a record count far from the locked size, or referencing an unknown id, is rejected outright (nothing is applied) rather than trusted - the same protection extends to `GEOLOCATE`-style updates (`GeolocationEntry`), which can only enrich existing records, never create or remove one.
+- **`SUBMIT_SCHEDULE`** validates a proposed day-by-day grouping against the locked dataset before it is ever presented as a final schedule: every record id must appear in exactly one day, exactly once - any missing, duplicated, or unknown/hallucinated id rejects the whole submission with the exact offending ids listed, logged as `[STORE_AUDIT_VALIDATION] datasetStores=... scheduledUniqueStores=... duplicates=... missing=... unknown=... valid=...`. This is what a schedule silently ending up with 22 or 24 stores instead of 23 is caught by.
+- **`GET_DATASET`** returns the current record list, verification/geolocation status, and any accepted schedule - the reference point every later tool call re-checks against instead of trusting memory of an earlier turn.
+
+The dataset is conversation-scoped, not just request-scoped (`StoreAuditDataset#conversationId`, 2-hour TTL with periodic sweep): `StoreAuditDatasetService#findLatestForConversation` lets a *later* chat turn ("polacz dzien 3 i 4") continue against the same canonical records without the user resending the original attachments - `NativeToolLoopService` looks this up at the start of every tool loop and, when found, tells the model the dataset id/stage/record count directly in its system prompt instead of leaving continuity to conversation-history text. Nothing here is written to the permanent Knowledge Workspace; it is working state for the current task, not long-term user knowledge.
 
 ### Web Search
 

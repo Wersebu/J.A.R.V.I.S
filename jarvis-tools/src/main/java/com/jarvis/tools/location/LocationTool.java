@@ -79,17 +79,22 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
                         "Resolves one or more free-text addresses, postal codes, or city names to geographic "
                                 + "coordinates (latitude/longitude). Use this for ANY task that needs coordinates or "
                                 + "needs to confirm a location exists - never use web search for this. Accepts either a "
-                                + "single \"query\" or a \"queries\" array to batch-resolve many addresses in one call "
-                                + "(preferred over calling this repeatedly for each address). Never used for finding "
-                                + "products, offers, or prices - use web.SEARCH_MARKETPLACE for that instead. Results are "
-                                + "validated against every address detail in the query (postal code especially) - a name "
-                                + "match alone is never enough. When a query can't be confidently pinned to one location "
-                                + "(e.g. same place name in multiple regions, no matching postal code among the candidates), "
-                                + "it comes back under \"ambiguousPoints\" with its candidates instead of a guessed coordinate - "
-                                + "ask the user to clarify rather than using an ambiguous result as-is.",
+                                + "single \"query\" or a \"queries\" array to batch-resolve many addresses in one call. "
+                                + "For more than a handful of addresses (e.g. many rows extracted from an image, document, "
+                                + "or list) do NOT pass them here directly - first call storeDataset.CREATE_DATASET with "
+                                + "the full extracted list, then use GEOCODE_DATASET on that locked dataset instead. GEOCODE "
+                                + "with a raw \"queries\" batch never checks record count or provenance, so an extraction "
+                                + "geocoded this way can silently drift in size with nothing catching it; GEOCODE_DATASET "
+                                + "cannot. Never used for finding products, offers, or prices - use web.SEARCH_MARKETPLACE "
+                                + "for that instead. Results are validated against every address detail in the query "
+                                + "(postal code especially) - a name match alone is never enough. When a query can't be "
+                                + "confidently pinned to one location (e.g. same place name in multiple regions, no "
+                                + "matching postal code among the candidates), it comes back under \"ambiguousPoints\" with "
+                                + "its candidates instead of a guessed coordinate - ask the user to clarify rather than "
+                                + "using an ambiguous result as-is.",
                         false, ToolSafetyLevel.READ,
                         arg("query", "string", false, "A single free-text address/postal code/city to geocode"),
-                        arg("queries", "array", false, "Multiple free-text addresses to geocode in one batch call")),
+                        arg("queries", "array", false, "A FEW free-text addresses to geocode in one batch call - for many, use storeDataset + GEOCODE_DATASET instead")),
                 operation("ROUTE",
                         "Computes the real road-network distance and driving duration between two points - never "
                                 + "a straight-line estimate. Each of \"from\"/\"to\" accepts either a free-text address "

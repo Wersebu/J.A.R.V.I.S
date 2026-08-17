@@ -1,7 +1,10 @@
 package com.jarvis.memory.pipeline;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jarvis.common.ai.Brain;
 import com.jarvis.common.ai.BrainType;
+import com.jarvis.common.ai.ImageAttachment;
+import com.jarvis.common.ai.ReasoningLevel;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.common.event.CognitiveEventBus;
@@ -18,6 +21,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -91,6 +95,35 @@ class ToolCallingStageTest {
         String answer = (String) method.invoke(stage, context, loopResult);
 
         assertThat(answer).isEqualTo("Nie udalo mi sie zweryfikowac aktualnych ofert spelniajacych te kryteria.");
+    }
+
+    // Regression for the exact reported bug: the model's private "thinking" contained a full
+    // reasoning trace, but the tool loop's plain-text final turn was a prose preamble followed by
+    // a TOOL_REQUEST-shaped {"type":"TOOL_REQUEST","goal":"..."} envelope written out of habit
+    // after the loop had already ended - actionParser.parse() still succeeds (it strips prose
+    // around a {...} block), so this must never fall through to displaying that raw text verbatim.
+    @Test
+    void streamToolFinalAnswerNeverLeaksRawJsonWhenTheLoopEndsOnAMisplacedToolRequestEnvelope() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        ToolResult knowledgeRead = new ToolResult(true, "knowledge", "READ_DOCUMENT", "request-1", "conversation-1",
+                false, List.of(), "Document read", Map.of("content", "..."), "", "", false, "");
+        String misplacedToolRequest = "Odczytuje dane ze zdjec i przygotowuje liste sklepow.\n\n"
+                + "{\"type\": \"TOOL_REQUEST\", \"goal\": \"Geocode the following extracted store addresses: "
+                + "1. Biedronka, Korczaka 7, 08-400 Garwolin\", \"reason\": \"Need coordinates.\", "
+                + "\"context\": {\"importantEntities\": []}}";
+        ToolCallingResult loopResult = new ToolCallingResult(true, misplacedToolRequest, List.of(), List.of(knowledgeRead));
+
+        ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("streamToolFinalAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).doesNotContain("\"type\"", "TOOL_REQUEST", "\"goal\"", "importantEntities");
+        assertThat(answer).isEqualTo("Zakonczylem prace z narzedziami, ale nie otrzymalem czytelnej tresci koncowej odpowiedzi.");
     }
 
     @Test
@@ -276,6 +309,53 @@ class ToolCallingStageTest {
         assertThat(answer).contains("https://www.olx.pl/d/oferta/rtx-4060-ti");
         assertThat(answer).doesNotContain("1 050");
         assertThat(answer).doesNotContain("Web search finished");
+    }
+
+    // TEST 1 (ToolCallingStage half): the pipeline's resolved images must reach the
+    // ToolCallingRequest handed to the native tool runtime - the exact hop where they used to be
+    // silently dropped.
+    @Test
+    void executeForwardsThePipelinesResolvedImagesIntoTheToolCallingRequest() {
+        AtomicReference<com.jarvis.tools.runtime.ToolCallingRequest> captured = new AtomicReference<>();
+        ToolCallingStage stage = new ToolCallingStage(request -> {
+            captured.set(request);
+            return new ToolCallingResult(true, "Final answer.", List.of(), List.of());
+        }, List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        ImageAttachment photo = new ImageAttachment("base64data", "sklepy.jpg");
+        ChatRequest request = new ChatRequest("conversation-1", "ustaw grafik na sierpien", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { })
+                .withExecution(null, new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW))
+                .withImages(List.of(photo))
+                .withMetadata("mainModelAction", "TOOL_REQUEST")
+                .withMetadata("toolGoal", "READ Work/Scheduling/StoreAuditScheduleWorkflow.md")
+                .withMetadata("toolReason", "Need the workflow procedure.");
+
+        stage.execute(context);
+
+        assertThat(captured.get()).isNotNull();
+        assertThat(captured.get().images()).extracting(ImageAttachment::originalFileName).containsExactly("sklepy.jpg");
+    }
+
+    @Test
+    void executeForwardsAnEmptyImageListWhenTheCurrentMessageHasNoAttachments() {
+        AtomicReference<com.jarvis.tools.runtime.ToolCallingRequest> captured = new AtomicReference<>();
+        ToolCallingStage stage = new ToolCallingStage(request -> {
+            captured.set(request);
+            return new ToolCallingResult(true, "Final answer.", List.of(), List.of());
+        }, List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        ChatRequest request = new ChatRequest("conversation-1", "sprawdz w wiedzy karte graficzna", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { })
+                .withExecution(null, new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW))
+                .withMetadata("mainModelAction", "TOOL_REQUEST")
+                .withMetadata("toolGoal", "Read the hardware document.")
+                .withMetadata("toolReason", "test");
+
+        stage.execute(context);
+
+        assertThat(captured.get()).isNotNull();
+        assertThat(captured.get().images()).isEmpty();
     }
 
     private static final class NoopCognitiveEventBus implements CognitiveEventBus {

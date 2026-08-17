@@ -312,9 +312,19 @@ public class ToolCallingStage implements PipelineStage {
             return switch (action.type()) {
                 case FINAL_ANSWER -> action.answer();
                 case CLARIFICATION -> action.question();
-                case TOOL_REQUEST -> fallback;
+                // A TOOL_REQUEST parsed out of what was supposed to be the tool loop's final
+                // plain-text content is never legitimate user-facing text - it is protocol JSON
+                // the model wrote out of habit after the loop already ended (usually with a prose
+                // preamble in front of it, which is exactly why actionParser.parse() above still
+                // succeeded: it strips surrounding text and parses just the {...} block). The
+                // caller passes the *same* raw text as `fallback`, so returning it here would leak
+                // that JSON scaffolding verbatim to the user - never do that; say so honestly
+                // instead.
+                case TOOL_REQUEST -> "Zakonczylem prace z narzedziami, ale nie otrzymalem czytelnej tresci koncowej odpowiedzi.";
             };
         } catch (RuntimeException exception) {
+            // raw genuinely was not a JSON envelope at all (no {...} to extract) - it is plain
+            // prose, and fallback (typically the same raw text) is the correct thing to show.
             return fallback;
         }
     }

@@ -582,11 +582,19 @@ public class NativeToolLoopService {
                 with one short message, then immediately keep calling tools - it does not end your turn and is
                 never a substitute for finishing the task.
 
-                If a task requires extracting many records from source material (e.g. many rows read off an
-                image, document, or list) rather than deriving a handful of facts, use the storeDataset tool to
-                hold the canonical record list instead of re-deriving or re-counting it from memory at every
-                turn - storeDataset.CREATE_DATASET locks the record count once, and later calls reference
-                records by id so the count can never silently drift across the rest of this loop.
+                If a task requires extracting many records from source material (e.g. more than 2-3 rows read
+                off an image, document, or list) rather than deriving a handful of facts, you MUST call
+                storeDataset.CREATE_DATASET with the full extracted record list ONCE, before calling any other
+                tool that operates on those records (e.g. location__geocode). Do this even if it feels faster to
+                geocode the raw address list directly - a batch geocode/location call is never a substitute for
+                storeDataset, because nothing then locks the record count or checks it for drift.
+                Once storeDataset.CREATE_DATASET has been called in this loop, or an existing dataset id is given
+                to you below, that dataset is now the single source of truth for those records: call
+                storeDataset.GET_DATASET to see the exact current list instead of re-reading the original
+                images/documents and re-deriving a list from scratch again. Never silently discard a dataset you
+                already created and produce a second, different list later in the same loop - if you are unsure
+                the extraction was complete or correct, use storeDataset.VERIFY_DATASET to correct it in place,
+                never a fresh CREATE_DATASET call for the same source material.
 
                 Freshness: %s
                 User request: %s

@@ -287,9 +287,12 @@ class StoreAuditDatasetServiceTest {
 
     @Test
     void findLatestForConversationReturnsTheMostRecentDatasetWhenSeveralExistForTheSameConversation() {
-        StoreAuditDatasetService service = service();
+        MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus(), clock);
         service.registerAttachments("request-1", "conversation-42", List.of("att-1"));
         service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1"));
+
+        clock.advance(Duration.ofMinutes(5));
         service.registerAttachments("request-2", "conversation-42", List.of("att-2"));
         StoreAuditDataset second = service.createDataset("request-2", 1, List.of("att-2"), candidates(5, "att-2")).dataset();
 
