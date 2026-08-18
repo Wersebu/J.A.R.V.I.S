@@ -162,11 +162,13 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
      *
      * @param session closed session
      */
-    public void detach(WebSocketSession session) {
+    public boolean detach(WebSocketSession session) {
         if (bridgeSession.compareAndSet(session, null)) {
             completeAllExceptionally("Windows MCP bridge disconnected.");
             LOGGER.info("[MCP_BRIDGE] Windows bridge disconnected session={}", session.getId());
+            return true;
         }
+        return false;
     }
 
     private JsonNode request(String type, String serverId, Map<String, Object> payload, Duration timeout) {

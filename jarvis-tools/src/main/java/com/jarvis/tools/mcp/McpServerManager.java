@@ -39,6 +39,18 @@ public interface McpServerManager {
     List<McpToolDescriptor> discoverTools();
 
     /**
+     * Activates every enabled MCP server that depends on a connected Windows bridge.
+     */
+    default void activateWindowsBridgeServers() {
+    }
+
+    /**
+     * Clears runtime state for Windows-hosted MCP servers after the bridge disconnects.
+     */
+    default void handleWindowsBridgeDisconnected() {
+    }
+
+    /**
      * Calls an MCP tool.
      *
      * @param descriptor tool descriptor

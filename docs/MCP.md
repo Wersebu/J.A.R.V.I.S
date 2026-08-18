@@ -130,6 +130,8 @@ jarvis:
 
 Core will not run `cmd.exe` on Ubuntu. The Windows bridge registers through `/ws/jarvis`, launches the local process, performs the MCP handshake, relays `tools/list` and `tools/call`, and returns structured MCP content to Core.
 
+When the Windows client sends `MCP_BRIDGE_REGISTER`, Core starts MCP activation asynchronously for every enabled server configured as `execution-host: WINDOWS` and `transport: WINDOWS_BRIDGE`. The WebSocket handler is not blocked. Each matching server is initialized through the Windows bridge, `tools/list` is called immediately, and discovered tools become available through the normal `ToolManager` and `/api/v1/tools` path. Core then emits `MCP_STATUS_CHANGED` so the Windows UI can refresh the MCP panel without a restart.
+
 Manual smoke test once the Windows bridge is available:
 
 1. Start Roblox Studio.
@@ -159,7 +161,7 @@ Core does not collapse MCP responses into a blind `toString()`. Large binary pay
 | `MCP server is disabled` | Server config has `enabled: false` or global MCP is disabled | Enable both `jarvis.mcp.enabled` and the server entry |
 | `MCP command is required` | `command` is empty for a `CORE` + `STDIO` server | Set the command and args |
 | `Windows MCP bridge is not connected` | Windows UI is closed or not connected to Core | Start Windows UI and verify the target points at this Core |
-| `Failed to start MCP process` | Windows could not launch the configured command | Verify `%LOCALAPPDATA%\Roblox\mcp.bat` exists and runs from `cmd.exe` |
+| `Failed to start MCP process` | Windows could not launch the configured command | Verify `%LOCALAPPDATA%\Roblox\mcp.bat` exists and runs from `cmd.exe`; the Windows bridge keeps recent sanitized stderr lines for diagnostics |
 | `initialize timeout` | MCP process started but did not answer | Check the MCP server logs and increase `initialize-timeout` if needed |
 | `tools/list timeout` | Discovery is slow or blocked | Check the MCP server and transport |
 | `MCP request timed out` | `tools/call` exceeded `call-timeout` | Increase timeout or investigate the external app |
@@ -179,3 +181,5 @@ MCP logs use the `[MCP]` prefix:
 ```
 
 Secrets and large binary payloads are intentionally not logged.
+
+The Windows bridge drains MCP process stderr continuously and keeps a bounded, sanitized diagnostics buffer. This prevents external MCP servers from blocking on a full stderr pipe while still surfacing useful startup and runtime errors.

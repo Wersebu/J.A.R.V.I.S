@@ -51,6 +51,13 @@ public class DefaultMcpServerManager implements McpServerManager {
             states.put(serverId, McpConnectionState.DISCONNECTED);
             return;
         }
+        if (isWindowsBridgeServer(server) && !bridgeConnected(server)) {
+            states.put(serverId, McpConnectionState.DISCONNECTED);
+            discoveredTools.remove(serverId);
+            lastErrors.put(serverId, "Windows MCP bridge is not connected.");
+            LOGGER.info("[MCP] waiting for Windows bridge server={}", serverId);
+            return;
+        }
         try {
             LOGGER.info("[MCP] connecting server={} host={} transport={}", serverId, server.getExecutionHost(), server.getTransport());
             states.put(serverId, McpConnectionState.CONNECTING);
@@ -76,6 +83,47 @@ public class DefaultMcpServerManager implements McpServerManager {
         discoveredTools.remove(serverId);
         states.put(serverId, McpConnectionState.DISCONNECTED);
         LOGGER.info("[MCP] disconnected server={}", serverId);
+    }
+
+    @Override
+    public void activateWindowsBridgeServers() {
+        if (!properties.isEnabled()) {
+            return;
+        }
+        for (Map.Entry<String, McpServerProperties> entry : properties.getServers().entrySet()) {
+            String serverId = entry.getKey();
+            McpServerProperties server = entry.getValue();
+            if (!server.isEnabled() || !isWindowsBridgeServer(server)) {
+                continue;
+            }
+            LOGGER.info("[MCP_BRIDGE] activating Windows MCP server={}", serverId);
+            clients.remove(serverId);
+            discoveredTools.remove(serverId);
+            List<McpToolDescriptor> tools = discoverServerTools(serverId, server);
+            if (states.getOrDefault(serverId, McpConnectionState.DISCONNECTED) == McpConnectionState.CONNECTED) {
+                discoveredTools.put(serverId, tools);
+            }
+            LOGGER.info("[MCP_BRIDGE] activation finished server={} state={} tools={}",
+                    serverId,
+                    states.getOrDefault(serverId, McpConnectionState.DISCONNECTED),
+                    discoveredTools.getOrDefault(serverId, List.of()).size());
+        }
+    }
+
+    @Override
+    public void handleWindowsBridgeDisconnected() {
+        for (Map.Entry<String, McpServerProperties> entry : properties.getServers().entrySet()) {
+            String serverId = entry.getKey();
+            McpServerProperties server = entry.getValue();
+            if (!isWindowsBridgeServer(server)) {
+                continue;
+            }
+            clients.remove(serverId);
+            discoveredTools.remove(serverId);
+            states.put(serverId, McpConnectionState.DISCONNECTED);
+            lastErrors.put(serverId, "Windows MCP bridge disconnected.");
+            LOGGER.info("[MCP_BRIDGE] server marked disconnected server={}", serverId);
+        }
     }
 
     @Override
@@ -163,10 +211,14 @@ public class DefaultMcpServerManager implements McpServerManager {
     }
 
     private boolean bridgeConnected(McpServerProperties server) {
-        return server.getExecutionHost() == McpExecutionHost.WINDOWS
-                && server.getTransport() == McpTransport.WINDOWS_BRIDGE
+        return isWindowsBridgeServer(server)
                 && windowsBridgeGateway != null
                 && windowsBridgeGateway.isBridgeConnected();
+    }
+
+    private boolean isWindowsBridgeServer(McpServerProperties server) {
+        return server.getExecutionHost() == McpExecutionHost.WINDOWS
+                && server.getTransport() == McpTransport.WINDOWS_BRIDGE;
     }
 
     private boolean shouldRediscover(String serverId, List<McpToolDescriptor> serverTools) {

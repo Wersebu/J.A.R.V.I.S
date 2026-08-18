@@ -7,6 +7,7 @@ import com.jarvis.api.diagnostics.JarvisLogBroadcaster;
 import com.jarvis.api.service.ChatService;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.event.CognitiveEvent;
+import com.jarvis.tools.mcp.McpServerManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.CloseStatus;
@@ -15,6 +16,7 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Persistent WebSocket endpoint for realtime Jarvis communication.
@@ -27,6 +29,7 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
     private final ChatService chatService;
     private final ObjectMapper objectMapper;
     private final WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway;
+    private final McpServerManager mcpServerManager;
 
     /**
      * Creates the WebSocket handler.
@@ -37,11 +40,13 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
     public JarvisWebSocketHandler(
             ChatService chatService,
             ObjectMapper objectMapper,
-            WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway
+            WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway,
+            McpServerManager mcpServerManager
     ) {
         this.chatService = chatService;
         this.objectMapper = objectMapper;
         this.windowsMcpBridgeGateway = windowsMcpBridgeGateway;
+        this.mcpServerManager = mcpServerManager;
     }
 
     /**
@@ -102,7 +107,10 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        windowsMcpBridgeGateway.detach(session);
+        if (windowsMcpBridgeGateway.detach(session)) {
+            mcpServerManager.handleWindowsBridgeDisconnected();
+            send(session, new WebSocketStatus("MCP_STATUS_CHANGED", "Windows MCP bridge disconnected"));
+        }
         closeLogSubscription(session);
     }
 
@@ -114,7 +122,10 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
-        windowsMcpBridgeGateway.detach(session);
+        if (windowsMcpBridgeGateway.detach(session)) {
+            mcpServerManager.handleWindowsBridgeDisconnected();
+            send(session, new WebSocketStatus("MCP_STATUS_CHANGED", "Windows MCP bridge disconnected"));
+        }
         closeLogSubscription(session);
     }
 
@@ -122,6 +133,7 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
         if ("MCP_BRIDGE_REGISTER".equals(messageType)) {
             windowsMcpBridgeGateway.register(session);
             send(session, new WebSocketStatus("MCP_BRIDGE_CONNECTED", "Windows MCP bridge connected"));
+            CompletableFuture.runAsync(() -> activateWindowsBridgeServers(session));
             return true;
         }
         if ("MCP_BRIDGE_RESPONSE".equals(messageType)) {
@@ -129,6 +141,16 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             return true;
         }
         return false;
+    }
+
+    private void activateWindowsBridgeServers(WebSocketSession session) {
+        try {
+            mcpServerManager.activateWindowsBridgeServers();
+            send(session, new WebSocketStatus("MCP_STATUS_CHANGED", "Windows MCP status changed"));
+        } catch (RuntimeException exception) {
+            LOGGER.warn("[MCP_BRIDGE] Windows MCP activation failed: {}", exception.getMessage());
+            send(session, new WebSocketStatus("MCP_STATUS_CHANGED", "Windows MCP activation failed: " + exception.getMessage()));
+        }
     }
 
     private void sendEvent(WebSocketSession session, CognitiveEvent event) {
