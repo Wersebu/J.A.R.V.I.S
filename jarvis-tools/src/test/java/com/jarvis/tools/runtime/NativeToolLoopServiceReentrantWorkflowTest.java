@@ -82,9 +82,10 @@ class NativeToolLoopServiceReentrantWorkflowTest {
                         Map.of("network", "Siec", "fullAddress", "Adres 3", "sourceRow", 3)
                 ))));
         turns.add(textTurn(MISPLACED_TOOL_REQUEST)); // written as text instead of a real tool call
-        turns.add(toolCallTurn("location__geocode_dataset", Map.of("datasetId", "PLACEHOLDER")));
+        // No datasetId - Core auto-targets the active canonical Store Audit dataset.
+        turns.add(toolCallTurn("location__geocode_dataset", Map.of()));
         turns.add(textTurn("Oto harmonogram wizyt."));  // premature - dataset not yet scheduled
-        turns.add(toolCallTurn("storedataset__submit_schedule", Map.of("datasetId", "PLACEHOLDER")));
+        turns.add(toolCallTurn("storedataset__submit_schedule", Map.of()));
         turns.add(textTurn("Oto ostateczny harmonogram wizyt."));
 
         ScriptedProvider provider = new ScriptedProvider(turns);
@@ -137,12 +138,12 @@ class NativeToolLoopServiceReentrantWorkflowTest {
                         Map.of("network", "Siec", "fullAddress", "Adres 1", "sourceRow", 1),
                         Map.of("network", "Siec", "fullAddress", "Adres 2", "sourceRow", 2)
                 ))));
+        // No datasetId on any of these - Core auto-targets the active canonical Store Audit dataset.
         turns.add(toolCallTurn("storedataset__append_records", Map.of(
-                "datasetId", "PLACEHOLDER",
                 "records", List.of(Map.of("network", "Siec", "fullAddress", "Adres 3", "sourceRow", 3)))));
-        turns.add(toolCallTurn("storedataset__finalize_dataset", Map.of("datasetId", "PLACEHOLDER")));
-        turns.add(toolCallTurn("location__geocode_dataset", Map.of("datasetId", "PLACEHOLDER")));
-        turns.add(toolCallTurn("storedataset__submit_schedule", Map.of("datasetId", "PLACEHOLDER")));
+        turns.add(toolCallTurn("storedataset__finalize_dataset", Map.of()));
+        turns.add(toolCallTurn("location__geocode_dataset", Map.of()));
+        turns.add(toolCallTurn("storedataset__submit_schedule", Map.of()));
         turns.add(textTurn("Oto harmonogram wizyt zbudowany przyrostowo."));
 
         ScriptedProvider provider = new ScriptedProvider(turns);
@@ -524,18 +525,21 @@ class NativeToolLoopServiceReentrantWorkflowTest {
             throw new UnsupportedOperationException("Unexpected tool call: " + tool + "." + operation);
         }
 
+        /**
+         * Auto-fills SUBMIT_SCHEDULE's {@code days} grouping from the real canonical dataset's
+         * current record ids - datasetId itself is no longer a placeholder to resolve here at all,
+         * since {@link NativeToolLoopService} already auto-targets/injects the active canonical
+         * dataset's real id before this tool manager ever sees the request.
+         */
         private ToolRequest resolvePlaceholder(ToolRequest request) {
-            if (!"PLACEHOLDER".equals(request.arguments().get("datasetId"))) {
+            if (!"SUBMIT_SCHEDULE".equalsIgnoreCase(request.operation()) || request.arguments().containsKey("days")) {
                 return request;
             }
-            String realId = resolveDatasetId(request);
+            String datasetId = String.valueOf(request.arguments().get("datasetId"));
+            StoreAuditDataset dataset = datasetService.getDataset(datasetId).orElseThrow();
+            List<String> ids = dataset.stores().stream().map(record -> record.id()).toList();
             java.util.Map<String, Object> arguments = new java.util.HashMap<>(request.arguments());
-            arguments.put("datasetId", realId);
-            if ("SUBMIT_SCHEDULE".equalsIgnoreCase(request.operation())) {
-                StoreAuditDataset dataset = datasetService.getDataset(realId).orElseThrow();
-                List<String> ids = dataset.stores().stream().map(record -> record.id()).toList();
-                arguments.put("days", List.of(Map.of("day", 1, "storeIds", ids)));
-            }
+            arguments.put("days", List.of(Map.of("day", 1, "storeIds", ids)));
             return new ToolRequest(request.toolName(), request.operation(), request.conversationId(), request.requestId(),
                     request.reason(), request.reasoningSummary(), arguments);
         }

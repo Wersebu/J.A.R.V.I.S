@@ -144,16 +144,18 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
                 operation("GEOCODE_DATASET",
                         "Batch-geocodes records already held in a storeDataset (see the storeDataset tool) and "
                                 + "updates them in place by record id - use this instead of GEOCODE whenever the "
-                                + "addresses belong a storeDataset (e.g. a Store Audit dataset). Only the datasetId "
-                                + "is needed - Core reads each record's canonical id and address directly from the "
-                                + "locked dataset itself, geocodes it, and writes the result back to that exact "
-                                + "record. You never resend record ids or addresses here, so a typo or drift in a "
-                                + "restated id (e.g. \"013\" instead of the real \"store-013\") can never cause a "
-                                + "record to be silently skipped. Requires the dataset to already be VERIFIED "
-                                + "(stage=LOCKED) - call storeDataset.VERIFY_DATASET first. This can never create a "
-                                + "new store record.",
+                                + "addresses belong a storeDataset (e.g. a Store Audit dataset). Core reads each "
+                                + "record's canonical id and address directly from the locked dataset itself, "
+                                + "geocodes it, and writes the result back to that exact record. You never resend "
+                                + "record ids or addresses here, so a typo or drift in a restated id (e.g. \"013\" "
+                                + "instead of the real \"store-013\") can never cause a record to be silently "
+                                + "skipped. Requires the dataset to already be VERIFIED (stage=LOCKED) - call "
+                                + "storeDataset.VERIFY_DATASET first. This can never create a new store record.",
                         true, ToolSafetyLevel.WRITE,
-                        arg("datasetId", "string", true, "Dataset id returned by storeDataset.CREATE_DATASET"),
+                        arg("datasetId", "string", false, "Dataset id. Usually not needed - while a Store Audit "
+                                + "workflow is active, Core automatically targets the active canonical dataset even "
+                                + "if this is omitted. Only supply this explicitly for standalone/administrative use "
+                                + "outside an active workflow."),
                         arg("recordIds", false, RECORD_IDS_SCHEMA))
         ));
     }

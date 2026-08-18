@@ -220,6 +220,35 @@ public class NativeToolLoopService {
                         messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(invalid)));
                         continue;
                     }
+                    // Core owns the active Store Audit dataset's identity - the model is never the
+                    // source of truth for which dataset a follow-up storeDataset/GEOCODE_DATASET
+                    // call targets. When a canonical dataset is already active this loop, a missing
+                    // datasetId argument is filled in automatically (the model never has to repeat
+                    // a UUID it was already given), and a supplied one that does not match is never
+                    // executed against the real tool - it is rejected immediately with the exact
+                    // canonical id, before wasting a real dataset-service call on an id that can
+                    // never exist under this workflow.
+                    if (!activeDatasetId.isBlank() && isDatasetReferencingAction(action)) {
+                        Optional<ToolAction> resolved = resolveActiveDatasetAction(action, activeDatasetId);
+                        if (resolved.isEmpty()) {
+                            datasetTouchedThisLoop = true;
+                            Object suppliedRaw = action.arguments().get("datasetId");
+                            String supplied = suppliedRaw == null ? "" : String.valueOf(suppliedRaw);
+                            ToolResult mismatch = datasetIdMismatchResult(request, action, activeDatasetId, supplied);
+                            results.add(mismatch);
+                            steps.add(new ToolRuntimeStep(step, "STORE_DATASET_ID_MISMATCH", action.tool(), action.operation(), "BLOCKED", mismatch));
+                            messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(mismatch)));
+                            messages.add(ModelMessage.system(workflowStatusBlock(request, activeDatasetId)));
+                            publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "STORE_DATASET_ID_MISMATCH",
+                                    "Supplied datasetId does not match the active Store Audit dataset", null, step, Map.of(
+                                            "tool", action.tool(), "operation", action.operation(),
+                                            "suppliedDatasetId", supplied, "activeDatasetId", activeDatasetId));
+                            LOGGER.warn("[STORE_AUDIT_DATASET_CONTEXT] requestId={} activeDatasetId={} suppliedDatasetId={} operation={} match=false action=REJECT_AND_PRESERVE_ACTIVE",
+                                    request.requestId(), activeDatasetId, supplied, action.operation());
+                            continue;
+                        }
+                        action = resolved.get();
+                    }
                     String fingerprint = actionFingerprint(action);
                     if (!callFingerprints.add(fingerprint)) {
                         ToolResult duplicate = duplicateResult(request, action);
@@ -306,9 +335,18 @@ public class NativeToolLoopService {
                     }
                     if (isDatasetTouchingAction(action)) {
                         datasetTouchedThisLoop = true;
-                        Object datasetIdValue = result.success() ? result.data().get("datasetId") : action.arguments().get("datasetId");
-                        if (datasetIdValue != null && !String.valueOf(datasetIdValue).isBlank()) {
-                            activeDatasetId = String.valueOf(datasetIdValue);
+                        // activeDatasetId is Core-owned workflow identity, never derived from an
+                        // unverified model argument - a FAILED call must never overwrite it with
+                        // whatever datasetId the model happened to send (including one it invented
+                        // outright), or a single hallucinated id could hijack the canonical
+                        // workflow state for the rest of the loop. Only a call Core itself confirmed
+                        // succeeded (result.data().get("datasetId"), returned by the dataset service
+                        // that actually created/holds it) can ever move this forward.
+                        if (result.success()) {
+                            Object datasetIdValue = result.data().get("datasetId");
+                            if (datasetIdValue != null && !String.valueOf(datasetIdValue).isBlank()) {
+                                activeDatasetId = String.valueOf(datasetIdValue);
+                            }
                         }
                         // A storeDataset operation actually executing is state-level proof this is a
                         // stateful-workflow task, however the loop's own upfront ToolIntent guess
@@ -906,11 +944,21 @@ public class NativeToolLoopService {
         return datasetService.getDataset(datasetId).map(dataset -> """
                 ACTIVE WORKFLOW: STORE_AUDIT
                 USER GOAL: %s
+                CANONICAL DATASET ID: %s
                 REQUIRED TERMINAL STATE: SCHEDULED
-                CURRENT STATE: %s (%d record(s))
+                CURRENT STATE: %s (%s record(s))
                 NEXT REQUIRED STAGE: %s
-                """.formatted(request.userMessage(), dataset.stage(), dataset.stores().size(),
-                        nextRequiredStageHint(dataset.stage()))).orElse("");
+                This is the ONLY valid datasetId for this workflow - never invent, reuse, or restate a
+                different one; storeDataset/GEOCODE_DATASET calls in this workflow do not even need to
+                include datasetId, Core targets this exact dataset automatically.
+                """.formatted(request.userMessage(), dataset.datasetId(), dataset.stage(),
+                        recordCountLabel(dataset), nextRequiredStageHint(dataset.stage()))).orElse("");
+    }
+
+    private String recordCountLabel(StoreAuditDataset dataset) {
+        return dataset.expectedRecordCount() > 0
+                ? dataset.stores().size() + "/" + dataset.expectedRecordCount()
+                : String.valueOf(dataset.stores().size());
     }
 
     private String datasetStageLabel(String datasetId) {
@@ -1293,6 +1341,87 @@ public class NativeToolLoopService {
     private boolean isDatasetTouchingAction(ToolAction action) {
         return "storedataset".equalsIgnoreCase(action.tool())
                 || ("location".equalsIgnoreCase(action.tool()) && "GEOCODE_DATASET".equalsIgnoreCase(action.operation()));
+    }
+
+    /**
+     * True for an operation that references an EXISTING canonical dataset by id (as opposed to
+     * {@code CREATE_DATASET}/{@code START_DATASET}, which create a new one and take no {@code
+     * datasetId} argument at all) - this is exactly the set of operations Core's active-dataset
+     * identity resolution ({@link #resolveActiveDatasetAction}) applies to.
+     *
+     * @param action tool action about to execute
+     * @return true when {@code action} targets an existing dataset by id
+     */
+    private boolean isDatasetReferencingAction(ToolAction action) {
+        return isDatasetTouchingAction(action) && !isCreateDataset(action);
+    }
+
+    /**
+     * Resolves {@code action}'s {@code datasetId} argument against the loop's Core-owned canonical
+     * active dataset, so the model is never the source of truth for which dataset a follow-up call
+     * targets - the same principle already applied to attachment provenance ({@code
+     * sourceAttachmentIndex}). Three outcomes:
+     * <ul>
+     *     <li>{@code datasetId} missing/blank - filled in with {@code activeDatasetId} automatically,
+     *     so the model never has to repeat a UUID it was already given;</li>
+     *     <li>{@code datasetId} present and equal to {@code activeDatasetId} - returned unchanged;</li>
+     *     <li>{@code datasetId} present and different - {@link Optional#empty()}, signaling the
+     *     caller to reject the call outright as {@code STORE_DATASET_ID_MISMATCH} without ever
+     *     executing it against the real tool. A model can never drift the active workflow onto a
+     *     different (possibly nonexistent, possibly invented) dataset this way.</li>
+     * </ul>
+     * Only called while an active dataset actually exists for this loop - a standalone/explicit
+     * {@code GET_DATASET} call made before any dataset has been touched this loop is untouched by
+     * this method entirely (generic tool use, not gated on workflow identity).
+     *
+     * @param action dataset-referencing action about to execute
+     * @param activeDatasetId Core's canonical active dataset id for this loop, never blank when
+     *         this method is called
+     * @return the action to execute (possibly with {@code datasetId} injected), or empty to reject
+     */
+    private Optional<ToolAction> resolveActiveDatasetAction(ToolAction action, String activeDatasetId) {
+        Object suppliedRaw = action.arguments().get("datasetId");
+        String supplied = suppliedRaw == null ? "" : String.valueOf(suppliedRaw).strip();
+        if (supplied.isBlank()) {
+            Map<String, Object> injected = new LinkedHashMap<>(action.arguments());
+            injected.put("datasetId", activeDatasetId);
+            return Optional.of(new ToolAction(action.action(), action.tool(), action.operation(), injected, action.reason(), action.answer()));
+        }
+        if (supplied.equals(activeDatasetId)) {
+            return Optional.of(action);
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Builds the rejection result for a {@code datasetId} that does not match the loop's active
+     * canonical dataset - deliberately detailed (canonical id, supplied id, current stage/count,
+     * next required action) so the model can self-correct on the very next turn instead of the
+     * loop burning several more calls against an id that can never exist.
+     *
+     * @param request tool-calling request
+     * @param action the rejected action
+     * @param activeDatasetId Core's canonical active dataset id
+     * @param supplied the model-supplied, non-matching datasetId
+     * @return a failed {@code STORE_DATASET_ID_MISMATCH} result
+     */
+    private ToolResult datasetIdMismatchResult(ToolCallingRequest request, ToolAction action, String activeDatasetId, String supplied) {
+        Optional<StoreAuditDataset> active = datasetService.getDataset(activeDatasetId);
+        String message = "An active Store Audit dataset already exists for this workflow. Canonical datasetId: "
+                + activeDatasetId + ". The supplied datasetId: " + supplied + " does not match the active dataset. "
+                + "Continue using the canonical active dataset - never invent or reuse a different dataset id "
+                + "while this workflow is active.";
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("suppliedDatasetId", supplied);
+        data.put("activeDatasetId", activeDatasetId);
+        data.put("stage", active.map(dataset -> dataset.stage().name()).orElse(""));
+        data.put("count", active.map(dataset -> dataset.stores().size()).orElse(0));
+        if (active.isPresent() && active.get().expectedRecordCount() > 0) {
+            data.put("expectedRecordCount", active.get().expectedRecordCount());
+        }
+        data.put("nextRequiredAction", active.map(dataset -> nextRequiredStageHint(dataset.stage())).orElse(""));
+        return new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
+                false, List.of(activeDatasetId), message, data, "STORE_DATASET_ID_MISMATCH", message, false, "");
     }
 
     /**

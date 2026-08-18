@@ -41,6 +41,18 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     private static final Logger LOGGER = LoggerFactory.getLogger(StoreDatasetTool.class);
     private static final String TOOL_NAME = "storeDataset";
 
+    // Not actually required in practice while a Store Audit workflow is active in the native tool
+    // loop: NativeToolLoopService owns the canonical active dataset's identity and injects this
+    // argument automatically when omitted, so the model never has to remember/repeat a dataset
+    // UUID it was already given. Kept as a normal (now optional) argument, not removed from the
+    // schema, so explicit out-of-workflow use (e.g. GET_DATASET on a specific known id) still
+    // works; supplying an id that does not match the active workflow's dataset is rejected as
+    // STORE_DATASET_ID_MISMATCH before this tool is ever called.
+    private static final String DATASET_ID_ARG_DESCRIPTION =
+            "Dataset id. Usually not needed - while a Store Audit workflow is active, Core automatically "
+                    + "targets the active canonical dataset even if this is omitted. Only supply this explicitly "
+                    + "for standalone/administrative use outside an active workflow.";
+
     // Nested schema shared by CREATE_DATASET/START_DATASET/APPEND_RECORDS - fullAddress is the only
     // field the JSON schema itself marks required; provenance (sourceAttachmentIndex preferred,
     // sourceAttachmentId as a fallback for explicit typed-list input with no attachments) is
@@ -182,7 +194,7 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "call FINALIZE_DATASET. Fails if the dataset is already finalized - use "
                                 + "VERIFY_DATASET to correct a finalized dataset instead.",
                         true, ToolSafetyLevel.WRITE,
-                        arg("datasetId", "string", true, "Dataset id returned by START_DATASET"),
+                        arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION),
                         arg("records", true, RECORDS_SCHEMA)),
                 operation("FINALIZE_DATASET",
                         "Locks the record count of a dataset still in stage=BUILDING, once every batch from "
@@ -195,7 +207,7 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "broken, call APPEND_RECORDS with the missing records and finalize again. Safe to "
                                 + "call again if already finalized.",
                         true, ToolSafetyLevel.WRITE,
-                        arg("datasetId", "string", true, "Dataset id returned by START_DATASET")),
+                        arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION)),
                 operation("VERIFY_DATASET",
                         "Submits a second-pass verification of the ALREADY-LOCKED dataset (stage=EXTRACTED) - "
                                 + "reports per-record status/corrections by record id, never a new independently "
@@ -209,7 +221,7 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "Call GET_DATASET first if you are not certain of the exact current record ids. "
                                 + "On success the dataset advances to stage=LOCKED.",
                         true, ToolSafetyLevel.WRITE,
-                        arg("datasetId", "string", true, "Dataset id returned by CREATE_DATASET"),
+                        arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION),
                         arg("verifications", true, VERIFICATIONS_SCHEMA)),
                 operation("GET_DATASET",
                         "Returns the current canonical dataset (all records with their ids, addresses, "
@@ -218,7 +230,10 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "relying on memory of an earlier turn, or to continue a dataset from an earlier "
                                 + "turn in this same conversation.",
                         false, ToolSafetyLevel.READ,
-                        arg("datasetId", "string", true, "Dataset id returned by CREATE_DATASET")),
+                        arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION
+                                + " Supply an explicit id here to inspect a specific dataset outside the active "
+                                + "workflow (e.g. an administrative/diagnostic lookup); while a Store Audit "
+                                + "workflow is active, an explicit id must match the active dataset.")),
                 operation("SUBMIT_SCHEDULE",
                         "Submits a proposed day-by-day grouping of the locked dataset's records for validation. "
                                 + "Every record id in the dataset must appear in exactly one day, exactly once - no "
@@ -229,7 +244,7 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "is required before presenting a final schedule to the user - never hand-count "
                                 + "or eyeball that every store was scheduled exactly once.",
                         true, ToolSafetyLevel.WRITE,
-                        arg("datasetId", "string", true, "Dataset id returned by CREATE_DATASET"),
+                        arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION),
                         arg("days", true, DAYS_SCHEMA))
         ));
     }
