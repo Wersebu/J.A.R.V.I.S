@@ -16,6 +16,7 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -78,6 +79,13 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         String messageType = root.path("type").asText("");
+        if ("MCP_BRIDGE_RESPONSE".equals(messageType)) {
+            LOGGER.info("[MCP_BRIDGE] inbound response session={} requestId={} server={} jsonBytes={}",
+                    session.getId(),
+                    root.path("requestId").asText(""),
+                    root.path("serverId").asText(""),
+                    message.getPayload().getBytes(StandardCharsets.UTF_8).length);
+        }
         if (handleBridgeMessage(session, root, messageType)) {
             return;
         }

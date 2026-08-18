@@ -132,6 +132,17 @@ Core will not run `cmd.exe` on Ubuntu. The Windows bridge registers through `/ws
 
 When the Windows client sends `MCP_BRIDGE_REGISTER`, Core starts MCP activation asynchronously for every enabled server configured as `execution-host: WINDOWS` and `transport: WINDOWS_BRIDGE`. The WebSocket handler is not blocked. Each matching server is initialized through the Windows bridge, `tools/list` is called immediately, and discovered tools become available through the normal `ToolManager` and `/api/v1/tools` path. Core then emits `MCP_STATUS_CHANGED` so the Windows UI can refresh the MCP panel without a restart.
 
+Large MCP discovery responses, especially `tools/list` responses with long descriptions and JSON schemas, travel over the shared `/ws/jarvis` WebSocket as text. Core configures the embedded WebSocket container through:
+
+```yaml
+jarvis:
+  websocket:
+    max-text-message-size: 4194304
+    max-binary-message-size: 8388608
+```
+
+The Windows bridge logs the UTF-8 byte size and whether OkHttp accepted each outbound bridge message into its send queue. These limits are intended for large MCP metadata responses, not for future screenshots, image/base64 payloads, or other heavy binary content. Those should use chunking, binary frames, or the attachment pipeline instead of a huge text frame.
+
 Manual smoke test once the Windows bridge is available:
 
 1. Start Roblox Studio.

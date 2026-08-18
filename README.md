@@ -2,7 +2,7 @@
 
 Jarvis (J.A.R.V.I.S. Core) is a long-term AI operating system backend foundation: a headless Spring Boot service that orchestrates local Ollama models behind a provider-independent AI contract, with brain routing, native tool calling, a Knowledge Workspace, web/marketplace/location tools, cognitive memory, and real-time streaming to a separate desktop client.
 
-Current version: **`2.17.1`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
+Current version: **`2.17.2`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
 
 MCP Windows bridge lifecycle is automatic: when the Windows client registers its bridge, Core asynchronously initializes enabled Windows-hosted MCP servers, discovers their tools, and refreshes MCP status without requiring manual reconnect calls.
 
@@ -80,7 +80,7 @@ All configuration lives under the `jarvis:` root key in `jarvis-core/src/main/re
 
 ```yaml
 jarvis:
-  version: "2.17.1"
+  version: "2.17.2"
   ai:
     identity-file: file:config/jarvis.md
     context-window: 16384
@@ -88,6 +88,9 @@ jarvis:
   workspace:               # temporary attachment storage (see File Workspace & Attachments)
     root: ./temp-workspaces
     ttl: 60m
+  websocket:               # shared realtime channel for chat, events, and Windows MCP bridge
+    max-text-message-size: 4194304
+    max-binary-message-size: 8388608
   tools:                    # native tool-calling runtime budgets (see Native Tool Calling)
     enabled: true
     runtime: native
