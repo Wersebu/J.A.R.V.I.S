@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.16.0"
+  version: "2.17.0"
   workspace:
     root: ./temp-workspaces
     ttl: 60m
@@ -44,16 +44,16 @@ jarvis:
       resume-tool-loop-after-approval: true
       generate-final-answer: true
   mcp:
-    enabled: false
+    enabled: true
     servers:
       roblox:
-        enabled: false
+        enabled: true
         execution-host: WINDOWS
         transport: WINDOWS_BRIDGE
         command: cmd.exe
         args:
           - /c
-          - "%LOCALAPPDATA%\\Roblox\\mcp.bat"
+          - "cd /d %LOCALAPPDATA%\\Roblox && .\\mcp.bat"
         access-level: EDIT
         startup-timeout: 10s
         initialize-timeout: 10s

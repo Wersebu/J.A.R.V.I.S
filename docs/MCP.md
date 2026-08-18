@@ -62,7 +62,7 @@ Supported transports:
 | Transport | Meaning |
 |---|---|
 | `STDIO` | JSON-RPC over stdin/stdout. |
-| `WINDOWS_BRIDGE` | Placeholder transport for MCP servers launched by the Windows client and proxied back to Core. |
+| `WINDOWS_BRIDGE` | Real bridge transport over the existing Core <-> Windows WebSocket. Core sends MCP JSON-RPC work to Windows, and Windows launches the local stdio MCP server. |
 
 Access levels:
 
@@ -124,11 +124,11 @@ jarvis:
         command: cmd.exe
         args:
           - /c
-          - "%LOCALAPPDATA%\\Roblox\\mcp.bat"
+          - "cd /d %LOCALAPPDATA%\\Roblox && .\\mcp.bat"
         access-level: EDIT
 ```
 
-Core will not run `cmd.exe` on Ubuntu. The Windows bridge is responsible for launching the local process and relaying MCP messages.
+Core will not run `cmd.exe` on Ubuntu. The Windows bridge registers through `/ws/jarvis`, launches the local process, performs the MCP handshake, relays `tools/list` and `tools/call`, and returns structured MCP content to Core.
 
 Manual smoke test once the Windows bridge is available:
 
@@ -136,8 +136,8 @@ Manual smoke test once the Windows bridge is available:
 2. Ensure `%LOCALAPPDATA%\Roblox\mcp.bat` exists and can be run from Windows.
 3. Enable `jarvis.mcp.enabled=true` and the `roblox` server.
 4. Start Core.
-5. Open Windows UI and connect the bridge.
-6. Verify `GET /api/v1/mcp/status` reports `CONNECTED`.
+5. Open Windows UI; it registers the bridge over the persistent WebSocket automatically.
+6. Verify `GET /api/v1/mcp/status` reports `bridgeConnected=true` and the Roblox server can reach `CONNECTED` after discovery.
 7. Verify `GET /api/v1/tools` includes `mcp_roblox_*` tools.
 8. Execute a safe read-only Roblox MCP operation first.
 
@@ -158,7 +158,8 @@ Core does not collapse MCP responses into a blind `toString()`. Large binary pay
 |---|---|---|
 | `MCP server is disabled` | Server config has `enabled: false` or global MCP is disabled | Enable both `jarvis.mcp.enabled` and the server entry |
 | `MCP command is required` | `command` is empty for a `CORE` + `STDIO` server | Set the command and args |
-| `requires WINDOWS / WINDOWS_BRIDGE bridge` | Server must be launched on Windows | Start or implement the Windows MCP bridge |
+| `Windows MCP bridge is not connected` | Windows UI is closed or not connected to Core | Start Windows UI and verify the target points at this Core |
+| `Failed to start MCP process` | Windows could not launch the configured command | Verify `%LOCALAPPDATA%\Roblox\mcp.bat` exists and runs from `cmd.exe` |
 | `initialize timeout` | MCP process started but did not answer | Check the MCP server logs and increase `initialize-timeout` if needed |
 | `tools/list timeout` | Discovery is slow or blocked | Check the MCP server and transport |
 | `MCP request timed out` | `tools/call` exceeded `call-timeout` | Increase timeout or investigate the external app |

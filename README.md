@@ -2,7 +2,7 @@
 
 Jarvis (J.A.R.V.I.S. Core) is a long-term AI operating system backend foundation: a headless Spring Boot service that orchestrates local Ollama models behind a provider-independent AI contract, with brain routing, native tool calling, a Knowledge Workspace, web/marketplace/location tools, cognitive memory, and real-time streaming to a separate desktop client.
 
-Current version: **`2.16.0`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
+Current version: **`2.17.0`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
 
 ## Requirements
 
@@ -78,7 +78,7 @@ All configuration lives under the `jarvis:` root key in `jarvis-core/src/main/re
 
 ```yaml
 jarvis:
-  version: "2.16.0"
+  version: "2.17.0"
   ai:
     identity-file: file:config/jarvis.md
     context-window: 16384
@@ -103,17 +103,17 @@ jarvis:
     nominatim-base-url: https://nominatim.openstreetmap.org
     osrm-base-url: https://router.project-osrm.org
     user-agent: "JARVIS-Core-LocationTool/1.0 (...)"
-  mcp:                      # disabled by default; see docs/MCP.md
-    enabled: false
+  mcp:                      # Windows bridge enabled for Roblox Studio MCP in dev
+    enabled: true
     servers:
       roblox:
-        enabled: false
+        enabled: true
         execution-host: WINDOWS
         transport: WINDOWS_BRIDGE
         command: cmd.exe
         args:
           - /c
-          - "%LOCALAPPDATA%\\Roblox\\mcp.bat"
+          - "cd /d %LOCALAPPDATA%\\Roblox && .\\mcp.bat"
         access-level: EDIT
   thinking:                 # streams the model's reasoning tokens to clients (see Thinking)
     stream-to-clients: true
@@ -252,7 +252,7 @@ LLM
   -> external app, e.g. Roblox Studio
 ```
 
-With `jarvis.mcp.enabled=false`, no MCP discovery occurs and regular chat/tool behavior is unchanged. See [docs/MCP.md](docs/MCP.md) for configuration, Roblox Studio setup, status endpoints, troubleshooting, and the Windows bridge flow.
+With `jarvis.mcp.enabled=false`, no MCP discovery occurs and regular chat/tool behavior is unchanged. In the default dev profile Roblox MCP is enabled through the Windows bridge, so Core waits for the Windows UI to register the bridge before it can discover Roblox tools. See [docs/MCP.md](docs/MCP.md) for configuration, Roblox Studio setup, status endpoints, troubleshooting, and the Windows bridge flow.
 
 `NativeToolLoopService` drives the actual loop: it exposes the *full* tool catalog to the model on every turn (which tool to call is always the model's own decision, never Core's), executes whatever the model calls, and feeds results back until the model returns a plain-text final answer. Loop safety:
 

@@ -16,6 +16,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
 
     private final ChatService chatService;
     private final ObjectMapper objectMapper;
+    private final WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway;
 
     /**
      * Creates the WebSocket configuration.
@@ -23,9 +24,14 @@ public class WebSocketConfig implements WebSocketConfigurer {
      * @param chatService chat service
      * @param objectMapper JSON mapper
      */
-    public WebSocketConfig(ChatService chatService, ObjectMapper objectMapper) {
+    public WebSocketConfig(
+            ChatService chatService,
+            ObjectMapper objectMapper,
+            WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway
+    ) {
         this.chatService = chatService;
         this.objectMapper = objectMapper;
+        this.windowsMcpBridgeGateway = windowsMcpBridgeGateway;
     }
 
     /**
@@ -35,7 +41,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
      */
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(new JarvisWebSocketHandler(chatService, objectMapper), "/ws/jarvis")
+        registry.addHandler(new JarvisWebSocketHandler(chatService, objectMapper, windowsMcpBridgeGateway), "/ws/jarvis")
                 .setAllowedOrigins("*");
     }
 }

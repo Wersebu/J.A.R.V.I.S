@@ -1,6 +1,7 @@
 package com.jarvis.tools.mcp;
 
 import com.jarvis.tools.ToolRequest;
+import org.springframework.beans.factory.ObjectProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -21,6 +22,7 @@ public class DefaultMcpServerManager implements McpServerManager {
 
     private final McpProperties properties;
     private final McpClientFactory clientFactory;
+    private final WindowsMcpBridgeGateway windowsBridgeGateway;
     private final Map<String, McpClient> clients = new ConcurrentHashMap<>();
     private final Map<String, List<McpToolDescriptor>> discoveredTools = new ConcurrentHashMap<>();
     private final Map<String, McpConnectionState> states = new ConcurrentHashMap<>();
@@ -32,9 +34,14 @@ public class DefaultMcpServerManager implements McpServerManager {
      * @param properties MCP properties
      * @param clientFactory MCP client factory
      */
-    public DefaultMcpServerManager(McpProperties properties, McpClientFactory clientFactory) {
+    public DefaultMcpServerManager(
+            McpProperties properties,
+            McpClientFactory clientFactory,
+            ObjectProvider<WindowsMcpBridgeGateway> windowsBridgeGateway
+    ) {
         this.properties = properties;
         this.clientFactory = clientFactory;
+        this.windowsBridgeGateway = windowsBridgeGateway.getIfAvailable();
     }
 
     @Override
@@ -83,6 +90,7 @@ public class DefaultMcpServerManager implements McpServerManager {
                     server.getExecutionHost(),
                     server.getTransport(),
                     states.getOrDefault(serverId, McpConnectionState.DISCONNECTED),
+                    bridgeConnected(server),
                     discoveredTools.getOrDefault(serverId, List.of()).size(),
                     lastErrors.getOrDefault(serverId, "")
             ));
@@ -102,7 +110,15 @@ public class DefaultMcpServerManager implements McpServerManager {
             if (!server.isEnabled()) {
                 continue;
             }
-            List<McpToolDescriptor> serverTools = discoveredTools.computeIfAbsent(serverId, id -> discoverServerTools(id, server));
+            List<McpToolDescriptor> serverTools = discoveredTools.get(serverId);
+            if (serverTools == null || shouldRediscover(serverId, serverTools)) {
+                serverTools = discoverServerTools(serverId, server);
+                if (states.getOrDefault(serverId, McpConnectionState.DISCONNECTED) == McpConnectionState.CONNECTED) {
+                    discoveredTools.put(serverId, serverTools);
+                } else {
+                    discoveredTools.remove(serverId);
+                }
+            }
             result.addAll(serverTools);
         }
         return List.copyOf(result);
@@ -144,5 +160,17 @@ public class DefaultMcpServerManager implements McpServerManager {
             throw new McpException("Unknown MCP server: " + serverId);
         }
         return server;
+    }
+
+    private boolean bridgeConnected(McpServerProperties server) {
+        return server.getExecutionHost() == McpExecutionHost.WINDOWS
+                && server.getTransport() == McpTransport.WINDOWS_BRIDGE
+                && windowsBridgeGateway != null
+                && windowsBridgeGateway.isBridgeConnected();
+    }
+
+    private boolean shouldRediscover(String serverId, List<McpToolDescriptor> serverTools) {
+        return serverTools.isEmpty()
+                && states.getOrDefault(serverId, McpConnectionState.DISCONNECTED) != McpConnectionState.CONNECTED;
     }
 }

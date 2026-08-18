@@ -1,6 +1,7 @@
 package com.jarvis.api.websocket;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.api.diagnostics.JarvisLogBroadcaster;
 import com.jarvis.api.service.ChatService;
@@ -25,6 +26,7 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
 
     private final ChatService chatService;
     private final ObjectMapper objectMapper;
+    private final WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway;
 
     /**
      * Creates the WebSocket handler.
@@ -32,9 +34,14 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
      * @param chatService chat service
      * @param objectMapper JSON mapper
      */
-    public JarvisWebSocketHandler(ChatService chatService, ObjectMapper objectMapper) {
+    public JarvisWebSocketHandler(
+            ChatService chatService,
+            ObjectMapper objectMapper,
+            WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway
+    ) {
         this.chatService = chatService;
         this.objectMapper = objectMapper;
+        this.windowsMcpBridgeGateway = windowsMcpBridgeGateway;
     }
 
     /**
@@ -58,9 +65,21 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
+        JsonNode root;
+        try {
+            root = objectMapper.readTree(message.getPayload());
+        } catch (JsonProcessingException exception) {
+            send(session, new WebSocketStatus("ERROR", "Invalid request JSON"));
+            return;
+        }
+        String messageType = root.path("type").asText("");
+        if (handleBridgeMessage(session, root, messageType)) {
+            return;
+        }
+
         ChatRequest request;
         try {
-            request = objectMapper.readValue(message.getPayload(), ChatRequest.class);
+            request = objectMapper.treeToValue(root, ChatRequest.class);
         } catch (JsonProcessingException exception) {
             send(session, new WebSocketStatus("ERROR", "Invalid chat request JSON"));
             return;
@@ -83,6 +102,7 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        windowsMcpBridgeGateway.detach(session);
         closeLogSubscription(session);
     }
 
@@ -94,7 +114,21 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
+        windowsMcpBridgeGateway.detach(session);
         closeLogSubscription(session);
+    }
+
+    private boolean handleBridgeMessage(WebSocketSession session, JsonNode root, String messageType) {
+        if ("MCP_BRIDGE_REGISTER".equals(messageType)) {
+            windowsMcpBridgeGateway.register(session);
+            send(session, new WebSocketStatus("MCP_BRIDGE_CONNECTED", "Windows MCP bridge connected"));
+            return true;
+        }
+        if ("MCP_BRIDGE_RESPONSE".equals(messageType)) {
+            windowsMcpBridgeGateway.handleResponse(root);
+            return true;
+        }
+        return false;
     }
 
     private void sendEvent(WebSocketSession session, CognitiveEvent event) {
