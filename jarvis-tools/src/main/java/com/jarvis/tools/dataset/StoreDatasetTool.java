@@ -10,6 +10,7 @@ import com.jarvis.tools.schema.ToolJsonSchema;
 import com.jarvis.tools.schema.ToolOperationDefinition;
 import com.jarvis.tools.schema.ToolSafetyLevel;
 import com.jarvis.tools.schema.ToolSchemaProvider;
+import com.jarvis.tools.workflow.StoreAuditWorkflowCompletionValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -21,6 +22,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Native tool that holds the canonical, structured dataset for multi-step extraction workflows
@@ -68,13 +70,14 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
             ToolJsonSchema.string("A current-message attachment id"),
             "Current-message attachment ids the records were extracted from - array of strings");
     private static final ToolJsonSchema VERIFICATION_ENTRY_SCHEMA = ToolJsonSchema.object(
-            verificationEntryProperties(), List.of("recordId", "status"),
-            "One record's verification status/correction");
+            verificationEntryProperties(), List.of("status"),
+            "One record's verification status/correction - reference the record via recordIndex (preferred) "
+                    + "or recordId (fallback)");
     private static final ToolJsonSchema VERIFICATIONS_SCHEMA = ToolJsonSchema.arrayOf(
-            VERIFICATION_ENTRY_SCHEMA, "Per-record verification results, referencing existing record ids only");
+            VERIFICATION_ENTRY_SCHEMA, "Per-record verification results, referencing existing records only");
     private static final ToolJsonSchema SCHEDULE_DAY_SCHEMA = ToolJsonSchema.object(
-            scheduleDayProperties(), List.of("day", "storeIds"),
-            "One day's grouping of store record ids");
+            scheduleDayProperties(), List.of("day"),
+            "One day's grouping of records - reference them via storeIndexes (preferred) or storeIds (fallback)");
     private static final ToolJsonSchema DAYS_SCHEMA = ToolJsonSchema.arrayOf(
             SCHEDULE_DAY_SCHEMA, "Day-by-day grouping - every dataset record id exactly once across all days");
 
@@ -102,7 +105,14 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
 
     private static Map<String, ToolJsonSchema> verificationEntryProperties() {
         Map<String, ToolJsonSchema> properties = new LinkedHashMap<>();
-        properties.put("recordId", ToolJsonSchema.string("Existing record id from the locked dataset"));
+        properties.put("recordIndex", ToolJsonSchema.integer(
+                "PREFERRED: 1-based position of the record within the canonical dataset (record #1 = 1, "
+                        + "record #2 = 2, ... matching the numbered list GET_DATASET/FINALIZE_DATASET/START_DATASET "
+                        + "showed you). Core resolves this to the real canonical record id - you never need to know "
+                        + "or copy that id's exact format."));
+        properties.put("recordId", ToolJsonSchema.string(
+                "Fallback: the exact canonical record id string, only when recordIndex is not available. Prefer "
+                        + "recordIndex - do not guess or reconstruct this string by hand."));
         properties.put("status", ToolJsonSchema.string("VERIFIED or CORRECTED"));
         properties.put("correctedFullAddress", ToolJsonSchema.string("New full address, only when status=CORRECTED"));
         properties.put("correctedPostalCode", ToolJsonSchema.string("New postal code, only when status=CORRECTED"));
@@ -112,8 +122,15 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     private static Map<String, ToolJsonSchema> scheduleDayProperties() {
         Map<String, ToolJsonSchema> properties = new LinkedHashMap<>();
         properties.put("day", ToolJsonSchema.integer("Day number within the schedule"));
+        properties.put("storeIndexes", ToolJsonSchema.arrayOf(
+                ToolJsonSchema.integer("1-based position of a record within the canonical dataset"),
+                "PREFERRED: 1-based positions of the records visited this day (record #1 = 1, record #2 = 2, "
+                        + "...). Core resolves each to the real canonical record id - you never need to know or "
+                        + "copy that id's exact format."));
         properties.put("storeIds", ToolJsonSchema.arrayOf(
-                ToolJsonSchema.string("A dataset record id"), "Record ids scheduled on this day"));
+                ToolJsonSchema.string("A dataset record id"),
+                "Fallback: exact canonical record id strings, only when storeIndexes is not available. Prefer "
+                        + "storeIndexes - do not guess or reconstruct these strings by hand."));
         return properties;
     }
 
@@ -210,16 +227,19 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                         arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION)),
                 operation("VERIFY_DATASET",
                         "Submits a second-pass verification of the ALREADY-LOCKED dataset (stage=EXTRACTED) - "
-                                + "reports per-record status/corrections by record id, never a new independently "
-                                + "regenerated list. REQUIRED before GEOCODE_DATASET - geolocation is rejected on a "
-                                + "dataset that has not passed through this stage. Must cover every canonical record "
-                                + "id in the dataset EXACTLY ONCE - a partial pass (e.g. verifying only 1 of 23 "
-                                + "records) is rejected outright, not silently accepted as a full verification. If "
-                                + "this pass is missing any record id, duplicates one, or references an unknown id, "
-                                + "Core rejects the whole pass (nothing is applied, stage stays EXTRACTED) and lists "
-                                + "the exact missing/duplicate/unknown ids so you can resubmit a corrected pass. "
-                                + "Call GET_DATASET first if you are not certain of the exact current record ids. "
-                                + "On success the dataset advances to stage=LOCKED.",
+                                + "reports per-record status/corrections, never a new independently regenerated "
+                                + "list. Reference each record by recordIndex (preferred, 1-based position in the "
+                                + "canonical dataset - Core resolves it, you never need to know the internal id "
+                                + "format) rather than recordId. REQUIRED before GEOCODE_DATASET - geolocation is "
+                                + "rejected on a dataset that has not passed through this stage. Must cover every "
+                                + "canonical record EXACTLY ONCE - a partial pass (e.g. verifying only 1 of 23 "
+                                + "records) is rejected outright, not silently accepted as a full verification. An "
+                                + "out-of-range recordIndex rejects the whole call immediately with the valid range "
+                                + "- never guess or clamp one. If this pass is missing any record, duplicates one, "
+                                + "or references an unknown one, Core rejects the whole pass (nothing is applied, "
+                                + "stage stays EXTRACTED) and lists exactly what to fix. Call GET_DATASET first if "
+                                + "you are not certain of the exact current records. On success the dataset "
+                                + "advances to stage=LOCKED.",
                         true, ToolSafetyLevel.WRITE,
                         arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION),
                         arg("verifications", true, VERIFICATIONS_SCHEMA)),
@@ -236,13 +256,17 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "workflow is active, an explicit id must match the active dataset.")),
                 operation("SUBMIT_SCHEDULE",
                         "Submits a proposed day-by-day grouping of the locked dataset's records for validation. "
-                                + "Every record id in the dataset must appear in exactly one day, exactly once - no "
-                                + "record missing, none duplicated, no unknown/invented id. The whole submission is "
-                                + "rejected (nothing applied) if any of that is violated, with the exact missing/"
-                                + "duplicate/unknown ids listed so you can resubmit a corrected grouping. Call "
-                                + "GET_DATASET first if you are not certain of the exact current record ids. This "
-                                + "is required before presenting a final schedule to the user - never hand-count "
-                                + "or eyeball that every store was scheduled exactly once.",
+                                + "Reference each record by storeIndexes (preferred, 1-based positions in the "
+                                + "canonical dataset - Core resolves them, you never need to know the internal id "
+                                + "format) rather than storeIds. Every record must appear in exactly one day, "
+                                + "exactly once - no record missing, none duplicated, no unknown/invented "
+                                + "reference. The whole submission is rejected (nothing applied) if any of that is "
+                                + "violated, with the exact missing/duplicate/unknown ones listed so you can "
+                                + "resubmit a corrected grouping. An out-of-range storeIndex rejects the whole call "
+                                + "immediately with the valid range - never guess or clamp one. Call GET_DATASET "
+                                + "first if you are not certain of the exact current records. This is required "
+                                + "before presenting a final schedule to the user - never hand-count or eyeball "
+                                + "that every store was scheduled exactly once.",
                         true, ToolSafetyLevel.WRITE,
                         arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION),
                         arg("days", true, DAYS_SCHEMA))
@@ -351,12 +375,26 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
 
     private ToolResult verify(ToolRequest request) {
         String datasetId = arg(request, "datasetId");
+        Optional<StoreAuditDataset> datasetOpt = datasetService.getDataset(datasetId);
+        List<Object> rawVerifications = listArg(request, "verifications");
+        if (datasetOpt.isPresent()) {
+            Optional<ToolResult> indexError = validateRecordIndexRange(request, "VERIFY_DATASET", datasetOpt.get(),
+                    rawVerifications, "recordIndex");
+            if (indexError.isPresent()) {
+                return indexError.get();
+            }
+            Optional<ToolResult> mismatchError = validateNoRecordReferenceMismatch(request, "VERIFY_DATASET",
+                    datasetOpt.get(), rawVerifications, "recordIndex", "recordId");
+            if (mismatchError.isPresent()) {
+                return mismatchError.get();
+            }
+        }
         List<VerificationEntry> verifications = new ArrayList<>();
-        for (Object raw : listArg(request, "verifications")) {
+        for (Object raw : rawVerifications) {
             if (raw instanceof Map<?, ?> map) {
                 verifications.add(new VerificationEntry(
-                        textField(map, "recordId"), textField(map, "status"),
-                        textField(map, "correctedFullAddress"), textField(map, "correctedPostalCode")));
+                        resolveRecordReference(map, "recordIndex", "recordId", datasetOpt.orElse(null)),
+                        textField(map, "status"), textField(map, "correctedFullAddress"), textField(map, "correctedPostalCode")));
             }
         }
         VerifyOutcome outcome = datasetService.verifyDataset(datasetId, verifications);
@@ -389,10 +427,29 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
 
     private ToolResult submitSchedule(ToolRequest request) {
         String datasetId = arg(request, "datasetId");
+        Optional<StoreAuditDataset> datasetOpt = datasetService.getDataset(datasetId);
+        List<Object> rawDays = listArg(request, "days");
+        if (datasetOpt.isPresent()) {
+            Optional<ToolResult> stageError = validateStage(request, "SUBMIT_SCHEDULE", datasetOpt.get(),
+                    Set.of(DatasetStage.GEOLOCATED, DatasetStage.SCHEDULED));
+            if (stageError.isPresent()) {
+                return stageError.get();
+            }
+            List<Integer> allIndexes = new ArrayList<>();
+            for (Object raw : rawDays) {
+                if (raw instanceof Map<?, ?> map) {
+                    allIndexes.addAll(intListField(map, "storeIndexes"));
+                }
+            }
+            Optional<ToolResult> indexError = validateIndexesInRange(request, "SUBMIT_SCHEDULE", datasetOpt.get(), allIndexes);
+            if (indexError.isPresent()) {
+                return indexError.get();
+            }
+        }
         List<ScheduleDay> days = new ArrayList<>();
-        for (Object raw : listArg(request, "days")) {
+        for (Object raw : rawDays) {
             if (raw instanceof Map<?, ?> map) {
-                days.add(new ScheduleDay(intField(map, "day"), stringListField(map, "storeIds")));
+                days.add(new ScheduleDay(intField(map, "day"), resolveScheduleDayStoreIds(map, datasetOpt.orElse(null))));
             }
         }
         ScheduleSubmitOutcome outcome = datasetService.submitSchedule(datasetId, days);
@@ -410,6 +467,203 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                 true, List.of(datasetId), outcome.message(), datasetData(outcome.dataset()), "", "", false, "");
     }
 
+    /**
+     * Rejects a call outright, before any further payload validation, when the dataset is not in
+     * one of the operation's allowed stages - a hard, deterministic Store Audit state-machine
+     * precondition, never something the model has to remember from prose instructions alone. Used
+     * for {@code SUBMIT_SCHEDULE} (allowed only once geolocation has actually happened) so a model
+     * can never submit a schedule against un-geocoded records just because the record-id/count
+     * invariants happen to already be satisfiable.
+     *
+     * @param request tool request, for the rejection result
+     * @param operationName operation name, for the rejection result
+     * @param dataset the dataset the operation targets
+     * @param allowedStages stages this operation may run in
+     * @return a rejection result when the dataset's stage is not allowed; empty otherwise
+     */
+    private Optional<ToolResult> validateStage(ToolRequest request, String operationName, StoreAuditDataset dataset,
+            Set<DatasetStage> allowedStages) {
+        if (allowedStages.contains(dataset.stage())) {
+            return Optional.empty();
+        }
+        // workflowDocumentLoaded is loop-scoped state this tool has no visibility into - assumed
+        // true here so a LOCKED dataset's requiredNextAction reads as the next distinct OPERATION
+        // (GEOCODE_DATASET), not the document gate; NativeToolLoopService enforces that separate
+        // gate itself, with real workflowDocumentLoaded state, when GEOCODE_DATASET is attempted.
+        String requiredNextAction = StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), true);
+        String message = operationName + " cannot run while the dataset is " + dataset.stage() + ". "
+                + (requiredNextAction.isBlank() ? "The dataset is already at its terminal stage."
+                        : "Call storeDataset." + requiredNextAction + " (or location." + requiredNextAction + " if it "
+                                + "is a location operation) first.");
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("stage", dataset.stage().name());
+        data.put("requiredNextAction", requiredNextAction);
+        LOGGER.warn("[STORE_AUDIT] requestId={} {} rejected: invalid stage={} (requiredNextAction={})",
+                request.requestId(), operationName, dataset.stage(), requiredNextAction);
+        return Optional.of(new ToolResult(false, TOOL_NAME, operationName, request.requestId(), request.conversationId(),
+                false, List.of(), message, data, "STORE_AUDIT_INVALID_STAGE", message, false, ""));
+    }
+
+    // ---------------------------------------------------------------------
+    // Core-owned recordIndex/storeIndexes -> canonical record id resolution
+    //
+    // Mirrors sourceAttachmentIndex: the model references a record by its simple 1-based position
+    // within the canonical dataset (matching the numbered list it was shown) instead of having to
+    // remember/reconstruct the exact "store-NNN" id string. Resolution happens entirely here, in
+    // the tool layer, before StoreAuditDatasetService ever sees the call - its own recordId-based
+    // invariant checking (missing/duplicate/unknown ids) is completely unchanged.
+    // ---------------------------------------------------------------------
+
+    /**
+     * Extracts every {@code recordIndex} value across a list of verification-entry maps and rejects
+     * the WHOLE call if any is outside {@code 1..dataset.stores().size()} - never guessed, clamped,
+     * or silently skipped.
+     *
+     * @param request tool request, for the rejection result
+     * @param operationName operation name, for the rejection result
+     * @param dataset the dataset the indices are resolved against
+     * @param rawEntries raw {@code verifications} argument entries
+     * @param indexField the map key holding the index (e.g. {@code "recordIndex"})
+     * @return a rejection result if any index is out of range; empty otherwise
+     */
+    private Optional<ToolResult> validateRecordIndexRange(ToolRequest request, String operationName,
+            StoreAuditDataset dataset, List<Object> rawEntries, String indexField) {
+        List<Integer> indexes = new ArrayList<>();
+        for (Object raw : rawEntries) {
+            if (raw instanceof Map<?, ?> map) {
+                Integer index = integerField(map, indexField);
+                if (index != null) {
+                    indexes.add(index);
+                }
+            }
+        }
+        return validateIndexesInRange(request, operationName, dataset, indexes);
+    }
+
+    /**
+     * Rejects the WHOLE call if any of {@code indexes} is outside {@code 1..dataset.stores().size()}.
+     *
+     * @param request tool request, for the rejection result
+     * @param operationName operation name, for the rejection result
+     * @param dataset the dataset the indices are resolved against
+     * @param indexes every index value supplied in this call
+     * @return a rejection result if any index is out of range; empty otherwise
+     */
+    private Optional<ToolResult> validateIndexesInRange(ToolRequest request, String operationName,
+            StoreAuditDataset dataset, List<Integer> indexes) {
+        int recordCount = dataset.stores().size();
+        List<Integer> invalid = indexes.stream().distinct()
+                .filter(index -> index < 1 || index > recordCount)
+                .sorted().toList();
+        if (invalid.isEmpty()) {
+            return Optional.empty();
+        }
+        String message = "Rejected: index value(s) " + invalid + " is out of range - the canonical dataset has "
+                + recordCount + " record(s), so valid indices are "
+                + (recordCount == 0 ? "none (empty dataset)" : "1.." + recordCount) + ". Never guess, clamp, or "
+                + "skip an out-of-range index - call GET_DATASET to see the exact current records and resubmit.";
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("invalidIndexes", invalid);
+        if (invalid.size() == 1) {
+            data.put("recordIndex", invalid.get(0));
+        }
+        data.put("recordCount", recordCount);
+        LOGGER.warn("[STORE_AUDIT] requestId={} {} rejected: index value(s) out of range={} (valid range 1..{})",
+                request.requestId(), operationName, invalid, recordCount);
+        return Optional.of(new ToolResult(false, TOOL_NAME, operationName, request.requestId(), request.conversationId(),
+                false, List.of(), message, data, "STORE_RECORD_INDEX_OUT_OF_RANGE", message, false, ""));
+    }
+
+    /**
+     * Rejects the WHOLE call if any entry supplies BOTH an index and an id that resolve to
+     * different records - a model must never be allowed to reference two different records with
+     * one confused entry.
+     *
+     * @param request tool request, for the rejection result
+     * @param operationName operation name, for the rejection result
+     * @param dataset the dataset the index is resolved against
+     * @param rawEntries raw {@code verifications} argument entries
+     * @param indexField the map key holding the index (e.g. {@code "recordIndex"})
+     * @param idField the map key holding the fallback id (e.g. {@code "recordId"})
+     * @return a rejection result on the first conflicting entry found; empty otherwise
+     */
+    private Optional<ToolResult> validateNoRecordReferenceMismatch(ToolRequest request, String operationName,
+            StoreAuditDataset dataset, List<Object> rawEntries, String indexField, String idField) {
+        for (Object raw : rawEntries) {
+            if (!(raw instanceof Map<?, ?> map)) {
+                continue;
+            }
+            Integer index = integerField(map, indexField);
+            String suppliedId = textField(map, idField);
+            if (index == null || suppliedId.isBlank()) {
+                continue;
+            }
+            if (index < 1 || index > dataset.stores().size()) {
+                // Already rejected as out-of-range by validateRecordIndexRange, called first.
+                continue;
+            }
+            String resolvedId = dataset.stores().get(index - 1).id();
+            if (resolvedId.equals(suppliedId)) {
+                continue;
+            }
+            String message = "Rejected: " + indexField + "=" + index + " resolves to \"" + resolvedId
+                    + "\", but a conflicting \"" + idField + "\": \"" + suppliedId + "\" was also supplied for the "
+                    + "same entry. Supply only one reference per entry - prefer " + indexField + " alone.";
+            Map<String, Object> data = Map.of(
+                    indexField, index, "resolvedRecordId", resolvedId, "suppliedRecordId", suppliedId);
+            LOGGER.warn("[STORE_AUDIT] requestId={} {} rejected: {}={} resolves to {} but conflicting {}={} was also supplied",
+                    request.requestId(), operationName, indexField, index, resolvedId, idField, suppliedId);
+            return Optional.of(new ToolResult(false, TOOL_NAME, operationName, request.requestId(), request.conversationId(),
+                    false, List.of(), message, data, "STORE_RECORD_REFERENCE_MISMATCH", message, false, ""));
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Resolves one entry's record reference: {@code indexField} (preferred) resolved against the
+     * dataset's canonical, stably-ordered record list, falling back to {@code idField} directly
+     * when no index was supplied. Range/mismatch already validated by the caller before this runs.
+     *
+     * @param map raw entry map
+     * @param indexField the map key holding the index
+     * @param idField the map key holding the fallback id
+     * @param dataset the dataset to resolve against, null when unknown (falls back to idField only)
+     * @return resolved canonical record id, or the raw {@code idField} value when no index/dataset
+     */
+    private String resolveRecordReference(Map<?, ?> map, String indexField, String idField, StoreAuditDataset dataset) {
+        Integer index = integerField(map, indexField);
+        if (index != null && dataset != null && index >= 1 && index <= dataset.stores().size()) {
+            return dataset.stores().get(index - 1).id();
+        }
+        return textField(map, idField);
+    }
+
+    /**
+     * Resolves one schedule day's records: {@code storeIndexes} (preferred, resolved against the
+     * dataset's canonical record list) when non-empty, otherwise the raw {@code storeIds} strings.
+     * When both are supplied, {@code storeIndexes} wins outright (no per-element mismatch check -
+     * the two lists can legitimately differ in length, so pairing them positionally would be
+     * ambiguous; the model is simply told to prefer indexes, so a well-behaved model never sends
+     * both for the same day in practice).
+     *
+     * @param map raw day map
+     * @param dataset the dataset to resolve against, null when unknown (falls back to storeIds only)
+     * @return resolved canonical record ids for this day
+     */
+    private List<String> resolveScheduleDayStoreIds(Map<?, ?> map, StoreAuditDataset dataset) {
+        List<Integer> indexes = intListField(map, "storeIndexes");
+        if (!indexes.isEmpty() && dataset != null) {
+            List<String> resolved = new ArrayList<>();
+            for (Integer index : indexes) {
+                if (index != null && index >= 1 && index <= dataset.stores().size()) {
+                    resolved.add(dataset.stores().get(index - 1).id());
+                }
+            }
+            return resolved;
+        }
+        return stringListField(map, "storeIds");
+    }
+
     private Map<String, Object> datasetData(StoreAuditDataset dataset) {
         Map<String, Object> data = new HashMap<>();
         data.put("datasetId", dataset.datasetId());
@@ -421,7 +675,12 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
             data.put("expectedRecordCount", dataset.expectedRecordCount());
         }
         data.put("sourceAttachmentIds", dataset.sourceAttachmentIds());
-        data.put("records", dataset.stores().stream().map(this::recordMap).toList());
+        List<Map<String, Object>> records = new ArrayList<>();
+        List<StoreRecord> stores = dataset.stores();
+        for (int index = 0; index < stores.size(); index++) {
+            records.add(recordMap(stores.get(index), index + 1));
+        }
+        data.put("records", records);
         if (!dataset.schedule().isEmpty()) {
             data.put("schedule", dataset.schedule().stream().map(this::scheduleDayMap).toList());
         }
@@ -435,8 +694,9 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
         return map;
     }
 
-    private Map<String, Object> recordMap(StoreRecord record) {
+    private Map<String, Object> recordMap(StoreRecord record, int recordIndex) {
         Map<String, Object> map = new HashMap<>();
+        map.put("recordIndex", recordIndex);
         map.put("id", record.id());
         map.put("network", record.network());
         map.put("city", record.city());
@@ -502,6 +762,19 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     private Integer integerField(Map<?, ?> map, String key) {
         Object value = map.get(key);
         return value instanceof Number number ? number.intValue() : null;
+    }
+
+    private List<Integer> intListField(Map<?, ?> map, String key) {
+        Object value = map.get(key);
+        List<Integer> result = new ArrayList<>();
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                if (item instanceof Number number) {
+                    result.add(number.intValue());
+                }
+            }
+        }
+        return result;
     }
 
     private List<String> stringListField(Map<?, ?> map, String key) {

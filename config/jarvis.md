@@ -550,7 +550,7 @@ Each candidate record submitted to `storeDataset` must use this structure:
 "buildingNumber": "<building number>",
 "postalCode": "<postal code>",
 "fullAddress": "<street + building number + postal code + city>",
-"sourceAttachmentId": "<actual current-message attachment id>",
+"sourceAttachmentIndex": <1-based position in the CURRENT MESSAGE ATTACHMENTS list>,
 "sourceRow": <source row number or stable source position>
 }
 
@@ -594,7 +594,7 @@ Correct candidate:
 "buildingNumber": "7",
 "postalCode": "08-400",
 "fullAddress": "Korczaka 7, 08-400 Garwolin",
-"sourceAttachmentId": "<actual attachment id>",
+"sourceAttachmentIndex": 1,
 "sourceRow": 1
 }
 
@@ -602,22 +602,24 @@ Do not leave `fullAddress` blank when its components are available.
 
 For current-message attachments:
 
-`sourceAttachmentId`
-MUST contain the real attachment id associated with the source.
+`sourceAttachmentIndex`
+identifies WHICH numbered current-message attachment the record came
+from - the same numbering shown in the CURRENT MESSAGE ATTACHMENTS list
+(Image 1 = 1, Image 2 = 2, ...).
 
-Never invent an attachment id.
+Never guess this number.
 
-Never use:
+Never reference an attachment from a previous message or an earlier
+turn - only this message's own attachments are valid.
 
-* file name,
-* image number,
-* "attachment-1",
-* "image1",
-* conversation id,
-* dataset id,
+Core resolves this index to the real internal attachment id itself -
+you never need to know, copy, or construct that id.
 
-as a substitute unless that value is actually the attachment id supplied
-by Core.
+`sourceAttachmentId` (the old per-record field) still exists only as a
+fallback for the rare case of an explicit user-typed list with no
+attachments at all - when this message has image attachments, always
+use `sourceAttachmentIndex` instead; never invent a value for either
+field.
 
 `sourceRow` identifies the row or stable position of that store in the
 source attachment.
@@ -680,10 +682,7 @@ A correct CREATE_DATASET request conceptually contains:
 
 sourceImageCount: 1
 
-sourceAttachmentIds:
-[
-"<actual-source-attachment-id>"
-]
+expectedRecordCount: 3
 
 records:
 [
@@ -694,7 +693,7 @@ records:
 "buildingNumber": "7",
 "postalCode": "08-400",
 "fullAddress": "Korczaka 7, 08-400 Garwolin",
-"sourceAttachmentId": "<actual-source-attachment-id>",
+"sourceAttachmentIndex": 1,
 "sourceRow": 1
 },
 {
@@ -704,7 +703,7 @@ records:
 "buildingNumber": "1",
 "postalCode": "08-400",
 "fullAddress": "Targowa 1, 08-400 Garwolin",
-"sourceAttachmentId": "<actual-source-attachment-id>",
+"sourceAttachmentIndex": 1,
 "sourceRow": 2
 },
 {
@@ -714,15 +713,16 @@ records:
 "buildingNumber": "14",
 "postalCode": "08-400",
 "fullAddress": "Kościuszki 14, 08-400 Garwolin",
-"sourceAttachmentId": "<actual-source-attachment-id>",
+"sourceAttachmentIndex": 1,
 "sourceRow": 3
 }
 ]
 
 This example describes the required data shape.
 
-The real attachment id from the current request MUST replace the
-placeholder.
+`sourceAttachmentIndex: 1` means every record came from current-message
+image 1 - use the real position of whichever image each record actually
+came from.
 
 # ============================================================
 
@@ -796,7 +796,12 @@ After this visual/source verification, call:
 
 storeDataset.VERIFY_DATASET
 
-Use the canonical `recordId` values assigned by Core.
+Reference each record by `recordIndex` - its 1-based position in the
+canonical dataset, exactly as numbered in the records Core showed you
+(record #1 = 1, record #2 = 2, ...). Core resolves this to the real
+internal record id itself - you never need to know or copy that id's
+format. An out-of-range `recordIndex` rejects the whole call outright
+with the valid range - never guess or clamp one.
 
 For a correct record submit status:
 
@@ -912,15 +917,20 @@ When the proposed grouping is complete, submit it through:
 
 storeDataset.SUBMIT_SCHEDULE
 
-using canonical store record ids.
+Reference each record by `storeIndexes` - the 1-based positions of the
+records visited each day, exactly as numbered in the canonical dataset
+(record #1 = 1, record #2 = 2, ...). Core resolves each to the real
+internal record id itself - you never need to know or copy that id's
+format. An out-of-range `storeIndex` rejects the whole call outright
+with the valid range - never guess or clamp one.
 
 The submission must cover every store record exactly once.
 
 If Core rejects the schedule because of:
 
-* missing ids,
-* duplicate ids,
-* unknown ids,
+* missing records,
+* duplicate records,
+* unknown/invented references,
 
 correct the grouping and submit it again.
 
@@ -975,8 +985,10 @@ Dataset creation failure:
 -> retry appropriately
 
 Dataset verification failure:
--> GET_DATASET if necessary
--> use canonical record ids
+-> GET_DATASET if necessary (only when the dataset genuinely changed
+   since your last GET_DATASET call - Core blocks a repeated call
+   against an unchanged dataset)
+-> use the canonical recordIndex values shown in the current records
 -> recheck source
 -> retry VERIFY_DATASET
 
@@ -986,7 +998,7 @@ Geolocation failure:
 -> retry geolocation
 
 Schedule validation failure:
--> inspect missing, duplicate or unknown record ids
+-> inspect missing, duplicate or unknown/invented references
 -> correct the grouping
 -> retry SUBMIT_SCHEDULE
 
@@ -1035,6 +1047,20 @@ SOURCE
 -> PLAN
 -> SUBMIT
 -> TABLE
+
+Core enforces this order itself, deterministically - it is not only a
+prose instruction to remember. An operation attempted at the wrong stage
+(e.g. GEOCODE_DATASET before VERIFY_DATASET, or SUBMIT_SCHEDULE before
+geolocation) is rejected immediately with the current stage and the
+exact next required action - fix the call based on that, do not retry
+the same wrong operation.
+
+GET_DATASET returns the exact same content when called again against a
+dataset that has not changed since your last GET_DATASET call - Core
+recognizes this and returns a short reminder instead of repeating the
+full dataset. Only call GET_DATASET again after a real mutation
+(APPEND_RECORDS, VERIFY_DATASET, geolocation, SUBMIT_SCHEDULE) or when
+you have never fetched this dataset's current state yet.
 
 
 

@@ -82,6 +82,12 @@ class NativeToolLoopServiceReentrantWorkflowTest {
                         Map.of("network", "Siec", "fullAddress", "Adres 3", "sourceRow", 3)
                 ))));
         turns.add(textTurn(MISPLACED_TOOL_REQUEST)); // written as text instead of a real tool call
+        // GEOCODE_DATASET requires the dataset to be LOCKED first - verify every record (by
+        // recordIndex, the preferred model-facing reference) before geolocation is even attempted.
+        turns.add(toolCallTurn("storedataset__verify_dataset", Map.of("verifications", List.of(
+                Map.of("recordIndex", 1, "status", "VERIFIED"),
+                Map.of("recordIndex", 2, "status", "VERIFIED"),
+                Map.of("recordIndex", 3, "status", "VERIFIED")))));
         // No datasetId - Core auto-targets the active canonical Store Audit dataset.
         turns.add(toolCallTurn("location__geocode_dataset", Map.of()));
         turns.add(textTurn("Oto harmonogram wizyt."));  // premature - dataset not yet scheduled
@@ -142,6 +148,14 @@ class NativeToolLoopServiceReentrantWorkflowTest {
         turns.add(toolCallTurn("storedataset__append_records", Map.of(
                 "records", List.of(Map.of("network", "Siec", "fullAddress", "Adres 3", "sourceRow", 3)))));
         turns.add(toolCallTurn("storedataset__finalize_dataset", Map.of()));
+        // GEOCODE_DATASET requires both a LOCKED dataset and the required workflow document read
+        // first - verify every record (by recordIndex, the preferred model-facing reference), then
+        // read the document, before geolocation is even attempted.
+        turns.add(toolCallTurn("storedataset__verify_dataset", Map.of("verifications", List.of(
+                Map.of("recordIndex", 1, "status", "VERIFIED"),
+                Map.of("recordIndex", 2, "status", "VERIFIED"),
+                Map.of("recordIndex", 3, "status", "VERIFIED")))));
+        turns.add(toolCallTurn("knowledge__read_document", Map.of("path", "Work/Scheduling/StoreAuditScheduleWorkflow.md")));
         turns.add(toolCallTurn("location__geocode_dataset", Map.of()));
         turns.add(toolCallTurn("storedataset__submit_schedule", Map.of()));
         turns.add(textTurn("Oto harmonogram wizyt zbudowany przyrostowo."));
@@ -329,6 +343,10 @@ class NativeToolLoopServiceReentrantWorkflowTest {
                         new ToolArgumentDefinition("sourceAttachmentIds", "array", true, "Ids"),
                         new ToolArgumentDefinition("records", "array", true, "Records")
                 ), true, ToolSafetyLevel.WRITE),
+                new ToolOperationDefinition("VERIFY_DATASET", "Verify dataset.", List.of(
+                        new ToolArgumentDefinition("datasetId", "string", true, "Dataset id"),
+                        new ToolArgumentDefinition("verifications", "array", true, "Verifications")
+                ), true, ToolSafetyLevel.WRITE),
                 new ToolOperationDefinition("SUBMIT_SCHEDULE", "Submit schedule.", List.of(
                         new ToolArgumentDefinition("datasetId", "string", true, "Dataset id"),
                         new ToolArgumentDefinition("days", "array", true, "Days")
@@ -338,6 +356,11 @@ class NativeToolLoopServiceReentrantWorkflowTest {
     }
 
     private static ToolRegistry incrementalRegistry() {
+        ToolDefinition knowledge = new ToolDefinition("knowledge", "Knowledge workspace.", List.of(
+                new ToolOperationDefinition("READ_DOCUMENT", "Read a document.", List.of(
+                        new ToolArgumentDefinition("path", "string", true, "Path")
+                ), false, ToolSafetyLevel.READ)
+        ));
         ToolDefinition location = new ToolDefinition("location", "Geocoding.", List.of(
                 new ToolOperationDefinition("GEOCODE_DATASET", "Geocode dataset records.", List.of(
                         new ToolArgumentDefinition("datasetId", "string", true, "Dataset id")
@@ -356,12 +379,16 @@ class NativeToolLoopServiceReentrantWorkflowTest {
                 new ToolOperationDefinition("FINALIZE_DATASET", "Finalize dataset.", List.of(
                         new ToolArgumentDefinition("datasetId", "string", true, "Dataset id")
                 ), true, ToolSafetyLevel.WRITE),
+                new ToolOperationDefinition("VERIFY_DATASET", "Verify dataset.", List.of(
+                        new ToolArgumentDefinition("datasetId", "string", true, "Dataset id"),
+                        new ToolArgumentDefinition("verifications", "array", true, "Verifications")
+                ), true, ToolSafetyLevel.WRITE),
                 new ToolOperationDefinition("SUBMIT_SCHEDULE", "Submit schedule.", List.of(
                         new ToolArgumentDefinition("datasetId", "string", true, "Dataset id"),
                         new ToolArgumentDefinition("days", "array", true, "Days")
                 ), true, ToolSafetyLevel.WRITE)
         ));
-        return registryOf(location, storeDataset);
+        return registryOf(knowledge, location, storeDataset);
     }
 
     private static ToolRegistry knowledgeOnlyRegistry() {

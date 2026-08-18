@@ -126,7 +126,8 @@ class StoreDatasetToolTest {
     // VERIFY_DATASET/SUBMIT_SCHEDULE exactly like a one-shot CREATE_DATASET would.
     @Test
     void startAppendFinalizeThroughTheToolProducesADatasetUsableBySubmitSchedule() {
-        StoreDatasetTool tool = new StoreDatasetTool(new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool tool = new StoreDatasetTool(service);
 
         ToolResult started = tool.execute(new ToolRequest("storeDataset", "START_DATASET", "conversation-1", "request-1",
                 "extraction", "", Map.of(
@@ -177,6 +178,16 @@ class StoreDatasetToolTest {
         assertThat(finalized.success()).isTrue();
         assertThat(finalized.data().get("stage")).isEqualTo("EXTRACTED");
         assertThat(finalized.data().get("count")).isEqualTo(4);
+
+        // SUBMIT_SCHEDULE requires geolocation first (stage=GEOLOCATED) - advance the dataset for
+        // real through VERIFY_DATASET and geolocation before the schedule can be accepted.
+        List<String> ids = List.of("store-001", "store-002", "store-003", "store-004");
+        List<VerificationEntry> verifications = ids.stream()
+                .map(id -> new VerificationEntry(id, "VERIFIED", "", "")).toList();
+        assertThat(service.verifyDataset(datasetId, verifications).success()).isTrue();
+        List<GeolocationEntry> geolocations = ids.stream()
+                .map(id -> new GeolocationEntry(id, GeolocationStatus.RESOLVED, 52.0, 21.0)).toList();
+        assertThat(service.updateGeolocation(datasetId, geolocations).success()).isTrue();
 
         ToolResult schedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
                 "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
@@ -263,6 +274,16 @@ class StoreDatasetToolTest {
                 )));
         String datasetId = (String) created.data().get("datasetId");
 
+        // SUBMIT_SCHEDULE requires geolocation first (stage=GEOLOCATED) - advance the dataset for
+        // real through VERIFY_DATASET and geolocation before the schedule can be accepted.
+        List<String> ids = List.of("store-001", "store-002", "store-003");
+        List<VerificationEntry> verifications = ids.stream()
+                .map(id -> new VerificationEntry(id, "VERIFIED", "", "")).toList();
+        assertThat(service.verifyDataset(datasetId, verifications).success()).isTrue();
+        List<GeolocationEntry> geolocations = ids.stream()
+                .map(id -> new GeolocationEntry(id, GeolocationStatus.RESOLVED, 52.0, 21.0)).toList();
+        assertThat(service.updateGeolocation(datasetId, geolocations).success()).isTrue();
+
         ToolResult validSchedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
                 "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
                         Map.of("day", 1, "storeIds", List.of("store-001", "store-002", "store-003"))
@@ -279,6 +300,238 @@ class StoreDatasetToolTest {
         @SuppressWarnings("unchecked")
         List<String> missing = (List<String>) incompleteSchedule.data().get("missingStoreIds");
         assertThat(missing).containsExactly("store-003");
+    }
+
+    // =====================================================================
+    // Regression tests for Core-owned recordIndex/storeIndexes mapping and hard stage guards
+    // (round 4): the model references records by their simple 1-based position in the canonical
+    // dataset instead of having to remember/reconstruct "store-NNN" strings, and Core enforces the
+    // Store Audit state machine's order deterministically rather than relying on the model
+    // remembering a prose instruction.
+    // =====================================================================
+
+    // TEST 1: VERIFY recordIndex mapping - a 3-record dataset, verified via recordIndex 1..3
+    // instead of the exact "store-001".."store-003" strings.
+    @Test
+    void verifyDatasetResolvesRecordIndexToTheCanonicalRecordId() {
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool tool = new StoreDatasetTool(service);
+        String datasetId = createThreeRecordDataset(tool);
+
+        ToolResult verify = tool.execute(new ToolRequest("storeDataset", "VERIFY_DATASET", "conversation-1", "request-1",
+                "verification", "", Map.of("datasetId", datasetId, "verifications", List.of(
+                        Map.of("recordIndex", 1, "status", "VERIFIED"),
+                        Map.of("recordIndex", 2, "status", "VERIFIED"),
+                        Map.of("recordIndex", 3, "status", "VERIFIED")))));
+
+        assertThat(verify.success()).isTrue();
+        assertThat(verify.data().get("stage")).isEqualTo("LOCKED");
+    }
+
+    // TEST 2: 23-record VERIFY via recordIndex 1..23 - full coverage, no missing/unknown/duplicate,
+    // stage EXTRACTED -> LOCKED.
+    @Test
+    void verifyDatasetAcceptsATwentyThreeRecordPassEntirelyByRecordIndex() {
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool tool = new StoreDatasetTool(service);
+        String datasetId = createDatasetWithRecordCount(tool, 23);
+
+        List<Map<String, Object>> verifications = new java.util.ArrayList<>();
+        for (int index = 1; index <= 23; index++) {
+            verifications.add(Map.of("recordIndex", index, "status", "VERIFIED"));
+        }
+        ToolResult verify = tool.execute(new ToolRequest("storeDataset", "VERIFY_DATASET", "conversation-1", "request-1",
+                "verification", "", Map.of("datasetId", datasetId, "verifications", verifications)));
+
+        assertThat(verify.success()).isTrue();
+        assertThat(verify.data().get("stage")).isEqualTo("LOCKED");
+        assertThat(verify.data().get("count")).isEqualTo(23);
+    }
+
+    // TEST 3: out-of-range recordIndex rejects the WHOLE call outright - never guessed or clamped,
+    // dataset stays EXTRACTED.
+    @Test
+    void verifyDatasetRejectsAnOutOfRangeRecordIndex() {
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool tool = new StoreDatasetTool(service);
+        String datasetId = createDatasetWithRecordCount(tool, 23);
+
+        ToolResult verify = tool.execute(new ToolRequest("storeDataset", "VERIFY_DATASET", "conversation-1", "request-1",
+                "verification", "", Map.of("datasetId", datasetId, "verifications", List.of(
+                        Map.of("recordIndex", 24, "status", "VERIFIED")))));
+
+        assertThat(verify.success()).isFalse();
+        assertThat(verify.errorCode()).isEqualTo("STORE_RECORD_INDEX_OUT_OF_RANGE");
+        assertThat(verify.data().get("recordCount")).isEqualTo(23);
+
+        ToolResult get = tool.execute(new ToolRequest("storeDataset", "GET_DATASET", "conversation-1", "request-1",
+                "check", "", Map.of("datasetId", datasetId)));
+        assertThat(get.data().get("stage")).isEqualTo("EXTRACTED");
+    }
+
+    // TEST 4: the same recordIndex used twice - rejected per the existing full-coverage invariant
+    // (missing the other records, that one duplicated).
+    @Test
+    void verifyDatasetRejectsADuplicateRecordIndex() {
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool tool = new StoreDatasetTool(service);
+        String datasetId = createThreeRecordDataset(tool);
+
+        ToolResult verify = tool.execute(new ToolRequest("storeDataset", "VERIFY_DATASET", "conversation-1", "request-1",
+                "verification", "", Map.of("datasetId", datasetId, "verifications", List.of(
+                        Map.of("recordIndex", 1, "status", "VERIFIED"),
+                        Map.of("recordIndex", 1, "status", "VERIFIED"),
+                        Map.of("recordIndex", 2, "status", "VERIFIED")))));
+
+        assertThat(verify.success()).isFalse();
+        assertThat(verify.errorCode()).isEqualTo("STORE_DATASET_INVARIANT_VIOLATION");
+        @SuppressWarnings("unchecked")
+        List<String> duplicates = (List<String>) verify.data().get("duplicateRecordIds");
+        assertThat(duplicates).containsExactly("store-001");
+        @SuppressWarnings("unchecked")
+        List<String> missing = (List<String>) verify.data().get("missingRecordIds");
+        assertThat(missing).containsExactly("store-003");
+    }
+
+    // TEST 5: SUBMIT_SCHEDULE storeIndexes mapping - a 5-record dataset, scheduled via storeIndexes
+    // instead of the exact "store-001".."store-005" strings.
+    @Test
+    void submitScheduleResolvesStoreIndexesToTheCanonicalRecordIds() {
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool tool = new StoreDatasetTool(service);
+        String datasetId = createDatasetWithRecordCount(tool, 5);
+        verifyAllByIndex(tool, datasetId, 5);
+        geolocateAll(service, datasetId);
+
+        ToolResult schedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
+                "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
+                        Map.of("day", 1, "storeIndexes", List.of(1, 2, 3)),
+                        Map.of("day", 2, "storeIndexes", List.of(4, 5))))));
+
+        assertThat(schedule.success()).isTrue();
+        assertThat(schedule.data().get("stage")).isEqualTo("SCHEDULED");
+    }
+
+    // TEST 6: an out-of-range storeIndex is rejected deterministically - never guessed or clamped.
+    @Test
+    void submitScheduleRejectsAnOutOfRangeStoreIndex() {
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool tool = new StoreDatasetTool(service);
+        String datasetId = createDatasetWithRecordCount(tool, 23);
+        verifyAllByIndex(tool, datasetId, 23);
+        geolocateAll(service, datasetId);
+
+        ToolResult schedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
+                "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
+                        Map.of("day", 1, "storeIndexes", List.of(1, 99))))));
+
+        assertThat(schedule.success()).isFalse();
+        assertThat(schedule.errorCode()).isEqualTo("STORE_RECORD_INDEX_OUT_OF_RANGE");
+    }
+
+    // TEST 7: EXTRACTED -> GEOCODE_DATASET is a genuinely invalid stage transition; asserted at the
+    // LocationTool boundary (StoreDatasetTool has no GEOCODE_DATASET operation).
+    @Test
+    void geocodeDatasetRejectsAnExtractedDatasetImmediately() {
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool tool = new StoreDatasetTool(service);
+        String datasetId = createThreeRecordDataset(tool);
+        com.jarvis.tools.location.LocationTool locationTool = new com.jarvis.tools.location.LocationTool(
+                query -> { throw new AssertionError("GeocodingClient must never be invoked on an EXTRACTED dataset"); },
+                new com.jarvis.tools.location.RoutingClient() {
+                    @Override
+                    public com.jarvis.tools.location.RouteResult route(com.jarvis.tools.location.GeoPoint from, com.jarvis.tools.location.GeoPoint to) {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
+                    public com.jarvis.tools.location.RouteMatrixResult table(List<com.jarvis.tools.location.GeoPoint> points) {
+                        throw new UnsupportedOperationException();
+                    }
+                },
+                new com.jarvis.tools.location.LocationProperties(true, "https://nominatim.example", "https://osrm.example",
+                        "Test-Agent/1.0", 0, 25, 8, java.time.Duration.ofSeconds(1), java.time.Duration.ofSeconds(1), 5),
+                service);
+
+        ToolResult geocode = locationTool.execute(new ToolRequest("location", "GEOCODE_DATASET", "conversation-1", "request-1",
+                "geo", "", Map.of("datasetId", datasetId)));
+
+        assertThat(geocode.success()).isFalse();
+        assertThat(geocode.errorCode()).isEqualTo("STORE_DATASET_NOT_VERIFIED");
+    }
+
+    // TEST 8: EXTRACTED -> SUBMIT_SCHEDULE is a genuinely invalid stage transition - rejected
+    // immediately as STORE_AUDIT_INVALID_STAGE, never reaching the missing/duplicate/unknown
+    // invariant check.
+    @Test
+    void submitScheduleRejectsAnExtractedDatasetImmediately() {
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool tool = new StoreDatasetTool(service);
+        String datasetId = createThreeRecordDataset(tool);
+
+        ToolResult schedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
+                "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
+                        Map.of("day", 1, "storeIndexes", List.of(1, 2, 3))))));
+
+        assertThat(schedule.success()).isFalse();
+        assertThat(schedule.errorCode()).isEqualTo("STORE_AUDIT_INVALID_STAGE");
+        assertThat(schedule.data().get("stage")).isEqualTo("EXTRACTED");
+        assertThat(schedule.data().get("requiredNextAction")).isEqualTo("VERIFY_DATASET");
+    }
+
+    // TEST: LOCKED -> SUBMIT_SCHEDULE (geolocation skipped) is also rejected - never allowed just
+    // because the record-id coverage invariant happens to be satisfiable.
+    @Test
+    void submitScheduleRejectsALockedDatasetThatWasNeverGeolocated() {
+        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool tool = new StoreDatasetTool(service);
+        String datasetId = createThreeRecordDataset(tool);
+        verifyAllByIndex(tool, datasetId, 3);
+
+        ToolResult schedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
+                "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
+                        Map.of("day", 1, "storeIndexes", List.of(1, 2, 3))))));
+
+        assertThat(schedule.success()).isFalse();
+        assertThat(schedule.errorCode()).isEqualTo("STORE_AUDIT_INVALID_STAGE");
+        assertThat(schedule.data().get("stage")).isEqualTo("LOCKED");
+    }
+
+    private String createThreeRecordDataset(StoreDatasetTool tool) {
+        return createDatasetWithRecordCount(tool, 3);
+    }
+
+    private String createDatasetWithRecordCount(StoreDatasetTool tool, int count) {
+        List<Map<String, Object>> records = new java.util.ArrayList<>();
+        for (int row = 1; row <= count; row++) {
+            records.add(Map.of("network", "Biedronka", "fullAddress", "Adres " + row,
+                    "sourceAttachmentId", "att-1", "sourceRow", row));
+        }
+        ToolResult created = tool.execute(new ToolRequest("storeDataset", "CREATE_DATASET", "conversation-1", "request-1",
+                "extraction", "", Map.of(
+                        "sourceImageCount", 1,
+                        "sourceAttachmentIds", List.of("att-1"),
+                        "records", records
+                )));
+        assertThat(created.success()).isTrue();
+        return (String) created.data().get("datasetId");
+    }
+
+    private void verifyAllByIndex(StoreDatasetTool tool, String datasetId, int count) {
+        List<Map<String, Object>> verifications = new java.util.ArrayList<>();
+        for (int index = 1; index <= count; index++) {
+            verifications.add(Map.of("recordIndex", index, "status", "VERIFIED"));
+        }
+        ToolResult verify = tool.execute(new ToolRequest("storeDataset", "VERIFY_DATASET", "conversation-1", "request-1",
+                "verification", "", Map.of("datasetId", datasetId, "verifications", verifications)));
+        assertThat(verify.success()).isTrue();
+    }
+
+    private void geolocateAll(StoreAuditDatasetService service, String datasetId) {
+        StoreAuditDataset dataset = service.getDataset(datasetId).orElseThrow();
+        List<GeolocationEntry> entries = dataset.stores().stream()
+                .map(record -> new GeolocationEntry(record.id(), GeolocationStatus.RESOLVED, 52.0, 21.0)).toList();
+        assertThat(service.updateGeolocation(datasetId, entries).success()).isTrue();
     }
 
     private static final class NoopCognitiveEventBus implements CognitiveEventBus {

@@ -20,8 +20,10 @@ import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.ToolRuntimeProperties;
 import com.jarvis.tools.dataset.DatasetStage;
+import com.jarvis.tools.dataset.GeolocationStatus;
 import com.jarvis.tools.dataset.StoreAuditDataset;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
+import com.jarvis.tools.dataset.VerificationStatus;
 import com.jarvis.tools.workflow.CompletionAssessment;
 import com.jarvis.tools.workflow.StoreAuditWorkflowCompletionValidator;
 import com.jarvis.tools.workflow.WorkflowCompletionContext;
@@ -161,6 +163,13 @@ public class NativeToolLoopService {
         // are the hard backstop regardless).
         boolean datasetTouchedThisLoop = false;
         String activeDatasetId = existingDataset.map(StoreAuditDataset::datasetId).orElse("");
+        // Snapshot of the active dataset's state as of the last real (non-blocked) GET_DATASET call
+        // this loop, so a repeated GET_DATASET on an UNCHANGED dataset can be short-circuited into a
+        // compact "nothing changed" result instead of the model burning several more inference turns
+        // re-reading the exact same records. Naturally invalidated by any real mutation in between -
+        // the live signature is always recomputed fresh at check time, so it simply no longer matches
+        // once anything actually changed, with no separate invalidation step needed.
+        String lastGetDatasetSignature = "";
         // True once a successful knowledge__read_document call this loop matched the active
         // workflow's required document path (see WorkflowCompletionValidator#requiredDocumentPath)
         // - trivially true when the active validator declares no required document, so this never
@@ -168,6 +177,14 @@ public class NativeToolLoopService {
         boolean workflowDocumentLoaded = completionValidator.requiredDocumentPath().isEmpty();
         int malformedContinuationAttempts = 0;
         int completionGateAttempts = 0;
+        // Separate from completionGateAttempts above: that counter bounds how many times guidance
+        // is pushed back, but a re-entry decided upon at exactly the last allowed step previously
+        // had nowhere to actually run - the outer for-loop's own step<=maxCalls condition ended the
+        // loop right after the "continue", so the completion gate's decision to re-enter was never
+        // actually honored. This bounded extension (small, capped) is granted only when the normal
+        // budget is genuinely exhausted at the moment a legitimate re-entry is decided, so recovery
+        // gets a REAL turn instead of an empty promise - never unbounded, never granted otherwise.
+        int completionRecoveryExtensionsUsed = 0;
         int emptyResponseRetries = 0;
         messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions, existingDataset)));
         messages.add(ModelMessage.user(request.userMessage(), request.images()));
@@ -234,11 +251,11 @@ public class NativeToolLoopService {
                             datasetTouchedThisLoop = true;
                             Object suppliedRaw = action.arguments().get("datasetId");
                             String supplied = suppliedRaw == null ? "" : String.valueOf(suppliedRaw);
-                            ToolResult mismatch = datasetIdMismatchResult(request, action, activeDatasetId, supplied);
+                            ToolResult mismatch = datasetIdMismatchResult(request, action, activeDatasetId, supplied, workflowDocumentLoaded);
                             results.add(mismatch);
                             steps.add(new ToolRuntimeStep(step, "STORE_DATASET_ID_MISMATCH", action.tool(), action.operation(), "BLOCKED", mismatch));
                             messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(mismatch)));
-                            messages.add(ModelMessage.system(workflowStatusBlock(request, activeDatasetId)));
+                            messages.add(ModelMessage.system(workflowStatusBlock(request, activeDatasetId, workflowDocumentLoaded)));
                             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "STORE_DATASET_ID_MISMATCH",
                                     "Supplied datasetId does not match the active Store Audit dataset", null, step, Map.of(
                                             "tool", action.tool(), "operation", action.operation(),
@@ -248,6 +265,51 @@ public class NativeToolLoopService {
                             continue;
                         }
                         action = resolved.get();
+                    }
+                    // Hard precondition, enforced by Core rather than left to the model remembering
+                    // a prose instruction: GEOCODE_DATASET on a LOCKED dataset must never run before
+                    // the required workflow document has actually been read this loop - rejected
+                    // immediately, before the real LocationTool/geocoding provider is ever called.
+                    if (isGeocodeDataset(action) && !activeDatasetId.isBlank()) {
+                        Optional<ToolResult> docGateRejection = geocodeWorkflowDocumentGateResult(
+                                request, action, activeDatasetId, workflowDocumentLoaded);
+                        if (docGateRejection.isPresent()) {
+                            datasetTouchedThisLoop = true;
+                            ToolResult blocked = docGateRejection.get();
+                            results.add(blocked);
+                            steps.add(new ToolRuntimeStep(step, "STORE_AUDIT_WORKFLOW_DOCUMENT_NOT_LOADED", action.tool(), action.operation(), "BLOCKED", blocked));
+                            messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(blocked)));
+                            messages.add(ModelMessage.system(workflowStatusBlock(request, activeDatasetId, workflowDocumentLoaded)));
+                            publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "STORE_AUDIT_WORKFLOW_DOCUMENT_NOT_LOADED",
+                                    "GEOCODE_DATASET blocked - required workflow document not read yet", null, step, Map.of(
+                                            "tool", action.tool(), "operation", action.operation(), "activeDatasetId", activeDatasetId));
+                            LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} step={} blocked GEOCODE_DATASET - required workflow document not read yet this loop",
+                                    request.requestId(), step);
+                            continue;
+                        }
+                    }
+                    // State-aware no-progress guard for GET_DATASET: if this exact dataset's state
+                    // (stage/count/verification/geolocation/schedule) is identical to what it was
+                    // the last time this loop actually called GET_DATASET for real, calling it again
+                    // can only return the exact same content - short-circuit with a compact reminder
+                    // instead, so the model spends its next turn on the real next step. Never blocks
+                    // a genuinely fresh GET_DATASET (first call this loop, a different dataset, or
+                    // one whose state legitimately changed since the last real call).
+                    if (isGetDataset(action) && !activeDatasetId.isBlank() && !lastGetDatasetSignature.isBlank()) {
+                        Optional<ToolResult> noProgress = getDatasetNoProgressResult(
+                                request, action, activeDatasetId, workflowDocumentLoaded, lastGetDatasetSignature);
+                        if (noProgress.isPresent()) {
+                            ToolResult blocked = noProgress.get();
+                            results.add(blocked);
+                            steps.add(new ToolRuntimeStep(step, "GET_DATASET_NO_PROGRESS", action.tool(), action.operation(), "BLOCKED", blocked));
+                            messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(blocked)));
+                            publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "GET_DATASET_NO_PROGRESS",
+                                    "Repeated GET_DATASET blocked - dataset unchanged since the last call", null, step,
+                                    Map.of("tool", action.tool(), "operation", action.operation(), "activeDatasetId", activeDatasetId));
+                            LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} blocked repeated GET_DATASET - dataset unchanged since the last real call",
+                                    request.requestId(), step);
+                            continue;
+                        }
                     }
                     String fingerprint = actionFingerprint(action);
                     if (!callFingerprints.add(fingerprint)) {
@@ -347,6 +409,10 @@ public class NativeToolLoopService {
                             if (datasetIdValue != null && !String.valueOf(datasetIdValue).isBlank()) {
                                 activeDatasetId = String.valueOf(datasetIdValue);
                             }
+                            if (isGetDataset(action)) {
+                                lastGetDatasetSignature = datasetService.getDataset(activeDatasetId)
+                                        .map(this::datasetStateSignature).orElse("");
+                            }
                         }
                         // A storeDataset operation actually executing is state-level proof this is a
                         // stateful-workflow task, however the loop's own upfront ToolIntent guess
@@ -361,7 +427,7 @@ public class NativeToolLoopService {
                                 request.requestId(), activeDatasetId,
                                 result.data().getOrDefault("stage", ""), result.data().getOrDefault("count", ""),
                                 result.data().getOrDefault("expectedRecordCount", ""), workflowDocumentLoaded);
-                        messages.add(ModelMessage.system(workflowStatusBlock(request, activeDatasetId)));
+                        messages.add(ModelMessage.system(workflowStatusBlock(request, activeDatasetId, workflowDocumentLoaded)));
                     }
                     if (isRequiredWorkflowDocumentRead(action, result)) {
                         workflowDocumentLoaded = true;
@@ -463,17 +529,27 @@ public class NativeToolLoopService {
                         datasetCreationAttemptFailed, lastDatasetCreationError);
                 CompletionAssessment assessment = completionValidator.assess(completionContext);
                 LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={}",
-                        request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId));
+                        request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId, workflowDocumentLoaded));
                 if (!assessment.complete()) {
                     if (completionGateAttempts < MAX_COMPLETION_GATE_ATTEMPTS) {
                         completionGateAttempts++;
+                        boolean recoveryExtension = false;
+                        if (step >= maxCalls && completionRecoveryExtensionsUsed == 0) {
+                            completionRecoveryExtensionsUsed = MAX_COMPLETION_RECOVERY_EXTENSIONS;
+                            maxCalls += MAX_COMPLETION_RECOVERY_EXTENSIONS;
+                            recoveryExtension = true;
+                            LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} COMPLETION_RECOVERY_BUDGET_EXTENDED maxCalls={} extensionsGranted={}",
+                                    request.requestId(), step, maxCalls, MAX_COMPLETION_RECOVERY_EXTENSIONS);
+                        }
                         LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} REENTER_TOOL_LOOP reason=WORKFLOW_NOT_COMPLETE attempt={}",
                                 request.requestId(), step, completionGateAttempts);
                         publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
                                 "Workflow not complete yet, continuing tool loop", null, step,
                                 Map.of("reason", assessment.reason(), "attempt", completionGateAttempts));
                         messages.add(ModelMessage.assistant(content, List.of()));
-                        messages.add(ModelMessage.system(assessment.guidance()));
+                        messages.add(ModelMessage.system(recoveryExtension
+                                ? recoveryGuidance(activeDatasetId, workflowDocumentLoaded, assessment.guidance())
+                                : assessment.guidance()));
                         continue;
                     }
                     LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} completion-gate retries exhausted reason={}, accepting answer as-is",
@@ -502,15 +578,25 @@ public class NativeToolLoopService {
                         datasetCreationAttemptFailed, lastDatasetCreationError);
                 CompletionAssessment assessment = completionValidator.assess(completionContext);
                 LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={} path=emptyResponse",
-                        request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId));
+                        request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId, workflowDocumentLoaded));
                 if (!assessment.complete() && completionGateAttempts < MAX_COMPLETION_GATE_ATTEMPTS) {
                     completionGateAttempts++;
+                    boolean recoveryExtension = false;
+                    if (step >= maxCalls && completionRecoveryExtensionsUsed == 0) {
+                        completionRecoveryExtensionsUsed = MAX_COMPLETION_RECOVERY_EXTENSIONS;
+                        maxCalls += MAX_COMPLETION_RECOVERY_EXTENSIONS;
+                        recoveryExtension = true;
+                        LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} COMPLETION_RECOVERY_BUDGET_EXTENDED maxCalls={} extensionsGranted={} path=emptyResponse",
+                                request.requestId(), step, maxCalls, MAX_COMPLETION_RECOVERY_EXTENSIONS);
+                    }
                     LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} REENTER_TOOL_LOOP reason=WORKFLOW_NOT_COMPLETE attempt={} path=emptyResponse",
                             request.requestId(), step, completionGateAttempts);
                     publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
                             "Workflow not complete yet after an empty model turn, continuing tool loop", null, step,
                             Map.of("reason", assessment.reason(), "attempt", completionGateAttempts));
-                    messages.add(ModelMessage.system(assessment.guidance()));
+                    messages.add(ModelMessage.system(recoveryExtension
+                            ? recoveryGuidance(activeDatasetId, workflowDocumentLoaded, assessment.guidance())
+                            : assessment.guidance()));
                     continue;
                 }
                 if (!assessment.complete()) {
@@ -546,7 +632,7 @@ public class NativeToolLoopService {
         // it actually touched still incomplete - never let the generic apology imply otherwise;
         // name the exact stage so the honest failure is at least actionable on the next turn.
         if (datasetTouchedThisLoop && !activeDatasetId.isBlank()) {
-            fallback = appendIncompleteWorkflowNote(fallback, activeDatasetId);
+            fallback = appendIncompleteWorkflowNote(fallback, activeDatasetId, workflowDocumentLoaded);
         }
         saveDebug(request, intent, steps, errors.isEmpty() ? "FINISHED" : "FAILED", errors);
         publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, errors.isEmpty() ? "FINISHED" : "FAILED",
@@ -650,8 +736,26 @@ public class NativeToolLoopService {
             result = toolExecutionFailedResult(request, action, error);
         }
         publish(request, CognitiveEventType.TOOL_EXECUTION_FINISHED, result.success() ? "FINISHED" : "FAILED",
-                "Tool execution finished", targetNode(action), step, resultMetadata(result));
+                toolExecutionFinishedMessage(result), targetNode(action), step, resultMetadata(result));
         return result;
+    }
+
+    /**
+     * Progress-stream message for a finished tool call - a generic "Tool execution finished" told
+     * the user nothing when a call actually failed (surfaced verbatim in the UI as if that were the
+     * error itself). A failed result's own {@code message()}/{@code errorMessage()} is real,
+     * specific, model-facing guidance (e.g. "23 nieznane identyfikatory rekordow") and is far more
+     * useful shown to the user directly than a generic label.
+     *
+     * @param result the finished tool result
+     * @return a specific message for a failure, the generic label for a genuine success
+     */
+    private String toolExecutionFinishedMessage(ToolResult result) {
+        if (result.success()) {
+            return "Tool execution finished";
+        }
+        String detail = !result.message().isBlank() ? result.message() : result.errorMessage();
+        return detail.isBlank() ? "Tool execution failed" : detail;
     }
 
     private ToolResult toolExecutionFailedResult(ToolCallingRequest request, ToolAction action, String error) {
@@ -926,6 +1030,42 @@ public class NativeToolLoopService {
     }
 
     /**
+     * Builds a tightly-constrained recovery message for a completion-gate re-entry that only exists
+     * because of a bounded budget extension (see {@link #MAX_COMPLETION_RECOVERY_EXTENSIONS}) - a
+     * genuinely bonus turn, not a fresh normal one, so this is deliberately narrower than {@link
+     * CompletionAssessment#guidance()}: it names the exact next action and, for the two operations
+     * that need it, the exact valid recordIndex/storeIndexes range, and explicitly tells the model
+     * not to spend this scarce turn on GET_DATASET again. Falls back to {@code fallback} (normally
+     * the assessment's own guidance) when the dataset can no longer be found.
+     *
+     * @param activeDatasetId Core's canonical active dataset id
+     * @param workflowDocumentLoaded whether the required workflow document has been read this loop
+     * @param fallback guidance to use if the dataset is no longer found
+     * @return constrained recovery guidance text
+     */
+    private String recoveryGuidance(String activeDatasetId, boolean workflowDocumentLoaded, String fallback) {
+        return datasetService.getDataset(activeDatasetId).map(dataset -> {
+            String nextAction = StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded);
+            StringBuilder builder = new StringBuilder();
+            builder.append("STORE AUDIT RECOVERY\n\n")
+                    .append("Current stage: ").append(dataset.stage()).append("\n")
+                    .append("Required next action: ").append(nextAction.isBlank() ? "none - already complete" : nextAction).append("\n")
+                    .append("Canonical record count: ").append(dataset.stores().size()).append("\n\n");
+            if ("VERIFY_DATASET".equals(nextAction)) {
+                builder.append("Use recordIndex values 1..").append(dataset.stores().size())
+                        .append(" - every one, exactly once.\n\n");
+            } else if ("SUBMIT_SCHEDULE".equals(nextAction)) {
+                builder.append("Use storeIndexes values 1..").append(dataset.stores().size())
+                        .append(" across the day groupings - every one, exactly once.\n\n");
+            }
+            builder.append("This is one of only a few remaining recovery turns for this task - act directly on "
+                    + "the required next action above. Do not call GET_DATASET again unless the dataset actually "
+                    + "changed since your last call.");
+            return builder.toString();
+        }).orElse(fallback);
+    }
+
+    /**
      * Builds a compact, repeatable status reminder appended right after a {@code storeDataset}/
      * {@code GEOCODE_DATASET} tool result - so the model's ORIGINAL task never gets lost behind a
      * narrow intermediate tool goal (e.g. "storeDataset.START_DATASET(sourceImageCount=2)") after
@@ -935,9 +1075,10 @@ public class NativeToolLoopService {
      *
      * @param request tool-calling request, for the original user goal
      * @param datasetId the dataset this status describes, blank if none is active yet
+     * @param workflowDocumentLoaded whether the required workflow document has been read this loop
      * @return compact status block, or empty string when there is no dataset to describe
      */
-    private String workflowStatusBlock(ToolCallingRequest request, String datasetId) {
+    private String workflowStatusBlock(ToolCallingRequest request, String datasetId, boolean workflowDocumentLoaded) {
         if (datasetId.isBlank()) {
             return "";
         }
@@ -947,12 +1088,14 @@ public class NativeToolLoopService {
                 CANONICAL DATASET ID: %s
                 REQUIRED TERMINAL STATE: SCHEDULED
                 CURRENT STATE: %s (%s record(s))
-                NEXT REQUIRED STAGE: %s
+                REQUIRED WORKFLOW DOCUMENT LOADED: %s
+                NEXT REQUIRED ACTION: %s
                 This is the ONLY valid datasetId for this workflow - never invent, reuse, or restate a
                 different one; storeDataset/GEOCODE_DATASET calls in this workflow do not even need to
                 include datasetId, Core targets this exact dataset automatically.
                 """.formatted(request.userMessage(), dataset.datasetId(), dataset.stage(),
-                        recordCountLabel(dataset), nextRequiredStageHint(dataset.stage()))).orElse("");
+                        recordCountLabel(dataset), workflowDocumentLoaded,
+                        StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded))).orElse("");
     }
 
     private String recordCountLabel(StoreAuditDataset dataset) {
@@ -968,21 +1111,23 @@ public class NativeToolLoopService {
         return datasetService.getDataset(datasetId).map(dataset -> dataset.stage().name()).orElse("n/a");
     }
 
-    private String nextRequiredActionFor(String datasetId) {
+    /**
+     * Delegates to {@link StoreAuditWorkflowCompletionValidator#nextRequiredAction} - the single
+     * source of truth for "what's next" shared by the compact workflow status block, completion-gate
+     * guidance, and hard stage-guard rejections, so this loop never carries its own drifting copy of
+     * the Store Audit state machine.
+     *
+     * @param datasetId the dataset to describe, blank if none is active yet
+     * @param workflowDocumentLoaded whether the required workflow document has been read this loop
+     * @return next required action label, {@code "n/a"} when there is no active dataset
+     */
+    private String nextRequiredActionFor(String datasetId, boolean workflowDocumentLoaded) {
         if (datasetId.isBlank()) {
             return "n/a";
         }
-        return datasetService.getDataset(datasetId).map(dataset -> nextRequiredStageHint(dataset.stage())).orElse("n/a");
-    }
-
-    private String nextRequiredStageHint(DatasetStage stage) {
-        return switch (stage) {
-            case BUILDING -> "APPEND_RECORDS / FINALIZE_DATASET";
-            case EXTRACTED -> "VERIFY_DATASET";
-            case LOCKED -> "GEOCODE_DATASET";
-            case GEOLOCATED -> "SUBMIT_SCHEDULE";
-            case SCHEDULED -> "none - present the final table to the user";
-        };
+        return datasetService.getDataset(datasetId)
+                .map(dataset -> StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded))
+                .orElse("n/a");
     }
 
     /**
@@ -1343,6 +1488,102 @@ public class NativeToolLoopService {
                 || ("location".equalsIgnoreCase(action.tool()) && "GEOCODE_DATASET".equalsIgnoreCase(action.operation()));
     }
 
+    private boolean isGeocodeDataset(ToolAction action) {
+        return "location".equalsIgnoreCase(action.tool()) && "GEOCODE_DATASET".equalsIgnoreCase(action.operation());
+    }
+
+    private boolean isGetDataset(ToolAction action) {
+        return "storedataset".equalsIgnoreCase(action.tool()) && "GET_DATASET".equalsIgnoreCase(action.operation());
+    }
+
+    /**
+     * Compact signature of everything about a dataset that a {@code GET_DATASET} call could
+     * possibly report differently: stage, record count, how many records have been verified,
+     * geolocated, and the accepted schedule's size. Two calls with an identical signature return
+     * identical content, by construction - this is what {@link #getDatasetNoProgressResult} compares
+     * against to decide whether a repeated call can only be a no-progress loop.
+     *
+     * @param dataset dataset to summarize
+     * @return compact state signature
+     */
+    private String datasetStateSignature(StoreAuditDataset dataset) {
+        long verifiedCount = dataset.stores().stream()
+                .filter(record -> record.verificationStatus() != VerificationStatus.UNVERIFIED).count();
+        long geoResolvedCount = dataset.stores().stream()
+                .filter(record -> record.geolocationStatus() != GeolocationStatus.PENDING).count();
+        return dataset.stage() + "|" + dataset.stores().size() + "|" + verifiedCount + "|" + geoResolvedCount
+                + "|" + dataset.schedule().size();
+    }
+
+    /**
+     * Short-circuits a {@code GET_DATASET} call into a compact "nothing changed" result when the
+     * active dataset's current state signature is identical to what it was the last time this loop
+     * actually called {@code GET_DATASET} for real - never blocks a genuinely fresh call (first
+     * GET_DATASET this loop, a different dataset, or one whose state has legitimately changed).
+     *
+     * @param request tool-calling request
+     * @param action the GET_DATASET action (datasetId already resolved to the canonical id)
+     * @param activeDatasetId Core's canonical active dataset id
+     * @param workflowDocumentLoaded whether the required workflow document has been read this loop
+     * @param lastGetDatasetSignature the state signature as of the last real GET_DATASET this loop
+     * @return a compact no-progress result when the dataset is genuinely unchanged; empty otherwise
+     */
+    private Optional<ToolResult> getDatasetNoProgressResult(ToolCallingRequest request, ToolAction action,
+            String activeDatasetId, boolean workflowDocumentLoaded, String lastGetDatasetSignature) {
+        Optional<StoreAuditDataset> dataset = datasetService.getDataset(activeDatasetId);
+        if (dataset.isEmpty() || !datasetStateSignature(dataset.get()).equals(lastGetDatasetSignature)) {
+            return Optional.empty();
+        }
+        StoreAuditDataset value = dataset.get();
+        String nextAction = StoreAuditWorkflowCompletionValidator.nextRequiredAction(value.stage(), workflowDocumentLoaded);
+        String message = "You already have the current canonical dataset - it has not changed since your last "
+                + "GET_DATASET call. Current stage: " + value.stage() + " (" + value.stores().size() + " record(s)). "
+                + "Next required action: " + (nextAction.isBlank() ? "none - already complete" : nextAction) + ". "
+                + "Act on that directly instead of calling GET_DATASET again.";
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("stage", value.stage().name());
+        data.put("count", value.stores().size());
+        data.put("nextRequiredAction", nextAction);
+        return Optional.of(new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
+                false, List.of(activeDatasetId), message, data, "STORE_DATASET_GET_NO_PROGRESS", message, false, ""));
+    }
+
+    /**
+     * Hard precondition for {@code GEOCODE_DATASET}: on a {@code LOCKED} dataset, the active
+     * workflow's required document (if any) must actually have been read THIS loop before geocoding
+     * runs - never left to the model remembering a system-prompt instruction. Only ever returns a
+     * rejection when the resolved dataset is genuinely {@code LOCKED} and a required document path
+     * is declared but not yet loaded; every other stage is left to the existing stage checks deeper
+     * in {@code LocationTool}/{@code StoreAuditDatasetService}.
+     *
+     * @param request tool-calling request
+     * @param action the GEOCODE_DATASET action (datasetId already resolved to the canonical id)
+     * @param activeDatasetId Core's canonical active dataset id
+     * @param workflowDocumentLoaded whether the required document has been read this loop
+     * @return a rejection result when the gate blocks this call; empty otherwise
+     */
+    private Optional<ToolResult> geocodeWorkflowDocumentGateResult(ToolCallingRequest request, ToolAction action,
+            String activeDatasetId, boolean workflowDocumentLoaded) {
+        if (workflowDocumentLoaded || completionValidator.requiredDocumentPath().isEmpty()) {
+            return Optional.empty();
+        }
+        Optional<StoreAuditDataset> dataset = datasetService.getDataset(activeDatasetId);
+        if (dataset.isEmpty() || dataset.get().stage() != DatasetStage.LOCKED) {
+            return Optional.empty();
+        }
+        String documentPath = completionValidator.requiredDocumentPath().get();
+        String message = "GEOCODE_DATASET cannot run yet - the dataset (datasetId=" + activeDatasetId
+                + ", stage=LOCKED) is ready for geolocation, but the required workflow document has not been read "
+                + "this task. Call knowledge__read_document(path=\"" + documentPath + "\") first, then retry "
+                + "GEOCODE_DATASET.";
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("stage", DatasetStage.LOCKED.name());
+        data.put("requiredNextAction", "READ_REQUIRED_WORKFLOW_DOCUMENT");
+        data.put("requiredDocumentPath", documentPath);
+        return Optional.of(new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
+                false, List.of(activeDatasetId), message, data, "STORE_AUDIT_WORKFLOW_DOCUMENT_NOT_LOADED", message, false, ""));
+    }
+
     /**
      * True for an operation that references an EXISTING canonical dataset by id (as opposed to
      * {@code CREATE_DATASET}/{@code START_DATASET}, which create a new one and take no {@code
@@ -1403,9 +1644,11 @@ public class NativeToolLoopService {
      * @param action the rejected action
      * @param activeDatasetId Core's canonical active dataset id
      * @param supplied the model-supplied, non-matching datasetId
+     * @param workflowDocumentLoaded whether the required workflow document has been read this loop
      * @return a failed {@code STORE_DATASET_ID_MISMATCH} result
      */
-    private ToolResult datasetIdMismatchResult(ToolCallingRequest request, ToolAction action, String activeDatasetId, String supplied) {
+    private ToolResult datasetIdMismatchResult(ToolCallingRequest request, ToolAction action, String activeDatasetId,
+            String supplied, boolean workflowDocumentLoaded) {
         Optional<StoreAuditDataset> active = datasetService.getDataset(activeDatasetId);
         String message = "An active Store Audit dataset already exists for this workflow. Canonical datasetId: "
                 + activeDatasetId + ". The supplied datasetId: " + supplied + " does not match the active dataset. "
@@ -1419,7 +1662,8 @@ public class NativeToolLoopService {
         if (active.isPresent() && active.get().expectedRecordCount() > 0) {
             data.put("expectedRecordCount", active.get().expectedRecordCount());
         }
-        data.put("nextRequiredAction", active.map(dataset -> nextRequiredStageHint(dataset.stage())).orElse(""));
+        data.put("nextRequiredAction", active.map(dataset ->
+                StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded)).orElse(""));
         return new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
                 false, List.of(activeDatasetId), message, data, "STORE_DATASET_ID_MISMATCH", message, false, "");
     }
@@ -1438,6 +1682,17 @@ public class NativeToolLoopService {
      * as-is rather than nagging forever - the outer step/timeout budget is the hard backstop.
      */
     private static final int MAX_COMPLETION_GATE_ATTEMPTS = 3;
+
+    /**
+     * The first time a completion-gate re-entry is decided upon at (or past) the normal step
+     * budget, {@code maxCalls} is bumped by this many turns IN ONE SHOT (not incrementally one at a
+     * time) - a genuine recovery from an early stage can legitimately need several consecutive
+     * operations in a row (e.g. VERIFY_DATASET, read the required document, GEOCODE_DATASET,
+     * SUBMIT_SCHEDULE), so a single bonus turn would only ever cover the first of those and still
+     * leave the loop stranded. Granted only once per loop (bounded, not unbounded) - see {@link
+     * #recoveryGuidance}.
+     */
+    private static final int MAX_COMPLETION_RECOVERY_EXTENSIONS = 5;
 
     private static final String REENTER_AFTER_TEXT_TOOL_REQUEST_NOTE =
             "You described a tool request as JSON/text instead of making an actual tool call. This loop has "
@@ -1559,17 +1814,18 @@ public class NativeToolLoopService {
      *
      * @param fallback the fallback answer computed so far, possibly blank
      * @param datasetId the dataset touched this loop
+     * @param workflowDocumentLoaded whether the required workflow document has been read this loop
      * @return fallback with the incomplete-workflow note appended, unchanged if the dataset is
      *         already SCHEDULED or no longer found
      */
-    private String appendIncompleteWorkflowNote(String fallback, String datasetId) {
+    private String appendIncompleteWorkflowNote(String fallback, String datasetId, boolean workflowDocumentLoaded) {
         return datasetService.getDataset(datasetId).map(dataset -> {
             if (dataset.stage() == DatasetStage.SCHEDULED) {
                 return fallback;
             }
             String note = "Zadanie Store Audit nie zostalo ukonczone (etap: " + dataset.stage() + ", "
                     + dataset.stores().size() + " rekord(ow)). Nastepny wymagany krok: "
-                    + nextRequiredStageHint(dataset.stage()) + ".";
+                    + StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded) + ".";
             return fallback.isBlank() ? note : fallback + " " + note;
         }).orElse(fallback);
     }
@@ -1590,6 +1846,7 @@ public class NativeToolLoopService {
                 "operation", result.operation(),
                 "success", result.success(),
                 "errorCode", result.errorCode(),
+                "message", result.message(),
                 "requiresApproval", result.requiresApproval()
         );
     }

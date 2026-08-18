@@ -101,4 +101,29 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
             case SCHEDULED -> "";
         };
     }
+
+    /**
+     * Single, deterministic source of truth for what operation must happen next in the Store Audit
+     * state machine, given only a dataset's stage and whether the required workflow document has
+     * been read this loop - used everywhere a "what's next" label is needed (the compact workflow
+     * status block, completion-gate guidance, and hard stage-guard rejection messages) so there is
+     * exactly one place this logic lives, never several drifting implementations of the same
+     * pipeline.
+     *
+     * @param stage current dataset stage
+     * @param requiredDocumentLoaded whether the required workflow document has been read this loop -
+     *         irrelevant except at {@link DatasetStage#LOCKED}
+     * @return the next required operation name (e.g. {@code "VERIFY_DATASET"}), {@code
+     *         "READ_REQUIRED_WORKFLOW_DOCUMENT"} at {@code LOCKED} until the document is read, or
+     *         blank at {@link DatasetStage#SCHEDULED} (nothing further required)
+     */
+    public static String nextRequiredAction(DatasetStage stage, boolean requiredDocumentLoaded) {
+        return switch (stage) {
+            case BUILDING -> "APPEND_RECORDS";
+            case EXTRACTED -> "VERIFY_DATASET";
+            case LOCKED -> requiredDocumentLoaded ? "GEOCODE_DATASET" : "READ_REQUIRED_WORKFLOW_DOCUMENT";
+            case GEOLOCATED -> "SUBMIT_SCHEDULE";
+            case SCHEDULED -> "";
+        };
+    }
 }
