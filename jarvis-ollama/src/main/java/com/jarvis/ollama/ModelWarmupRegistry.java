@@ -84,15 +84,24 @@ public class ModelWarmupRegistry implements ModelWarmupReadiness {
     }
 
     /**
-     * Returns true when a model completed eager warmup.
+     * Returns true when a model completed eager warmup - including the resolved active model,
+     * which {@link com.jarvis.ollama.OllamaStartupModelWarmup} always warms unconditionally even
+     * when it has no entry in {@code jarvis.model-startup.models} at all, so an absent policy entry
+     * is treated the same as {@code EAGER} here. An explicit {@code LAZY} entry still means "not
+     * warmed", since that reflects a deliberate choice for that model.
      *
      * @param model model name
      * @return warm flag
      */
     public boolean eagerModelReady(String model) {
-        return status() == ModelWarmupStatus.READY
-                && policies().get(model) == ModelStartupPolicy.EAGER
-                && modelStatuses.get(model) == ModelWarmupStatus.READY;
+        if (status() != ModelWarmupStatus.READY) {
+            return false;
+        }
+        ModelStartupPolicy policy = policies().get(model);
+        if (policy == ModelStartupPolicy.LAZY) {
+            return false;
+        }
+        return modelStatuses.get(model) == ModelWarmupStatus.READY;
     }
 
     /**

@@ -150,6 +150,10 @@ public class NativeToolLoopService {
         // - the model must fix the dataset call instead. Cleared the moment a dataset does become
         // available, so a later, successful retry lifts the block immediately.
         boolean datasetCreationAttemptFailed = false;
+        // The rejected creation call's own message, so the completion gate can hand the model the
+        // exact reason instead of a generic "try again" - cleared the moment a later attempt
+        // succeeds, alongside datasetCreationAttemptFailed above.
+        String lastDatasetCreationError = "";
         // Re-entrant agent loop bookkeeping: neither counter blocks progress on its own - each just
         // bounds how many times this loop will push corrective guidance back to the model for the
         // same class of problem before giving up and accepting whatever content it has, so a
@@ -294,8 +298,10 @@ public class NativeToolLoopService {
                         if (result.success()) {
                             datasetAvailable = true;
                             datasetCreationAttemptFailed = false;
+                            lastDatasetCreationError = "";
                         } else {
                             datasetCreationAttemptFailed = true;
+                            lastDatasetCreationError = result.message();
                         }
                     }
                     if (isDatasetTouchingAction(action)) {
@@ -415,7 +421,8 @@ public class NativeToolLoopService {
                 // dataset), that workflow's own completion validator gets the final say before this
                 // loop accepts the content as done.
                 WorkflowCompletionContext completionContext = new WorkflowCompletionContext(
-                        request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId, workflowDocumentLoaded);
+                        request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId, workflowDocumentLoaded,
+                        datasetCreationAttemptFailed, lastDatasetCreationError);
                 CompletionAssessment assessment = completionValidator.assess(completionContext);
                 LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={}",
                         request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId));
@@ -453,7 +460,8 @@ public class NativeToolLoopService {
                 // instead of the real schedule. Gate this exit path identically to the content-based
                 // one above, with the same bounded-retry budget (shared, not doubled).
                 WorkflowCompletionContext completionContext = new WorkflowCompletionContext(
-                        request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId, workflowDocumentLoaded);
+                        request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId, workflowDocumentLoaded,
+                        datasetCreationAttemptFailed, lastDatasetCreationError);
                 CompletionAssessment assessment = completionValidator.assess(completionContext);
                 LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={} path=emptyResponse",
                         request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId));

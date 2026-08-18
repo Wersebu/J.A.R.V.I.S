@@ -40,6 +40,21 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
 
     @Override
     public CompletionAssessment assess(WorkflowCompletionContext context) {
+        if (context.datasetCreationFailed() && context.activeDatasetId().isBlank()) {
+            // A rejected CREATE_DATASET/START_DATASET call sets datasetTouchedThisLoop=true but
+            // never assigns an activeDatasetId (the operation never took a datasetId argument to
+            // fall back on) - without this check that blank id would fall through to the generic
+            // "workflow never engaged" shortcut below and let the loop present the failed attempt
+            // as a finished task, instead of asking the model to fix and resubmit it.
+            String reason = context.lastDatasetCreationErrorMessage().isBlank()
+                    ? "no further detail was recorded."
+                    : context.lastDatasetCreationErrorMessage();
+            String guidance = "The Store Audit dataset creation call in this task FAILED and no dataset was "
+                    + "created - the task is not finished. Reason: " + reason + " Fix the call based on that "
+                    + "reason and resubmit storeDataset.CREATE_DATASET or storeDataset.START_DATASET - never "
+                    + "tell the user the schedule/extraction is ready when dataset creation itself failed.";
+            return new CompletionAssessment(false, "STORE_AUDIT_DATASET_CREATION_FAILED", guidance);
+        }
         if (!context.datasetTouchedThisLoop() || context.activeDatasetId().isBlank()) {
             return CompletionAssessment.ok();
         }

@@ -3,6 +3,7 @@ package com.jarvis.memory.pipeline;
 import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.AIProviderException;
+import com.jarvis.common.ai.ImageAttachment;
 import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
@@ -10,6 +11,7 @@ import com.jarvis.common.event.TokenEvent;
 import com.jarvis.common.dto.AttachmentReference;
 import com.jarvis.common.memory.ConversationMessage;
 import com.jarvis.tools.ToolResult;
+import com.jarvis.tools.dataset.StoreAuditDataset;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import com.jarvis.tools.runtime.ToolCallingRequest;
 import com.jarvis.tools.runtime.ToolCallingResult;
@@ -47,6 +49,12 @@ public class ToolCallingStage implements PipelineStage {
             "Nie udalo mi sie zweryfikowac aktualnych ofert spelniajacych te kryteria.";
     private static final Pattern LEADING_MARKDOWN_FENCE = Pattern.compile("^```[a-zA-Z0-9_-]*\\r?\\n?");
     private static final int FENCE_DETECTION_PROBE_CHARS = 24;
+    // Detects a structured envelope's opening even when a model prefixes it with a short prose
+    // preamble ("Oto wynik: {"type":...") despite being told to return raw JSON - the confirmed
+    // root cause of a raw TOOL_REQUEST envelope leaking into the live-streamed answer, since the
+    // plain "starts with {" check below never catches this shape at all.
+    private static final Pattern STRUCTURED_ENVELOPE_HINT = Pattern.compile("\\{\\s*\"type\"\\s*:");
+    private static final int STRUCTURED_DETECTION_PROBE_CHARS = 48;
 
     private final ToolCallingRuntime toolCallingRuntime;
     private final List<AIProvider> aiProviders;
@@ -87,10 +95,11 @@ public class ToolCallingStage implements PipelineStage {
         if (!"TOOL_REQUEST".equals(String.valueOf(context.metadata().getOrDefault("mainModelAction", "")))) {
             return context;
         }
-        List<String> attachmentIds = context.request().attachments().stream().map(AttachmentReference::attachmentId).toList();
-        storeAuditDatasetService.registerAttachments(context.requestId(), context.conversationId(), attachmentIds);
-        if (!attachmentIds.isEmpty()) {
-            LOGGER.info("[STORE_AUDIT] requestId={} attachments={}", context.requestId(), attachmentIds.size());
+        logAttachmentProvenance(context);
+        List<String> imageAttachmentIds = context.images().stream().map(ImageAttachment::attachmentId).toList();
+        storeAuditDatasetService.registerAttachments(context.requestId(), context.conversationId(), imageAttachmentIds);
+        if (!imageAttachmentIds.isEmpty()) {
+            LOGGER.info("[STORE_AUDIT] requestId={} attachments={}", context.requestId(), imageAttachmentIds.size());
         }
         ToolCallingResult result = toolCallingRuntime.execute(new ToolCallingRequest(
                 context.requestId(),
@@ -112,11 +121,88 @@ public class ToolCallingStage implements PipelineStage {
             publishAnswerSources(context, result);
             answer = streamToolFinalAnswer(context, result);
         }
+        answer = finalProtocolGuard(context, answer);
         GenerationFinishedEvent finished = GenerationFinishedEvent.create(context.conversationId(), 0, context.brain().type(),
                 context.model(), null, Math.max(1, answer.length() / 4), null);
         return context.withResponse(answer, finished)
                 .withMetadata("toolCallingHandled", true)
                 .withMetadata("toolCallingSteps", result.steps().size());
+    }
+
+    /**
+     * Last, unconditional guard immediately before this stage's answer becomes the response - every
+     * earlier protection (structured-detection in {@link #handleToolAnswerToken}, {@link
+     * #parsedStructuredToolAnswer}, the final-synthesis re-entry in {@link
+     * #streamToolFinalSynthesis}) already exists to stop a raw {@code TOOL_REQUEST} envelope from
+     * reaching the user, but each covers one specific code path - this catches whatever slips past
+     * every one of them, no matter the reason, since a raw protocol envelope must never reach the
+     * user under any circumstance. A bounded re-entry into the tool runtime already happened
+     * upstream where one was possible ({@link #streamToolFinalSynthesis}'s own retry budget); by
+     * the time content reaches here, that budget is already spent, so this only ever needs to
+     * choose an honest failure message over leaking raw JSON.
+     *
+     * @param context pipeline context
+     * @param candidate this stage's answer, about to become the user-facing response
+     * @return {@code candidate} unchanged unless it is itself a structured envelope, in which case
+     *         a FINAL_ANSWER/CLARIFICATION is unwrapped and a TOOL_REQUEST is replaced with an
+     *         honest, plain-text explanation of what remains unfinished
+     */
+    private String finalProtocolGuard(PipelineContext context, String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return candidate;
+        }
+        try {
+            MainModelAction action = actionParser.parse(candidate);
+            return switch (action.type()) {
+                case FINAL_ANSWER -> action.answer();
+                case CLARIFICATION -> action.question();
+                case TOOL_REQUEST -> {
+                    LOGGER.warn("[TOOL_CALLING_STAGE] requestId={} FINAL_PROTOCOL_GUARD blocked a TOOL_REQUEST "
+                                    + "envelope from reaching the user goal=\"{}\"",
+                            context.requestId(), action.goal());
+                    yield incompleteWorkflowMessage(context);
+                }
+            };
+        } catch (RuntimeException exception) {
+            // candidate genuinely is not a JSON envelope (no {...} to extract) - ordinary plain
+            // user-facing text, returned unchanged.
+            return candidate;
+        }
+    }
+
+    /**
+     * Builds an honest, plain-text explanation of what is still unfinished for a workflow that
+     * leaked a TOOL_REQUEST instead of a real answer - naming the exact dataset stage when a Store
+     * Audit dataset exists for this conversation, instead of a generic apology.
+     *
+     * @param context pipeline context
+     * @return plain-text failure message, never protocol JSON
+     */
+    private String incompleteWorkflowMessage(PipelineContext context) {
+        Optional<StoreAuditDataset> dataset = storeAuditDatasetService.findLatestForConversation(context.conversationId());
+        if (dataset.isPresent()) {
+            StoreAuditDataset value = dataset.get();
+            return "Nie udalo mi sie ukonczyc zadania, poniewaz zestaw danych Store Audit (stage=" + value.stage()
+                    + ", " + value.stores().size() + " rekord(y)) nie zostal jeszcze doprowadzony do konca. "
+                    + "Sprobuj poprosic ponownie, aby kontynuowac od tego miejsca.";
+        }
+        return "Nie udalo mi sie ukonczyc zadania w tej turze - narzedzia nie zwrocily czytelnej tresci koncowej odpowiedzi.";
+    }
+
+    /**
+     * Logs a diagnostic line comparing the full current-message attachment set against the
+     * image-only subset actually used for provenance registration, so a future test run can
+     * pinpoint whether a provenance mismatch originates from upload, {@code ImageAttachmentStage},
+     * context propagation, or the model/tool layer - counts and real ids only, never base64 payloads.
+     *
+     * @param context pipeline context
+     */
+    private void logAttachmentProvenance(PipelineContext context) {
+        List<String> registeredIds = context.request().attachments().stream().map(AttachmentReference::attachmentId).toList();
+        List<String> imageContextIds = context.images().stream().map(ImageAttachment::attachmentId).toList();
+        boolean mappingConsistent = new LinkedHashSet<>(registeredIds).containsAll(imageContextIds);
+        LOGGER.info("[ATTACHMENT_PROVENANCE] requestId={} registeredAttachments={} imageAttachments={} registeredIds={} imageContextIds={} mappingConsistent={}",
+                context.requestId(), registeredIds.size(), imageContextIds.size(), registeredIds, imageContextIds, mappingConsistent);
     }
 
     /**
@@ -298,10 +384,24 @@ public class ToolCallingStage implements PipelineStage {
                 return;
             }
             String unfenced = LEADING_MARKDOWN_FENCE.matcher(stripped).replaceFirst("");
+            if (!unfenced.startsWith("{")) {
+                Matcher hintMatcher = STRUCTURED_ENVELOPE_HINT.matcher(unfenced);
+                if (hintMatcher.find()) {
+                    // A structured envelope arrived after a prose preamble - discard that prose
+                    // (never shown to the user) and treat only the envelope onward as the
+                    // structured content, or the preamble would stream as narration and then the
+                    // envelope would still leak in raw once the plain-text path re-took over.
+                    unfenced = unfenced.substring(hintMatcher.start());
+                } else if (unfenced.length() < STRUCTURED_DETECTION_PROBE_CHARS) {
+                    // Not enough content yet to rule out a structured envelope arriving after more
+                    // prose - keep waiting instead of committing to "plain text" too early.
+                    return;
+                }
+            }
             streamState.structured = unfenced.startsWith("{");
             streamState.modeDecided = true;
             if (streamState.structured) {
-                StreamingStructuredResponseParser.ParserUpdate update = streamState.parser.accept(streamState.raw.toString());
+                StreamingStructuredResponseParser.ParserUpdate update = streamState.parser.accept(unfenced);
                 streamState.raw.setLength(0);
                 update.detectedType().ifPresent(type -> publishStructuredToolAnswerDetected(context, type));
                 if (update.streamedText() != null && !update.streamedText().isEmpty()) {

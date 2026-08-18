@@ -28,6 +28,7 @@ import com.jarvis.tools.dataset.GeolocationStatus;
 import com.jarvis.tools.dataset.ScheduleDay;
 import com.jarvis.tools.dataset.StoreAuditDataset;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
+import com.jarvis.tools.dataset.StoreDatasetTool;
 import com.jarvis.tools.dataset.StoreRecord;
 import com.jarvis.tools.dataset.VerificationEntry;
 import com.jarvis.tools.schema.ToolArgumentDefinition;
@@ -132,6 +133,122 @@ class NativeToolLoopServiceCompletionGateTest {
         assertThat(result.finalAnswer()).isEqualTo("Oto gotowy grafik: 3 sklepy zaplanowane.");
         // Exactly the 2 scripted turns ran - no completion-gate re-entry was needed.
         assertThat(provider.callCount()).isEqualTo(2);
+    }
+
+    // TEST 13 (round 2): a real START_DATASET call fails (declared sourceAttachmentIds includes an
+    // id Core never registered - the exact production shape), leaving activeDatasetId blank. The
+    // very next model turn is empty (no tool call, no text) - the completion gate must NOT treat
+    // this as workflow-complete and return immediately; it must push the rejection reason back to
+    // the model and keep the loop going, exactly like every other "not complete yet" case.
+    @Test
+    void failedStartDatasetFollowedByAnEmptyTurnNeverEndsTheLoopEarlyAsIfComplete() {
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreDatasetTool storeDatasetTool = new StoreDatasetTool(datasetService);
+        // Core only ever registered "att-1" as a real current-message attachment.
+        datasetService.registerAttachments("request-1", "conversation-1", List.of("att-1"));
+
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        // "att-fabricated" was never registered - real StoreAuditDatasetService rejects this
+        // outright with STORE_DATASET_PROVENANCE_INVALID, leaving no dataset created.
+        turns.add(toolCallTurn("storedataset__start_dataset", Map.of(
+                "sourceImageCount", 1, "expectedRecordCount", 1,
+                "sourceAttachmentIds", List.of("att-1", "att-fabricated"),
+                "records", List.of(Map.of("network", "Biedronka", "fullAddress", "Adres 1",
+                        "sourceAttachmentId", "att-1", "sourceRow", 1)))));
+        // The exact reported bug's shape: an empty turn right after the failed creation call.
+        turns.add(emptyTurn());
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        StoreDatasetOnlyToolManager toolManager = new StoreDatasetOnlyToolManager(storeDatasetTool);
+
+        NativeToolLoopService service = new NativeToolLoopService(
+                List.of(provider), toolManager, query -> ToolIntent.LOCATION,
+                new ToolRuntimeProperties(true, 10, 10, 2, 30, "native", 10, 20),
+                new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
+                new NativeToolSchemaMapper(startDatasetRegistry()), datasetService
+        );
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1", "przygotuj grafik na sierpien",
+                "Create the Store Audit dataset.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        // The bug: this used to return immediately after the empty turn (callCount==2, complete=true
+        // logged wrongly). The fix: the completion gate pushes the rejection reason back and the
+        // loop keeps re-entering (bounded by MAX_COMPLETION_GATE_ATTEMPTS) instead of stopping here.
+        assertThat(provider.callCount()).isGreaterThan(2);
+        assertThat(datasetService.findLatestForConversation("conversation-1")).isEmpty();
+    }
+
+    private static ToolRegistry startDatasetRegistry() {
+        ToolDefinition storeDataset = new ToolDefinition("storedataset", "Canonical dataset.", List.of(
+                new ToolOperationDefinition("START_DATASET", "Start dataset.", List.of(
+                        new ToolArgumentDefinition("sourceImageCount", "number", true, "Count"),
+                        new ToolArgumentDefinition("expectedRecordCount", "number", true, "Expected count"),
+                        new ToolArgumentDefinition("sourceAttachmentIds", "array", true, "Ids"),
+                        new ToolArgumentDefinition("records", "array", true, "Records")
+                ), true, ToolSafetyLevel.WRITE)
+        ));
+        return new ToolRegistry() {
+            @Override
+            public List<ToolDefinition> definitions() {
+                return List.of(storeDataset);
+            }
+
+            @Override
+            public String promptSection() {
+                return "";
+            }
+        };
+    }
+
+    /**
+     * Delegates every {@code storedataset} call to a real {@link StoreDatasetTool} - the completion
+     * gate must see a genuine rejection outcome, not a stubbed one, for TEST 13 to be a faithful
+     * regression test.
+     */
+    private static final class StoreDatasetOnlyToolManager implements ToolManager {
+
+        private final StoreDatasetTool storeDatasetTool;
+
+        private StoreDatasetOnlyToolManager(StoreDatasetTool storeDatasetTool) {
+            this.storeDatasetTool = storeDatasetTool;
+        }
+
+        @Override
+        public List<JarvisTool> listTools() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<JarvisTool> findTool(String name) {
+            return Optional.of(new JarvisTool() {
+                @Override
+                public String getName() {
+                    return name;
+                }
+
+                @Override
+                public String getDescription() {
+                    return "stub";
+                }
+
+                @Override
+                public ToolResult execute(ToolRequest request) {
+                    throw new UnsupportedOperationException("Not used directly");
+                }
+            });
+        }
+
+        @Override
+        public ToolResult execute(ToolRequest request) {
+            if ("storedataset".equalsIgnoreCase(request.toolName())) {
+                return storeDatasetTool.execute(request);
+            }
+            throw new UnsupportedOperationException("Unexpected tool call: " + request.toolName() + "." + request.operation());
+        }
     }
 
     private StoreAuditDataset buildGeolocatedDataset(StoreAuditDatasetService datasetService) {

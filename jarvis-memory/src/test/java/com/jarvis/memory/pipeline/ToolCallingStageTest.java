@@ -293,7 +293,11 @@ class ToolCallingStageTest {
                 PipelineContext.class, String.class, streamStateClass);
         handleToken.setAccessible(true);
 
-        String plain = "`x` jest niezdefiniowana.";
+        // Long enough to exceed STRUCTURED_DETECTION_PROBE_CHARS on its own - this test only
+        // exercises handleToolAnswerToken() directly (never finishToolAnswerStream(), which is what
+        // flushes a still-undecided buffer at the real end of a stream), so the mode decision must
+        // resolve to "plain text" within the fed tokens themselves for anything to be observed here.
+        String plain = "`x` jest niezdefiniowana w tym zakresie kodu, wiec trzeba to poprawic przed dalsza analiza.";
         for (int index = 0; index < plain.length(); index++) {
             handleToken.invoke(stage, context, String.valueOf(plain.charAt(index)), streamState);
         }
@@ -450,6 +454,134 @@ class ToolCallingStageTest {
         String answer = (String) method.invoke(stage, context, loopResult);
 
         assertThat(answer).isEqualTo("Zakonczylem prace z narzedziami, ale nie otrzymalem czytelnej tresci koncowej odpowiedzi.");
+    }
+
+    // TEST 10: finalProtocolGuard - a raw TOOL_REQUEST envelope, with nothing around it, must never
+    // reach the user - the last, unconditional guard before context.withResponse().
+    @Test
+    void finalProtocolGuardNeverLeaksARawToolRequestEnvelope() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        String raw = "{\"type\": \"TOOL_REQUEST\", \"goal\": \"Create a canonical storeDataset\", "
+                + "\"reason\": \"Need the dataset before scheduling.\", \"context\": {\"importantEntities\": []}}";
+        ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class);
+        method.setAccessible(true);
+        String guarded = (String) method.invoke(stage, context, raw);
+
+        assertThat(guarded).doesNotContain("\"type\"", "TOOL_REQUEST", "\"goal\"", "importantEntities");
+    }
+
+    // TEST 11: the same envelope wrapped in a ```json fence must also never leak.
+    @Test
+    void finalProtocolGuardNeverLeaksAMarkdownFencedToolRequestEnvelope() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        String fenced = "```json\n{\"type\": \"TOOL_REQUEST\", \"goal\": \"Create a canonical storeDataset\", "
+                + "\"reason\": \"Need the dataset before scheduling.\"}\n```";
+        ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class);
+        method.setAccessible(true);
+        String guarded = (String) method.invoke(stage, context, fenced);
+
+        assertThat(guarded).doesNotContain("\"type\"", "TOOL_REQUEST", "```");
+    }
+
+    // TEST 12: a prose preamble in front of the envelope must also never leak.
+    @Test
+    void finalProtocolGuardNeverLeaksAToolRequestEnvelopePrecededByProse() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        String prefixed = "Przygotowuje teraz kolejne wywolanie narzedzia.\n\n"
+                + "{\"type\": \"TOOL_REQUEST\", \"goal\": \"Create a canonical storeDataset\", "
+                + "\"reason\": \"Need the dataset before scheduling.\"}";
+        ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class);
+        method.setAccessible(true);
+        String guarded = (String) method.invoke(stage, context, prefixed);
+
+        assertThat(guarded).doesNotContain("\"type\"", "TOOL_REQUEST");
+    }
+
+    // Companion to TEST 10-12: a genuine FINAL_ANSWER envelope must still be unwrapped to its
+    // plain-text answer, not treated as a leak - the guard must not become overly aggressive.
+    @Test
+    void finalProtocolGuardUnwrapsAGenuineFinalAnswerEnvelope() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        String structured = "{\"type\":\"FINAL_ANSWER\",\"answer\":\"Grafik jest gotowy.\"}";
+        ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class);
+        method.setAccessible(true);
+        String guarded = (String) method.invoke(stage, context, structured);
+
+        assertThat(guarded).isEqualTo("Grafik jest gotowy.");
+    }
+
+    // Companion: genuine plain text (no envelope at all) must pass through unchanged.
+    @Test
+    void finalProtocolGuardLeavesGenuinePlainTextUnchanged() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        String plain = "Grafik jest gotowy, wszystkie 23 sklepy zaplanowane.";
+        ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class);
+        method.setAccessible(true);
+        String guarded = (String) method.invoke(stage, context, plain);
+
+        assertThat(guarded).isEqualTo(plain);
+    }
+
+    // handleToolAnswerToken: a structured envelope arriving after a short prose preamble, streamed
+    // character-by-character exactly like a live model turn, must also never leak the raw JSON -
+    // the confirmed root cause of the production TOOL_REQUEST leak (the old detector only checked
+    // whether the very first character was '{').
+    @Test
+    void handleToolAnswerTokenUnwrapsAStructuredEnvelopeArrivingAfterAProsePreamble() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        List<String> answerChunks = new ArrayList<>();
+        ChatRequest request = new ChatRequest("conversation-1", "Utworz grafik audytow.", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { },
+                event -> {
+                    if (event.event() == CognitiveEventType.ANSWER_TOKEN) {
+                        answerChunks.add(event.message());
+                    }
+                });
+
+        Class<?> streamStateClass = Class.forName("com.jarvis.memory.pipeline.ToolCallingStage$ToolAnswerStreamState");
+        Constructor<?> streamStateConstructor = streamStateClass.getDeclaredConstructor();
+        streamStateConstructor.setAccessible(true);
+        Object streamState = streamStateConstructor.newInstance();
+
+        Method handleToken = ToolCallingStage.class.getDeclaredMethod("handleToolAnswerToken",
+                PipelineContext.class, String.class, streamStateClass);
+        handleToken.setAccessible(true);
+
+        String prefixed = "Ok: {\"type\":\"FINAL_ANSWER\",\"answer\":\"Rozpoczynam proces tworzenia grafiku.\"}";
+        for (int index = 0; index < prefixed.length(); index++) {
+            handleToken.invoke(stage, context, String.valueOf(prefixed.charAt(index)), streamState);
+        }
+
+        String streamed = String.join("", answerChunks);
+        assertThat(streamed).isEqualTo("Rozpoczynam proces tworzenia grafiku.");
+        assertThat(streamed).doesNotContain("\"type\"", "FINAL_ANSWER", "Ok:");
     }
 
     /**

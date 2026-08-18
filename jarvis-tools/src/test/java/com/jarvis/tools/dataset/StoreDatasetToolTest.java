@@ -48,6 +48,55 @@ class StoreDatasetToolTest {
         assertThat(records).extracting(record -> record.get("id")).containsExactly("store-001", "store-002");
     }
 
+    // TEST 1 (StoreDatasetTool half): a native tool call using sourceAttachmentIndex (1-based,
+    // matching the "Image 1"/"Image 2" numbering shown to the model) instead of a real attachment
+    // id - Core resolves each index against the real, registered current-message attachments.
+    @Test
+    void startDatasetResolvesSourceAttachmentIndexToTheRealRegisteredAttachmentIds() {
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        datasetService.registerAttachments("request-1", "conversation-1", List.of("image-A", "image-B"));
+        StoreDatasetTool tool = new StoreDatasetTool(datasetService);
+
+        ToolResult result = tool.execute(new ToolRequest("storeDataset", "START_DATASET", "conversation-1", "request-1",
+                "extraction", "", Map.of(
+                        "sourceImageCount", 2,
+                        "expectedRecordCount", 2,
+                        "sourceAttachmentIds", List.of(),
+                        "records", List.of(
+                                Map.of("network", "Biedronka", "fullAddress", "A 1", "sourceAttachmentIndex", 1, "sourceRow", 1),
+                                Map.of("network", "Stokrotka", "fullAddress", "A 2", "sourceAttachmentIndex", 2, "sourceRow", 2)
+                        )
+                )));
+
+        assertThat(result.success()).isTrue();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> records = (List<Map<String, Object>>) result.data().get("records");
+        assertThat(records).extracting(record -> record.get("sourceAttachmentId"))
+                .containsExactlyInAnyOrder("image-A", "image-B");
+    }
+
+    // TEST 2 (StoreDatasetTool half): sourceAttachmentIndex=3 with only 2 real attachments
+    // registered - rejected outright with a precise errorCode, never silently mapped/guessed.
+    @Test
+    void startDatasetRejectsAnOutOfRangeSourceAttachmentIndex() {
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        datasetService.registerAttachments("request-1", "conversation-1", List.of("image-A", "image-B"));
+        StoreDatasetTool tool = new StoreDatasetTool(datasetService);
+
+        ToolResult result = tool.execute(new ToolRequest("storeDataset", "START_DATASET", "conversation-1", "request-1",
+                "extraction", "", Map.of(
+                        "sourceImageCount", 2,
+                        "expectedRecordCount", 1,
+                        "sourceAttachmentIds", List.of(),
+                        "records", List.of(
+                                Map.of("network", "Biedronka", "fullAddress", "A 1", "sourceAttachmentIndex", 3, "sourceRow", 1)
+                        )
+                )));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.errorCode()).isEqualTo("STORE_DATASET_ATTACHMENT_INDEX_INVALID");
+    }
+
     @Test
     void createDatasetRejectsARecordWithoutValidProvenanceButKeepsTheValidOnes() {
         StoreDatasetTool tool = new StoreDatasetTool(new StoreAuditDatasetService(new NoopCognitiveEventBus()));

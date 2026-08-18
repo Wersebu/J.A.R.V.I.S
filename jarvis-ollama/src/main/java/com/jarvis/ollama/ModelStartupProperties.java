@@ -47,9 +47,15 @@ public class ModelStartupProperties {
         return model;
     }
 
+    /**
+     * Default policies for the SECONDARY, provider-independent models (speech/vision), never the
+     * main LLM - which model to warm eagerly at startup is {@link
+     * com.jarvis.common.model.ActiveModelService}'s job alone, resolved dynamically, not a name
+     * hardcoded here. This map being empty of any main-LLM entry is deliberate: it must never be
+     * treated as "the list of models to warm up".
+     */
     private static Map<String, ModelPolicyProperties> defaultModels() {
         Map<String, ModelPolicyProperties> defaults = new LinkedHashMap<>();
-        defaults.put("gpt-oss:20b", new ModelPolicyProperties(ModelStartupPolicy.EAGER, "-1m"));
         defaults.put("Chatterbox", new ModelPolicyProperties(ModelStartupPolicy.LAZY, ""));
         defaults.put("Whisper", new ModelPolicyProperties(ModelStartupPolicy.LAZY, ""));
         defaults.put("Vision", new ModelPolicyProperties(ModelStartupPolicy.LAZY, ""));

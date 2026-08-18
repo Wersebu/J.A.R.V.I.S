@@ -662,8 +662,98 @@ class StoreAuditDatasetServiceTest {
         assertThat(locked.stores()).allMatch(record -> record.verificationStatus() == VerificationStatus.VERIFIED);
     }
 
+    // =====================================================================
+    // Regression tests for Core-owned sourceAttachmentIndex provenance (round 2): the model
+    // supplies a 1-based position into the current message's REAL attachment list instead of
+    // having to copy a real attachment UUID by hand - see also StoreDatasetToolTest and
+    // NativeToolLoopServiceCompletionGateTest for the surrounding tool-schema/loop-level coverage.
+    // =====================================================================
+
+    // TEST 1: 2 real, registered current-message attachments - every candidate references them by
+    // 1-based index (1 = image-A, 2 = image-B) instead of by real attachment id. Core must resolve
+    // each index to the real attachment id deterministically and accept the dataset.
+    @Test
+    void sourceAttachmentIndexResolvesDeterministicallyToTheRealRegisteredAttachmentIds() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-1", List.of("image-A", "image-B"));
+
+        List<CandidateRecord> candidates = candidatesByIndex(4, 1, 2);
+        CreateOutcome outcome = service.startDataset("request-1", 2, 4, List.of(), candidates);
+
+        assertThat(outcome.success()).isTrue();
+        assertThat(outcome.dataset().stores()).extracting(StoreRecord::sourceAttachmentId)
+                .containsExactlyInAnyOrder("image-A", "image-B", "image-A", "image-B");
+    }
+
+    // TEST 2: sourceAttachmentIndex=3 with only 2 real attachments registered - rejected outright,
+    // with a precise errorCode, never silently mapped to an out-of-range/guessed attachment.
+    @Test
+    void sourceAttachmentIndexOutOfRangeIsRejectedWithAPreciseErrorCodeAndNoSilentFallback() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-1", List.of("image-A", "image-B"));
+        List<CandidateRecord> candidates = new java.util.ArrayList<>(candidatesByIndex(2, 1));
+        candidates.add(new CandidateRecord("Biedronka", "Miasto Testowe", "Ulica Testowa", "99",
+                "00-099", "Ulica Testowa 99, 00-099 Miasto Testowe", "", 99, 3));
+
+        CreateOutcome outcome = service.startDataset("request-1", 2, 3, List.of(), candidates);
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.errorCode()).isEqualTo("STORE_DATASET_ATTACHMENT_INDEX_INVALID");
+        assertThat(outcome.message()).contains("[3]").contains("1..2");
+        assertThat(outcome.dataset()).isNull();
+    }
+
+    // TEST 3: 23 records (14 via index=1, 9 via index=2) through the full incremental flow - the
+    // final accepted count is 23 and every record's internal sourceAttachmentId is a real,
+    // registered attachment id (never blank, never a copied/echoed value from the model).
+    @Test
+    void twentyThreeRecordsAcrossTwoIndexedAttachmentsFlowThroughTheIncrementalDatasetIntact() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-1", List.of("image-A", "image-B"));
+
+        CreateOutcome started = service.startDataset("request-1", 2, 23, List.of(), candidatesByIndex(14, 1));
+        assertThat(started.success()).isTrue();
+        String datasetId = started.dataset().datasetId();
+
+        List<CandidateRecord> secondBatch = new java.util.ArrayList<>();
+        for (int index = 15; index <= 23; index++) {
+            secondBatch.add(new CandidateRecord("Stokrotka", "Miasto Testowe", "Ulica Testowa", String.valueOf(index),
+                    "00-00" + (index % 10), "Ulica Testowa " + index + ", Miasto Testowe", "", index, 2));
+        }
+        AppendOutcome appended = service.appendRecords(datasetId, secondBatch);
+        assertThat(appended.success()).isTrue();
+        assertThat(appended.dataset().stores()).hasSize(23);
+
+        FinalizeOutcome finalized = service.finalizeDataset(datasetId);
+        assertThat(finalized.success()).isTrue();
+        assertThat(finalized.dataset().stores()).hasSize(23);
+        assertThat(finalized.dataset().stores()).allMatch(record ->
+                record.sourceAttachmentId().equals("image-A") || record.sourceAttachmentId().equals("image-B"));
+        long fromImageA = finalized.dataset().stores().stream().filter(record -> record.sourceAttachmentId().equals("image-A")).count();
+        long fromImageB = finalized.dataset().stores().stream().filter(record -> record.sourceAttachmentId().equals("image-B")).count();
+        assertThat(fromImageA).isEqualTo(14);
+        assertThat(fromImageB).isEqualTo(9);
+    }
+
     private StoreAuditDatasetService service() {
         return new StoreAuditDatasetService(new NoopCognitiveEventBus());
+    }
+
+    /**
+     * Builds candidates referencing the given 1-based attachment indices (round-robin), leaving
+     * {@code sourceAttachmentId} blank - exactly how a model using the preferred index-based
+     * provenance field would submit them.
+     */
+    private List<CandidateRecord> candidatesByIndex(int count, int... attachmentIndices) {
+        List<CandidateRecord> candidates = new java.util.ArrayList<>();
+        int[] indices = attachmentIndices.length > 0 ? attachmentIndices : new int[] {1};
+        for (int index = 1; index <= count; index++) {
+            int attachmentIndex = indices[(index - 1) % indices.length];
+            candidates.add(new CandidateRecord("Biedronka", "Miasto Testowe", "Ulica Testowa",
+                    String.valueOf(index), "00-00" + (index % 10), "Ulica Testowa " + index + ", Miasto Testowe",
+                    "", index, attachmentIndex));
+        }
+        return candidates;
     }
 
     /**

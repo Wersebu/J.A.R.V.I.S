@@ -41,12 +41,14 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     private static final Logger LOGGER = LoggerFactory.getLogger(StoreDatasetTool.class);
     private static final String TOOL_NAME = "storeDataset";
 
-    // Nested schema shared by CREATE_DATASET/START_DATASET/APPEND_RECORDS - fullAddress and
-    // sourceAttachmentId are the only fields StoreAuditDatasetService actually enforces as
-    // required (see buildDataset's per-candidate checks); the rest are descriptive and optional
-    // so a partially-legible source row is still accepted rather than rejected outright.
+    // Nested schema shared by CREATE_DATASET/START_DATASET/APPEND_RECORDS - fullAddress is the only
+    // field the JSON schema itself marks required; provenance (sourceAttachmentIndex preferred,
+    // sourceAttachmentId as a fallback for explicit typed-list input with no attachments) is
+    // enforced by StoreAuditDatasetService instead of the schema, since exactly which of the two is
+    // required depends on whether this message has attachments at all. The rest are descriptive and
+    // optional so a partially-legible source row is still accepted rather than rejected outright.
     private static final ToolJsonSchema RECORD_SCHEMA = ToolJsonSchema.object(
-            recordProperties(), List.of("fullAddress", "sourceAttachmentId"),
+            recordProperties(), List.of("fullAddress"),
             "One extracted store record");
     private static final ToolJsonSchema RECORDS_SCHEMA = ToolJsonSchema.arrayOf(
             RECORD_SCHEMA, "Extracted records: array of objects, never a JSON-encoded string");
@@ -72,9 +74,16 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
         properties.put("buildingNumber", ToolJsonSchema.string("Building number"));
         properties.put("postalCode", ToolJsonSchema.string("Postal code"));
         properties.put("fullAddress", ToolJsonSchema.string("Full postal address - required, the record is rejected without it"));
+        properties.put("sourceAttachmentIndex", ToolJsonSchema.integer(
+                "PREFERRED provenance field: 1-based position of the current-message attachment this record was "
+                        + "read from, exactly as numbered in the 'CURRENT MESSAGE ATTACHMENTS' list (Image 1 = 1, "
+                        + "Image 2 = 2, ...). Never invent or guess a value, and never reference an attachment from "
+                        + "a previous message - only this message's own attachments are valid. Core resolves this "
+                        + "to the real attachment id itself; you never need to know or copy that id."));
         properties.put("sourceAttachmentId", ToolJsonSchema.string(
-                "Id of the current-message attachment this record was extracted from - required, the record is "
-                        + "rejected without valid provenance"));
+                "Fallback provenance field, only for the rare case of an explicit user-typed record list with no "
+                        + "image attachments at all. When this message has image attachments, use "
+                        + "sourceAttachmentIndex instead - do not copy an attachment id string by hand."));
         properties.put("sourceRow", ToolJsonSchema.integer("Row/line number within the source attachment, for traceability"));
         return properties;
     }
@@ -127,9 +136,10 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                         "Submits the full list of store records extracted from the current message's "
                                 + "attachments, ONCE, after reading all of them. Locks the canonical record "
                                 + "count - call this exactly once per extraction, not incrementally. Every "
-                                + "record must carry the id of the actual current-message attachment it was "
-                                + "read from (sourceAttachmentId); a record without valid provenance is "
-                                + "rejected, not silently accepted. Never call this with records copied from "
+                                + "record must carry sourceAttachmentIndex - the 1-based position of the "
+                                + "current-message attachment it was actually read from (Image 1 = 1, Image 2 = 2, "
+                                + "...); a record without valid provenance is rejected, not silently accepted. "
+                                + "Never call this with records copied from "
                                 + "workflow documentation, Knowledge examples, or conversation history - only "
                                 + "from the current message's own attachments or an explicit user-typed list. "
                                 + "Returns the locked dataset with assigned record ids - use those ids in all "
@@ -317,7 +327,8 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                 candidates.add(new CandidateRecord(
                         textField(map, "network"), textField(map, "city"), textField(map, "street"),
                         textField(map, "buildingNumber"), textField(map, "postalCode"), textField(map, "fullAddress"),
-                        textField(map, "sourceAttachmentId"), intField(map, "sourceRow")));
+                        textField(map, "sourceAttachmentId"), intField(map, "sourceRow"),
+                        integerField(map, "sourceAttachmentIndex")));
             }
         }
         return candidates;
@@ -471,6 +482,11 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     private int intField(Map<?, ?> map, String key) {
         Object value = map.get(key);
         return value instanceof Number number ? number.intValue() : 0;
+    }
+
+    private Integer integerField(Map<?, ?> map, String key) {
+        Object value = map.get(key);
+        return value instanceof Number number ? number.intValue() : null;
     }
 
     private List<String> stringListField(Map<?, ?> map, String key) {

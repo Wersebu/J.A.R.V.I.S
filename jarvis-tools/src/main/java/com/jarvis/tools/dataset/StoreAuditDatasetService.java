@@ -18,6 +18,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -214,6 +215,18 @@ public class StoreAuditDatasetService {
             }
         }
 
+        // sourceAttachmentIndex is resolved against the REAL registered attachment list, never the
+        // model-declared one (which can be an incomplete/wrong subset) - a candidate referencing an
+        // index outside 1..realAttachmentIds.size() rejects the WHOLE call outright with a precise
+        // errorCode, rather than silently dropping just that one candidate: an out-of-range index is
+        // a structural model error (a value that cannot possibly be right), not a plausible
+        // low-quality read like a blurry address, so it gets the same "fix and resubmit" treatment
+        // as an invalid declared attachment id above instead of a soft per-candidate reject.
+        Optional<CreateOutcome> invalidIndex = validateAttachmentIndices(requestId, source, realAttachmentIds);
+        if (invalidIndex.isPresent()) {
+            return invalidIndex.get();
+        }
+
         Set<String> allowedAttachmentSet = new HashSet<>(effectiveAttachmentIds);
         Set<String> seenSourceKeys = new LinkedHashSet<>();
         List<StoreRecord> accepted = new ArrayList<>();
@@ -228,7 +241,7 @@ public class StoreAuditDatasetService {
                 rejected.add(new RejectedCandidate(index, "Missing fullAddress"));
                 continue;
             }
-            String sourceAttachmentId = safe(candidate.sourceAttachmentId());
+            String sourceAttachmentId = resolveSourceAttachmentId(candidate, realAttachmentIds);
             if (!allowedAttachmentSet.isEmpty()) {
                 if (sourceAttachmentId.isBlank() || !allowedAttachmentSet.contains(sourceAttachmentId)) {
                     rejected.add(new RejectedCandidate(index,
@@ -375,6 +388,71 @@ public class StoreAuditDatasetService {
     }
 
     /**
+     * Validates every candidate's {@link CandidateRecord#sourceAttachmentIndex()} (when supplied)
+     * against the real current-message attachment list, deterministically - the model is never
+     * responsible for knowing or copying the real attachment UUID; it only ever names a 1-based
+     * position ("Image 1", "Image 2", ...) and Core resolves that itself. An index outside {@code
+     * 1..realAttachmentIds.size()} can never be silently mapped, guessed, or resolved against a
+     * previous message/turn's attachments - current-message provenance only.
+     *
+     * @param requestId pipeline request id, for logging
+     * @param source candidate records to validate
+     * @param realAttachmentIds Core's real, ordered current-message attachment ids
+     * @return a rejection outcome naming the exact invalid index/valid range, if any candidate is
+     *         out of range; empty when every supplied index (if any) is valid
+     */
+    private Optional<CreateOutcome> validateAttachmentIndices(
+            String requestId,
+            List<CandidateRecord> source,
+            List<String> realAttachmentIds
+    ) {
+        List<Integer> invalid = source.stream()
+                .map(CandidateRecord::sourceAttachmentIndex)
+                .filter(Objects::nonNull)
+                .filter(position -> position < 1 || position > realAttachmentIds.size())
+                .distinct()
+                .sorted()
+                .toList();
+        if (invalid.isEmpty()) {
+            return Optional.empty();
+        }
+        String message = "Dataset creation rejected: sourceAttachmentIndex " + invalid + " is out of range - "
+                + "this message has " + realAttachmentIds.size() + " current-message attachment(s), so valid "
+                + "indices are " + (realAttachmentIds.isEmpty() ? "none (no attachments on this message)"
+                        : "1.." + realAttachmentIds.size()) + ". Never guess an index and never reuse an "
+                + "attachment from a previous message or earlier turn - only this message's own attachments "
+                + "are valid provenance. Re-check which image each record actually came from and resubmit.";
+        LOGGER.warn("[STORE_AUDIT] requestId={} extraction rejected: invalid sourceAttachmentIndex value(s)={} (valid range 1..{})",
+                requestId, invalid, realAttachmentIds.size());
+        return Optional.of(new CreateOutcome(false, null, 0, 0, List.of(), message, "STORE_DATASET_ATTACHMENT_INDEX_INVALID"));
+    }
+
+    /**
+     * Resolves a candidate's real {@code sourceAttachmentId}: deterministically from {@link
+     * CandidateRecord#sourceAttachmentIndex()} against Core's real attachment list when supplied
+     * (the model is never trusted to also supply the correct real id itself in that case - the
+     * index is Core-owned, not merely a hint), otherwise falls back to whatever {@link
+     * CandidateRecord#sourceAttachmentId()} string the caller provided directly (explicit typed-list
+     * input, or a caller that already resolved the real id itself).
+     *
+     * @param candidate candidate record
+     * @param realAttachmentIds Core's real, ordered current-message attachment ids
+     * @return resolved real attachment id, blank when neither an index nor an id was supplied
+     */
+    private String resolveSourceAttachmentId(CandidateRecord candidate, List<String> realAttachmentIds) {
+        Integer position = candidate.sourceAttachmentIndex();
+        if (position != null) {
+            // Range already validated by validateAttachmentIndices before this is ever called -
+            // this bound check is just defensive, never expected to actually trigger.
+            if (position >= 1 && position <= realAttachmentIds.size()) {
+                return realAttachmentIds.get(position - 1);
+            }
+            return "";
+        }
+        return safe(candidate.sourceAttachmentId());
+    }
+
+    /**
      * Appends another batch of extracted candidate records to a dataset still in {@link
      * DatasetStage#BUILDING} - the record count is not locked until {@link #finalizeDataset}.
      * Subject to the same per-record provenance checks as {@link #createDataset}, using the source
@@ -402,6 +480,11 @@ public class StoreAuditDatasetService {
 
         List<CandidateRecord> source = candidates == null ? List.of() : candidates;
         List<String> declared = dataset.sourceAttachmentIds();
+        Optional<CreateOutcome> invalidIndex = validateAttachmentIndices(dataset.requestId(), source, declared);
+        if (invalidIndex.isPresent()) {
+            CreateOutcome rejection = invalidIndex.get();
+            return new AppendOutcome(false, dataset, 0, 0, List.of(), rejection.message(), rejection.errorCode());
+        }
         Set<String> declaredSet = new HashSet<>(declared);
         Set<String> seenSourceKeys = new LinkedHashSet<>();
         for (StoreRecord existing : dataset.stores()) {
@@ -419,7 +502,7 @@ public class StoreAuditDatasetService {
                 rejected.add(new RejectedCandidate(index, "Missing fullAddress"));
                 continue;
             }
-            String sourceAttachmentId = safe(candidate.sourceAttachmentId());
+            String sourceAttachmentId = resolveSourceAttachmentId(candidate, declared);
             if (!declared.isEmpty()) {
                 if (sourceAttachmentId.isBlank() || !declaredSet.contains(sourceAttachmentId)) {
                     rejected.add(new RejectedCandidate(index,
