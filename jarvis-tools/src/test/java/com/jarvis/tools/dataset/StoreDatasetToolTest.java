@@ -92,15 +92,28 @@ class StoreDatasetToolTest {
         assertThat(started.data().get("stage")).isEqualTo("BUILDING");
         String datasetId = (String) started.data().get("datasetId");
 
-        ToolResult appended = tool.execute(new ToolRequest("storeDataset", "APPEND_RECORDS", "conversation-1", "request-1",
+        ToolResult appendedFirstBatch = tool.execute(new ToolRequest("storeDataset", "APPEND_RECORDS", "conversation-1", "request-1",
                 "extraction", "", Map.of(
                         "datasetId", datasetId,
                         "records", List.of(
                                 Map.of("network", "Biedronka", "fullAddress", "A 3", "sourceAttachmentId", "att-1", "sourceRow", 3)
                         )
                 )));
+        assertThat(appendedFirstBatch.success()).isTrue();
+        assertThat(appendedFirstBatch.data().get("count")).isEqualTo(3);
+        assertThat(appendedFirstBatch.data().get("stage")).isEqualTo("BUILDING");
+
+        // A second APPEND_RECORDS batch must accumulate on top of the first, not replace it -
+        // this is the exact incremental shape the model is expected to use for a large extraction.
+        ToolResult appended = tool.execute(new ToolRequest("storeDataset", "APPEND_RECORDS", "conversation-1", "request-1",
+                "extraction", "", Map.of(
+                        "datasetId", datasetId,
+                        "records", List.of(
+                                Map.of("network", "Biedronka", "fullAddress", "A 4", "sourceAttachmentId", "att-1", "sourceRow", 4)
+                        )
+                )));
         assertThat(appended.success()).isTrue();
-        assertThat(appended.data().get("count")).isEqualTo(3);
+        assertThat(appended.data().get("count")).isEqualTo(4);
         assertThat(appended.data().get("stage")).isEqualTo("BUILDING");
 
         // A dataset still BUILDING must reject SUBMIT_SCHEDULE.
@@ -114,11 +127,11 @@ class StoreDatasetToolTest {
                 "finalize", "", Map.of("datasetId", datasetId)));
         assertThat(finalized.success()).isTrue();
         assertThat(finalized.data().get("stage")).isEqualTo("EXTRACTED");
-        assertThat(finalized.data().get("count")).isEqualTo(3);
+        assertThat(finalized.data().get("count")).isEqualTo(4);
 
         ToolResult schedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
                 "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
-                        Map.of("day", 1, "storeIds", List.of("store-001", "store-002", "store-003"))
+                        Map.of("day", 1, "storeIds", List.of("store-001", "store-002", "store-003", "store-004"))
                 ))));
         assertThat(schedule.success()).isTrue();
         assertThat(schedule.data().get("stage")).isEqualTo("SCHEDULED");

@@ -194,14 +194,31 @@ class StoreAuditDatasetServiceTest {
     // invariant as CREATE_DATASET), so a BUILDING dataset can never legitimately reach
     // FINALIZE_DATASET with 0 records through the public API - this proves that upstream guard.
     @Test
-    void startDatasetRejectsAnEmptyFirstBatchTheSameWayCreateDatasetDoes() {
+    void startDatasetAcceptsAnEmptyFirstBatchLeavingAnEmptyBuildingDataset() {
+        // Unlike CREATE_DATASET (a one-shot call with no later stage to add records at),
+        // START_DATASET is allowed to land empty - the model can still recover via
+        // APPEND_RECORDS. Only FINALIZE_DATASET rejects a dataset that is still empty once the
+        // model is done submitting batches (see finalizeDatasetRejectsAnEmptyDataset below).
         StoreAuditDatasetService service = service();
 
         CreateOutcome outcome = service.startDataset("request-1", 1, List.of("att-1"), List.of());
 
+        assertThat(outcome.success()).isTrue();
+        assertThat(outcome.dataset()).isNotNull();
+        assertThat(outcome.dataset().stage()).isEqualTo(DatasetStage.BUILDING);
+        assertThat(outcome.dataset().stores()).isEmpty();
+    }
+
+    @Test
+    void finalizeDatasetRejectsAnEmptyDataset() {
+        StoreAuditDatasetService service = service();
+        String datasetId = service.startDataset("request-1", 1, List.of("att-1"), List.of()).dataset().datasetId();
+
+        FinalizeOutcome outcome = service.finalizeDataset(datasetId);
+
         assertThat(outcome.success()).isFalse();
         assertThat(outcome.errorCode()).isEqualTo("EMPTY_DATASET");
-        assertThat(outcome.dataset()).isNull();
+        assertThat(service.getDataset(datasetId).orElseThrow().stage()).isEqualTo(DatasetStage.BUILDING);
     }
 
     @Test

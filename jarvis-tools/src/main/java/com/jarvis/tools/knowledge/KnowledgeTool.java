@@ -18,6 +18,7 @@ import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.schema.ToolArgumentDefinition;
 import com.jarvis.tools.schema.ToolDefinition;
+import com.jarvis.tools.schema.ToolJsonSchema;
 import com.jarvis.tools.schema.ToolOperationDefinition;
 import com.jarvis.tools.schema.ToolSafetyLevel;
 import com.jarvis.tools.schema.ToolSchemaProvider;
@@ -377,8 +378,15 @@ public class KnowledgeTool implements JarvisTool, ToolSchemaProvider {
         return new ToolOperationDefinition(name, description, List.of(arguments), write, safetyLevel);
     }
 
+    private static final ToolJsonSchema CHANGES_SCHEMA = ToolJsonSchema.arrayOf(
+            ToolJsonSchema.object(Map.of(), List.of(), "A planned document change"),
+            "Planned multi-document changes, array of objects");
+
     private ToolArgumentDefinition arg(String name, boolean required) {
-        return new ToolArgumentDefinition(name, name.equals("changes") ? "array" : "string", required, "");
+        if (name.equals("changes")) {
+            return new ToolArgumentDefinition(name, required, CHANGES_SCHEMA);
+        }
+        return new ToolArgumentDefinition(name, "string", required, "");
     }
 
     private KnowledgeToolOperation operation(ToolRequest request) {

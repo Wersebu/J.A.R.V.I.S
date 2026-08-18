@@ -81,6 +81,62 @@ class NativeToolLoopServiceMultimodalContinuityTest {
         }
     }
 
+    // The model previously had no way to know a real current-message attachment id and fell back
+    // to inventing one (e.g. "attachment_0"), which then always failed storeDataset's provenance
+    // check. ImageAttachmentStage now threads the real AttachmentReference.attachmentId() through,
+    // and the system prompt must list it so the model can cite it verbatim.
+    @Test
+    void systemPromptListsTheRealAttachmentIdOfEachImageWhenKnown() {
+        ImageAttachment photo = new ImageAttachment("base64data", "sklepy.jpg", "real-attachment-42");
+        RecordingProvider provider = new RecordingProvider();
+        NativeToolLoopService service = new NativeToolLoopService(
+                List.of(provider), new EchoToolManager(), query -> ToolIntent.NO_TOOL,
+                new ToolRuntimeProperties(true, 4, 8, 2, 30, "native"),
+                new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
+                new NativeToolSchemaMapper(knowledgeRegistry()),
+                new StoreAuditDatasetService(new NoopCognitiveEventBus())
+        );
+
+        service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1", "ustaw grafik na sierpien",
+                "extract records", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST,
+                List.of(photo)
+        ));
+
+        ModelMessage systemTurn = provider.capturedMessageLists.get(0).stream()
+                .filter(message -> "system".equals(message.role())).findFirst().orElseThrow();
+        assertThat(systemTurn.content()).contains("CURRENT MESSAGE ATTACHMENTS");
+        assertThat(systemTurn.content()).contains("real-attachment-42");
+        assertThat(systemTurn.content()).contains("sklepy.jpg");
+    }
+
+    @Test
+    void systemPromptOmitsTheAttachmentBlockWhenNoImageHasAKnownId() {
+        ImageAttachment photoWithoutId = new ImageAttachment("base64data", "sklepy.jpg");
+        RecordingProvider provider = new RecordingProvider();
+        NativeToolLoopService service = new NativeToolLoopService(
+                List.of(provider), new EchoToolManager(), query -> ToolIntent.NO_TOOL,
+                new ToolRuntimeProperties(true, 4, 8, 2, 30, "native"),
+                new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
+                new NativeToolSchemaMapper(knowledgeRegistry()),
+                new StoreAuditDatasetService(new NoopCognitiveEventBus())
+        );
+
+        service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1", "ustaw grafik na sierpien",
+                "extract records", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST,
+                List.of(photoWithoutId)
+        ));
+
+        ModelMessage systemTurn = provider.capturedMessageLists.get(0).stream()
+                .filter(message -> "system".equals(message.role())).findFirst().orElseThrow();
+        assertThat(systemTurn.content()).doesNotContain("CURRENT MESSAGE ATTACHMENTS");
+    }
+
     @Test
     void aTextOnlyRequestNeverAttachesImagesToTheUserTurn() {
         RecordingProvider provider = new RecordingProvider();

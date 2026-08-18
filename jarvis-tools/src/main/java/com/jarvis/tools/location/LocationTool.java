@@ -10,6 +10,7 @@ import com.jarvis.tools.dataset.GeolocationUpdateOutcome;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import com.jarvis.tools.schema.ToolArgumentDefinition;
 import com.jarvis.tools.schema.ToolDefinition;
+import com.jarvis.tools.schema.ToolJsonSchema;
 import com.jarvis.tools.schema.ToolOperationDefinition;
 import com.jarvis.tools.schema.ToolSafetyLevel;
 import com.jarvis.tools.schema.ToolSchemaProvider;
@@ -19,6 +20,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -37,6 +39,31 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(LocationTool.class);
     private static final String TOOL_NAME = "location";
+
+    // "point" arguments (queries/points/stops) accept either a free-text address string or a
+    // {latitude,longitude} object at runtime (see resolvePoint/geocode) - the native tool-calling
+    // schema model here has no anyOf, so items are declared as string (the common, documented
+    // case); the object form stays usable since only the top-level array/object shape is
+    // enforced at the native-tool-call boundary, not each item's shape.
+    private static final ToolJsonSchema ADDRESS_ITEM_SCHEMA = ToolJsonSchema.string(
+            "A free-text address/postal code/city, or an object with latitude/longitude");
+    private static final ToolJsonSchema QUERIES_SCHEMA = ToolJsonSchema.arrayOf(
+            ADDRESS_ITEM_SCHEMA, "A FEW free-text addresses to geocode in one batch call - for many, use storeDataset + GEOCODE_DATASET instead");
+    private static final ToolJsonSchema POINTS_SCHEMA = ToolJsonSchema.arrayOf(
+            ADDRESS_ITEM_SCHEMA, "List of addresses or {latitude,longitude} points");
+    private static final ToolJsonSchema STOPS_SCHEMA = ToolJsonSchema.arrayOf(
+            ADDRESS_ITEM_SCHEMA, "List of stop addresses or {latitude,longitude} points");
+    private static final ToolJsonSchema GEOCODE_RECORD_SCHEMA = ToolJsonSchema.object(
+            geocodeRecordProperties(), List.of("recordId", "fullAddress"), "One dataset record to geocode");
+    private static final ToolJsonSchema GEOCODE_RECORDS_SCHEMA = ToolJsonSchema.arrayOf(
+            GEOCODE_RECORD_SCHEMA, "Records to geocode: array of objects, never a JSON-encoded string");
+
+    private static Map<String, ToolJsonSchema> geocodeRecordProperties() {
+        Map<String, ToolJsonSchema> properties = new LinkedHashMap<>();
+        properties.put("recordId", ToolJsonSchema.string("Existing storeDataset record id"));
+        properties.put("fullAddress", ToolJsonSchema.string("Full postal address to geocode for this record"));
+        return properties;
+    }
 
     private final GeocodingClient geocodingClient;
     private final RoutingClient routingClient;
@@ -94,7 +121,7 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
                                 + "using an ambiguous result as-is.",
                         false, ToolSafetyLevel.READ,
                         arg("query", "string", false, "A single free-text address/postal code/city to geocode"),
-                        arg("queries", "array", false, "A FEW free-text addresses to geocode in one batch call - for many, use storeDataset + GEOCODE_DATASET instead")),
+                        arg("queries", false, QUERIES_SCHEMA)),
                 operation("ROUTE",
                         "Computes the real road-network distance and driving duration between two points - never "
                                 + "a straight-line estimate. Each of \"from\"/\"to\" accepts either a free-text address "
@@ -107,7 +134,7 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
                                 + "points or addresses (also covers what may be called a \"distance matrix\"). "
                                 + "Each entry accepts either a free-text address (auto-geocoded) or {latitude,longitude}.",
                         false, ToolSafetyLevel.READ,
-                        arg("points", "array", true, "List of addresses or {latitude,longitude} points")),
+                        arg("points", true, POINTS_SCHEMA)),
                 operation("OPTIMIZE_ROUTE",
                         "Given a starting point and a list of stop addresses/points, proposes a visiting order that "
                                 + "reasonably minimizes total travel distance or time, using real road-network data. "
@@ -115,7 +142,7 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
                                 + "these places\", \"plan a route through these stops\" style requests.",
                         false, ToolSafetyLevel.READ,
                         arg("start", "string", true, "Starting address or {latitude,longitude}"),
-                        arg("stops", "array", true, "List of stop addresses or {latitude,longitude} points"),
+                        arg("stops", true, STOPS_SCHEMA),
                         arg("optimize", "string", false, "\"distance\" or \"time\" (default \"time\")")),
                 operation("GEOCODE_DATASET",
                         "Batch-geocodes records already held in a storeDataset (see the storeDataset tool) and "
@@ -126,7 +153,7 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
                                 + "reported and ignored, not added.",
                         true, ToolSafetyLevel.WRITE,
                         arg("datasetId", "string", true, "Dataset id returned by storeDataset.CREATE_DATASET"),
-                        arg("records", "array", true, "Records to geocode: [{recordId, fullAddress}]"))
+                        arg("records", true, GEOCODE_RECORDS_SCHEMA))
         ));
     }
 
@@ -556,6 +583,10 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
 
     private ToolArgumentDefinition arg(String name, String type, boolean required, String description) {
         return new ToolArgumentDefinition(name, type, required, description);
+    }
+
+    private ToolArgumentDefinition arg(String name, boolean required, ToolJsonSchema schema) {
+        return new ToolArgumentDefinition(name, required, schema);
     }
 
     private LocationToolOperation operation(ToolRequest request) {

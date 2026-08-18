@@ -176,6 +176,38 @@ class NativeToolLoopServiceRawGeocodeGuardTest {
         assertThat(result.results()).noneMatch(r -> "RAW_GEOCODE_WITHOUT_DATASET_BLOCKED".equals(r.errorCode()));
     }
 
+    @Test
+    void rawGeocodeAfterAFailedDatasetCreationAttemptIsBlockedUntilTheModelFixesTheDatasetCall() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn("storedataset__create_dataset", Map.of(
+                "sourceImageCount", 1, "sourceAttachmentIds", List.of(), "records", List.of())));
+        turns.add(toolCallTurn("location__geocode", Map.of("query", "Sklep 1, 08-400 Garwolin")));
+        turns.add(textTurn("Oto grafik."));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        FakeToolManager toolManager = new FakeToolManager(false);
+
+        NativeToolLoopService service = new NativeToolLoopService(
+                List.of(provider), toolManager, query -> ToolIntent.LOCATION,
+                new ToolRuntimeProperties(true, 10, 10, 2, 30, "native", 10),
+                new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
+                new NativeToolSchemaMapper(registryWithDatasetOperations()),
+                new StoreAuditDatasetService(new NoopCognitiveEventBus())
+        );
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-5", "conversation-1", "przygotuj grafik na sierpien",
+                "Create the dataset then geocode.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.handled()).isTrue();
+        // The raw GEOCODE call following the failed CREATE_DATASET must never reach LocationTool -
+        // it has to be blocked outright, not merely capped by the address-count limit.
+        assertThat(toolManager.geocodeCalls()).isZero();
+        assertThat(result.results()).anyMatch(r -> "RAW_GEOCODE_AFTER_DATASET_FAILURE_BLOCKED".equals(r.errorCode()));
+    }
+
     private static ModelResponse toolCallTurn(String name, Map<String, Object> arguments) {
         return new ModelResponse("", "", List.of(new ModelToolCall("call-" + System.nanoTime(), name, arguments)),
                 "tool_calls", new ModelUsage(0, 0, 0));
@@ -270,7 +302,16 @@ class NativeToolLoopServiceRawGeocodeGuardTest {
 
     private static final class FakeToolManager implements ToolManager {
 
+        private final boolean datasetCreationSucceeds;
         private int geocodeCalls;
+
+        FakeToolManager() {
+            this(true);
+        }
+
+        FakeToolManager(boolean datasetCreationSucceeds) {
+            this.datasetCreationSucceeds = datasetCreationSucceeds;
+        }
 
         int geocodeCalls() {
             return geocodeCalls;
@@ -313,6 +354,11 @@ class NativeToolLoopServiceRawGeocodeGuardTest {
                         true, List.of(), "Geocoded dataset records", Map.of(), "", "", false, "");
             }
             if ("storedataset".equalsIgnoreCase(request.toolName()) && "CREATE_DATASET".equalsIgnoreCase(request.operation())) {
+                if (!datasetCreationSucceeds) {
+                    return new ToolResult(false, "storedataset", "CREATE_DATASET", request.requestId(), request.conversationId(),
+                            false, List.of(), "Dataset creation rejected: 0 records", Map.of(),
+                            "EMPTY_DATASET", "Dataset creation rejected: 0 records", false, "");
+                }
                 return new ToolResult(true, "storedataset", "CREATE_DATASET", request.requestId(), request.conversationId(),
                         true, List.of("dataset-1"), "Dataset created", Map.of("datasetId", "dataset-1", "count", 1), "", "", false, "");
             }

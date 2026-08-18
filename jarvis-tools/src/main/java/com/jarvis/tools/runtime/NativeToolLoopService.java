@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.AIProviderException;
+import com.jarvis.common.ai.ImageAttachment;
 import com.jarvis.common.ai.ModelMessage;
 import com.jarvis.common.ai.ModelResponse;
 import com.jarvis.common.ai.ModelToolCall;
@@ -136,6 +137,11 @@ public class NativeToolLoopService {
         Optional<StoreAuditDataset> existingDataset = datasetService.findLatestForConversation(request.conversationId());
         boolean datasetAvailable = existingDataset.isPresent();
         int rawGeocodeAddressCount = 0;
+        // Once a CREATE_DATASET/START_DATASET attempt has failed and no dataset exists yet, raw
+        // location.GEOCODE must not become a silent workaround for the whole storeDataset workflow
+        // - the model must fix the dataset call instead. Cleared the moment a dataset does become
+        // available, so a later, successful retry lifts the block immediately.
+        boolean datasetCreationAttemptFailed = false;
         // Re-entrant agent loop bookkeeping: neither counter blocks progress on its own - each just
         // bounds how many times this loop will push corrective guidance back to the model for the
         // same class of problem before giving up and accepting whatever content it has, so a
@@ -181,6 +187,7 @@ public class NativeToolLoopService {
                 for (ModelToolCall call : response.toolCalls()) {
                     publish(request, CognitiveEventType.NATIVE_TOOL_CALL_RECEIVED, "RECEIVED",
                             "Native tool call received", null, step, Map.of("name", call.name(), "arguments", call.arguments()));
+                    logNativeToolCall(request, step, call);
                     ToolAction action;
                     try {
                         action = schemaMapper.toAction(call.name(), call.arguments(), "Native model tool call");
@@ -188,7 +195,9 @@ public class NativeToolLoopService {
                     } catch (RuntimeException exception) {
                         LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} step={} invalid native tool call name={} arguments={} error={}",
                                 request.requestId(), step, call.name(), call.arguments(), exception.getMessage());
-                        ToolResult invalid = invalidResult(request, call, exception.getMessage());
+                        String errorCode = exception instanceof InvalidToolArgumentException
+                                ? "INVALID_TOOL_ARGUMENT" : "INVALID_TOOL_CALL";
+                        ToolResult invalid = invalidResult(request, call, exception.getMessage(), errorCode);
                         results.add(invalid);
                         steps.add(new ToolRuntimeStep(step, "INVALID_TOOL_CALL", toolName(call), operationName(call), "FAILED", invalid));
                         messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(invalid)));
@@ -222,6 +231,19 @@ public class NativeToolLoopService {
                         continue;
                     }
                     if (!datasetAvailable && isRawGeocode(action)) {
+                        if (datasetCreationAttemptFailed) {
+                            ToolResult blocked = rawGeocodeAfterFailedDatasetResult(request, action);
+                            results.add(blocked);
+                            steps.add(new ToolRuntimeStep(step, "RAW_GEOCODE_AFTER_DATASET_FAILURE_BLOCKED", action.tool(), action.operation(), "BLOCKED", blocked));
+                            messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(blocked)));
+                            publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "RAW_GEOCODE_AFTER_DATASET_FAILURE_BLOCKED",
+                                    "Raw batch geocoding blocked after a failed dataset creation attempt", null, step, Map.of(
+                                            "tool", action.tool(), "operation", action.operation()));
+                            LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} step={} blocked raw location.GEOCODE - a storeDataset creation attempt "
+                                            + "already failed this loop and no dataset exists yet",
+                                    request.requestId(), step);
+                            continue;
+                        }
                         int addressesInCall = geocodeAddressCount(action);
                         int projectedTotal = rawGeocodeAddressCount + addressesInCall;
                         if (projectedTotal > RAW_GEOCODE_ADDRESS_LIMIT) {
@@ -255,8 +277,13 @@ public class NativeToolLoopService {
                     ToolResult result = executeAction(request, action, step);
                     result = enrichIfNeeded(request, action, result, step);
                     logDatasetContinuity(request, action, datasetStoresBeforeCall);
-                    if (result.success() && isCreateDataset(action)) {
-                        datasetAvailable = true;
+                    if (isCreateDataset(action)) {
+                        if (result.success()) {
+                            datasetAvailable = true;
+                            datasetCreationAttemptFailed = false;
+                        } else {
+                            datasetCreationAttemptFailed = true;
+                        }
                     }
                     if (isDatasetTouchingAction(action)) {
                         datasetTouchedThisLoop = true;
@@ -752,6 +779,7 @@ public class NativeToolLoopService {
                     turn below - they persist for the rest of this loop, you do not need to ask the user to
                     resend them and no tool can "fetch" them. Read whatever data you need from them yourself.
                     """.formatted(request.images().size()));
+            builder.append(attachmentIdBlock(request));
         }
         existingDataset.ifPresent(dataset -> builder.append("""
 
@@ -760,6 +788,36 @@ public class NativeToolLoopService {
                 instead of asking the user to resend the original attachments or re-extracting from scratch.
                 """.formatted(dataset.datasetId(), dataset.stage(), dataset.stores().size())));
         return builder.toString();
+    }
+
+    /**
+     * Lists the real current-message attachment ids next to each image, so the model has an exact
+     * id to cite as {@code sourceAttachmentId} instead of inventing one (e.g. {@code
+     * "attachment_0"}) - which previously always failed {@code storeDataset}'s provenance check
+     * since the invented id never matches Core's real records. Blank when an image failed to
+     * resolve a real attachment id (should not normally happen, but never worth hiding the image
+     * itself over).
+     *
+     * @param request tool-calling request
+     * @return prompt block listing each attached image's real attachment id, or empty string when
+     *         no image carries a resolved id
+     */
+    private String attachmentIdBlock(ToolCallingRequest request) {
+        List<ImageAttachment> images = request.images();
+        boolean anyKnownId = images.stream().anyMatch(image -> !image.attachmentId().isBlank());
+        if (!anyKnownId) {
+            return "";
+        }
+        StringBuilder block = new StringBuilder("\nCURRENT MESSAGE ATTACHMENTS\n");
+        for (int index = 0; index < images.size(); index++) {
+            ImageAttachment image = images.get(index);
+            block.append(index + 1).append(". attachmentId: ")
+                    .append(image.attachmentId().isBlank() ? "(unknown)" : image.attachmentId())
+                    .append(", name: ").append(image.originalFileName().isBlank() ? "(unnamed)" : image.originalFileName())
+                    .append(", type: image\n");
+        }
+        block.append("Use these exact attachmentId values for sourceAttachmentId/sourceAttachmentIds - never invent one.\n");
+        return block.toString();
     }
 
     /**
@@ -998,10 +1056,66 @@ public class NativeToolLoopService {
                 false, "");
     }
 
-    private ToolResult invalidResult(ToolCallingRequest request, ModelToolCall call, String error) {
+    private ToolResult invalidResult(ToolCallingRequest request, ModelToolCall call, String error, String errorCode) {
         return new ToolResult(false, toolName(call), operationName(call), request.requestId(), request.conversationId(),
                 false, List.of(), "Invalid native tool call", Map.of("error", error == null ? "" : error),
-                "INVALID_TOOL_CALL", error == null ? "" : error, false, "");
+                errorCode, error == null ? "" : error, false, "");
+    }
+
+    private static final int MAX_LOGGED_LIST_ITEMS = 3;
+    private static final int MAX_LOGGED_STRING_CHARS = 200;
+
+    /**
+     * Logs the raw native tool call before it is mapped to a {@link ToolAction}, so the exact
+     * name/argument shape the model sent is visible in server logs even when a validation or
+     * mapping error immediately follows. Arrays are logged as size+short preview rather than
+     * dumped in full, since a Store Audit dataset call can carry dozens of records.
+     *
+     * @param request tool-calling request
+     * @param step current loop step
+     * @param call raw native model tool call
+     */
+    private void logNativeToolCall(ToolCallingRequest request, int step, ModelToolCall call) {
+        LOGGER.info("[NATIVE_TOOL_CALL] requestId={} step={} name={} arguments={}",
+                request.requestId(), step, call.name(), compactArgumentsForLog(call.arguments()));
+    }
+
+    private Map<String, Object> compactArgumentsForLog(Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> compact = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : arguments.entrySet()) {
+            compact.put(entry.getKey(), compactValueForLog(entry.getValue()));
+        }
+        return compact;
+    }
+
+    private Object compactValueForLog(Object value) {
+        if (value instanceof List<?> list) {
+            StringBuilder preview = new StringBuilder("array(size=").append(list.size());
+            if (!list.isEmpty()) {
+                preview.append(", preview=[");
+                for (int index = 0; index < Math.min(list.size(), MAX_LOGGED_LIST_ITEMS); index++) {
+                    if (index > 0) {
+                        preview.append(", ");
+                    }
+                    preview.append(compactValueForLog(list.get(index)));
+                }
+                if (list.size() > MAX_LOGGED_LIST_ITEMS) {
+                    preview.append(", ...");
+                }
+                preview.append("]");
+            }
+            return preview.append(")").toString();
+        }
+        if (value instanceof Map<?, ?> map) {
+            return "object(keys=" + map.keySet() + ")";
+        }
+        if (value instanceof String text && text.length() > MAX_LOGGED_STRING_CHARS) {
+            return text.substring(0, MAX_LOGGED_STRING_CHARS) + "...(" + text.length() + " chars)";
+        }
+        return value;
     }
 
     /**
@@ -1136,6 +1250,19 @@ public class NativeToolLoopService {
                         + "result actually covers every extracted record. Call storeDataset.CREATE_DATASET with "
                         + "the FULL extracted record list first, then use location.GEOCODE_DATASET on that "
                         + "locked dataset instead of geocoding addresses one by one.",
+                false, "");
+    }
+
+    private ToolResult rawGeocodeAfterFailedDatasetResult(ToolCallingRequest request, ToolAction action) {
+        return new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
+                false, List.of(), "Raw geocoding blocked after a failed dataset creation attempt",
+                Map.of("reason", "RAW_GEOCODE_AFTER_DATASET_FAILURE_BLOCKED"),
+                "RAW_GEOCODE_AFTER_DATASET_FAILURE_BLOCKED",
+                "A storeDataset.CREATE_DATASET/START_DATASET call already failed in this task and no dataset "
+                        + "exists yet - falling back to raw location.GEOCODE now would silently replace the "
+                        + "storeDataset workflow with an unlocked, unchecked address list. Fix and retry "
+                        + "storeDataset.CREATE_DATASET (or START_DATASET) with valid records instead - only once "
+                        + "that succeeds does GEOCODE_DATASET become the right next step.",
                 false, "");
     }
 

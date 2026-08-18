@@ -3,14 +3,17 @@ package com.jarvis.tools.runtime;
 import com.jarvis.common.ai.NativeToolDefinition;
 import com.jarvis.tools.schema.ToolArgumentDefinition;
 import com.jarvis.tools.schema.ToolDefinition;
+import com.jarvis.tools.schema.ToolJsonSchema;
 import com.jarvis.tools.schema.ToolOperationDefinition;
 import com.jarvis.tools.schema.ToolRegistry;
 import com.jarvis.tools.schema.ToolSafetyLevel;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests proving the model always sees the full tool catalog.
@@ -40,6 +43,124 @@ class NativeToolSchemaMapperTest {
 
         assertThat(noToolIntent).hasSameSizeAs(saveKnowledgeIntent);
         assertThat(noToolIntent).hasSameSizeAs(searchWebIntent);
+    }
+
+    // Regression coverage for the root-cause bug: NativeToolSchemaMapper.jsonType() used to
+    // collapse every non-number/boolean argument type - including array and object - down to the
+    // literal string "string", so the model's native tool-calling grammar never saw a real array
+    // or object shape for arguments like storeDataset.records.
+
+    @Test
+    void arrayTypedArgumentProducesArrayNotString() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(datasetRegistry());
+
+        Map<String, Object> schema = parametersFor(mapper, "storedataset__create_dataset");
+        Map<String, Object> sourceAttachmentIds = propertySchema(schema, "sourceAttachmentIds");
+
+        assertThat(sourceAttachmentIds.get("type")).isEqualTo("array");
+    }
+
+    @Test
+    void arrayOfStringsDeclaresStringItems() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(datasetRegistry());
+
+        Map<String, Object> schema = parametersFor(mapper, "storedataset__create_dataset");
+        Map<String, Object> sourceAttachmentIds = propertySchema(schema, "sourceAttachmentIds");
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> items = (Map<String, Object>) sourceAttachmentIds.get("items");
+        assertThat(items).isNotNull();
+        assertThat(items.get("type")).isEqualTo("string");
+    }
+
+    @Test
+    void arrayOfObjectsDeclaresNestedObjectItemsWithProperties() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(datasetRegistry());
+
+        Map<String, Object> schema = parametersFor(mapper, "storedataset__create_dataset");
+        Map<String, Object> records = propertySchema(schema, "records");
+
+        assertThat(records.get("type")).isEqualTo("array");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> items = (Map<String, Object>) records.get("items");
+        assertThat(items.get("type")).isEqualTo("object");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> properties = (Map<String, Object>) items.get("properties");
+        assertThat(properties).containsKeys("fullAddress", "sourceAttachmentId");
+        @SuppressWarnings("unchecked")
+        List<String> required = (List<String>) items.get("required");
+        assertThat(required).containsExactlyInAnyOrder("fullAddress", "sourceAttachmentId");
+    }
+
+    @Test
+    void wrongTypedArrayArgumentIsRejectedWithAPreciseValidationErrorInsteadOfSilentlyCoercing() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(datasetRegistry());
+
+        assertThatThrownBy(() -> mapper.toAction("storedataset__create_dataset",
+                Map.of("sourceImageCount", 1, "sourceAttachmentIds", List.of("att-1"), "records", "not-an-array"),
+                "test"))
+                .isInstanceOf(InvalidToolArgumentException.class)
+                .hasMessageContaining("records")
+                .hasMessageContaining("array")
+                .hasMessageContaining("string");
+    }
+
+    @Test
+    void correctlyTypedArrayArgumentIsAccepted() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(datasetRegistry());
+
+        ToolAction action = mapper.toAction("storedataset__create_dataset",
+                Map.of("sourceImageCount", 1, "sourceAttachmentIds", List.of("att-1"),
+                        "records", List.of(Map.of("fullAddress", "A 1", "sourceAttachmentId", "att-1"))),
+                "test");
+
+        assertThat(action.tool()).isEqualTo("storedataset");
+        assertThat(action.operation()).isEqualTo("CREATE_DATASET");
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> parametersFor(NativeToolSchemaMapper mapper, String functionName) {
+        return mapper.definitions(ToolIntent.LOCATION).stream()
+                .filter(definition -> definition.name().equals(functionName))
+                .map(NativeToolDefinition::parameters)
+                .findFirst()
+                .orElseThrow();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> propertySchema(Map<String, Object> parameters, String argumentName) {
+        Map<String, Object> properties = (Map<String, Object>) parameters.get("properties");
+        return (Map<String, Object>) properties.get(argumentName);
+    }
+
+    private static ToolRegistry datasetRegistry() {
+        ToolJsonSchema recordSchema = ToolJsonSchema.object(
+                Map.of(
+                        "fullAddress", ToolJsonSchema.string("Full postal address"),
+                        "sourceAttachmentId", ToolJsonSchema.string("Source attachment id")
+                ),
+                List.of("fullAddress", "sourceAttachmentId"),
+                "One extracted store record");
+        ToolDefinition storeDataset = new ToolDefinition("storedataset", "Canonical dataset.", List.of(
+                new ToolOperationDefinition("CREATE_DATASET", "Create dataset.", List.of(
+                        new ToolArgumentDefinition("sourceImageCount", "number", true, "Count"),
+                        new ToolArgumentDefinition("sourceAttachmentIds", true,
+                                ToolJsonSchema.arrayOf(ToolJsonSchema.string("An attachment id"), "Attachment ids")),
+                        new ToolArgumentDefinition("records", true,
+                                ToolJsonSchema.arrayOf(recordSchema, "Extracted records"))
+                ), true, ToolSafetyLevel.WRITE)
+        ));
+        return new ToolRegistry() {
+            @Override
+            public List<ToolDefinition> definitions() {
+                return List.of(storeDataset);
+            }
+
+            @Override
+            public String promptSection() {
+                return "";
+            }
+        };
     }
 
     private static ToolRegistry twoToolRegistry() {

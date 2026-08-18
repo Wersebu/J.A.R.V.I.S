@@ -6,6 +6,7 @@ import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.schema.ToolArgumentDefinition;
 import com.jarvis.tools.schema.ToolDefinition;
+import com.jarvis.tools.schema.ToolJsonSchema;
 import com.jarvis.tools.schema.ToolOperationDefinition;
 import com.jarvis.tools.schema.ToolSafetyLevel;
 import com.jarvis.tools.schema.ToolSchemaProvider;
@@ -15,6 +16,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -38,6 +40,61 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(StoreDatasetTool.class);
     private static final String TOOL_NAME = "storeDataset";
+
+    // Nested schema shared by CREATE_DATASET/START_DATASET/APPEND_RECORDS - fullAddress and
+    // sourceAttachmentId are the only fields StoreAuditDatasetService actually enforces as
+    // required (see buildDataset's per-candidate checks); the rest are descriptive and optional
+    // so a partially-legible source row is still accepted rather than rejected outright.
+    private static final ToolJsonSchema RECORD_SCHEMA = ToolJsonSchema.object(
+            recordProperties(), List.of("fullAddress", "sourceAttachmentId"),
+            "One extracted store record");
+    private static final ToolJsonSchema RECORDS_SCHEMA = ToolJsonSchema.arrayOf(
+            RECORD_SCHEMA, "Extracted records: array of objects, never a JSON-encoded string");
+    private static final ToolJsonSchema SOURCE_ATTACHMENT_IDS_SCHEMA = ToolJsonSchema.arrayOf(
+            ToolJsonSchema.string("A current-message attachment id"),
+            "Current-message attachment ids the records were extracted from - array of strings");
+    private static final ToolJsonSchema VERIFICATION_ENTRY_SCHEMA = ToolJsonSchema.object(
+            verificationEntryProperties(), List.of("recordId", "status"),
+            "One record's verification status/correction");
+    private static final ToolJsonSchema VERIFICATIONS_SCHEMA = ToolJsonSchema.arrayOf(
+            VERIFICATION_ENTRY_SCHEMA, "Per-record verification results, referencing existing record ids only");
+    private static final ToolJsonSchema SCHEDULE_DAY_SCHEMA = ToolJsonSchema.object(
+            scheduleDayProperties(), List.of("day", "storeIds"),
+            "One day's grouping of store record ids");
+    private static final ToolJsonSchema DAYS_SCHEMA = ToolJsonSchema.arrayOf(
+            SCHEDULE_DAY_SCHEMA, "Day-by-day grouping - every dataset record id exactly once across all days");
+
+    private static Map<String, ToolJsonSchema> recordProperties() {
+        Map<String, ToolJsonSchema> properties = new LinkedHashMap<>();
+        properties.put("network", ToolJsonSchema.string("Store network/chain name"));
+        properties.put("city", ToolJsonSchema.string("City"));
+        properties.put("street", ToolJsonSchema.string("Street name"));
+        properties.put("buildingNumber", ToolJsonSchema.string("Building number"));
+        properties.put("postalCode", ToolJsonSchema.string("Postal code"));
+        properties.put("fullAddress", ToolJsonSchema.string("Full postal address - required, the record is rejected without it"));
+        properties.put("sourceAttachmentId", ToolJsonSchema.string(
+                "Id of the current-message attachment this record was extracted from - required, the record is "
+                        + "rejected without valid provenance"));
+        properties.put("sourceRow", ToolJsonSchema.integer("Row/line number within the source attachment, for traceability"));
+        return properties;
+    }
+
+    private static Map<String, ToolJsonSchema> verificationEntryProperties() {
+        Map<String, ToolJsonSchema> properties = new LinkedHashMap<>();
+        properties.put("recordId", ToolJsonSchema.string("Existing record id from the locked dataset"));
+        properties.put("status", ToolJsonSchema.string("VERIFIED or CORRECTED"));
+        properties.put("correctedFullAddress", ToolJsonSchema.string("New full address, only when status=CORRECTED"));
+        properties.put("correctedPostalCode", ToolJsonSchema.string("New postal code, only when status=CORRECTED"));
+        return properties;
+    }
+
+    private static Map<String, ToolJsonSchema> scheduleDayProperties() {
+        Map<String, ToolJsonSchema> properties = new LinkedHashMap<>();
+        properties.put("day", ToolJsonSchema.integer("Day number within the schedule"));
+        properties.put("storeIds", ToolJsonSchema.arrayOf(
+                ToolJsonSchema.string("A dataset record id"), "Record ids scheduled on this day"));
+        return properties;
+    }
 
     private final StoreAuditDatasetService datasetService;
 
@@ -82,8 +139,8 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "then APPEND_RECORDS for the rest, then FINALIZE_DATASET instead.",
                         true, ToolSafetyLevel.WRITE,
                         arg("sourceImageCount", "number", true, "Number of image attachments read during extraction"),
-                        arg("sourceAttachmentIds", "array", true, "Current-message attachment ids the records were extracted from"),
-                        arg("records", "array", true, "Extracted records: [{network,city,street,buildingNumber,postalCode,fullAddress,sourceAttachmentId,sourceRow}]")),
+                        arg("sourceAttachmentIds", true, SOURCE_ATTACHMENT_IDS_SCHEMA),
+                        arg("records", true, RECORDS_SCHEMA)),
                 operation("START_DATASET",
                         "Starts building a dataset incrementally with the FIRST batch of extracted records "
                                 + "(e.g. 5-8 at a time), for extractions too large to reliably submit in one "
@@ -94,8 +151,8 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "further batch).",
                         true, ToolSafetyLevel.WRITE,
                         arg("sourceImageCount", "number", true, "Number of image attachments read during extraction"),
-                        arg("sourceAttachmentIds", "array", true, "Current-message attachment ids the records were extracted from"),
-                        arg("records", "array", true, "First batch of extracted records: [{network,city,street,buildingNumber,postalCode,fullAddress,sourceAttachmentId,sourceRow}]")),
+                        arg("sourceAttachmentIds", true, SOURCE_ATTACHMENT_IDS_SCHEMA),
+                        arg("records", true, RECORDS_SCHEMA)),
                 operation("APPEND_RECORDS",
                         "Appends another batch of extracted records to a dataset still in stage=BUILDING "
                                 + "(started with START_DATASET). Call this as many times as needed with small "
@@ -104,7 +161,7 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "VERIFY_DATASET to correct a finalized dataset instead.",
                         true, ToolSafetyLevel.WRITE,
                         arg("datasetId", "string", true, "Dataset id returned by START_DATASET"),
-                        arg("records", "array", true, "Next batch of extracted records: [{network,city,street,buildingNumber,postalCode,fullAddress,sourceAttachmentId,sourceRow}]")),
+                        arg("records", true, RECORDS_SCHEMA)),
                 operation("FINALIZE_DATASET",
                         "Locks the record count of a dataset still in stage=BUILDING, once every batch from "
                                 + "the source material has been submitted via START_DATASET/APPEND_RECORDS. "
@@ -122,7 +179,7 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "of proceeding on a corrupted count.",
                         true, ToolSafetyLevel.WRITE,
                         arg("datasetId", "string", true, "Dataset id returned by CREATE_DATASET"),
-                        arg("verifications", "array", true, "[{recordId,status,correctedFullAddress,correctedPostalCode}], status is VERIFIED or CORRECTED")),
+                        arg("verifications", true, VERIFICATIONS_SCHEMA)),
                 operation("GET_DATASET",
                         "Returns the current canonical dataset (all records with their ids, addresses, "
                                 + "verification/geolocation status, and any previously accepted schedule). Use "
@@ -142,7 +199,7 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "or eyeball that every store was scheduled exactly once.",
                         true, ToolSafetyLevel.WRITE,
                         arg("datasetId", "string", true, "Dataset id returned by CREATE_DATASET"),
-                        arg("days", "array", true, "[{day: number, storeIds: [string]}] - every dataset record id exactly once across all days"))
+                        arg("days", true, DAYS_SCHEMA))
         ));
     }
 
@@ -408,6 +465,10 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
 
     private ToolArgumentDefinition arg(String name, String type, boolean required, String description) {
         return new ToolArgumentDefinition(name, type, required, description);
+    }
+
+    private ToolArgumentDefinition arg(String name, boolean required, ToolJsonSchema schema) {
+        return new ToolArgumentDefinition(name, required, schema);
     }
 
     private StoreDatasetOperation operation(ToolRequest request) {

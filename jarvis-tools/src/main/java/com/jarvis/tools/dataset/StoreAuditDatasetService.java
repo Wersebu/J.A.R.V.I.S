@@ -229,16 +229,20 @@ public class StoreAuditDatasetService {
         }
 
         boolean building = targetStage == DatasetStage.BUILDING;
-        if (accepted.isEmpty()) {
+        // A one-shot CREATE_DATASET producing 0 records is always an error - there is no later
+        // stage to add records at. START_DATASET is different: it is legal for the first batch to
+        // land empty (e.g. every candidate in it failed provenance) as long as the model can still
+        // recover via APPEND_RECORDS - only FINALIZE_DATASET rejects a dataset that is still empty
+        // once the model has finished submitting batches.
+        if (accepted.isEmpty() && !building) {
             String message = "Dataset creation rejected: the resulting record count would be 0 ("
                     + rejected.size() + " candidate(s) rejected for missing/invalid provenance, "
                     + duplicateCount + " duplicate(s) skipped). Re-read the currently available images/attachments "
-                    + "or user-typed list and call " + (building ? "START_DATASET" : "CREATE_DATASET")
-                    + " again with at least one valid record"
-                    + (building ? "" : " - or, for a large extraction, use START_DATASET with a smaller first batch") + ".";
-            LOGGER.warn("[STORE_AUDIT] requestId={} extraction rejected: {} would produce an empty dataset "
+                    + "or user-typed list and call CREATE_DATASET again with at least one valid record - or, for a "
+                    + "large extraction, use START_DATASET with a smaller first batch.";
+            LOGGER.warn("[STORE_AUDIT] requestId={} extraction rejected: CREATE_DATASET would produce an empty dataset "
                             + "(submitted={}, rejected={}, duplicates={})",
-                    requestId, building ? "START_DATASET" : "CREATE_DATASET", source.size(), rejected.size(), duplicateCount);
+                    requestId, source.size(), rejected.size(), duplicateCount);
             return new CreateOutcome(false, null, 0, duplicateCount, rejected, message, "EMPTY_DATASET");
         }
 

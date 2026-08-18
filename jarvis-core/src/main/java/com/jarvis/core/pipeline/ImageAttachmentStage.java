@@ -75,7 +75,7 @@ public class ImageAttachmentStage implements PipelineStage {
             }
             TemporaryWorkspaceService.ReadableImageAttachment readable = temporaryWorkspaceService.readImageAttachment(reference);
             String base64 = Base64.getEncoder().encodeToString(readable.bytes());
-            return java.util.Optional.of(new ImageAttachment(base64, metadata.originalFileName()));
+            return java.util.Optional.of(new ImageAttachment(base64, metadata.originalFileName(), reference.attachmentId()));
         } catch (RuntimeException exception) {
             LOGGER.warn("[JARVIS] [IMAGE] Failed to resolve image attachment workspace={} attachment={} reason={}",
                     reference.workspaceId(), reference.attachmentId(), exception.getMessage());
