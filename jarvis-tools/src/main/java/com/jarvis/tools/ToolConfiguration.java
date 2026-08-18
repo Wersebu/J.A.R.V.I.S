@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 @EnableConfigurationProperties({
         ToolRuntimeProperties.class,
+        com.jarvis.tools.mcp.McpProperties.class,
         com.jarvis.tools.web.WebSearchProperties.class,
         com.jarvis.tools.location.LocationProperties.class
 })

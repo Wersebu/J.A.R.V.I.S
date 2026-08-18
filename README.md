@@ -2,7 +2,7 @@
 
 Jarvis (J.A.R.V.I.S. Core) is a long-term AI operating system backend foundation: a headless Spring Boot service that orchestrates local Ollama models behind a provider-independent AI contract, with brain routing, native tool calling, a Knowledge Workspace, web/marketplace/location tools, cognitive memory, and real-time streaming to a separate desktop client.
 
-Current version: **`2.9.0`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
+Current version: **`2.16.0`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
 
 ## Requirements
 
@@ -11,6 +11,7 @@ Current version: **`2.9.0`**. Runs on Java 21 with Maven, targets Ubuntu Server 
 - A running [Ollama](https://ollama.com) instance (default `http://localhost:11434`) with at least one pulled model (default `gpt-oss:20b`)
 - Optional: a local [SearXNG](https://docs.searxng.org/) instance for live web/marketplace search (see [Web Search](#web-search))
 - Optional: internet access to the public [OpenStreetMap Nominatim](https://nominatim.openstreetmap.org) and [OSRM](https://router.project-osrm.org) instances for the [Location](#location--geocoding--routing) tool, or a self-hosted equivalent
+- Optional: external MCP servers for dynamic tools, for example Roblox Studio MCP through the Windows bridge (see [Model Context Protocol](#model-context-protocol-mcp))
 - The separate Windows desktop client ([D:\J.AR.V.I.S\WINDOWS-claude\WINDOWS](../WINDOWS-claude/WINDOWS)) is optional - Core is a fully independent headless service reachable over plain HTTP/SSE/WebSocket by any client
 
 ## Modules
@@ -23,7 +24,7 @@ Current version: **`2.9.0`**. Runs on Java 21 with Maven, targets Ubuntu Server 
 - `jarvis-memory` - the cognitive pipeline (stage-by-stage request processing), conversation history, and tool-calling orchestration.
 - `jarvis-ollama` - Ollama implementation hidden behind the provider-independent AI contract, model management, and the Qwen thinking-budget mechanism.
 - `jarvis-planner` - planning contracts for future planning engines.
-- `jarvis-tools` - native tool execution framework: `KnowledgeTool`, `WebSearchTool` (web + marketplace), and `LocationTool` (geocoding/routing).
+- `jarvis-tools` - native tool execution framework: `KnowledgeTool`, `WebSearchTool` (web + marketplace), `LocationTool` (geocoding/routing), and dynamic MCP tool adapters.
 - `jarvis-plugin-sdk` - plugin extension contracts for future external JAR plugins.
 
 ## Running & Building
@@ -77,7 +78,7 @@ All configuration lives under the `jarvis:` root key in `jarvis-core/src/main/re
 
 ```yaml
 jarvis:
-  version: "2.15.0"
+  version: "2.16.0"
   ai:
     identity-file: file:config/jarvis.md
     context-window: 16384
@@ -102,6 +103,18 @@ jarvis:
     nominatim-base-url: https://nominatim.openstreetmap.org
     osrm-base-url: https://router.project-osrm.org
     user-agent: "JARVIS-Core-LocationTool/1.0 (...)"
+  mcp:                      # disabled by default; see docs/MCP.md
+    enabled: false
+    servers:
+      roblox:
+        enabled: false
+        execution-host: WINDOWS
+        transport: WINDOWS_BRIDGE
+        command: cmd.exe
+        args:
+          - /c
+          - "%LOCALAPPDATA%\\Roblox\\mcp.bat"
+        access-level: EDIT
   thinking:                 # streams the model's reasoning tokens to clients (see Thinking)
     stream-to-clients: true
     persist: false
@@ -152,6 +165,7 @@ See `jarvis-core/src/main/resources/application.yml` for every key and its defau
 | `POST/GET/DELETE /api/v1/conversations/*` | Conversation history management |
 | `GET/POST /api/v1/memory/*` | Cognitive memory search/reindex/legacy migration |
 | `GET /api/v1/tools`, `/api/v1/tools/requests/{id}` | Registered native tool catalog and past tool-call requests |
+| `GET /api/v1/mcp/status`, `POST /api/v1/mcp/{serverId}/connect`, `/disconnect` | MCP server diagnostics and lifecycle controls |
 | `GET /api/v1/cognitive-graph`, `/debug` | Cognitive event graph for the diagnostics UI |
 | `GET /api/v1/debug/*`, `/api/v1/research/requests/{id}` | Pipeline/request/tool-loop debug snapshots |
 | `POST /api/v1/router/analyze`, `/compare` | Brain-routing decision inspection |
@@ -225,6 +239,20 @@ The knowledge engine keeps metadata only; source documents remain in the configu
 ### Native Tool Calling & Tool Loop
 
 Every native tool is a Spring bean implementing `JarvisTool` (`getName`/`getDescription`/`execute`) plus `ToolSchemaProvider` (`definition()` describing its operations as JSON-schema-like `ToolOperationDefinition`s). `DefaultToolManager`/`DefaultToolRegistry` auto-discover every such bean via Spring's `List<JarvisTool>` injection - **adding a new tool requires no changes to any dispatch/routing code**, only the new tool class itself plus (if it needs its own configuration) one line in `jarvis-tools/src/main/java/com/jarvis/tools/ToolConfiguration.java`'s `@EnableConfigurationProperties`.
+
+### Model Context Protocol MCP
+
+MCP support is integrated as a dynamic source for the existing native tool system, not as a second tool runtime. `McpServerManager` handles configured MCP server lifecycle, discovery, status, and calls; `McpDynamicToolSource` wraps discovered MCP tools as regular `JarvisTool` instances; `DefaultToolRegistry` exposes their schemas only when MCP is enabled and discovery succeeds. MCP tool names are namespaced as `mcp_<server>_<tool>` to avoid collisions with native tools.
+
+```text
+LLM
+  -> Core ToolRegistry / ToolManager
+  -> MCP adapter
+  -> MCP server or Windows MCP bridge
+  -> external app, e.g. Roblox Studio
+```
+
+With `jarvis.mcp.enabled=false`, no MCP discovery occurs and regular chat/tool behavior is unchanged. See [docs/MCP.md](docs/MCP.md) for configuration, Roblox Studio setup, status endpoints, troubleshooting, and the Windows bridge flow.
 
 `NativeToolLoopService` drives the actual loop: it exposes the *full* tool catalog to the model on every turn (which tool to call is always the model's own decision, never Core's), executes whatever the model calls, and feeds results back until the model returns a plain-text final answer. Loop safety:
 

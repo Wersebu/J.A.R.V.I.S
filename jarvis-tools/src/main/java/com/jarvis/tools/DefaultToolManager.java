@@ -2,6 +2,7 @@ package com.jarvis.tools;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
@@ -18,7 +19,8 @@ public class DefaultToolManager implements ToolManager {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultToolManager.class);
 
-    private final Map<String, JarvisTool> tools;
+    private final Map<String, JarvisTool> staticTools;
+    private final List<DynamicToolSource> dynamicSources;
 
     /**
      * Creates the manager and registers all discovered tools.
@@ -26,6 +28,17 @@ public class DefaultToolManager implements ToolManager {
      * @param discoveredTools Spring-discovered tools
      */
     public DefaultToolManager(List<JarvisTool> discoveredTools) {
+        this(discoveredTools, List.of());
+    }
+
+    /**
+     * Creates the manager and registers all static and dynamic tool sources.
+     *
+     * @param discoveredTools Spring-discovered tools
+     * @param dynamicSources runtime-discovered tool sources
+     */
+    @Autowired
+    public DefaultToolManager(List<JarvisTool> discoveredTools, List<DynamicToolSource> dynamicSources) {
         Map<String, JarvisTool> registered = new LinkedHashMap<>();
         for (JarvisTool tool : discoveredTools) {
             JarvisTool previous = registered.putIfAbsent(normalize(tool.getName()), tool);
@@ -34,7 +47,8 @@ public class DefaultToolManager implements ToolManager {
             }
             LOGGER.info("[TOOL] Registered tool name={}", tool.getName());
         }
-        this.tools = Map.copyOf(registered);
+        this.staticTools = Map.copyOf(registered);
+        this.dynamicSources = dynamicSources == null ? List.of() : List.copyOf(dynamicSources);
     }
 
     /**
@@ -47,12 +61,12 @@ public class DefaultToolManager implements ToolManager {
 
     @Override
     public List<JarvisTool> listTools() {
-        return List.copyOf(tools.values());
+        return List.copyOf(combinedTools().values());
     }
 
     @Override
     public Optional<JarvisTool> findTool(String name) {
-        return Optional.ofNullable(tools.get(normalize(name)));
+        return Optional.ofNullable(combinedTools().get(normalize(name)));
     }
 
     @Override
@@ -60,7 +74,7 @@ public class DefaultToolManager implements ToolManager {
         if (request == null || request.toolName() == null || request.toolName().isBlank()) {
             throw new ToolException("Tool name is required");
         }
-        JarvisTool tool = tools.get(normalize(request.toolName()));
+        JarvisTool tool = combinedTools().get(normalize(request.toolName()));
         if (tool == null) {
             throw new ToolException("Tool not registered: " + request.toolName());
         }
@@ -81,5 +95,19 @@ public class DefaultToolManager implements ToolManager {
                 result.requiresApproval(),
                 result.draftId()
         );
+    }
+
+    private Map<String, JarvisTool> combinedTools() {
+        Map<String, JarvisTool> combined = new LinkedHashMap<>(staticTools);
+        for (DynamicToolSource source : dynamicSources) {
+            for (JarvisTool tool : source.tools()) {
+                String key = normalize(tool.getName());
+                JarvisTool previous = combined.putIfAbsent(key, tool);
+                if (previous != null) {
+                    throw new ToolException("Duplicate dynamic tool registered: " + tool.getName());
+                }
+            }
+        }
+        return combined;
     }
 }

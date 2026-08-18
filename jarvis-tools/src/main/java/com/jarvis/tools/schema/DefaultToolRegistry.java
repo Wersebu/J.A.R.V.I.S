@@ -1,7 +1,11 @@
 package com.jarvis.tools.schema;
 
+import com.jarvis.tools.DynamicToolSource;
+import com.jarvis.tools.JarvisTool;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -12,6 +16,7 @@ import java.util.stream.Collectors;
 public class DefaultToolRegistry implements ToolRegistry {
 
     private final List<ToolDefinition> definitions;
+    private final List<DynamicToolSource> dynamicSources;
 
     /**
      * Creates the registry.
@@ -19,20 +24,41 @@ public class DefaultToolRegistry implements ToolRegistry {
      * @param providers discovered schema providers
      */
     public DefaultToolRegistry(List<ToolSchemaProvider> providers) {
+        this(providers, List.of());
+    }
+
+    /**
+     * Creates the registry.
+     *
+     * @param providers discovered schema providers
+     * @param dynamicSources runtime-discovered tool sources
+     */
+    @Autowired
+    public DefaultToolRegistry(List<ToolSchemaProvider> providers, List<DynamicToolSource> dynamicSources) {
         this.definitions = providers.stream().map(ToolSchemaProvider::definition).toList();
+        this.dynamicSources = dynamicSources == null ? List.of() : List.copyOf(dynamicSources);
     }
 
     @Override
     public List<ToolDefinition> definitions() {
-        return definitions;
+        List<ToolDefinition> current = new ArrayList<>(definitions);
+        for (DynamicToolSource source : dynamicSources) {
+            for (JarvisTool tool : source.tools()) {
+                if (tool instanceof ToolSchemaProvider provider) {
+                    current.add(provider.definition());
+                }
+            }
+        }
+        return List.copyOf(current);
     }
 
     @Override
     public String promptSection() {
-        if (definitions.isEmpty()) {
+        List<ToolDefinition> currentDefinitions = definitions();
+        if (currentDefinitions.isEmpty()) {
             return "";
         }
-        return "AVAILABLE TOOLS\n\n" + definitions.stream()
+        return "AVAILABLE TOOLS\n\n" + currentDefinitions.stream()
                 .map(this::formatTool)
                 .collect(Collectors.joining("\n\n"))
                 + "\n\nRules:\n"

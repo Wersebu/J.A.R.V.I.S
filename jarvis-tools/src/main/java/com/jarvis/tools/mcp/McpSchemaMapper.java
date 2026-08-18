@@ -1,0 +1,90 @@
+package com.jarvis.tools.mcp;
+
+import com.jarvis.tools.schema.ToolArgumentDefinition;
+import com.jarvis.tools.schema.ToolJsonSchema;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+/**
+ * Converts MCP JSON Schema maps into Jarvis tool schema definitions.
+ */
+public class McpSchemaMapper {
+
+    /**
+     * Converts an MCP input schema into top-level Jarvis tool arguments.
+     *
+     * @param inputSchema MCP input schema
+     * @return Jarvis argument definitions
+     */
+    public List<ToolArgumentDefinition> arguments(Map<String, Object> inputSchema) {
+        Map<String, Object> properties = asMap(inputSchema == null ? null : inputSchema.get("properties"));
+        List<String> required = asStringList(inputSchema == null ? null : inputSchema.get("required"));
+        List<ToolArgumentDefinition> arguments = new ArrayList<>();
+        for (Map.Entry<String, Object> entry : properties.entrySet()) {
+            ToolJsonSchema schema = schema(asMap(entry.getValue()), "");
+            arguments.add(new ToolArgumentDefinition(entry.getKey(), required.contains(entry.getKey()), schema));
+        }
+        if (arguments.isEmpty()) {
+            arguments.add(new ToolArgumentDefinition("arguments", false,
+                    ToolJsonSchema.object(Map.of(), List.of(), "Raw MCP tool arguments.")));
+        }
+        return List.copyOf(arguments);
+    }
+
+    private ToolJsonSchema schema(Map<String, Object> source, String fallbackDescription) {
+        String type = string(source.get("type"), "string").toLowerCase(Locale.ROOT);
+        String description = string(source.get("description"), fallbackDescription);
+        if ("array".equals(type)) {
+            return ToolJsonSchema.arrayOf(schema(asMap(source.get("items")), ""), description);
+        }
+        if ("object".equals(type)) {
+            Map<String, Object> rawProperties = asMap(source.get("properties"));
+            Map<String, ToolJsonSchema> properties = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : rawProperties.entrySet()) {
+                properties.put(entry.getKey(), schema(asMap(entry.getValue()), ""));
+            }
+            return ToolJsonSchema.object(properties, asStringList(source.get("required")), description);
+        }
+        if ("integer".equals(type)) {
+            return ToolJsonSchema.integer(description);
+        }
+        if ("number".equals(type)) {
+            return ToolJsonSchema.number(description);
+        }
+        if ("boolean".equals(type)) {
+            return ToolJsonSchema.bool(description);
+        }
+        return ToolJsonSchema.string(description);
+    }
+
+    private Map<String, Object> asMap(Object value) {
+        if (!(value instanceof Map<?, ?> raw)) {
+            return Map.of();
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                result.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return result;
+    }
+
+    private List<String> asStringList(Object value) {
+        if (!(value instanceof List<?> raw)) {
+            return List.of();
+        }
+        return raw.stream()
+                .filter(item -> item != null)
+                .map(String::valueOf)
+                .toList();
+    }
+
+    private String string(Object value, String fallback) {
+        return value == null ? fallback : String.valueOf(value);
+    }
+}
