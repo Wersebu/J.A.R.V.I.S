@@ -88,7 +88,7 @@ public class ToolCallingStage implements PipelineStage {
             return context;
         }
         List<String> attachmentIds = context.request().attachments().stream().map(AttachmentReference::attachmentId).toList();
-        storeAuditDatasetService.registerAttachments(context.requestId(), attachmentIds);
+        storeAuditDatasetService.registerAttachments(context.requestId(), context.conversationId(), attachmentIds);
         if (!attachmentIds.isEmpty()) {
             LOGGER.info("[STORE_AUDIT] requestId={} attachments={}", context.requestId(), attachmentIds.size());
         }

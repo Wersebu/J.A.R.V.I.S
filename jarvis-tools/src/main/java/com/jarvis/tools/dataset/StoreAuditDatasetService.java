@@ -109,17 +109,23 @@ public class StoreAuditDatasetService {
      *
      * @param requestId pipeline request id
      * @param sourceImageCount number of image attachments read during extraction
-     * @param declaredAttachmentIds attachment ids the model claims it extracted records from
+     * @param expectedRecordCount total number of source records the model expects to extract
+     *         (e.g. counted across every screenshot before submitting), 0 if not declared - checked
+     *         against the accepted record count so an extraction can never silently finalize short
+     * @param declaredAttachmentIds attachment ids the model claims it extracted records from - only
+     *         used as a sanity check and as a fallback when Core has no real registration for this
+     *         request; the authoritative set is the one registered via {@link #registerAttachments}
      * @param candidates extracted candidate records
      * @return outcome describing what was accepted, rejected, or deduplicated
      */
     public CreateOutcome createDataset(
             String requestId,
             int sourceImageCount,
+            int expectedRecordCount,
             List<String> declaredAttachmentIds,
             List<CandidateRecord> candidates
     ) {
-        return buildDataset(requestId, sourceImageCount, declaredAttachmentIds, candidates, DatasetStage.EXTRACTED);
+        return buildDataset(requestId, sourceImageCount, expectedRecordCount, declaredAttachmentIds, candidates, DatasetStage.EXTRACTED);
     }
 
     /**
@@ -132,22 +138,28 @@ public class StoreAuditDatasetService {
      *
      * @param requestId pipeline request id
      * @param sourceImageCount number of image attachments read during extraction
-     * @param declaredAttachmentIds attachment ids the model claims it extracted records from
+     * @param expectedRecordCount total number of source records the model expects to extract
+     *         across every batch it will submit, 0 if not declared
+     * @param declaredAttachmentIds attachment ids the model claims it extracted records from - only
+     *         used as a sanity check and as a fallback when Core has no real registration for this
+     *         request; the authoritative set is the one registered via {@link #registerAttachments}
      * @param candidates first batch of extracted candidate records
      * @return outcome describing what was accepted, rejected, or deduplicated
      */
     public CreateOutcome startDataset(
             String requestId,
             int sourceImageCount,
+            int expectedRecordCount,
             List<String> declaredAttachmentIds,
             List<CandidateRecord> candidates
     ) {
-        return buildDataset(requestId, sourceImageCount, declaredAttachmentIds, candidates, DatasetStage.BUILDING);
+        return buildDataset(requestId, sourceImageCount, expectedRecordCount, declaredAttachmentIds, candidates, DatasetStage.BUILDING);
     }
 
     private CreateOutcome buildDataset(
             String requestId,
             int sourceImageCount,
+            int expectedRecordCount,
             List<String> declaredAttachmentIds,
             List<CandidateRecord> candidates,
             DatasetStage targetStage
@@ -169,9 +181,22 @@ public class StoreAuditDatasetService {
             }
         }
 
+        // The dataset's authoritative attachment set is the real one Core registered for this
+        // request (ToolCallingStage#registerAttachments, from the actual current-message
+        // attachments) - never merely whatever subset the model happened to declare. This is what
+        // lets every attachment's records be accepted from the start, instead of a later
+        // APPEND_RECORDS batch for a second/third attachment being rejected wholesale just because
+        // an earlier START_DATASET call only declared the first one. The model's own declared list
+        // above is still checked for inventing an id that isn't real, but never narrows the legal
+        // set below the real one. Falls back to the model-declared list only when Core has no
+        // registration for this request at all (e.g. text-input mode, or a test that never calls
+        // registerAttachments).
+        List<String> realAttachmentIds = known.map(AttachmentRegistration::attachmentIds).orElse(List.of());
+        List<String> effectiveAttachmentIds = !realAttachmentIds.isEmpty() ? realAttachmentIds : declared;
+
         String conversationIdForRequest = known.map(AttachmentRegistration::conversationId).orElse("");
-        if (!declared.isEmpty() && !conversationIdForRequest.isBlank()) {
-            Set<String> declaredForDuplicateCheck = new HashSet<>(declared);
+        if (!effectiveAttachmentIds.isEmpty() && !conversationIdForRequest.isBlank()) {
+            Set<String> declaredForDuplicateCheck = new HashSet<>(effectiveAttachmentIds);
             Optional<StoreAuditDataset> duplicate = datasets.values().stream()
                     .filter(existing -> conversationIdForRequest.equals(existing.conversationId()))
                     .filter(existing -> new HashSet<>(existing.sourceAttachmentIds()).equals(declaredForDuplicateCheck))
@@ -189,7 +214,7 @@ public class StoreAuditDatasetService {
             }
         }
 
-        Set<String> declaredSet = new HashSet<>(declared);
+        Set<String> allowedAttachmentSet = new HashSet<>(effectiveAttachmentIds);
         Set<String> seenSourceKeys = new LinkedHashSet<>();
         List<StoreRecord> accepted = new ArrayList<>();
         List<RejectedCandidate> rejected = new ArrayList<>();
@@ -204,15 +229,15 @@ public class StoreAuditDatasetService {
                 continue;
             }
             String sourceAttachmentId = safe(candidate.sourceAttachmentId());
-            if (!declared.isEmpty()) {
-                if (sourceAttachmentId.isBlank() || !declaredSet.contains(sourceAttachmentId)) {
+            if (!allowedAttachmentSet.isEmpty()) {
+                if (sourceAttachmentId.isBlank() || !allowedAttachmentSet.contains(sourceAttachmentId)) {
                     rejected.add(new RejectedCandidate(index,
-                            "Missing or invalid source provenance - sourceAttachmentId must be one of the declared "
-                                    + "current-message attachment ids"));
+                            "Missing or invalid source provenance - sourceAttachmentId must be one of the current "
+                                    + "message's real attachment ids"));
                     continue;
                 }
             }
-            // In text-input mode (no attachments declared at all) a blank sourceAttachmentId is
+            // In text-input mode (no attachments known at all) a blank sourceAttachmentId is
             // accepted - the explicit user-typed list is itself the valid source in that case.
 
             String dedupeKey = sourceAttachmentId + "::" + candidate.sourceRow();
@@ -246,11 +271,22 @@ public class StoreAuditDatasetService {
             return new CreateOutcome(false, null, 0, duplicateCount, rejected, message, "EMPTY_DATASET");
         }
 
+        // CREATE_DATASET has no later batch to complete the extraction with, so its own declared
+        // expectedRecordCount (if any) is checked immediately, the same way FINALIZE_DATASET checks
+        // it for an incremental BUILDING->EXTRACTED transition - see completeExtractionInvariants.
+        if (!building) {
+            Optional<CreateOutcome> incomplete = incompleteExtractionRejection(
+                    requestId, expectedRecordCount, accepted, effectiveAttachmentIds, "CREATE_DATASET");
+            if (incomplete.isPresent()) {
+                return incomplete.get();
+            }
+        }
+
         Instant now = clock.instant();
         String conversationId = conversationIdForRequest;
         StoreAuditDataset dataset = new StoreAuditDataset(
-                UUID.randomUUID().toString(), requestId, conversationId, declared, sourceImageCount,
-                accepted, accepted.size(), targetStage, List.of(), now, now.plus(DATASET_TTL));
+                UUID.randomUUID().toString(), requestId, conversationId, effectiveAttachmentIds, sourceImageCount,
+                Math.max(expectedRecordCount, 0), accepted, accepted.size(), targetStage, List.of(), now, now.plus(DATASET_TTL));
         datasets.put(dataset.datasetId(), dataset);
 
         LOGGER.info("[STORE_AUDIT] requestId={} extraction pass1 count={} rejected={} duplicates={} stage={}",
@@ -273,6 +309,69 @@ public class StoreAuditDatasetService {
                 + (building ? " Call storeDataset.APPEND_RECORDS with the next batch, then storeDataset.FINALIZE_DATASET "
                 + "once every record has been submitted." : "");
         return new CreateOutcome(true, dataset, accepted.size(), duplicateCount, rejected, message, "");
+    }
+
+    /**
+     * Enforces the two code-level, generic (never hardcoded to a specific count) safety nets that
+     * catch an incomplete extraction before it is allowed to lock in as {@link
+     * DatasetStage#EXTRACTED}:
+     * <ol>
+     *     <li>if the model declared {@code expectedRecordCount} up front, the accepted count must
+     *     match it exactly - the exact production bug this exists for is a 23-record extraction
+     *     silently finalizing with only 14 records because a later batch's provenance was rejected;</li>
+     *     <li>every real current-message attachment this dataset is scoped to must have contributed
+     *     at least one record - a completely unrepresented attachment (e.g. a whole second
+     *     screenshot's rows all rejected or never submitted) is caught even when the model never
+     *     declared an expected count at all.</li>
+     * </ol>
+     *
+     * @param requestId pipeline request id, for logging
+     * @param expectedRecordCount model-declared expected total, 0/negative if not declared
+     * @param accepted records accepted so far
+     * @param attachmentIds the dataset's real attachment set
+     * @param operationName {@code CREATE_DATASET} or {@code FINALIZE_DATASET}, for the message
+     * @return a rejection outcome, if either invariant is violated; empty when the extraction may proceed
+     */
+    private Optional<CreateOutcome> incompleteExtractionRejection(
+            String requestId,
+            int expectedRecordCount,
+            List<StoreRecord> accepted,
+            List<String> attachmentIds,
+            String operationName
+    ) {
+        if (expectedRecordCount > 0 && accepted.size() != expectedRecordCount) {
+            int missing = expectedRecordCount - accepted.size();
+            String message = "Dataset " + (missing > 0 ? "incomplete" : "rejected") + ": expected " + expectedRecordCount
+                    + " source record(s) (as declared), but only " + accepted.size() + " were accepted"
+                    + (missing > 0 ? " (" + missing + " missing)" : " (" + (-missing) + " more than expected)") + ". "
+                    + "Re-check the source material for rows that were skipped or rejected, then "
+                    + (operationName.equals("FINALIZE_DATASET")
+                            ? "call storeDataset.APPEND_RECORDS with the missing records before finalizing again"
+                            : "call CREATE_DATASET again with the complete, correct record list")
+                    + " - never finalize short of the declared expected count.";
+            LOGGER.warn("[STORE_AUDIT][INVARIANT_VIOLATION] requestId={} expectedRecords={} actualRecords={} missing={}",
+                    requestId, expectedRecordCount, accepted.size(), Math.max(missing, 0));
+            return Optional.of(new CreateOutcome(false, null, accepted.size(), 0, List.of(), message, "STORE_DATASET_INCOMPLETE_EXTRACTION"));
+        }
+        if (!attachmentIds.isEmpty()) {
+            Set<String> representedAttachmentIds = new LinkedHashSet<>();
+            for (StoreRecord record : accepted) {
+                representedAttachmentIds.add(record.sourceAttachmentId());
+            }
+            List<String> unrepresented = attachmentIds.stream().filter(id -> !representedAttachmentIds.contains(id)).toList();
+            if (!unrepresented.isEmpty()) {
+                String message = "Dataset incomplete: attachment id(s) " + unrepresented + " contributed zero records - "
+                        + "every current-message attachment used for this dataset must have at least one record. "
+                        + "Re-read the missing attachment(s) and "
+                        + (operationName.equals("FINALIZE_DATASET")
+                                ? "call storeDataset.APPEND_RECORDS with their records before finalizing again"
+                                : "call CREATE_DATASET again including their records")
+                        + ".";
+                LOGGER.warn("[STORE_AUDIT][INVARIANT_VIOLATION] requestId={} unrepresentedAttachmentIds={}", requestId, unrepresented);
+                return Optional.of(new CreateOutcome(false, null, accepted.size(), 0, List.of(), message, "STORE_DATASET_ATTACHMENT_NOT_REPRESENTED"));
+            }
+        }
+        return Optional.empty();
     }
 
     /**
@@ -398,6 +497,11 @@ public class StoreAuditDatasetService {
             LOGGER.warn("[STORE_AUDIT] requestId={} datasetId={} finalize rejected: 0 records", dataset.requestId(), datasetId);
             return new FinalizeOutcome(false, dataset, message, "EMPTY_DATASET");
         }
+        Optional<CreateOutcome> incomplete = incompleteExtractionRejection(
+                dataset.requestId(), dataset.expectedRecordCount(), dataset.stores(), dataset.sourceAttachmentIds(), "FINALIZE_DATASET");
+        if (incomplete.isPresent()) {
+            return new FinalizeOutcome(false, dataset, incomplete.get().message(), incomplete.get().errorCode());
+        }
         StoreAuditDataset finalized = dataset.withStage(DatasetStage.EXTRACTED);
         datasets.put(datasetId, finalized);
         LOGGER.info("[STORE_AUDIT] requestId={} datasetId={} finalized count={}",
@@ -413,10 +517,12 @@ public class StoreAuditDatasetService {
     }
 
     /**
-     * Applies a verification pass to an existing dataset. Rejects the whole pass, without applying
-     * anything, when it references unknown record ids or reports an implausible record count - the
-     * exact failure mode this mechanism exists to prevent (e.g. a locked 23-record dataset getting
-     * a 117-entry "verification").
+     * Applies a verification pass to an existing dataset. Requires FULL coverage - every canonical
+     * record id referenced in the pass exactly once, no record missing, none duplicated, none
+     * hallucinated - mirroring the invariant {@link #submitSchedule} enforces on a proposed
+     * schedule. Rejects the whole pass, without applying anything or changing the stage, otherwise:
+     * a single-record verification pass against a 23-record dataset must never be accepted as if it
+     * verified the whole thing.
      *
      * @param datasetId dataset id
      * @param verifications verification entries, referencing existing records by id
@@ -426,39 +532,66 @@ public class StoreAuditDatasetService {
         sweepExpired();
         StoreAuditDataset dataset = datasets.get(datasetId);
         if (dataset == null) {
-            return new VerifyOutcome(false, null, false, List.of(), "Unknown or expired dataset id: " + datasetId);
+            return new VerifyOutcome(false, null, false, List.of(), List.of(), List.of(), "Unknown or expired dataset id: " + datasetId);
         }
         if (dataset.stage() == DatasetStage.BUILDING) {
-            return new VerifyOutcome(false, dataset, false, List.of(),
+            return new VerifyOutcome(false, dataset, false, List.of(), List.of(), List.of(),
                     "Dataset " + datasetId + " is still being built (stage=BUILDING, " + dataset.stores().size()
                             + " record(s) so far). Call storeDataset.FINALIZE_DATASET before verifying it.");
         }
         List<VerificationEntry> entries = verifications == null ? List.of() : verifications;
-        Map<String, StoreRecord> byId = new LinkedHashMap<>();
+        Set<String> knownIds = new LinkedHashSet<>();
         for (StoreRecord record : dataset.stores()) {
-            byId.put(record.id(), record);
+            knownIds.add(record.id());
         }
-        List<String> unknownIds = entries.stream()
-                .map(VerificationEntry::recordId)
-                .filter(id -> id == null || !byId.containsKey(id))
-                .toList();
-        boolean countImplausible = entries.size() > dataset.expectedStoreCount();
-        if (!unknownIds.isEmpty() || countImplausible) {
-            LOGGER.warn("[STORE_AUDIT][INVARIANT_VIOLATION] requestId={} datasetId={} expected={} actual={} stage=VERIFICATION unknownIds={}",
-                    dataset.requestId(), datasetId, dataset.expectedStoreCount(), entries.size(), unknownIds);
+
+        List<String> unknownIds = new ArrayList<>();
+        Set<String> seenUnknown = new LinkedHashSet<>();
+        Set<String> seenKnown = new HashSet<>();
+        List<String> duplicateIds = new ArrayList<>();
+        for (VerificationEntry entry : entries) {
+            String id = entry.recordId();
+            if (id == null || !knownIds.contains(id)) {
+                if (id != null && seenUnknown.add(id)) {
+                    unknownIds.add(id);
+                }
+                continue;
+            }
+            if (!seenKnown.add(id)) {
+                duplicateIds.add(id);
+            }
+        }
+        List<String> missingIds = new ArrayList<>();
+        for (String id : knownIds) {
+            if (!seenKnown.contains(id)) {
+                missingIds.add(id);
+            }
+        }
+
+        boolean valid = unknownIds.isEmpty() && duplicateIds.isEmpty() && missingIds.isEmpty();
+        LOGGER.info("[STORE_AUDIT_VALIDATION] requestId={} datasetId={} expected={} actual={} missing={} duplicates={} unknown={} valid={}",
+                dataset.requestId(), datasetId, knownIds.size(), seenKnown.size(),
+                missingIds.size(), duplicateIds.size(), unknownIds.size(), valid);
+        if (!valid) {
+            LOGGER.warn("[STORE_AUDIT][INVARIANT_VIOLATION] requestId={} datasetId={} stage=VERIFICATION expected={} actual={} missing={} unknown={} duplicates={}",
+                    dataset.requestId(), datasetId, knownIds.size(), entries.size(), missingIds, unknownIds, duplicateIds);
             cognitiveEventBus.publish(CognitiveEventType.WORKFLOW_DATASET_INVARIANT_VIOLATION, "VERIFICATION", "Store Audit dataset invariant violated",
                     datasetId, Map.of(
                             "datasetId", datasetId,
                             "requestId", dataset.requestId(),
-                            "expected", dataset.expectedStoreCount(),
+                            "expected", knownIds.size(),
                             "actual", entries.size(),
+                            "missingRecordIds", missingIds,
+                            "duplicateRecordIds", duplicateIds,
                             "unknownRecordIds", unknownIds
                     ));
-            String message = "Verification pass rejected: expected around " + dataset.expectedStoreCount()
-                    + " record(s) (the locked dataset size), but this pass reported " + entries.size() + " entries"
-                    + (unknownIds.isEmpty() ? "" : " and referenced unknown record id(s) " + unknownIds)
-                    + ". Call GET_DATASET and recheck against the existing records instead of regenerating a new list.";
-            return new VerifyOutcome(false, dataset, true, unknownIds, message);
+            String message = "Verification pass rejected: expected exactly " + knownIds.size()
+                    + " record(s) (the locked dataset size), each verified exactly once."
+                    + (missingIds.isEmpty() ? "" : " Missing from this pass: " + missingIds + ".")
+                    + (unknownIds.isEmpty() ? "" : " Unknown/hallucinated id(s): " + unknownIds + ".")
+                    + (duplicateIds.isEmpty() ? "" : " Duplicated id(s): " + duplicateIds + ".")
+                    + " Call GET_DATASET and resubmit a corrected verification pass covering every record exactly once.";
+            return new VerifyOutcome(false, dataset, true, missingIds, duplicateIds, unknownIds, message);
         }
 
         List<StoreRecord> updated = new ArrayList<>(dataset.stores());
@@ -483,7 +616,7 @@ public class StoreAuditDatasetService {
         cognitiveEventBus.publish(CognitiveEventType.WORKFLOW_DATASET_VERIFIED, "LOCKED", "Store Audit dataset verified and locked",
                 datasetId, Map.of("datasetId", datasetId, "requestId", dataset.requestId(), "count", locked.stores().size()));
 
-        return new VerifyOutcome(true, locked, false, List.of(),
+        return new VerifyOutcome(true, locked, false, List.of(), List.of(), List.of(),
                 "Verification applied. Dataset locked with " + locked.stores().size() + " record(s).");
     }
 
@@ -520,22 +653,37 @@ public class StoreAuditDatasetService {
 
     /**
      * Applies geolocation results to existing records by id. Can never create or remove a record -
-     * entries referencing an unknown record id are reported, not applied.
+     * entries referencing an unknown record id are reported, not applied. Only legal once the
+     * dataset has been through a full verification pass ({@link DatasetStage#LOCKED}) - or is
+     * already {@link DatasetStage#GEOLOCATED} (a legitimate retry of unresolved records) - so a
+     * model can never skip straight from a bare extraction to geolocation without ever verifying
+     * the extracted addresses.
      *
      * @param datasetId dataset id
      * @param results geolocation results, referencing existing records by id
-     * @return outcome describing what was updated
+     * @return outcome describing what was updated, or why geolocation could not proceed
      */
     public GeolocationUpdateOutcome updateGeolocation(String datasetId, List<GeolocationEntry> results) {
         sweepExpired();
         StoreAuditDataset dataset = datasets.get(datasetId);
         if (dataset == null) {
-            return new GeolocationUpdateOutcome(false, null, 0, List.of(), "Unknown or expired dataset id: " + datasetId);
+            return new GeolocationUpdateOutcome(false, null, 0, List.of(), "Unknown or expired dataset id: " + datasetId, "STORE_DATASET_NOT_FOUND");
         }
         if (dataset.stage() == DatasetStage.BUILDING) {
             return new GeolocationUpdateOutcome(false, dataset, 0, List.of(),
                     "Dataset " + datasetId + " is still being built (stage=BUILDING, " + dataset.stores().size()
-                            + " record(s) so far). Call storeDataset.FINALIZE_DATASET before geocoding it.");
+                            + " record(s) so far). Call storeDataset.FINALIZE_DATASET before geocoding it.",
+                    "STORE_DATASET_NOT_BUILDING");
+        }
+        if (dataset.stage() != DatasetStage.LOCKED && dataset.stage() != DatasetStage.GEOLOCATED) {
+            String message = dataset.stage() == DatasetStage.SCHEDULED
+                    ? "Dataset " + datasetId + " already has an accepted schedule (stage=SCHEDULED) - geolocation is "
+                            + "no longer applicable."
+                    : "Dataset " + datasetId + " has not been verified yet (stage=" + dataset.stage() + "). "
+                            + "Call storeDataset.VERIFY_DATASET before geolocation.";
+            LOGGER.warn("[STORE_AUDIT][INVARIANT_VIOLATION] requestId={} datasetId={} stage=GEOLOCATION attempted before verification (stage={})",
+                    dataset.requestId(), datasetId, dataset.stage());
+            return new GeolocationUpdateOutcome(false, dataset, 0, List.of(), message, "STORE_DATASET_NOT_VERIFIED");
         }
         List<GeolocationEntry> entries = results == null ? List.of() : results;
         List<StoreRecord> updated = new ArrayList<>(dataset.stores());
@@ -579,7 +727,7 @@ public class StoreAuditDatasetService {
 
         String message = "Updated " + updatedCount + " record(s)."
                 + (unknownIds.isEmpty() ? "" : " " + unknownIds.size() + " unknown record id(s) ignored (no record created).");
-        return new GeolocationUpdateOutcome(true, newDataset, updatedCount, unknownIds, message);
+        return new GeolocationUpdateOutcome(true, newDataset, updatedCount, unknownIds, message, "");
     }
 
     /**

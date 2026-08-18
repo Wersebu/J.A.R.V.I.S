@@ -1,5 +1,7 @@
 package com.jarvis.tools.workflow;
 
+import java.util.Optional;
+
 /**
  * Pluggable check the native tool loop consults before accepting a model's proposed final content
  * as a genuinely finished task, instead of a status update mid-workflow.
@@ -18,4 +20,17 @@ public interface WorkflowCompletionValidator {
      * @return assessment; {@link CompletionAssessment#ok()} when there is nothing to gate on
      */
     CompletionAssessment assess(WorkflowCompletionContext context);
+
+    /**
+     * The logical Knowledge Workspace path of a document this workflow requires to have been read
+     * (via {@code knowledge__read_document}) before it can be considered progressing, if any. The
+     * loop stays generic - it never hardcodes any specific document path - it only tracks whether a
+     * successful {@code READ_DOCUMENT} call this turn matched the path a validator declares here,
+     * and reports that back via {@link WorkflowCompletionContext#requiredDocumentLoaded()}.
+     *
+     * @return the required document's logical path, or empty when this workflow needs none
+     */
+    default Optional<String> requiredDocumentPath() {
+        return Optional.empty();
+    }
 }

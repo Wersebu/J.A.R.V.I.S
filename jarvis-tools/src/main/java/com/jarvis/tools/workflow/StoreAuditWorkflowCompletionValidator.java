@@ -15,6 +15,13 @@ import java.util.Optional;
  */
 public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletionValidator {
 
+    /**
+     * The authoritative Store Audit planning procedure, in the Knowledge Workspace - required
+     * reading (via {@code knowledge__read_document}) before geolocation/scheduling proceeds, but
+     * never duplicated into this class or any prompt: see {@link #requiredDocumentPath()}.
+     */
+    private static final String REQUIRED_WORKFLOW_DOCUMENT_PATH = "Work/Scheduling/StoreAuditScheduleWorkflow.md";
+
     private final StoreAuditDatasetService datasetService;
 
     /**
@@ -24,6 +31,11 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
      */
     public StoreAuditWorkflowCompletionValidator(StoreAuditDatasetService datasetService) {
         this.datasetService = datasetService;
+    }
+
+    @Override
+    public Optional<String> requiredDocumentPath() {
+        return Optional.of(REQUIRED_WORKFLOW_DOCUMENT_PATH);
     }
 
     @Override
@@ -40,6 +52,18 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
         if (value.stage() == DatasetStage.SCHEDULED) {
             return CompletionAssessment.ok();
         }
+        // The workflow document defines the actual planning rules (which days, how many stores per
+        // day, ...) - once the dataset is verified and ready for geolocation/planning, this must be
+        // read before proceeding, not skipped in favor of the model improvising its own grouping.
+        boolean readyForWorkflowDocument = value.stage() == DatasetStage.LOCKED || value.stage() == DatasetStage.GEOLOCATED;
+        if (readyForWorkflowDocument && !context.requiredDocumentLoaded()) {
+            String guidance = "The Store Audit dataset (datasetId=" + value.datasetId() + ", stage=" + value.stage()
+                    + ") is ready for geolocation/planning, but the authoritative workflow procedure has not been "
+                    + "read yet this task. Call knowledge__read_document(path=\"" + REQUIRED_WORKFLOW_DOCUMENT_PATH
+                    + "\") first, then follow its planning rules for grouping records into days - never invent "
+                    + "grouping rules without reading it.";
+            return new CompletionAssessment(false, "STORE_AUDIT_WORKFLOW_DOCUMENT_NOT_LOADED", guidance);
+        }
         String guidance = "The Store Audit dataset (datasetId=" + value.datasetId() + ") was used in this task but "
                 + "is not finished yet: stage=" + value.stage() + ", " + value.stores().size() + " record(s). "
                 + nextStepGuidance(value.stage())
@@ -54,9 +78,9 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
         return switch (stage) {
             case BUILDING -> "Call storeDataset.APPEND_RECORDS with the remaining records, then "
                     + "storeDataset.FINALIZE_DATASET once every record has been submitted.";
-            case EXTRACTED -> "Call storeDataset.VERIFY_DATASET to lock verification, then "
-                    + "location.GEOCODE_DATASET, then storeDataset.SUBMIT_SCHEDULE.";
-            case LOCKED -> "Call location.GEOCODE_DATASET for the locked records, then storeDataset.SUBMIT_SCHEDULE.";
+            case EXTRACTED -> "Call storeDataset.VERIFY_DATASET, covering every record exactly once, to lock "
+                    + "verification (stage=LOCKED).";
+            case LOCKED -> "Call location.GEOCODE_DATASET for the verified records, then storeDataset.SUBMIT_SCHEDULE.";
             case GEOLOCATED -> "Call storeDataset.SUBMIT_SCHEDULE with a day-by-day grouping covering every "
                     + "record exactly once.";
             case SCHEDULED -> "";

@@ -139,6 +139,11 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "then APPEND_RECORDS for the rest, then FINALIZE_DATASET instead.",
                         true, ToolSafetyLevel.WRITE,
                         arg("sourceImageCount", "number", true, "Number of image attachments read during extraction"),
+                        arg("expectedRecordCount", "number", true,
+                                "Total number of store records you counted across ALL source material before "
+                                        + "submitting - the exact number of rows you intend to extract in total. "
+                                        + "Checked against what is actually accepted; a mismatch rejects the dataset "
+                                        + "so an incomplete extraction can never silently lock in short."),
                         arg("sourceAttachmentIds", true, SOURCE_ATTACHMENT_IDS_SCHEMA),
                         arg("records", true, RECORDS_SCHEMA)),
                 operation("START_DATASET",
@@ -148,9 +153,16 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "VERIFY_DATASET/GEOCODE_DATASET/SUBMIT_SCHEDULE - until FINALIZE_DATASET is "
                                 + "called. Same arguments and provenance rules as CREATE_DATASET; only call this "
                                 + "once per extraction (use APPEND_RECORDS with the returned datasetId for every "
-                                + "further batch).",
+                                + "further batch). It is legal for this first batch to end up with 0 accepted "
+                                + "records - APPEND_RECORDS can still add the rest - but FINALIZE_DATASET will "
+                                + "reject an empty or incomplete dataset.",
                         true, ToolSafetyLevel.WRITE,
                         arg("sourceImageCount", "number", true, "Number of image attachments read during extraction"),
+                        arg("expectedRecordCount", "number", true,
+                                "Total number of store records you counted across ALL source material before "
+                                        + "starting - the exact number of rows you intend to extract in total across "
+                                        + "this batch and every APPEND_RECORDS batch that follows. FINALIZE_DATASET "
+                                        + "rejects the dataset if the final accepted count does not match this."),
                         arg("sourceAttachmentIds", true, SOURCE_ATTACHMENT_IDS_SCHEMA),
                         arg("records", true, RECORDS_SCHEMA)),
                 operation("APPEND_RECORDS",
@@ -166,17 +178,26 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                         "Locks the record count of a dataset still in stage=BUILDING, once every batch from "
                                 + "the source material has been submitted via START_DATASET/APPEND_RECORDS. "
                                 + "After this, the dataset behaves exactly like one created with CREATE_DATASET - "
-                                + "VERIFY_DATASET/GEOCODE_DATASET/SUBMIT_SCHEDULE all become usable. Rejected if "
-                                + "the dataset has 0 records. Safe to call again if already finalized.",
+                                + "advancing to stage=EXTRACTED, ready for VERIFY_DATASET. Rejected if the dataset "
+                                + "has 0 records, if the accepted count does not match the expectedRecordCount "
+                                + "declared at START_DATASET time, or if any of the dataset's real source "
+                                + "attachments contributed zero records - in every case nothing is left unfixably "
+                                + "broken, call APPEND_RECORDS with the missing records and finalize again. Safe to "
+                                + "call again if already finalized.",
                         true, ToolSafetyLevel.WRITE,
                         arg("datasetId", "string", true, "Dataset id returned by START_DATASET")),
                 operation("VERIFY_DATASET",
-                        "Submits a second-pass verification of the ALREADY-LOCKED dataset - reports "
-                                + "per-record status/corrections by record id, never a new independently "
-                                + "regenerated list. If this pass references an unknown record id or reports "
-                                + "a record count far from the locked dataset size, Core rejects the whole "
-                                + "pass (nothing is applied) and asks you to recheck via GET_DATASET instead "
-                                + "of proceeding on a corrupted count.",
+                        "Submits a second-pass verification of the ALREADY-LOCKED dataset (stage=EXTRACTED) - "
+                                + "reports per-record status/corrections by record id, never a new independently "
+                                + "regenerated list. REQUIRED before GEOCODE_DATASET - geolocation is rejected on a "
+                                + "dataset that has not passed through this stage. Must cover every canonical record "
+                                + "id in the dataset EXACTLY ONCE - a partial pass (e.g. verifying only 1 of 23 "
+                                + "records) is rejected outright, not silently accepted as a full verification. If "
+                                + "this pass is missing any record id, duplicates one, or references an unknown id, "
+                                + "Core rejects the whole pass (nothing is applied, stage stays EXTRACTED) and lists "
+                                + "the exact missing/duplicate/unknown ids so you can resubmit a corrected pass. "
+                                + "Call GET_DATASET first if you are not certain of the exact current record ids. "
+                                + "On success the dataset advances to stage=LOCKED.",
                         true, ToolSafetyLevel.WRITE,
                         arg("datasetId", "string", true, "Dataset id returned by CREATE_DATASET"),
                         arg("verifications", true, VERIFICATIONS_SCHEMA)),
@@ -220,17 +241,21 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
 
     private ToolResult create(ToolRequest request) {
         int sourceImageCount = intArg(request, "sourceImageCount");
+        int expectedRecordCount = intArg(request, "expectedRecordCount");
         List<String> sourceAttachmentIds = stringListArg(request, "sourceAttachmentIds");
         List<CandidateRecord> candidates = candidatesFromRecordsArg(request);
-        CreateOutcome outcome = datasetService.createDataset(request.requestId(), sourceImageCount, sourceAttachmentIds, candidates);
+        CreateOutcome outcome = datasetService.createDataset(
+                request.requestId(), sourceImageCount, expectedRecordCount, sourceAttachmentIds, candidates);
         return createOutcomeResult(request, "CREATE_DATASET", outcome);
     }
 
     private ToolResult start(ToolRequest request) {
         int sourceImageCount = intArg(request, "sourceImageCount");
+        int expectedRecordCount = intArg(request, "expectedRecordCount");
         List<String> sourceAttachmentIds = stringListArg(request, "sourceAttachmentIds");
         List<CandidateRecord> candidates = candidatesFromRecordsArg(request);
-        CreateOutcome outcome = datasetService.startDataset(request.requestId(), sourceImageCount, sourceAttachmentIds, candidates);
+        CreateOutcome outcome = datasetService.startDataset(
+                request.requestId(), sourceImageCount, expectedRecordCount, sourceAttachmentIds, candidates);
         return createOutcomeResult(request, "START_DATASET", outcome);
     }
 
@@ -312,6 +337,10 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
         if (!outcome.success()) {
             String errorCode = outcome.invariantViolation() ? "STORE_DATASET_INVARIANT_VIOLATION" : "STORE_DATASET_NOT_FOUND";
             Map<String, Object> data = outcome.dataset() == null ? Map.of() : datasetData(outcome.dataset());
+            data = new HashMap<>(data);
+            data.put("missingRecordIds", outcome.missingRecordIds());
+            data.put("duplicateRecordIds", outcome.duplicateRecordIds());
+            data.put("unknownRecordIds", outcome.unknownRecordIds());
             return new ToolResult(false, TOOL_NAME, "VERIFY_DATASET", request.requestId(), request.conversationId(),
                     false, List.of(), outcome.message(), data, errorCode, outcome.message(), false, "");
         }
@@ -362,6 +391,9 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
         data.put("stage", dataset.stage().name());
         data.put("count", dataset.stores().size());
         data.put("sourceImageCount", dataset.sourceImageCount());
+        if (dataset.expectedRecordCount() > 0) {
+            data.put("expectedRecordCount", dataset.expectedRecordCount());
+        }
         data.put("sourceAttachmentIds", dataset.sourceAttachmentIds());
         data.put("records", dataset.stores().stream().map(this::recordMap).toList());
         if (!dataset.schedule().isEmpty()) {

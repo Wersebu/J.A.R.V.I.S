@@ -223,6 +223,29 @@ class LocationToolTest {
                 .isInstanceOf(ToolException.class);
     }
 
+    // REGRESSION TEST 4 (tool level): GEOCODE_DATASET on a dataset that has not been through
+    // VERIFY_DATASET yet (stage=EXTRACTED) must be rejected outright, not silently geocoded - this
+    // is the exact step the production bug skipped.
+    @Test
+    void geocodeDatasetIsRejectedOnADatasetThatHasNotBeenVerifiedYet() {
+        com.jarvis.tools.dataset.StoreAuditDatasetService datasetService =
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus());
+        com.jarvis.tools.dataset.CreateOutcome created = datasetService.createDataset("request-1", 1, 0, List.of("att-1"), List.of(
+                new com.jarvis.tools.dataset.CandidateRecord("Biedronka", "Garwolin", "Korczaka", "7", "08-400",
+                        "Biedronka, Korczaka 7, 08-400 Garwolin", "att-1", 1)
+        ));
+        String datasetId = created.dataset().datasetId();
+        LocationTool tool = new LocationTool(new FakeGeocodingClient(), new FakeRoutingClient(), PROPERTIES, datasetService);
+
+        ToolResult result = tool.execute(new ToolRequest("location", "GEOCODE_DATASET", "conversation-1", "request-1", "", "",
+                Map.of("datasetId", datasetId)));
+
+        assertThat(result.success()).isFalse();
+        assertThat(result.errorCode()).isEqualTo("STORE_DATASET_NOT_VERIFIED");
+        assertThat(datasetService.getDataset(datasetId).orElseThrow().stage())
+                .isEqualTo(com.jarvis.tools.dataset.DatasetStage.EXTRACTED);
+    }
+
     // TEST C/D from the Store Audit dataset invariant suite, exercised through the actual
     // location.GEOCODE_DATASET operation: it can only update existing storeDataset records by id,
     // never create one, regardless of how many results come back.
@@ -230,15 +253,14 @@ class LocationToolTest {
     void geocodeDatasetUpdatesExistingDatasetRecordsWithoutEverCreatingNewOnes() {
         com.jarvis.tools.dataset.StoreAuditDatasetService datasetService =
                 new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus());
-        com.jarvis.tools.dataset.CreateOutcome created = datasetService.createDataset("request-1", 1, List.of("att-1"), List.of(
+        com.jarvis.tools.dataset.CreateOutcome created = datasetService.createDataset("request-1", 1, 0, List.of("att-1"), List.of(
                 new com.jarvis.tools.dataset.CandidateRecord("Biedronka", "Garwolin", "Korczaka", "7", "08-400",
                         "Biedronka, Korczaka 7, 08-400 Garwolin", "att-1", 1),
                 new com.jarvis.tools.dataset.CandidateRecord("Biedronka", "Garwolin", "Targowa", "1", "08-400",
                         "Nieistniejacy Adres XYZ", "att-1", 2)
         ));
         String datasetId = created.dataset().datasetId();
-        String recordId1 = created.dataset().stores().get(0).id();
-        String recordId2 = created.dataset().stores().get(1).id();
+        verifyAll(datasetService, created.dataset());
 
         FakeGeocodingClient geocodingClient = new FakeGeocodingClient();
         geocodingClient.on("Biedronka, Korczaka 7, 08-400 Garwolin", GeocodeResult.resolved(
@@ -246,11 +268,10 @@ class LocationToolTest {
         geocodingClient.on("Nieistniejacy Adres XYZ", GeocodeResult.unresolved("Nieistniejacy Adres XYZ", "No matching location found"));
         LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES, datasetService);
 
+        // Canonical API: only datasetId is supplied - Core reads each record's real id/fullAddress
+        // straight from the locked dataset itself, the model never resends them.
         ToolResult result = tool.execute(new ToolRequest("location", "GEOCODE_DATASET", "conversation-1", "request-1", "", "",
-                Map.of("datasetId", datasetId, "records", List.of(
-                        Map.of("recordId", recordId1, "fullAddress", "Biedronka, Korczaka 7, 08-400 Garwolin"),
-                        Map.of("recordId", recordId2, "fullAddress", "Nieistniejacy Adres XYZ")
-                ))));
+                Map.of("datasetId", datasetId)));
 
         assertThat(result.success()).isTrue();
         assertThat(result.data().get("updatedCount")).isEqualTo(2);
@@ -266,26 +287,41 @@ class LocationToolTest {
     void geocodeDatasetIgnoresAnUnknownRecordIdRatherThanCreatingANewRecord() {
         com.jarvis.tools.dataset.StoreAuditDatasetService datasetService =
                 new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus());
-        com.jarvis.tools.dataset.CreateOutcome created = datasetService.createDataset("request-1", 1, List.of("att-1"), List.of(
+        com.jarvis.tools.dataset.CreateOutcome created = datasetService.createDataset("request-1", 1, 0, List.of("att-1"), List.of(
                 new com.jarvis.tools.dataset.CandidateRecord("Biedronka", "Garwolin", "Korczaka", "7", "08-400",
                         "Biedronka, Korczaka 7, 08-400 Garwolin", "att-1", 1)
         ));
         String datasetId = created.dataset().datasetId();
+        String realRecordId = created.dataset().stores().get(0).id();
+        verifyAll(datasetService, created.dataset());
 
         FakeGeocodingClient geocodingClient = new FakeGeocodingClient();
-        geocodingClient.on("Sklep spoza datasetu", GeocodeResult.resolved("Sklep spoza datasetu", 50.0, 20.0, "Sklep spoza datasetu"));
+        geocodingClient.on("Biedronka, Korczaka 7, 08-400 Garwolin", GeocodeResult.resolved(
+                "Biedronka, Korczaka 7, 08-400 Garwolin", 51.90, 21.63, "Biedronka, Korczaka 7, Garwolin"));
         LocationTool tool = new LocationTool(geocodingClient, new FakeRoutingClient(), PROPERTIES, datasetService);
 
+        // The model can request a subset by id (e.g. a retry), but an id that isn't a real
+        // canonical record must be reported, never used to invent a new record or address.
         ToolResult result = tool.execute(new ToolRequest("location", "GEOCODE_DATASET", "conversation-1", "request-1", "", "",
-                Map.of("datasetId", datasetId, "records", List.of(
-                        Map.of("recordId", "store-999", "fullAddress", "Sklep spoza datasetu")
-                ))));
+                Map.of("datasetId", datasetId, "recordIds", List.of(realRecordId, "store-999"))));
 
         assertThat(result.success()).isTrue();
         @SuppressWarnings("unchecked")
-        List<String> unknownIds = (List<String>) result.data().get("unknownRecordIds");
+        List<String> unknownIds = (List<String>) result.data().get("unknownRequestedRecordIds");
         assertThat(unknownIds).containsExactly("store-999");
         assertThat(datasetService.getDataset(datasetId).orElseThrow().stores()).hasSize(1);
+    }
+
+    /**
+     * Submits a full, valid verification pass so a test dataset can reach stage=LOCKED - required
+     * before GEOCODE_DATASET is legal.
+     */
+    private void verifyAll(com.jarvis.tools.dataset.StoreAuditDatasetService datasetService, com.jarvis.tools.dataset.StoreAuditDataset dataset) {
+        List<com.jarvis.tools.dataset.VerificationEntry> entries = dataset.stores().stream()
+                .map(record -> new com.jarvis.tools.dataset.VerificationEntry(record.id(), "VERIFIED", "", ""))
+                .toList();
+        com.jarvis.tools.dataset.VerifyOutcome outcome = datasetService.verifyDataset(dataset.datasetId(), entries);
+        assertThat(outcome.success()).isTrue();
     }
 
     private static final class NoopCognitiveEventBus implements com.jarvis.common.event.CognitiveEventBus {

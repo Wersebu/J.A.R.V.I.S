@@ -31,7 +31,7 @@ class StoreAuditDatasetServiceTest {
         StoreAuditDatasetService service = service();
         List<CandidateRecord> candidates = candidates(23, "att-1", "att-2");
 
-        CreateOutcome outcome = service.createDataset("request-1", 2, List.of("att-1", "att-2"), candidates);
+        CreateOutcome outcome = service.createDataset("request-1", 2, 0, List.of("att-1", "att-2"), candidates);
 
         assertThat(outcome.success()).isTrue();
         assertThat(outcome.dataset().stores()).hasSize(23);
@@ -50,7 +50,7 @@ class StoreAuditDatasetServiceTest {
         legit.add(new CandidateRecord("Biedronka", "Miasto Testowe", "Ulica Testowa", "99",
                 "00-099", "Ulica Testowa 99, 00-099 Miasto Testowe", "", 99));
 
-        CreateOutcome outcome = service.createDataset("request-1", 1, List.of("att-1"), legit);
+        CreateOutcome outcome = service.createDataset("request-1", 1, 0, List.of("att-1"), legit);
 
         assertThat(outcome.dataset().stores()).hasSize(3);
         assertThat(outcome.rejected()).hasSize(1);
@@ -63,7 +63,7 @@ class StoreAuditDatasetServiceTest {
         StoreAuditDatasetService service = service();
         service.registerAttachments("request-1", List.of("att-1", "att-2"));
 
-        CreateOutcome outcome = service.createDataset("request-1", 1, List.of("att-1", "att-fabricated"), candidates(3, "att-1"));
+        CreateOutcome outcome = service.createDataset("request-1", 1, 0, List.of("att-1", "att-fabricated"), candidates(3, "att-1"));
 
         assertThat(outcome.success()).isFalse();
         assertThat(outcome.dataset()).isNull();
@@ -76,7 +76,7 @@ class StoreAuditDatasetServiceTest {
     void createDatasetRejectsAnEmptyRecordListAsEmptyDataset() {
         StoreAuditDatasetService service = service();
 
-        CreateOutcome outcome = service.createDataset("request-1", 2, List.of("att-1", "att-2"), List.of());
+        CreateOutcome outcome = service.createDataset("request-1", 2, 0, List.of("att-1", "att-2"), List.of());
 
         assertThat(outcome.success()).isFalse();
         assertThat(outcome.dataset()).isNull();
@@ -93,7 +93,7 @@ class StoreAuditDatasetServiceTest {
                         "Ulica 1, 00-001 Miasto", "att-unknown", 1)
         );
 
-        CreateOutcome outcome = service.createDataset("request-1", 1, List.of("att-1"), allInvalid);
+        CreateOutcome outcome = service.createDataset("request-1", 1, 0, List.of("att-1"), allInvalid);
 
         assertThat(outcome.success()).isFalse();
         assertThat(outcome.dataset()).isNull();
@@ -106,10 +106,10 @@ class StoreAuditDatasetServiceTest {
     void createDatasetRejectsADuplicateForTheSameConversationAndSourceAttachments() {
         StoreAuditDatasetService service = service();
         service.registerAttachments("request-1", "conversation-1", List.of("att-1", "att-2"));
-        StoreAuditDataset first = service.createDataset("request-1", 2, List.of("att-1", "att-2"), candidates(23, "att-1")).dataset();
+        StoreAuditDataset first = service.createDataset("request-1", 2, 0, List.of("att-1", "att-2"), candidates(23, "att-1", "att-2")).dataset();
 
         service.registerAttachments("request-2", "conversation-1", List.of("att-1", "att-2"));
-        CreateOutcome second = service.createDataset("request-2", 2, List.of("att-1", "att-2"), candidates(5, "att-1"));
+        CreateOutcome second = service.createDataset("request-2", 2, 0, List.of("att-1", "att-2"), candidates(5, "att-1", "att-2"));
 
         assertThat(second.success()).isFalse();
         assertThat(second.errorCode()).isEqualTo("STORE_DATASET_DUPLICATE_SOURCE");
@@ -123,10 +123,10 @@ class StoreAuditDatasetServiceTest {
     void createDatasetAllowsADifferentDatasetForDifferentSourceAttachmentsInTheSameConversation() {
         StoreAuditDatasetService service = service();
         service.registerAttachments("request-1", "conversation-1", List.of("att-1"));
-        StoreAuditDataset first = service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset();
+        StoreAuditDataset first = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
 
         service.registerAttachments("request-2", "conversation-1", List.of("att-2"));
-        CreateOutcome second = service.createDataset("request-2", 1, List.of("att-2"), candidates(5, "att-2"));
+        CreateOutcome second = service.createDataset("request-2", 1, 0, List.of("att-2"), candidates(5, "att-2"));
 
         assertThat(second.success()).isTrue();
         assertThat(second.dataset().datasetId()).isNotEqualTo(first.datasetId());
@@ -140,7 +140,7 @@ class StoreAuditDatasetServiceTest {
         StoreAuditDatasetService service = service();
         service.registerAttachments("request-1", "conversation-1", List.of("att-1"));
 
-        CreateOutcome started = service.startDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1"));
+        CreateOutcome started = service.startDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1"));
         assertThat(started.success()).isTrue();
         assertThat(started.dataset().stage()).isEqualTo(DatasetStage.BUILDING);
         assertThat(started.dataset().stores()).hasSize(3);
@@ -169,7 +169,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void appendRecordsRejectsAnEmptyBatch() {
         StoreAuditDatasetService service = service();
-        String datasetId = service.startDataset("request-1", 1, List.of(), candidates(2, "att-1")).dataset().datasetId();
+        String datasetId = service.startDataset("request-1", 1, 0, List.of(), candidates(2, "att-1")).dataset().datasetId();
 
         AppendOutcome outcome = service.appendRecords(datasetId, List.of());
 
@@ -181,7 +181,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void appendRecordsRejectsATargetThatIsAlreadyFinalized() {
         StoreAuditDatasetService service = service();
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
 
         AppendOutcome outcome = service.appendRecords(dataset.datasetId(), candidates(1, "att-1"));
 
@@ -201,7 +201,7 @@ class StoreAuditDatasetServiceTest {
         // model is done submitting batches (see finalizeDatasetRejectsAnEmptyDataset below).
         StoreAuditDatasetService service = service();
 
-        CreateOutcome outcome = service.startDataset("request-1", 1, List.of("att-1"), List.of());
+        CreateOutcome outcome = service.startDataset("request-1", 1, 0, List.of("att-1"), List.of());
 
         assertThat(outcome.success()).isTrue();
         assertThat(outcome.dataset()).isNotNull();
@@ -212,7 +212,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void finalizeDatasetRejectsAnEmptyDataset() {
         StoreAuditDatasetService service = service();
-        String datasetId = service.startDataset("request-1", 1, List.of("att-1"), List.of()).dataset().datasetId();
+        String datasetId = service.startDataset("request-1", 1, 0, List.of("att-1"), List.of()).dataset().datasetId();
 
         FinalizeOutcome outcome = service.finalizeDataset(datasetId);
 
@@ -224,7 +224,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void finalizeDatasetIsIdempotentWhenAlreadyFinalized() {
         StoreAuditDatasetService service = service();
-        String datasetId = service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset().datasetId();
+        String datasetId = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset().datasetId();
 
         FinalizeOutcome first = service.finalizeDataset(datasetId);
         FinalizeOutcome second = service.finalizeDataset(datasetId);
@@ -238,7 +238,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void verifyGeolocationAndScheduleAllRejectAStillBuildingDataset() {
         StoreAuditDatasetService service = service();
-        String datasetId = service.startDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset().datasetId();
+        String datasetId = service.startDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset().datasetId();
 
         VerifyOutcome verify = service.verifyDataset(datasetId, List.of(new VerificationEntry("store-001", "VERIFIED", "", "")));
         GeolocationUpdateOutcome geo = service.updateGeolocation(datasetId,
@@ -258,10 +258,10 @@ class StoreAuditDatasetServiceTest {
     void startDatasetAppliesTheSameDuplicateSourceCheckAsCreateDataset() {
         StoreAuditDatasetService service = service();
         service.registerAttachments("request-1", "conversation-1", List.of("att-1"));
-        StoreAuditDataset first = service.startDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset();
+        StoreAuditDataset first = service.startDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
 
         service.registerAttachments("request-2", "conversation-1", List.of("att-1"));
-        CreateOutcome second = service.startDataset("request-2", 1, List.of("att-1"), candidates(3, "att-1"));
+        CreateOutcome second = service.startDataset("request-2", 1, 0, List.of("att-1"), candidates(3, "att-1"));
 
         assertThat(second.success()).isFalse();
         assertThat(second.errorCode()).isEqualTo("STORE_DATASET_DUPLICATE_SOURCE");
@@ -272,7 +272,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void geolocationUpdatesResolveExistingRecordsWithoutChangingCount() {
         StoreAuditDatasetService service = service();
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        StoreAuditDataset dataset = verifyAll(service, service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset());
 
         List<GeolocationEntry> results = dataset.stores().stream()
                 .map(record -> new GeolocationEntry(record.id(), GeolocationStatus.RESOLVED, 52.0, 21.0))
@@ -290,7 +290,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void oneFailedGeolocationLeavesDatasetSizeUnchangedAndMarksOnlyThatRecordFailed() {
         StoreAuditDatasetService service = service();
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        StoreAuditDataset dataset = verifyAll(service, service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset());
 
         List<GeolocationEntry> results = new java.util.ArrayList<>();
         for (int index = 0; index < dataset.stores().size(); index++) {
@@ -310,7 +310,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void retryingAFailedGeolocationUpdatesTheSameRecordRatherThanCreatingANewOne() {
         StoreAuditDatasetService service = service();
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        StoreAuditDataset dataset = verifyAll(service, service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset());
         String failingId = dataset.stores().get(5).id();
 
         service.updateGeolocation(dataset.datasetId(), List.of(new GeolocationEntry(failingId, GeolocationStatus.FAILED, null, null)));
@@ -333,7 +333,7 @@ class StoreAuditDatasetServiceTest {
         candidates.add(new CandidateRecord("Biedronka", "Miasto Testowe", "Ulica Testowa", "1",
                 "00-001", "Ulica Testowa 1, 00-001 Miasto Testowe", "att-1", 1));
 
-        CreateOutcome outcome = service.createDataset("request-1", 1, List.of("att-1"), candidates);
+        CreateOutcome outcome = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates);
 
         assertThat(outcome.dataset().stores()).hasSize(3);
         assertThat(outcome.duplicateCount()).isEqualTo(1);
@@ -344,7 +344,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void verificationReportingAWildlyDifferentCountIsRejectedAsAnInvariantViolation() {
         StoreAuditDatasetService service = service();
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
 
         List<VerificationEntry> bogusVerification = new java.util.ArrayList<>();
         for (int index = 0; index < 117; index++) {
@@ -364,7 +364,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void verificationReferencingAnUnknownRecordIdIsRejectedAsAnInvariantViolation() {
         StoreAuditDatasetService service = service();
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
 
         VerifyOutcome outcome = service.verifyDataset(dataset.datasetId(), List.of(new VerificationEntry("store-999", "VERIFIED", "", "")));
 
@@ -378,7 +378,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void datasetSurvivesUnchangedAcrossMultipleServiceCallsSimulatingToolLoopContinuation() {
         StoreAuditDatasetService service = service();
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
 
         // Simulate several intervening "model turns" that only read the dataset.
         for (int turn = 0; turn < 5; turn++) {
@@ -398,7 +398,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void submitScheduleAcceptsAValidCompleteGrouping() {
         StoreAuditDatasetService service = service();
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
         List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
 
         ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(
@@ -415,7 +415,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void submitScheduleRejectsAGroupingMissingAStore() {
         StoreAuditDatasetService service = service();
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
         List<String> ids = new java.util.ArrayList<>(dataset.stores().stream().map(StoreRecord::id).toList());
         String omitted = ids.remove(22);
 
@@ -431,7 +431,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void submitScheduleRejectsAnUnknownHallucinatedStoreId() {
         StoreAuditDatasetService service = service();
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
         List<String> ids = new java.util.ArrayList<>(dataset.stores().stream().map(StoreRecord::id).toList());
         ids.add("store-999");
 
@@ -445,7 +445,7 @@ class StoreAuditDatasetServiceTest {
     @Test
     void submitScheduleRejectsADuplicateStoreIdAcrossDays() {
         StoreAuditDatasetService service = service();
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
         List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
 
         ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(
@@ -474,7 +474,7 @@ class StoreAuditDatasetServiceTest {
     void findLatestForConversationLocatesADatasetCreatedInAnEarlierTurnWithoutResendingAttachments() {
         StoreAuditDatasetService service = service();
         service.registerAttachments("request-1", "conversation-42", List.of("att-1"));
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(23, "att-1")).dataset();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
 
         Optional<StoreAuditDataset> found = service.findLatestForConversation("conversation-42");
 
@@ -488,11 +488,11 @@ class StoreAuditDatasetServiceTest {
         MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
         StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus(), clock);
         service.registerAttachments("request-1", "conversation-42", List.of("att-1"));
-        service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1"));
+        service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1"));
 
         clock.advance(Duration.ofMinutes(5));
         service.registerAttachments("request-2", "conversation-42", List.of("att-2"));
-        StoreAuditDataset second = service.createDataset("request-2", 1, List.of("att-2"), candidates(5, "att-2")).dataset();
+        StoreAuditDataset second = service.createDataset("request-2", 1, 0, List.of("att-2"), candidates(5, "att-2")).dataset();
 
         Optional<StoreAuditDataset> found = service.findLatestForConversation("conversation-42");
 
@@ -504,7 +504,7 @@ class StoreAuditDatasetServiceTest {
     void findLatestForConversationNeverMatchesADatasetFromADifferentConversation() {
         StoreAuditDatasetService service = service();
         service.registerAttachments("request-1", "conversation-A", List.of("att-1"));
-        service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1"));
+        service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1"));
 
         assertThat(service.findLatestForConversation("conversation-B")).isEmpty();
         assertThat(service.findLatestForConversation("")).isEmpty();
@@ -514,21 +514,181 @@ class StoreAuditDatasetServiceTest {
     void expiredDatasetIsSweptAndNoLongerRetrievable() {
         MutableClock clock = new MutableClock(Instant.parse("2026-01-01T00:00:00Z"));
         StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus(), clock);
-        StoreAuditDataset dataset = service.createDataset("request-1", 1, List.of("att-1"), candidates(3, "att-1")).dataset();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
 
         clock.advance(Duration.ofHours(3));
 
         assertThat(service.getDataset(dataset.datasetId())).isEmpty();
     }
 
+    // =====================================================================
+    // Regression tests for the multi-attachment provenance / expectedRecordCount /
+    // full-N/N-verification / VERIFY-before-GEOCODE hardening round (see also LocationToolTest
+    // for the canonical GEOCODE_DATASET tests, and NativeToolLoopServiceCompletionGateTest for the
+    // completion-gate-on-every-exit-path tests). None of these hardcode a specific store chain,
+    // month, or count beyond what each scenario needs - the production bug used 14+9=23 Biedronka/
+    // Stokrotka records purely as an illustrative fixture size.
+    // =====================================================================
+
+    // REGRESSION TEST 1: two real, registered current-message attachments - START_DATASET declares
+    // only the first batch's records (image-A), APPEND_RECORDS supplies the second batch (image-B).
+    // Every record from BOTH attachments must be accepted; a dataset scoped to 2 real attachments
+    // must never silently only allow records from the first one.
+    @Test
+    void multiAttachmentProvenanceAcceptsRecordsFromEveryRealAttachmentAcrossIncrementalBatches() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-1", List.of("image-A", "image-B"));
+
+        // START_DATASET's own sourceAttachmentIds argument only mentions image-A - exactly the
+        // production bug's shape - but Core's real registered set (both image-A and image-B) is
+        // what actually governs provenance, not this possibly-incomplete model declaration.
+        CreateOutcome started = service.startDataset("request-1", 2, 23, List.of("image-A"), candidates(14, "image-A"));
+        assertThat(started.success()).isTrue();
+        assertThat(started.dataset().sourceAttachmentIds()).containsExactlyInAnyOrder("image-A", "image-B");
+        String datasetId = started.dataset().datasetId();
+
+        List<CandidateRecord> imageBBatch = new java.util.ArrayList<>();
+        for (int index = 15; index <= 23; index++) {
+            imageBBatch.add(new CandidateRecord("Stokrotka", "Miasto Testowe", "Ulica Testowa", String.valueOf(index),
+                    "00-00" + (index % 10), "Ulica Testowa " + index + ", Miasto Testowe", "image-B", index));
+        }
+        AppendOutcome appended = service.appendRecords(datasetId, imageBBatch);
+
+        assertThat(appended.success()).isTrue();
+        assertThat(appended.acceptedCount()).isEqualTo(9);
+        assertThat(appended.rejected()).isEmpty();
+        assertThat(appended.dataset().stores()).hasSize(23);
+
+        FinalizeOutcome finalized = service.finalizeDataset(datasetId);
+        assertThat(finalized.success()).isTrue();
+        assertThat(finalized.dataset().stores()).hasSize(23);
+    }
+
+    // REGRESSION TEST 2: expectedRecordCount=23 declared at START_DATASET time, but only 14 records
+    // actually accepted - FINALIZE_DATASET must reject, dataset stays BUILDING.
+    @Test
+    void finalizeRejectsAnIncompleteExtractionShortOfTheDeclaredExpectedCount() {
+        StoreAuditDatasetService service = service();
+        String datasetId = service.startDataset("request-1", 2, 23, List.of("att-1"), candidates(14, "att-1"))
+                .dataset().datasetId();
+
+        FinalizeOutcome outcome = service.finalizeDataset(datasetId);
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.errorCode()).isEqualTo("STORE_DATASET_INCOMPLETE_EXTRACTION");
+        assertThat(outcome.message()).contains("23").contains("14");
+        assertThat(service.getDataset(datasetId).orElseThrow().stage()).isEqualTo(DatasetStage.BUILDING);
+    }
+
+    // REGRESSION TEST 3: expectedRecordCount=23, actual=23 - FINALIZE_DATASET succeeds, stage=EXTRACTED.
+    @Test
+    void finalizeAcceptsAnExtractionThatMatchesTheDeclaredExpectedCountExactly() {
+        StoreAuditDatasetService service = service();
+        String datasetId = service.startDataset("request-1", 2, 23, List.of("att-1"), candidates(23, "att-1"))
+                .dataset().datasetId();
+
+        FinalizeOutcome outcome = service.finalizeDataset(datasetId);
+
+        assertThat(outcome.success()).isTrue();
+        assertThat(outcome.dataset().stage()).isEqualTo(DatasetStage.EXTRACTED);
+        assertThat(outcome.dataset().stores()).hasSize(23);
+    }
+
+    // REGRESSION TEST 4: GEOCODE_DATASET (via updateGeolocation) on a merely-EXTRACTED (not yet
+    // verified) dataset must be rejected outright - VERIFY_DATASET is mandatory first.
+    @Test
+    void geolocationIsRejectedOnAnUnverifiedExtractedDataset() {
+        StoreAuditDatasetService service = service();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
+        assertThat(dataset.stage()).isEqualTo(DatasetStage.EXTRACTED);
+
+        GeolocationUpdateOutcome outcome = service.updateGeolocation(dataset.datasetId(),
+                List.of(new GeolocationEntry(dataset.stores().get(0).id(), GeolocationStatus.RESOLVED, 52.0, 21.0)));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.errorCode()).isEqualTo("STORE_DATASET_NOT_VERIFIED");
+        assertThat(service.getDataset(dataset.datasetId()).orElseThrow().stage()).isEqualTo(DatasetStage.EXTRACTED);
+    }
+
+    // REGRESSION TEST 5: a 23-record dataset, VERIFY_DATASET called with only 1 of the 23 canonical
+    // ids - must be rejected outright as incomplete, never silently accepted as "verified".
+    @Test
+    void verifyDatasetRejectsAPartialPassCoveringOnlyOneOfManyRecords() {
+        StoreAuditDatasetService service = service();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
+
+        VerifyOutcome outcome = service.verifyDataset(dataset.datasetId(),
+                List.of(new VerificationEntry(dataset.stores().get(0).id(), "VERIFIED", "", "")));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.invariantViolation()).isTrue();
+        assertThat(outcome.missingRecordIds()).hasSize(22);
+        assertThat(service.getDataset(dataset.datasetId()).orElseThrow().stage()).isEqualTo(DatasetStage.EXTRACTED);
+    }
+
+    // REGRESSION TEST 6: a verification entry with a malformed id ("013" instead of the real
+    // "store-013") must be reported as an exact unknown id, and the whole pass rejected - a model
+    // typo can never silently drop a record from verification.
+    @Test
+    void verifyDatasetRejectsAMalformedRecordIdAsUnknownRatherThanMatchingItLoosely() {
+        StoreAuditDatasetService service = service();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
+        List<VerificationEntry> entries = new java.util.ArrayList<>();
+        for (StoreRecord record : dataset.stores()) {
+            // Record 13 ("store-013") is mistyped as the bare number "013".
+            String id = record.id().equals("store-013") ? "013" : record.id();
+            entries.add(new VerificationEntry(id, "VERIFIED", "", ""));
+        }
+
+        VerifyOutcome outcome = service.verifyDataset(dataset.datasetId(), entries);
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.unknownRecordIds()).containsExactly("013");
+        assertThat(outcome.missingRecordIds()).containsExactly("store-013");
+        assertThat(service.getDataset(dataset.datasetId()).orElseThrow().stage()).isEqualTo(DatasetStage.EXTRACTED);
+    }
+
+    // REGRESSION TEST 7: a full 23/23 verification pass - every canonical id, exactly once -
+    // succeeds and advances the dataset to LOCKED.
+    @Test
+    void verifyDatasetAcceptsAFullPassCoveringEveryCanonicalRecordExactlyOnceAndLocksTheDataset() {
+        StoreAuditDatasetService service = service();
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
+
+        StoreAuditDataset locked = verifyAll(service, dataset);
+
+        assertThat(locked.stage()).isEqualTo(DatasetStage.LOCKED);
+        assertThat(locked.stores()).hasSize(23);
+        assertThat(locked.stores()).allMatch(record -> record.verificationStatus() == VerificationStatus.VERIFIED);
+    }
+
     private StoreAuditDatasetService service() {
         return new StoreAuditDatasetService(new NoopCognitiveEventBus());
     }
 
+    /**
+     * Submits a full, valid verification pass (every canonical record id, exactly once, VERIFIED)
+     * so tests that only care about geolocation/scheduling behavior can reach stage=LOCKED without
+     * each repeating the full-coverage verification pass by hand.
+     */
+    private StoreAuditDataset verifyAll(StoreAuditDatasetService service, StoreAuditDataset dataset) {
+        List<VerificationEntry> entries = dataset.stores().stream()
+                .map(record -> new VerificationEntry(record.id(), "VERIFIED", "", ""))
+                .toList();
+        VerifyOutcome outcome = service.verifyDataset(dataset.datasetId(), entries);
+        assertThat(outcome.success()).isTrue();
+        return outcome.dataset();
+    }
+
     private List<CandidateRecord> candidates(int count, String... attachmentIds) {
         List<CandidateRecord> candidates = new java.util.ArrayList<>();
-        String attachmentId = attachmentIds.length > 0 ? attachmentIds[0] : "att-1";
+        String[] ids = attachmentIds.length > 0 ? attachmentIds : new String[] {"att-1"};
         for (int index = 1; index <= count; index++) {
+            // Round-robins across every given attachment id, so a multi-attachment call (e.g.
+            // candidates(23, "att-1", "att-2")) genuinely distributes records across all of them
+            // instead of silently dumping everything under the first one - real coverage of every
+            // declared attachment is itself an invariant StoreAuditDatasetService now enforces.
+            String attachmentId = ids[(index - 1) % ids.length];
             candidates.add(new CandidateRecord("Biedronka", "Miasto Testowe", "Ulica Testowa",
                     String.valueOf(index), "00-00" + (index % 10), "Ulica Testowa " + index + ", Miasto Testowe",
                     attachmentId, index));

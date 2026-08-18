@@ -4,10 +4,13 @@ import com.jarvis.tools.JarvisTool;
 import com.jarvis.tools.ToolException;
 import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
+import com.jarvis.tools.dataset.DatasetStage;
 import com.jarvis.tools.dataset.GeolocationEntry;
 import com.jarvis.tools.dataset.GeolocationStatus;
 import com.jarvis.tools.dataset.GeolocationUpdateOutcome;
+import com.jarvis.tools.dataset.StoreAuditDataset;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
+import com.jarvis.tools.dataset.StoreRecord;
 import com.jarvis.tools.schema.ToolArgumentDefinition;
 import com.jarvis.tools.schema.ToolDefinition;
 import com.jarvis.tools.schema.ToolJsonSchema;
@@ -53,17 +56,11 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
             ADDRESS_ITEM_SCHEMA, "List of addresses or {latitude,longitude} points");
     private static final ToolJsonSchema STOPS_SCHEMA = ToolJsonSchema.arrayOf(
             ADDRESS_ITEM_SCHEMA, "List of stop addresses or {latitude,longitude} points");
-    private static final ToolJsonSchema GEOCODE_RECORD_SCHEMA = ToolJsonSchema.object(
-            geocodeRecordProperties(), List.of("recordId", "fullAddress"), "One dataset record to geocode");
-    private static final ToolJsonSchema GEOCODE_RECORDS_SCHEMA = ToolJsonSchema.arrayOf(
-            GEOCODE_RECORD_SCHEMA, "Records to geocode: array of objects, never a JSON-encoded string");
-
-    private static Map<String, ToolJsonSchema> geocodeRecordProperties() {
-        Map<String, ToolJsonSchema> properties = new LinkedHashMap<>();
-        properties.put("recordId", ToolJsonSchema.string("Existing storeDataset record id"));
-        properties.put("fullAddress", ToolJsonSchema.string("Full postal address to geocode for this record"));
-        return properties;
-    }
+    private static final ToolJsonSchema RECORD_IDS_SCHEMA = ToolJsonSchema.arrayOf(
+            ToolJsonSchema.string("An existing canonical storeDataset record id, e.g. \"store-013\""),
+            "Optional: only geocode these existing canonical record ids (e.g. to retry ones that came back "
+                    + "unresolved/ambiguous). Omit to geocode every record in the dataset. Ids not present in the "
+                    + "dataset are reported, never used to create or match anything.");
 
     private final GeocodingClient geocodingClient;
     private final RoutingClient routingClient;
@@ -147,13 +144,17 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
                 operation("GEOCODE_DATASET",
                         "Batch-geocodes records already held in a storeDataset (see the storeDataset tool) and "
                                 + "updates them in place by record id - use this instead of GEOCODE whenever the "
-                                + "addresses belong to a locked storeDataset (e.g. a Store Audit dataset), in as few "
-                                + "batch calls as practical rather than one call per record. This can never create a "
-                                + "new store record, no matter how many results come back - unknown record ids are "
-                                + "reported and ignored, not added.",
+                                + "addresses belong a storeDataset (e.g. a Store Audit dataset). Only the datasetId "
+                                + "is needed - Core reads each record's canonical id and address directly from the "
+                                + "locked dataset itself, geocodes it, and writes the result back to that exact "
+                                + "record. You never resend record ids or addresses here, so a typo or drift in a "
+                                + "restated id (e.g. \"013\" instead of the real \"store-013\") can never cause a "
+                                + "record to be silently skipped. Requires the dataset to already be VERIFIED "
+                                + "(stage=LOCKED) - call storeDataset.VERIFY_DATASET first. This can never create a "
+                                + "new store record.",
                         true, ToolSafetyLevel.WRITE,
                         arg("datasetId", "string", true, "Dataset id returned by storeDataset.CREATE_DATASET"),
-                        arg("records", true, GEOCODE_RECORDS_SCHEMA))
+                        arg("recordIds", false, RECORD_IDS_SCHEMA))
         ));
     }
 
@@ -178,24 +179,51 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
         if (datasetId.isBlank()) {
             return failure(request, "GEOCODE_DATASET", "GEOCODE_DATASET_MISSING_ID", "Nie podano datasetId.");
         }
-        List<Object> rawRecords = listArg(request, "records");
-        if (rawRecords.isEmpty()) {
-            return failure(request, "GEOCODE_DATASET", "GEOCODE_DATASET_NO_RECORDS", "Nie podano rekordow do zgeokodowania.");
+        Optional<StoreAuditDataset> maybeDataset = datasetService.getDataset(datasetId);
+        if (maybeDataset.isEmpty()) {
+            return failure(request, "GEOCODE_DATASET", "STORE_DATASET_NOT_FOUND", "Unknown or expired dataset id: " + datasetId);
         }
+        StoreAuditDataset dataset = maybeDataset.get();
+        if (dataset.stage() != DatasetStage.LOCKED && dataset.stage() != DatasetStage.GEOLOCATED) {
+            String message = "Dataset " + datasetId + " has not been verified yet (stage=" + dataset.stage() + "). "
+                    + "Call storeDataset.VERIFY_DATASET before geolocation.";
+            return failure(request, "GEOCODE_DATASET", "STORE_DATASET_NOT_VERIFIED", message);
+        }
+
+        // Canonical, Core-sourced records only - the model can request a subset by id (e.g. to
+        // retry unresolved ones) but can never resend/override a record's id or address here. This
+        // is what stops a restated id like "013" (instead of the real "store-013") from silently
+        // skipping a record, and stops an address drifting between what was extracted and what is
+        // actually geocoded.
+        List<String> requestedIds = stringListArg(request, "recordIds");
+        Map<String, StoreRecord> byId = new LinkedHashMap<>();
+        for (StoreRecord record : dataset.stores()) {
+            byId.put(record.id(), record);
+        }
+        List<StoreRecord> targets;
+        List<String> unknownRequestedIds = new ArrayList<>();
+        if (requestedIds.isEmpty()) {
+            targets = dataset.stores();
+        } else {
+            targets = new ArrayList<>();
+            for (String id : requestedIds) {
+                StoreRecord record = byId.get(id);
+                if (record == null) {
+                    unknownRequestedIds.add(id);
+                } else {
+                    targets.add(record);
+                }
+            }
+        }
+        if (targets.isEmpty()) {
+            return failure(request, "GEOCODE_DATASET", "GEOCODE_DATASET_NO_RECORDS",
+                    "No matching records to geocode." + (unknownRequestedIds.isEmpty() ? "" : " Unknown record id(s): " + unknownRequestedIds + "."));
+        }
+
         List<Map<String, Object>> resultsForModel = new ArrayList<>();
         List<GeolocationEntry> updates = new ArrayList<>();
-        for (Object raw : rawRecords) {
-            if (!(raw instanceof Map<?, ?> map)) {
-                continue;
-            }
-            Object recordIdValue = map.get("recordId");
-            Object addressValue = map.containsKey("fullAddress") ? map.get("fullAddress") : map.get("address");
-            String recordId = recordIdValue == null ? "" : String.valueOf(recordIdValue).strip();
-            String address = addressValue == null ? "" : String.valueOf(addressValue).strip();
-            if (recordId.isBlank() || address.isBlank()) {
-                continue;
-            }
-            GeocodeResult result = safeGeocode(address);
+        for (StoreRecord record : targets) {
+            GeocodeResult result = safeGeocode(record.fullAddress());
             GeolocationStatus status = switch (result.status()) {
                 case RESOLVED -> GeolocationStatus.RESOLVED;
                 case AMBIGUOUS, NOT_CONFIDENTLY_RESOLVED -> GeolocationStatus.AMBIGUOUS;
@@ -203,10 +231,11 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
             };
             Double latitude = status == GeolocationStatus.RESOLVED ? result.latitude() : null;
             Double longitude = status == GeolocationStatus.RESOLVED ? result.longitude() : null;
-            updates.add(new GeolocationEntry(recordId, status, latitude, longitude));
+            updates.add(new GeolocationEntry(record.id(), status, latitude, longitude));
 
             Map<String, Object> entry = new HashMap<>();
-            entry.put("recordId", recordId);
+            entry.put("recordId", record.id());
+            entry.put("fullAddress", record.fullAddress());
             entry.put("status", status.name());
             if (latitude != null) {
                 entry.put("latitude", latitude);
@@ -224,7 +253,8 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
         }
         GeolocationUpdateOutcome outcome = datasetService.updateGeolocation(datasetId, updates);
         if (!outcome.success()) {
-            return failure(request, "GEOCODE_DATASET", "STORE_DATASET_NOT_FOUND", outcome.message());
+            String errorCode = outcome.errorCode().isBlank() ? "STORE_DATASET_NOT_FOUND" : outcome.errorCode();
+            return failure(request, "GEOCODE_DATASET", errorCode, outcome.message());
         }
         LOGGER.info("[STORE_AUDIT] requestId={} GEOCODE_DATASET datasetId={} attempted={} updated={}",
                 request.requestId(), datasetId, updates.size(), outcome.updatedCount());
@@ -234,8 +264,8 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
         data.put("updatedCount", outcome.updatedCount());
         data.put("datasetStage", outcome.dataset().stage().name());
         data.put("datasetCount", outcome.dataset().stores().size());
-        if (!outcome.unknownRecordIds().isEmpty()) {
-            data.put("unknownRecordIds", outcome.unknownRecordIds());
+        if (!unknownRequestedIds.isEmpty()) {
+            data.put("unknownRequestedRecordIds", unknownRequestedIds);
         }
         return new ToolResult(true, TOOL_NAME, "GEOCODE_DATASET", request.requestId(), request.conversationId(),
                 true, List.of(datasetId), outcome.message(), data, "", "", false, "");
@@ -565,6 +595,16 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
             return new ArrayList<>(list);
         }
         return List.of();
+    }
+
+    private List<String> stringListArg(ToolRequest request, String name) {
+        List<String> result = new ArrayList<>();
+        for (Object item : listArg(request, name)) {
+            if (item != null && !String.valueOf(item).isBlank()) {
+                result.add(String.valueOf(item).strip());
+            }
+        }
+        return result;
     }
 
     private ToolResult failure(ToolRequest request, String operation, String errorCode, String errorMessage) {

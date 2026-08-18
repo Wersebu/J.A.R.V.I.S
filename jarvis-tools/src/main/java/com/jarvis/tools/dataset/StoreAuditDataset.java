@@ -18,8 +18,16 @@ import java.util.List;
  * @param requestId originating pipeline request id
  * @param conversationId owning conversation id, so a later turn can find this dataset without
  *         knowing its exact id - blank when the creating request had none registered
- * @param sourceAttachmentIds current-message attachment ids the records were extracted from
+ * @param sourceAttachmentIds current-message attachment ids the records were extracted from -
+ *         the real, Core-registered set whenever one was known at creation time (see {@link
+ *         StoreAuditDatasetService#registerAttachments}), not merely whatever subset the model
+ *         itself declared - this is what lets every attachment's records be accepted even when the
+ *         model only declared the first one
  * @param sourceImageCount number of image attachments read during extraction
+ * @param expectedRecordCount total number of source records the model declared it expects to
+ *         extract (e.g. counted across every screenshot before submitting any batch) - 0 when not
+ *         declared. Checked against {@code stores.size()} at the BUILDING-to-EXTRACTED transition
+ *         so an incremental extraction can never silently finalize short of what was promised.
  * @param stores canonical record list
  * @param expectedStoreCount record count captured at extraction time - must equal
  *         {@code stores.size()} for the lifetime of this dataset
@@ -34,6 +42,7 @@ public record StoreAuditDataset(
         String conversationId,
         List<String> sourceAttachmentIds,
         int sourceImageCount,
+        int expectedRecordCount,
         List<StoreRecord> stores,
         int expectedStoreCount,
         DatasetStage stage,
@@ -62,7 +71,7 @@ public record StoreAuditDataset(
      */
     public StoreAuditDataset withStores(List<StoreRecord> newStores, DatasetStage newStage) {
         return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
-                newStores, expectedStoreCount, newStage, schedule, createdAt, expiresAt);
+                expectedRecordCount, newStores, expectedStoreCount, newStage, schedule, createdAt, expiresAt);
     }
 
     /**
@@ -74,7 +83,7 @@ public record StoreAuditDataset(
      */
     public StoreAuditDataset withSchedule(List<ScheduleDay> newSchedule) {
         return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
-                stores, expectedStoreCount, DatasetStage.SCHEDULED, newSchedule, createdAt, expiresAt);
+                expectedRecordCount, stores, expectedStoreCount, DatasetStage.SCHEDULED, newSchedule, createdAt, expiresAt);
     }
 
     /**
@@ -88,7 +97,7 @@ public record StoreAuditDataset(
      */
     public StoreAuditDataset withStage(DatasetStage newStage) {
         return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
-                stores, expectedStoreCount, newStage, schedule, createdAt, expiresAt);
+                expectedRecordCount, stores, expectedStoreCount, newStage, schedule, createdAt, expiresAt);
     }
 
     /**
@@ -102,6 +111,6 @@ public record StoreAuditDataset(
      */
     public StoreAuditDataset withAppendedStores(List<StoreRecord> newStores) {
         return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
-                newStores, newStores.size(), DatasetStage.BUILDING, schedule, createdAt, expiresAt);
+                expectedRecordCount, newStores, newStores.size(), DatasetStage.BUILDING, schedule, createdAt, expiresAt);
     }
 }

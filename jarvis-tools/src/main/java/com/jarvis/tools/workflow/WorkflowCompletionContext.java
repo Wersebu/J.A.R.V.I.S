@@ -11,12 +11,16 @@ package com.jarvis.tools.workflow;
  *         dataset the model is actively engaged with right now, never merely because one happens
  *         to exist for the conversation (e.g. an unrelated later turn must not be blocked by it)
  * @param activeDatasetId the most recently touched dataset id in this loop, blank if none
+ * @param requiredDocumentLoaded whether a {@code knowledge__read_document} call matching {@link
+ *         WorkflowCompletionValidator#requiredDocumentPath()} succeeded during this tool loop -
+ *         always {@code true} when the active validator declares no required document
  */
 public record WorkflowCompletionContext(
         String requestId,
         String conversationId,
         boolean datasetTouchedThisLoop,
-        String activeDatasetId
+        String activeDatasetId,
+        boolean requiredDocumentLoaded
 ) {
 
     /**

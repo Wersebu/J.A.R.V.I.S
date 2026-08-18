@@ -168,7 +168,7 @@ class NativeToolLoopServiceMultimodalContinuityTest {
     void anExistingConversationDatasetIsSurfacedInTheSystemPromptWithoutNewAttachments() {
         StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
         datasetService.registerAttachments("earlier-request", "conversation-99", List.of("att-1"));
-        var created = datasetService.createDataset("earlier-request", 1, List.of("att-1"), List.of(
+        var created = datasetService.createDataset("earlier-request", 1, 0, List.of("att-1"), List.of(
                 new com.jarvis.tools.dataset.CandidateRecord("Biedronka", "Miasto", "Ulica", "1", "00-001",
                         "Ulica 1, 00-001 Miasto", "att-1", 1)
         ));

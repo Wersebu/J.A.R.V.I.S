@@ -15,6 +15,12 @@ import org.springframework.boot.context.properties.bind.ConstructorBinding;
  * @param maxConsecutiveOperationRepeats max consecutive calls to the same tool+operation
  *        (regardless of arguments) before the loop refuses further calls to it - a coarser,
  *        argument-agnostic no-progress guard on top of the exact-fingerprint duplicate blocker
+ * @param statefulWorkflowMinToolBudget minimum tool-call budget once a stateful workflow (e.g.
+ *        Store Audit) is genuinely engaged - detected from real loop state (an existing dataset for
+ *        the conversation, or a storeDataset operation actually executing this loop), never from a
+ *        keyword classifier alone. A full Store Audit pass (start/append/finalize/verify/read
+ *        workflow doc/geocode/retry/route/optimize/submit/retry/final answer) can easily need more
+ *        turns than a plain web-search floor
  */
 @ConfigurationProperties(prefix = "jarvis.tools")
 public record ToolRuntimeProperties(
@@ -24,7 +30,8 @@ public record ToolRuntimeProperties(
         int maxConsecutiveFailures,
         int timeoutSeconds,
         String runtime,
-        int maxConsecutiveOperationRepeats
+        int maxConsecutiveOperationRepeats,
+        int statefulWorkflowMinToolBudget
 ) {
 
     /**
@@ -39,6 +46,23 @@ public record ToolRuntimeProperties(
         timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 600;
         runtime = runtime == null || runtime.isBlank() ? "native" : runtime.trim().toLowerCase(java.util.Locale.ROOT);
         maxConsecutiveOperationRepeats = maxConsecutiveOperationRepeats > 0 ? maxConsecutiveOperationRepeats : 5;
+        statefulWorkflowMinToolBudget = statefulWorkflowMinToolBudget > 0 ? statefulWorkflowMinToolBudget : 20;
+    }
+
+    /**
+     * Backward-compatible constructor used by older tests/call sites built before {@code
+     * statefulWorkflowMinToolBudget} existed.
+     */
+    public ToolRuntimeProperties(
+            Boolean enabled,
+            int maxCallsFast,
+            int maxCallsResearch,
+            int maxConsecutiveFailures,
+            int timeoutSeconds,
+            String runtime,
+            int maxConsecutiveOperationRepeats
+    ) {
+        this(enabled, maxCallsFast, maxCallsResearch, maxConsecutiveFailures, timeoutSeconds, runtime, maxConsecutiveOperationRepeats, 20);
     }
 
     /**
@@ -53,7 +77,7 @@ public record ToolRuntimeProperties(
             int timeoutSeconds,
             String runtime
     ) {
-        this(enabled, maxCallsFast, maxCallsResearch, maxConsecutiveFailures, timeoutSeconds, runtime, 5);
+        this(enabled, maxCallsFast, maxCallsResearch, maxConsecutiveFailures, timeoutSeconds, runtime, 5, 20);
     }
 
     /**
@@ -66,7 +90,7 @@ public record ToolRuntimeProperties(
             int maxConsecutiveFailures,
             int timeoutSeconds
     ) {
-        this(enabled, maxCallsFast, maxCallsResearch, maxConsecutiveFailures, timeoutSeconds, "legacy", 5);
+        this(enabled, maxCallsFast, maxCallsResearch, maxConsecutiveFailures, timeoutSeconds, "legacy", 5, 20);
     }
 
     /**

@@ -19,6 +19,7 @@ import com.jarvis.tools.ToolManager;
 import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.ToolRuntimeProperties;
+import com.jarvis.tools.dataset.DatasetStage;
 import com.jarvis.tools.dataset.StoreAuditDataset;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import com.jarvis.tools.workflow.CompletionAssessment;
@@ -136,6 +137,13 @@ public class NativeToolLoopService {
         Map<String, Integer> operationRepeatCounts = new LinkedHashMap<>();
         Optional<StoreAuditDataset> existingDataset = datasetService.findLatestForConversation(request.conversationId());
         boolean datasetAvailable = existingDataset.isPresent();
+        if (datasetAvailable) {
+            // Continuing a Store Audit dataset from an earlier conversation turn is itself proof
+            // this is a stateful-workflow task - raise the floor from real state, not from a
+            // keyword classifier that can miss a request like "przygotuj grafik na sierpien" (no
+            // geolocation-flavored words at all) entirely.
+            maxCalls = Math.max(maxCalls, properties.statefulWorkflowMinToolBudget());
+        }
         int rawGeocodeAddressCount = 0;
         // Once a CREATE_DATASET/START_DATASET attempt has failed and no dataset exists yet, raw
         // location.GEOCODE must not become a silent workaround for the whole storeDataset workflow
@@ -149,6 +157,11 @@ public class NativeToolLoopService {
         // are the hard backstop regardless).
         boolean datasetTouchedThisLoop = false;
         String activeDatasetId = existingDataset.map(StoreAuditDataset::datasetId).orElse("");
+        // True once a successful knowledge__read_document call this loop matched the active
+        // workflow's required document path (see WorkflowCompletionValidator#requiredDocumentPath)
+        // - trivially true when the active validator declares no required document, so this never
+        // gates a workflow that has none.
+        boolean workflowDocumentLoaded = completionValidator.requiredDocumentPath().isEmpty();
         int malformedContinuationAttempts = 0;
         int completionGateAttempts = 0;
         int emptyResponseRetries = 0;
@@ -291,9 +304,23 @@ public class NativeToolLoopService {
                         if (datasetIdValue != null && !String.valueOf(datasetIdValue).isBlank()) {
                             activeDatasetId = String.valueOf(datasetIdValue);
                         }
-                        LOGGER.info("[WORKFLOW_STATE] requestId={} datasetId={} stage={} records={}",
+                        // A storeDataset operation actually executing is state-level proof this is a
+                        // stateful-workflow task, however the loop's own upfront ToolIntent guess
+                        // classified it - raise the call budget from that real signal instead of only
+                        // ever trusting the classifier, so the exact production failure (intent
+                        // resolved to NO_TOOL for "przygotuj grafik na sierpien", capping the loop at
+                        // a handful of calls) cannot starve a genuinely multi-stage workflow again.
+                        if (maxCalls < properties.statefulWorkflowMinToolBudget()) {
+                            maxCalls = properties.statefulWorkflowMinToolBudget();
+                        }
+                        LOGGER.info("[WORKFLOW_STATE] workflow=STORE_AUDIT requestId={} datasetId={} stage={} records={} expectedRecords={} workflowLoaded={}",
                                 request.requestId(), activeDatasetId,
-                                result.data().getOrDefault("stage", ""), result.data().getOrDefault("count", ""));
+                                result.data().getOrDefault("stage", ""), result.data().getOrDefault("count", ""),
+                                result.data().getOrDefault("expectedRecordCount", ""), workflowDocumentLoaded);
+                        messages.add(ModelMessage.system(workflowStatusBlock(request, activeDatasetId)));
+                    }
+                    if (isRequiredWorkflowDocumentRead(action, result)) {
+                        workflowDocumentLoaded = true;
                     }
                     // Only the SEARCH_MARKETPLACE call itself is marketplace evidence - a collector
                     // existing elsewhere in the loop must never taint an unrelated result (e.g. a
@@ -388,10 +415,10 @@ public class NativeToolLoopService {
                 // dataset), that workflow's own completion validator gets the final say before this
                 // loop accepts the content as done.
                 WorkflowCompletionContext completionContext = new WorkflowCompletionContext(
-                        request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId);
+                        request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId, workflowDocumentLoaded);
                 CompletionAssessment assessment = completionValidator.assess(completionContext);
-                LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} COMPLETION_GATE complete={} reason={}",
-                        request.requestId(), step, assessment.complete(), assessment.reason());
+                LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={}",
+                        request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId));
                 if (!assessment.complete()) {
                     if (completionGateAttempts < MAX_COMPLETION_GATE_ATTEMPTS) {
                         completionGateAttempts++;
@@ -418,6 +445,32 @@ public class NativeToolLoopService {
             }
 
             if (!results.isEmpty()) {
+                // A model turn with no tool calls and no text content, but with tool results already
+                // collected, previously fell straight through to FINAL_SYNTHESIS_REQUIRED without
+                // ever consulting the completion gate - this is exactly how a Store Audit workflow
+                // stuck at stage=GEOLOCATED (VERIFY skipped, SUBMIT_SCHEDULE never called) ended up
+                // handed to tool-less final synthesis, which then produced a "geocoding summary"
+                // instead of the real schedule. Gate this exit path identically to the content-based
+                // one above, with the same bounded-retry budget (shared, not doubled).
+                WorkflowCompletionContext completionContext = new WorkflowCompletionContext(
+                        request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId, workflowDocumentLoaded);
+                CompletionAssessment assessment = completionValidator.assess(completionContext);
+                LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={} path=emptyResponse",
+                        request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId));
+                if (!assessment.complete() && completionGateAttempts < MAX_COMPLETION_GATE_ATTEMPTS) {
+                    completionGateAttempts++;
+                    LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} REENTER_TOOL_LOOP reason=WORKFLOW_NOT_COMPLETE attempt={} path=emptyResponse",
+                            request.requestId(), step, completionGateAttempts);
+                    publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
+                            "Workflow not complete yet after an empty model turn, continuing tool loop", null, step,
+                            Map.of("reason", assessment.reason(), "attempt", completionGateAttempts));
+                    messages.add(ModelMessage.system(assessment.guidance()));
+                    continue;
+                }
+                if (!assessment.complete()) {
+                    LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} completion-gate retries exhausted (emptyResponse path) reason={}, falling back to final synthesis",
+                            request.requestId(), assessment.reason());
+                }
                 saveDebug(request, intent, steps, "FINAL_SYNTHESIS_REQUIRED", errors);
                 publish(request, CognitiveEventType.FINAL_SYNTHESIS_STARTED, "STARTED",
                         "Final synthesis fallback requested", null, step, Map.of("results", results.size()));
@@ -443,6 +496,12 @@ public class NativeToolLoopService {
         }
 
         String fallback = fallbackAnswer(results, errors);
+        // The loop is giving up here (timeout or the outer call budget exhausted) with a workflow
+        // it actually touched still incomplete - never let the generic apology imply otherwise;
+        // name the exact stage so the honest failure is at least actionable on the next turn.
+        if (datasetTouchedThisLoop && !activeDatasetId.isBlank()) {
+            fallback = appendIncompleteWorkflowNote(fallback, activeDatasetId);
+        }
         saveDebug(request, intent, steps, errors.isEmpty() ? "FINISHED" : "FAILED", errors);
         publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, errors.isEmpty() ? "FINISHED" : "FAILED",
                 "Native tool loop finished", null, steps.size(), Map.of("errors", errors, "results", results.size()));
@@ -818,6 +877,84 @@ public class NativeToolLoopService {
         }
         block.append("Use these exact attachmentId values for sourceAttachmentId/sourceAttachmentIds - never invent one.\n");
         return block.toString();
+    }
+
+    /**
+     * Builds a compact, repeatable status reminder appended right after a {@code storeDataset}/
+     * {@code GEOCODE_DATASET} tool result - so the model's ORIGINAL task never gets lost behind a
+     * narrow intermediate tool goal (e.g. "storeDataset.START_DATASET(sourceImageCount=2)") after
+     * the first tool call. Deliberately a few lines, not the whole system prompt re-sent - the
+     * message list is append-only, so this accumulates over a long loop by design, one small block
+     * per dataset-touching call rather than one large one duplicated every turn.
+     *
+     * @param request tool-calling request, for the original user goal
+     * @param datasetId the dataset this status describes, blank if none is active yet
+     * @return compact status block, or empty string when there is no dataset to describe
+     */
+    private String workflowStatusBlock(ToolCallingRequest request, String datasetId) {
+        if (datasetId.isBlank()) {
+            return "";
+        }
+        return datasetService.getDataset(datasetId).map(dataset -> """
+                ACTIVE WORKFLOW: STORE_AUDIT
+                USER GOAL: %s
+                REQUIRED TERMINAL STATE: SCHEDULED
+                CURRENT STATE: %s (%d record(s))
+                NEXT REQUIRED STAGE: %s
+                """.formatted(request.userMessage(), dataset.stage(), dataset.stores().size(),
+                        nextRequiredStageHint(dataset.stage()))).orElse("");
+    }
+
+    private String datasetStageLabel(String datasetId) {
+        if (datasetId.isBlank()) {
+            return "n/a";
+        }
+        return datasetService.getDataset(datasetId).map(dataset -> dataset.stage().name()).orElse("n/a");
+    }
+
+    private String nextRequiredActionFor(String datasetId) {
+        if (datasetId.isBlank()) {
+            return "n/a";
+        }
+        return datasetService.getDataset(datasetId).map(dataset -> nextRequiredStageHint(dataset.stage())).orElse("n/a");
+    }
+
+    private String nextRequiredStageHint(DatasetStage stage) {
+        return switch (stage) {
+            case BUILDING -> "APPEND_RECORDS / FINALIZE_DATASET";
+            case EXTRACTED -> "VERIFY_DATASET";
+            case LOCKED -> "GEOCODE_DATASET";
+            case GEOLOCATED -> "SUBMIT_SCHEDULE";
+            case SCHEDULED -> "none - present the final table to the user";
+        };
+    }
+
+    /**
+     * True when {@code action} is a successful {@code knowledge__read_document} call whose {@code
+     * path} argument matches the active workflow's {@link WorkflowCompletionValidator#requiredDocumentPath()}
+     * - used to set {@link WorkflowCompletionContext#requiredDocumentLoaded()}. Path comparison is
+     * normalized (trimmed, case-insensitive, backslashes as slashes) since a model may not
+     * reproduce the exact casing/separators the workflow declared it in.
+     *
+     * @param action tool action that just executed
+     * @param result its result
+     * @return true when this call satisfies the active workflow's required-document gate
+     */
+    private boolean isRequiredWorkflowDocumentRead(ToolAction action, ToolResult result) {
+        if (!result.success() || !"knowledge".equalsIgnoreCase(action.tool()) || !"READ_DOCUMENT".equalsIgnoreCase(action.operation())) {
+            return false;
+        }
+        Optional<String> requiredPath = completionValidator.requiredDocumentPath();
+        if (requiredPath.isEmpty()) {
+            return false;
+        }
+        Object pathValue = action.arguments().get("path");
+        String actualPath = pathValue == null ? "" : String.valueOf(pathValue);
+        return normalizeDocumentPath(actualPath).equals(normalizeDocumentPath(requiredPath.get()));
+    }
+
+    private String normalizeDocumentPath(String path) {
+        return path.strip().toLowerCase(Locale.ROOT).replace('\\', '/').replaceAll("^/+", "");
     }
 
     /**
@@ -1274,6 +1411,30 @@ public class NativeToolLoopService {
             return "Nie udalo mi sie teraz zebrac wystarczajacych danych.";
         }
         return "Nie udalo mi sie teraz zebrac wystarczajacych danych: " + String.join("; ", errors);
+    }
+
+    /**
+     * Appends (or, when {@code fallback} is blank - the common case when tool results exist, see
+     * {@link #fallbackAnswer} - stands in for) an honest note naming the exact stage a touched
+     * Store Audit dataset was left at when this loop gave up (timeout or call budget exhausted).
+     * Never silently lets a generic apology, or worse an unrelated tool's own success message,
+     * stand in for "the schedule is ready" when it is not.
+     *
+     * @param fallback the fallback answer computed so far, possibly blank
+     * @param datasetId the dataset touched this loop
+     * @return fallback with the incomplete-workflow note appended, unchanged if the dataset is
+     *         already SCHEDULED or no longer found
+     */
+    private String appendIncompleteWorkflowNote(String fallback, String datasetId) {
+        return datasetService.getDataset(datasetId).map(dataset -> {
+            if (dataset.stage() == DatasetStage.SCHEDULED) {
+                return fallback;
+            }
+            String note = "Zadanie Store Audit nie zostalo ukonczone (etap: " + dataset.stage() + ", "
+                    + dataset.stores().size() + " rekord(ow)). Nastepny wymagany krok: "
+                    + nextRequiredStageHint(dataset.stage()) + ".";
+            return fallback.isBlank() ? note : fallback + " " + note;
+        }).orElse(fallback);
     }
 
     private ToolResult copy(ToolResult result, Map<String, Object> data) {
