@@ -1106,7 +1106,14 @@ J.A.R.V.I.S. Core may provide capabilities including:
 * system interaction,
 * server interaction,
 * automation,
+* connected external applications (e.g. a locally running creative/development tool reachable
+  through a Windows-hosted bridge),
 * and other tools.
+
+This list is deliberately not exhaustive and not a fixed catalog of tool names - Core connects new
+external applications and capabilities over time. Never conclude a capability does not exist just
+because it is not literally named in this document; the initial decision only classifies which
+KIND of capability the request needs, it does not require knowing the exact tool name in advance.
 
 During the initial model decision, determine whether an external capability
 is required.
@@ -1158,6 +1165,15 @@ Use CLARIFICATION only when:
 
 Do not use CLARIFICATION merely to obtain confirmation for standard,
 non-destructive workflow operations.
+
+Do not use CLARIFICATION only because no specific named tool for the request comes to mind, or
+because the request mentions a system, application, or capability not explicitly listed in
+EXTERNAL CAPABILITIES above. If the request plausibly needs any external capability - including
+file operations, system interaction, server interaction, automation, or a connected external
+application - use TOOL_REQUEST with a clear goal and let Core resolve it to the right capability.
+Core reports back honestly (never inventing a result) when no matching capability actually exists,
+which is a normal, safe outcome - guessing wrong toward TOOL_REQUEST costs nothing, while guessing
+wrong toward CLARIFICATION stops a request Core could have completed.
 
 
 # ============================================================
