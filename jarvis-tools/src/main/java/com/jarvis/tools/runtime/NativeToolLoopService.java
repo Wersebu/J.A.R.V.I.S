@@ -25,7 +25,11 @@ import com.jarvis.tools.dataset.StoreAuditDataset;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import com.jarvis.tools.dataset.VerificationStatus;
 import com.jarvis.tools.workflow.CompletionAssessment;
+import com.jarvis.tools.workflow.CompositeWorkflowCompletionValidator;
+import com.jarvis.tools.workflow.GenericGoalCompletionValidator;
 import com.jarvis.tools.workflow.StoreAuditWorkflowCompletionValidator;
+import com.jarvis.tools.workflow.ToolOperationClassifier;
+import com.jarvis.tools.workflow.ToolOperationRole;
 import com.jarvis.tools.workflow.WorkflowCompletionContext;
 import com.jarvis.tools.workflow.WorkflowCompletionValidator;
 import org.slf4j.Logger;
@@ -95,10 +99,15 @@ public class NativeToolLoopService {
         this.webSearchQualityEvaluator = new WebSearchQualityEvaluator();
         this.marketObservationExtractor = new MarketObservationExtractor();
         this.listingVerifier = new AiListingVerifier(objectMapper);
-        // Store Audit is the only stateful workflow with a completion validator today; the agent
-        // loop below only ever talks to the generic WorkflowCompletionValidator interface, so a
-        // future stateful workflow can plug in its own implementation without the loop changing.
-        this.completionValidator = new StoreAuditWorkflowCompletionValidator(datasetService);
+        // The agent loop below only ever talks to the generic WorkflowCompletionValidator
+        // interface, so a future stateful workflow can plug in its own implementation without the
+        // loop changing. Store Audit's own validator is checked first (workflow-specific state
+        // machine); GenericGoalCompletionValidator runs for every request regardless of workflow,
+        // catching the general "answered from a bootstrap-only tool result" failure mode.
+        this.completionValidator = new CompositeWorkflowCompletionValidator(List.of(
+                new StoreAuditWorkflowCompletionValidator(datasetService),
+                new GenericGoalCompletionValidator()
+        ));
     }
 
     /**
@@ -526,7 +535,8 @@ public class NativeToolLoopService {
                 // loop accepts the content as done.
                 WorkflowCompletionContext completionContext = new WorkflowCompletionContext(
                         request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId, workflowDocumentLoaded,
-                        datasetCreationAttemptFailed, lastDatasetCreationError);
+                        datasetCreationAttemptFailed, lastDatasetCreationError, request.userMessage(), toolCallCount(steps),
+                        isBootstrapOnlyEvidence(steps), (content + " " + response.thinking()).strip());
                 CompletionAssessment assessment = completionValidator.assess(completionContext);
                 LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={}",
                         request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId, workflowDocumentLoaded));
@@ -575,7 +585,8 @@ public class NativeToolLoopService {
                 // one above, with the same bounded-retry budget (shared, not doubled).
                 WorkflowCompletionContext completionContext = new WorkflowCompletionContext(
                         request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId, workflowDocumentLoaded,
-                        datasetCreationAttemptFailed, lastDatasetCreationError);
+                        datasetCreationAttemptFailed, lastDatasetCreationError, request.userMessage(), toolCallCount(steps),
+                        isBootstrapOnlyEvidence(steps), response.thinking().strip());
                 CompletionAssessment assessment = completionValidator.assess(completionContext);
                 LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={} path=emptyResponse",
                         request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId, workflowDocumentLoaded));
@@ -1108,6 +1119,49 @@ public class NativeToolLoopService {
         return dataset.expectedRecordCount() > 0
                 ? dataset.stores().size() + "/" + dataset.expectedRecordCount()
                 : String.valueOf(dataset.stores().size());
+    }
+
+    /**
+     * Counts tool calls that actually executed this loop (real {@code TOOL_CALL} steps, never
+     * blocked/invalid/duplicate ones) - used by {@link GenericGoalCompletionValidator} to tell "no
+     * tools were used at all" (nothing to gate on) apart from "only bootstrap tools were used".
+     *
+     * @param steps every step recorded so far this loop
+     * @return count of genuinely executed tool calls
+     */
+    private int toolCallCount(List<ToolRuntimeStep> steps) {
+        int count = 0;
+        for (ToolRuntimeStep step : steps) {
+            if ("TOOL_CALL".equals(step.action())) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * True when at least one tool call has actually executed this loop and every successful one
+     * classifies as bootstrap-only ({@link ToolOperationRole#isBootstrap()}) - e.g. only listing
+     * available sessions/instances or selecting one, never anything that could itself answer the
+     * user's real request. A single successful non-bootstrap call (or zero executed calls) makes
+     * this false.
+     *
+     * @param steps every step recorded so far this loop
+     * @return true when only bootstrap tool calls have succeeded this loop
+     */
+    private boolean isBootstrapOnlyEvidence(List<ToolRuntimeStep> steps) {
+        boolean anySuccessful = false;
+        for (ToolRuntimeStep step : steps) {
+            if (!"TOOL_CALL".equals(step.action()) || step.result() == null || !step.result().success()) {
+                continue;
+            }
+            anySuccessful = true;
+            ToolOperationRole role = ToolOperationClassifier.classify(step.tool(), step.operation());
+            if (!role.isBootstrap()) {
+                return false;
+            }
+        }
+        return anySuccessful;
     }
 
     private String datasetStageLabel(String datasetId) {

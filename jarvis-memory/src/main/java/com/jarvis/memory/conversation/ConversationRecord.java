@@ -1,0 +1,46 @@
+package com.jarvis.memory.conversation;
+
+import java.time.Instant;
+
+/**
+ * Durable conversation metadata - separate from the message log itself ({@link
+ * ConversationMessageRepository}), so switching/listing/renaming/archiving a conversation never
+ * requires scanning its messages.
+ *
+ * @param id stable conversation identifier
+ * @param title display title, defaults to {@code "Nowa rozmowa"} for a brand-new conversation until
+ *         an auto-generated or user-set title replaces it
+ * @param createdAt when this conversation was first created
+ * @param updatedAt when this conversation last received a message
+ * @param archived whether the conversation is archived (hidden from the default list, never deleted)
+ * @param lastModel the most recently used model name for this conversation, blank if none yet
+ * @param rollingSummary the current rolling summary text, blank if none has been generated yet
+ * @param summaryUntilSequence the highest message {@code sequence_number} the rolling summary
+ *         covers, {@code 0} when there is no summary yet
+ */
+public record ConversationRecord(
+        String id,
+        String title,
+        Instant createdAt,
+        Instant updatedAt,
+        boolean archived,
+        String lastModel,
+        String rollingSummary,
+        long summaryUntilSequence
+) {
+
+    /**
+     * Default title assigned to a brand-new conversation.
+     */
+    public static final String DEFAULT_TITLE = "Nowa rozmowa";
+
+    /**
+     * Normalizes null fields.
+     */
+    public ConversationRecord {
+        id = id == null ? "" : id;
+        title = title == null || title.isBlank() ? DEFAULT_TITLE : title;
+        lastModel = lastModel == null ? "" : lastModel;
+        rollingSummary = rollingSummary == null ? "" : rollingSummary;
+    }
+}
