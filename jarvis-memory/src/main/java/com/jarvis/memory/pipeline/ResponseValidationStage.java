@@ -12,6 +12,7 @@ import com.jarvis.common.prompt.GroundedResponseValidator;
 import com.jarvis.common.prompt.GroundedValidationResult;
 import com.jarvis.common.prompt.GroundingSourceType;
 import com.jarvis.memory.ConversationMemoryService;
+import com.jarvis.memory.conversation.ConversationTitleService;
 import com.jarvis.memory.job.MemoryJobService;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
@@ -30,6 +31,7 @@ public class ResponseValidationStage implements PipelineStage {
     private final CognitiveEventBus cognitiveEventBus;
     private final ConversationMemoryService memoryService;
     private final MemoryJobService memoryJobService;
+    private final ConversationTitleService conversationTitleService;
     private final GroundedResponseValidator groundedResponseValidator;
     private final List<AIProvider> aiProviders;
 
@@ -46,12 +48,14 @@ public class ResponseValidationStage implements PipelineStage {
             CognitiveEventBus cognitiveEventBus,
             ConversationMemoryService memoryService,
             MemoryJobService memoryJobService,
+            ConversationTitleService conversationTitleService,
             GroundedResponseValidator groundedResponseValidator,
             List<AIProvider> aiProviders
     ) {
         this.cognitiveEventBus = cognitiveEventBus;
         this.memoryService = memoryService;
         this.memoryJobService = memoryJobService;
+        this.conversationTitleService = conversationTitleService;
         this.groundedResponseValidator = groundedResponseValidator;
         this.aiProviders = List.copyOf(aiProviders);
     }
@@ -79,6 +83,7 @@ public class ResponseValidationStage implements PipelineStage {
                 Instant.now()
         );
         memoryService.addMessage(responseContext.conversationId(), assistantMessage);
+        conversationTitleService.maybeGenerateTitleAsync(responseContext.conversationId(), responseContext.brain());
         cognitiveEventBus.publish(CognitiveEventType.CONVERSATION_ASSISTANT_RESPONSE_PERSISTED,
                 "PERSISTED", "Assistant response persisted", null, Map.of(
                         "conversationId", responseContext.conversationId(),

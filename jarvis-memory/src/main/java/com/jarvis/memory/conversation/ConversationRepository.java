@@ -56,6 +56,15 @@ public interface ConversationRepository {
     void rename(String conversationId, String title);
 
     /**
+     * Updates the title only when it still has the default source.
+     *
+     * @param conversationId stable conversation identifier
+     * @param title generated title
+     * @return true when the generated title was applied
+     */
+    boolean updateGeneratedTitleIfDefault(String conversationId, String title);
+
+    /**
      * Archives or unarchives a conversation - never a destructive delete.
      *
      * @param conversationId stable conversation identifier

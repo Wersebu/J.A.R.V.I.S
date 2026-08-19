@@ -171,7 +171,20 @@ class ConversationControllerTest {
         @Override
         public void rename(String conversationId, String title) {
             update(conversationId, existing -> new ConversationRecord(existing.id(), title, existing.createdAt(),
-                    existing.updatedAt(), existing.archived(), existing.lastModel(), existing.rollingSummary(), existing.summaryUntilSequence()));
+                    existing.updatedAt(), existing.archived(), existing.lastModel(), "USER",
+                    existing.rollingSummary(), existing.summaryUntilSequence()));
+        }
+
+        @Override
+        public boolean updateGeneratedTitleIfDefault(String conversationId, String title) {
+            ConversationRecord existing = records.get(conversationId);
+            if (existing == null || !"DEFAULT".equalsIgnoreCase(existing.titleSource())) {
+                return false;
+            }
+            records.put(conversationId, new ConversationRecord(existing.id(), title, existing.createdAt(),
+                    existing.updatedAt(), existing.archived(), existing.lastModel(), "GENERATED",
+                    existing.rollingSummary(), existing.summaryUntilSequence()));
+            return true;
         }
 
         @Override

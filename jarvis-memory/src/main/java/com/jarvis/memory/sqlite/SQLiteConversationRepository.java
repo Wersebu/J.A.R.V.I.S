@@ -39,8 +39,8 @@ public class SQLiteConversationRepository implements ConversationRepository {
         try (Connection connection = connectionFactory.openConnection();
              PreparedStatement insert = connection.prepareStatement("""
                      INSERT OR IGNORE INTO conversations
-                     (id, title, created_at, updated_at, archived, last_model, rolling_summary, summary_until_sequence)
-                     VALUES (?, ?, ?, ?, 0, '', '', 0)
+                     (id, title, created_at, updated_at, archived, last_model, title_source, rolling_summary, summary_until_sequence)
+                     VALUES (?, ?, ?, ?, 0, '', 'DEFAULT', '', 0)
                      """)) {
             insert.setString(1, conversationId);
             insert.setString(2, ConversationRecord.DEFAULT_TITLE);
@@ -59,7 +59,7 @@ public class SQLiteConversationRepository implements ConversationRepository {
     public Optional<ConversationRecord> find(String conversationId) {
         try (Connection connection = connectionFactory.openConnection();
              PreparedStatement statement = connection.prepareStatement("""
-                     SELECT id, title, created_at, updated_at, archived, last_model, rolling_summary, summary_until_sequence
+                     SELECT id, title, created_at, updated_at, archived, last_model, title_source, rolling_summary, summary_until_sequence
                      FROM conversations WHERE id = ?
                      """)) {
             statement.setString(1, conversationId);
@@ -76,7 +76,7 @@ public class SQLiteConversationRepository implements ConversationRepository {
         List<ConversationRecord> records = new ArrayList<>();
         try (Connection connection = connectionFactory.openConnection();
              PreparedStatement statement = connection.prepareStatement("""
-                     SELECT id, title, created_at, updated_at, archived, last_model, rolling_summary, summary_until_sequence
+                     SELECT id, title, created_at, updated_at, archived, last_model, title_source, rolling_summary, summary_until_sequence
                      FROM conversations ORDER BY datetime(updated_at) DESC
                      """);
              ResultSet resultSet = statement.executeQuery()) {
@@ -96,7 +96,23 @@ public class SQLiteConversationRepository implements ConversationRepository {
 
     @Override
     public void rename(String conversationId, String title) {
-        execute("UPDATE conversations SET title = ? WHERE id = ?", title, conversationId);
+        execute("UPDATE conversations SET title = ?, title_source = 'USER' WHERE id = ?", title, conversationId);
+    }
+
+    @Override
+    public boolean updateGeneratedTitleIfDefault(String conversationId, String title) {
+        try (Connection connection = connectionFactory.openConnection();
+             PreparedStatement statement = connection.prepareStatement("""
+                     UPDATE conversations
+                     SET title = ?, title_source = 'GENERATED'
+                     WHERE id = ? AND title_source = 'DEFAULT'
+                     """)) {
+            statement.setString(1, title);
+            statement.setString(2, conversationId);
+            return statement.executeUpdate() > 0;
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Could not update generated conversation title", exception);
+        }
     }
 
     @Override
@@ -160,6 +176,7 @@ public class SQLiteConversationRepository implements ConversationRepository {
                 Instant.parse(resultSet.getString("updated_at")),
                 resultSet.getInt("archived") != 0,
                 resultSet.getString("last_model"),
+                resultSet.getString("title_source"),
                 resultSet.getString("rolling_summary"),
                 resultSet.getLong("summary_until_sequence")
         );

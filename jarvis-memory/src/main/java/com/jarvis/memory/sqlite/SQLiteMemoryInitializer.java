@@ -126,10 +126,12 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                     updated_at TEXT NOT NULL,
                     archived INTEGER NOT NULL DEFAULT 0,
                     last_model TEXT NOT NULL DEFAULT '',
+                    title_source TEXT NOT NULL DEFAULT 'DEFAULT',
                     rolling_summary TEXT NOT NULL DEFAULT '',
                     summary_until_sequence INTEGER NOT NULL DEFAULT 0
                 )
                 """);
+        addColumnIfMissing(statement, "conversations", "title_source", "TEXT NOT NULL DEFAULT 'DEFAULT'");
         statement.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS conversation_messages (
                     id TEXT PRIMARY KEY,
@@ -176,8 +178,8 @@ public class SQLiteMemoryInitializer implements InitializingBean {
     private void migrateWorkingMemoryIntoDurableConversationTables(Statement statement) throws SQLException {
         statement.executeUpdate("""
                 INSERT OR IGNORE INTO conversations
-                (id, title, created_at, updated_at, archived, last_model, rolling_summary, summary_until_sequence)
-                SELECT conversation_id, 'Nowa rozmowa', MIN(created_at), MAX(created_at), 0, '', '', 0
+                (id, title, created_at, updated_at, archived, last_model, title_source, rolling_summary, summary_until_sequence)
+                SELECT conversation_id, 'Nowa rozmowa', MIN(created_at), MAX(created_at), 0, '', 'DEFAULT', '', 0
                 FROM working_memory
                 GROUP BY conversation_id
                 """);

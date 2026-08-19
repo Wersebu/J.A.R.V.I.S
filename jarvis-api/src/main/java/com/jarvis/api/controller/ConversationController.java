@@ -181,11 +181,12 @@ public class ConversationController {
             Instant createdAt,
             Instant updatedAt,
             boolean archived,
-            String lastModel
+            String lastModel,
+            String titleSource
     ) {
         private static ConversationResponse from(ConversationRecord record) {
             return new ConversationResponse(record.id(), record.title(), record.createdAt(),
-                    record.updatedAt(), record.archived(), record.lastModel());
+                    record.updatedAt(), record.archived(), record.lastModel(), record.titleSource());
         }
     }
 

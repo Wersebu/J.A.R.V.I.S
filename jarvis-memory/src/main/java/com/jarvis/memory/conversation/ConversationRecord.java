@@ -14,6 +14,7 @@ import java.time.Instant;
  * @param updatedAt when this conversation last received a message
  * @param archived whether the conversation is archived (hidden from the default list, never deleted)
  * @param lastModel the most recently used model name for this conversation, blank if none yet
+ * @param titleSource where the current title came from: DEFAULT, GENERATED, or USER
  * @param rollingSummary the current rolling summary text, blank if none has been generated yet
  * @param summaryUntilSequence the highest message {@code sequence_number} the rolling summary
  *         covers, {@code 0} when there is no summary yet
@@ -25,6 +26,7 @@ public record ConversationRecord(
         Instant updatedAt,
         boolean archived,
         String lastModel,
+        String titleSource,
         String rollingSummary,
         long summaryUntilSequence
 ) {
@@ -34,6 +36,19 @@ public record ConversationRecord(
      */
     public static final String DEFAULT_TITLE = "Nowa rozmowa";
 
+    public ConversationRecord(
+            String id,
+            String title,
+            Instant createdAt,
+            Instant updatedAt,
+            boolean archived,
+            String lastModel,
+            String rollingSummary,
+            long summaryUntilSequence
+    ) {
+        this(id, title, createdAt, updatedAt, archived, lastModel, "DEFAULT", rollingSummary, summaryUntilSequence);
+    }
+
     /**
      * Normalizes null fields.
      */
@@ -41,6 +56,7 @@ public record ConversationRecord(
         id = id == null ? "" : id;
         title = title == null || title.isBlank() ? DEFAULT_TITLE : title;
         lastModel = lastModel == null ? "" : lastModel;
+        titleSource = titleSource == null || titleSource.isBlank() ? "DEFAULT" : titleSource;
         rollingSummary = rollingSummary == null ? "" : rollingSummary;
     }
 }

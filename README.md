@@ -72,6 +72,14 @@ ValidationStage
   -> ResponseValidationStage     (persists the assistant turn)
 ```
 
+After the first successful user/assistant exchange in a new conversation, Core
+starts a best-effort background title job using the same selected AI provider
+and model with the `BACKGROUND` job type. The generated title is applied only
+while the conversation still has the default title source; a manual rename marks
+the title as user-owned and late generator results are ignored. If the model is
+unavailable or returns an invalid title, Core falls back to a shortened version
+of the first user message.
+
 The main model's structured response is always one of exactly three types (`MainModelActionType`): `FINAL_ANSWER`, `TOOL_REQUEST`, or `CLARIFICATION`. A `TOOL_REQUEST` carries a free-text `goal`/`reason` - it never names a specific tool. Which tool actually runs is decided entirely by the model itself through native function calling (see [Native Tool Calling](#native-tool-calling--tool-loop)), not by any keyword-based router in Core.
 
 ## Configuration
