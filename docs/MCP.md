@@ -142,6 +142,42 @@ as a valid empty discovery - `WebSocketWindowsMcpBridgeGateway#listTools` now re
 protocol error (`TOOLS_FIELD_NOT_ARRAY`), so a real Windows-side bug can never masquerade as "Roblox
 Studio just isn't attached yet".
 
+## Real Tool Calls Timing Out Despite Fast Discovery
+
+Discovery (`MCP_CONNECT` + `MCP_LIST_TOOLS`) can succeed perfectly - fast, `discoveredTools > 0`,
+tools registered - and a real `MCP_CALL_TOOL` (e.g. `list_roblox_studios`) can still appear to time
+out from Core's point of view. This turned out to be a **separate, more fundamental bug**, found by
+comparing a real production trace on both sides of the bridge:
+
+```text
+Windows side (real trace): request received -> tools/call sent -> response received -> durationMs=0
+Core side (same trace):    request sent -> ... -> timed out after 65s -> "stale response" 2-4 minutes later
+```
+
+The Windows bridge answered in **0-4 milliseconds**. Core did not see that response for **2-4
+minutes** - and the delay lined up exactly with how long the *chat pipeline that triggered the call*
+took to finish, not with anything MCP-specific.
+
+**Root cause:** chat and the MCP bridge share one persistent WebSocket session (`/ws/jarvis`).
+Jakarta/Spring WebSocket containers deliver one session's incoming frames strictly sequentially -
+they will never invoke the handler again for that session until the current invocation returns.
+`JarvisWebSocketHandler.handleTextMessage` used to run `chatService.stream(...)` **synchronously**
+for a chat request, so a single long-running native tool loop (easily minutes) blocked delivery of
+*every other frame on that same session* for its entire duration - including the `MCP_BRIDGE_RESPONSE`
+that very loop was waiting on. The response was sent by Windows almost instantly, but sat queued,
+undelivered, until the chat pipeline itself finally finished and freed the session for the next frame
+- a self-inflicted deadlock-shaped bottleneck, not a networking or Roblox-side issue.
+
+**Fix:** `handleTextMessage` now dispatches chat processing onto a dedicated executor
+(`chatExecutor` in `JarvisWebSocketHandler`) and returns immediately, regardless of how long the
+underlying pipeline takes. The container is then free to keep delivering other frames - MCP bridge
+responses in particular - on the same session throughout. Bridge messages (`MCP_BRIDGE_REGISTER`,
+`MCP_BRIDGE_RESPONSE`) were already handled synchronously and fast, so they are unaffected other than
+now actually being reachable while a chat request is in flight.
+
+This explains why a slow-looking real tool call can be entirely explained by "how long was the
+overall chat turn taking" rather than by the external application itself.
+
 ## API
 
 ```bash
@@ -227,6 +263,7 @@ Core does not collapse MCP responses into a blind `toString()`. Large binary pay
 | `state=CONNECTED` but `discoveredTools=0` right after connecting | `tools/list` legitimately returned 0 tools (e.g. Studio/plugin not attached yet at that exact moment) | This now retries automatically (bounded, with a short backoff) - wait a few seconds, or force it immediately with `POST /api/v1/mcp/roblox/connect`; check `lastError` for the exact attempt count once retries are exhausted |
 | `Windows MCP bridge returned a malformed tools/list response ... expected payload.tools to be an array` | The Windows bridge sent a response shaped differently than the documented `{"payload":{"tools":[...]}}` contract (a real protocol bug, not a normal empty discovery) | Check the Windows bridge's own logs for the `MCP_LIST_TOOLS` request/response around that time; this is deliberately never treated the same as a genuine empty tool list |
 | Reconnect after a Windows bridge drop still can't discover tools | A previous MCP process was left running (orphaned) and is holding a resource the new one needs (e.g. a local port/pipe the external application only allows one listener on) | Fixed as of this version - `close()` now kills the whole process tree, and Core closes the previous client (sending `MCP_DISCONNECT`) before reactivating; if it still happens, check for orphaned processes manually and file it as a new bug |
+| Discovery is fast (`discoveredTools > 0`) but a real `tools/call` still times out, and Windows-side logs show the call actually answered in milliseconds | Was: `handleTextMessage` ran the whole chat pipeline synchronously, blocking delivery of the `MCP_BRIDGE_RESPONSE` on the shared session until the pipeline itself finished - see [Real Tool Calls Timing Out Despite Fast Discovery](#real-tool-calls-timing-out-despite-fast-discovery) | Fixed as of this version - chat processing now runs on a dedicated executor so `handleTextMessage` returns immediately and bridge responses are delivered promptly even during a long chat turn |
 
 Core's own wait for a bridge response is always a few seconds longer than whatever timeout it told the Windows client to use internally (`BRIDGE_RESPONSE_SLACK` in `WebSocketWindowsMcpBridgeGateway`). Without that slack, Core's side of the round trip could time out at (or fractionally before) the Windows client's own watchdog, discarding the pending request; a real, on-time Windows response then had nowhere to go and was logged and dropped as a stale response (`[MCP_BRIDGE] stale response requestId=...`) instead of reaching the model with the actual, specific failure reason (stderr excerpt, JSON-RPC error, etc.).
 

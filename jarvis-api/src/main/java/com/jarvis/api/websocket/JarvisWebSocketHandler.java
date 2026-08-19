@@ -18,6 +18,8 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Persistent WebSocket endpoint for realtime Jarvis communication.
@@ -31,6 +33,27 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway;
     private final McpServerManager mcpServerManager;
+    /**
+     * Jakarta/Spring WebSocket containers deliver one session's incoming frames strictly
+     * sequentially - the container will not invoke {@link #handleTextMessage} again for this
+     * session until the current invocation returns. A chat request used to run {@code
+     * chatService.stream(...)} synchronously inside that callback, so a single long-running chat
+     * pipeline (easily minutes, e.g. a multi-turn native tool loop) blocked delivery of every other
+     * incoming frame on the SAME session for its entire duration - including an {@code
+     * MCP_BRIDGE_RESPONSE} the very same pipeline was waiting on, since chat and the MCP bridge
+     * share this one persistent connection. A real production trace confirmed this exactly: the
+     * Windows bridge answered an MCP tool call in 0-4ms, but Core did not see that response until
+     * the chat pipeline finally finished - 2-4 minutes later - because the response frame sat queued
+     * behind the still-running {@code handleTextMessage} call for the chat request itself. Chat
+     * processing now runs on this dedicated executor instead, so {@code handleTextMessage} returns
+     * immediately and the container is free to deliver bridge frames (and any other session traffic)
+     * while a chat pipeline is still running.
+     */
+    private final ExecutorService chatExecutor = Executors.newCachedThreadPool(runnable -> {
+        Thread thread = new Thread(runnable, "jarvis-ws-chat");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     /**
      * Creates the WebSocket handler.
@@ -98,13 +121,18 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        try {
-            chatService.stream(request, event -> sendEvent(session, event));
-            send(session, new WebSocketStatus("COMPLETED", "Request completed"));
-        } catch (RuntimeException exception) {
-            LOGGER.error("[JARVIS] WebSocket chat failed", exception);
-            send(session, new WebSocketStatus("ERROR", exception.getMessage() == null ? "Request failed" : exception.getMessage()));
-        }
+        // Dispatched, not run inline - see chatExecutor's javadoc. handleTextMessage must return
+        // quickly regardless of how long the chat pipeline takes, so the container keeps delivering
+        // other frames on this same session (MCP bridge responses in particular) throughout.
+        chatExecutor.submit(() -> {
+            try {
+                chatService.stream(request, event -> sendEvent(session, event));
+                send(session, new WebSocketStatus("COMPLETED", "Request completed"));
+            } catch (RuntimeException exception) {
+                LOGGER.error("[JARVIS] WebSocket chat failed", exception);
+                send(session, new WebSocketStatus("ERROR", exception.getMessage() == null ? "Request failed" : exception.getMessage()));
+            }
+        });
     }
 
     /**
