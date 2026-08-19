@@ -153,6 +153,26 @@ public class NativeToolSchemaMapper {
     }
 
     /**
+     * Returns runtime-declared enum values by argument name.
+     *
+     * @param functionName model-facing function name
+     * @return enum values keyed by exact schema field name
+     */
+    public Map<String, List<Object>> enumValues(String functionName) {
+        return findOperation(functionName)
+                .map(operation -> {
+                    Map<String, List<Object>> values = new LinkedHashMap<>();
+                    for (ToolArgumentDefinition argument : operation.arguments()) {
+                        if (!argument.schema().enumValues().isEmpty()) {
+                            values.put(argument.name(), argument.schema().enumValues());
+                        }
+                    }
+                    return values;
+                })
+                .orElse(Map.of());
+    }
+
+    /**
      * Describes whether a definition came from a native/static tool or an MCP dynamic tool.
      *
      * @param functionName model-facing function name
@@ -183,6 +203,17 @@ public class NativeToolSchemaMapper {
             throw new InvalidToolArgumentException("Unexpected wrapper 'arguments'. Expected top-level fields: "
                     + expectedFieldLabel(definitions) + ".");
         }
+        Set<String> declaredNames = definitions.stream()
+                .map(ToolArgumentDefinition::name)
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        List<String> unknownFields = safeArguments.keySet().stream()
+                .filter(field -> !declaredNames.contains(field))
+                .toList();
+        if (!unknownFields.isEmpty()) {
+            throw new InvalidToolArgumentException("Unknown argument(s) " + unknownFields
+                    + ". Expected exact top-level fields from runtime schema: " + expectedFieldLabel(definitions)
+                    + ". Do not rename snake_case fields to camelCase.");
+        }
         for (ToolArgumentDefinition argument : definitions) {
             Object value = safeArguments.get(argument.name());
             if (value == null) {
@@ -199,6 +230,10 @@ public class NativeToolSchemaMapper {
             ToolJsonSchema schema = argument.schema();
             if (!matches(schema, value)) {
                 throw new InvalidToolArgumentException(describeMismatch(argument.name(), schema, value));
+            }
+            if (!schema.enumValues().isEmpty() && !schema.enumValues().contains(value)) {
+                throw new InvalidToolArgumentException("Argument '" + argument.name()
+                        + "' must be one of " + schema.enumValues() + ", but received '" + value + "'.");
             }
         }
     }
@@ -582,6 +617,9 @@ public class NativeToolSchemaMapper {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("type", node.type());
         result.put("description", node.description());
+        if (!node.enumValues().isEmpty()) {
+            result.put("enum", node.enumValues());
+        }
         if ("array".equals(node.type()) && node.items() != null) {
             result.put("items", toJsonSchema(node.items()));
         }

@@ -75,6 +75,47 @@ class NativeToolSchemaMapperTest {
     }
 
     @Test
+    void runtimeSchemaKeepsExactSnakeCaseRequiredEnumAndDescriptions() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(strictRobloxRegistry());
+
+        Map<String, Object> schema = parametersFor(mapper, "mcp_roblox_search_game_tree__call");
+
+        assertThat(schema.get("required")).isEqualTo(List.of("studio_id", "datamodel_type"));
+        Map<String, Object> studioId = propertySchema(schema, "studio_id");
+        Map<String, Object> datamodelType = propertySchema(schema, "datamodel_type");
+        assertThat(studioId.get("description")).isEqualTo("Exact connected Studio id from list_roblox_studios.");
+        assertThat(datamodelType.get("enum")).isEqualTo(List.of("Edit", "Client", "Server"));
+        assertThat(datamodelType.get("description")).isEqualTo("Roblox datamodel type.");
+    }
+
+    @Test
+    void unknownCamelCaseFieldIsRejectedBeforeMcpExecution() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(strictRobloxRegistry());
+
+        assertThatThrownBy(() -> mapper.toAction("mcp_roblox_search_game_tree__call",
+                Map.of("studioId", "studio-1", "datamodel_type", "Edit"), "test"))
+                .isInstanceOf(InvalidToolArgumentException.class)
+                .hasMessageContaining("Unknown argument")
+                .hasMessageContaining("studioId")
+                .hasMessageContaining("studio_id")
+                .hasMessageContaining("Do not rename snake_case fields to camelCase");
+    }
+
+    @Test
+    void enumValueOutsideRuntimeSchemaIsRejectedBeforeMcpExecution() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(strictRobloxRegistry());
+
+        assertThatThrownBy(() -> mapper.toAction("mcp_roblox_search_game_tree__call",
+                Map.of("studio_id", "studio-1", "datamodel_type", "Model"), "test"))
+                .isInstanceOf(InvalidToolArgumentException.class)
+                .hasMessageContaining("datamodel_type")
+                .hasMessageContaining("Edit")
+                .hasMessageContaining("Client")
+                .hasMessageContaining("Server")
+                .hasMessageContaining("Model");
+    }
+
+    @Test
     void wrappedArgumentsAreRejectedWhenSchemaDeclaresTopLevelFields() {
         NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(mcpRegistry());
 
@@ -345,6 +386,21 @@ class NativeToolSchemaMapperTest {
                 new ToolOperationDefinition("CALL", "List.", List.of(), false, ToolSafetyLevel.READ)
         ));
         return registry(searchTree, listStudios);
+    }
+
+    private static ToolRegistry strictRobloxRegistry() {
+        ToolDefinition searchTree = new ToolDefinition("mcp_roblox_search_game_tree", "Searches Roblox tree.", List.of(
+                new ToolOperationDefinition("CALL", "Search.", List.of(
+                        new ToolArgumentDefinition("studio_id", true,
+                                ToolJsonSchema.string("Exact connected Studio id from list_roblox_studios.")),
+                        new ToolArgumentDefinition("datamodel_type", true,
+                                ToolJsonSchema.string("Roblox datamodel type.")
+                                        .withEnumValues(List.of("Edit", "Client", "Server"))),
+                        new ToolArgumentDefinition("query", false,
+                                ToolJsonSchema.string("Search query."))
+                ), false, ToolSafetyLevel.READ)
+        ));
+        return registry(searchTree);
     }
 
     private static ToolRegistry runtimeRegistry() {

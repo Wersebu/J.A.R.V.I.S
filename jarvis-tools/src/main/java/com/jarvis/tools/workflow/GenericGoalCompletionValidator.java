@@ -66,8 +66,21 @@ public class GenericGoalCompletionValidator implements WorkflowCompletionValidat
                     + "i (still )?need to|not enough (information|data|evidence)|insufficient|incomplete|"
                     + "is missing|haven't (found|retrieved|gotten)|not yet complete|does not answer)");
 
+    private static final Pattern PERMISSION_TO_RETRY_PATTERN = Pattern.compile(
+            "(?i)(czy chcesz(,)? zebym|czy mam|mam sprobowac|mog[eę] sprobowac|chcesz(,)? zebym sprobowal|"
+                    + "should i try|would you like me to|do you want me to|may i try|can i retry|try again)");
+
     @Override
     public CompletionAssessment assess(WorkflowCompletionContext context) {
+        if (context.toolCallCount() > 0 && PERMISSION_TO_RETRY_PATTERN.matcher(context.proposedFinalText()).find()) {
+            String guidance = """
+                    The user's goal already authorizes safe read/search/inspect tool calls needed to complete it.
+                    Do not ask the user whether to retry a read-only operation. Continue the native tool loop with a
+                    corrected call, a different read/search/inspect tool, or clearly block only if no valid safe path
+                    remains. Original user request: "%s"
+                    """.formatted(context.originalUserRequest());
+            return new CompletionAssessment(false, "READ_RETRY_PERMISSION_QUESTION_NOT_COMPLETE", guidance);
+        }
         if (context.toolCallCount() <= 0 || !context.bootstrapOnlyEvidence()) {
             return CompletionAssessment.ok();
         }

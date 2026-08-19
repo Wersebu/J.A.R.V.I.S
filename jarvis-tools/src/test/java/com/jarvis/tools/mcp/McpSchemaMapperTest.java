@@ -4,6 +4,7 @@ import com.jarvis.tools.schema.ToolArgumentDefinition;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -32,15 +33,21 @@ class McpSchemaMapperTest {
 
     @Test
     void namedPropertiesRemainTopLevelArguments() {
+        Map<String, Object> properties = new LinkedHashMap<>();
+        properties.put("studio_id", Map.of("type", "string", "description", "Studio id"));
+        properties.put("datamodel_type", Map.of(
+                "type", "string",
+                "description", "Roblox datamodel type",
+                "enum", List.of("Edit", "Client", "Server")));
+
         List<ToolArgumentDefinition> arguments = mapper.arguments(Map.of(
                 "type", "object",
-                "properties", Map.of(
-                        "query", Map.of("type", "string", "description", "Search query")
-                ),
-                "required", List.of("query")
+                "properties", properties,
+                "required", List.of("studio_id", "datamodel_type")
         ));
 
-        assertThat(arguments).extracting(ToolArgumentDefinition::name).containsExactly("query");
+        assertThat(arguments).extracting(ToolArgumentDefinition::name).containsExactly("studio_id", "datamodel_type");
         assertThat(arguments.get(0).required()).isTrue();
+        assertThat(arguments.get(1).schema().enumValues()).containsExactly("Edit", "Client", "Server");
     }
 }

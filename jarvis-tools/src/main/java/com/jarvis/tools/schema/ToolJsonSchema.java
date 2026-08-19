@@ -1,6 +1,7 @@
 package com.jarvis.tools.schema;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 
@@ -18,13 +19,15 @@ import java.util.Map;
  * @param items element schema, present only when {@code type} is {@code array}
  * @param properties named property schemas, present only when {@code type} is {@code object}
  * @param required required property names, present only when {@code type} is {@code object}
+ * @param enumValues allowed literal values, when the runtime schema declares an {@code enum}
  */
 public record ToolJsonSchema(
         String type,
         String description,
         ToolJsonSchema items,
         Map<String, ToolJsonSchema> properties,
-        List<String> required
+        List<String> required,
+        List<Object> enumValues
 ) {
 
     /**
@@ -33,8 +36,22 @@ public record ToolJsonSchema(
     public ToolJsonSchema {
         type = type == null || type.isBlank() ? "string" : type;
         description = description == null ? "" : description;
-        properties = properties == null ? Map.of() : Map.copyOf(properties);
+        properties = properties == null ? Map.of() : java.util.Collections.unmodifiableMap(new LinkedHashMap<>(properties));
         required = required == null ? List.of() : List.copyOf(required);
+        enumValues = enumValues == null ? List.of() : List.copyOf(enumValues);
+    }
+
+    /**
+     * Backward-compatible constructor for callers that do not declare enum values.
+     */
+    public ToolJsonSchema(
+            String type,
+            String description,
+            ToolJsonSchema items,
+            Map<String, ToolJsonSchema> properties,
+            List<String> required
+    ) {
+        this(type, description, items, properties, required, List.of());
     }
 
     /**
@@ -46,6 +63,16 @@ public record ToolJsonSchema(
      */
     public static ToolJsonSchema of(String type, String description) {
         return new ToolJsonSchema(type, description, null, Map.of(), List.of());
+    }
+
+    /**
+     * Adds enum values to an existing schema node.
+     *
+     * @param enumValues runtime-declared allowed literal values
+     * @return copy of this schema with enum values attached
+     */
+    public ToolJsonSchema withEnumValues(List<Object> enumValues) {
+        return new ToolJsonSchema(type, description, items, properties, required, enumValues);
     }
 
     /**

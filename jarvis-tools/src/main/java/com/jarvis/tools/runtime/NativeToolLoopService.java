@@ -149,6 +149,7 @@ public class NativeToolLoopService {
         Map<String, Long> toolsByProvider = toolsByProvider(definitions);
         Map<ToolOperationRole, Long> toolsByOperationRole = toolsByOperationRole(definitions);
         List<String> requiredEvidence = requiredEvidence(request, resolvedIntent, scope.detectedProvider());
+        Map<String, Object> acquiredFacts = new LinkedHashMap<>();
         Set<String> callFingerprints = new LinkedHashSet<>();
         Map<String, Integer> operationRepeatCounts = new LinkedHashMap<>();
         Optional<StoreAuditDataset> existingDataset = datasetService.findLatestForConversation(request.conversationId());
@@ -263,10 +264,11 @@ public class NativeToolLoopService {
                                 request.requestId(), step, call.name(), call.arguments(), exception.getMessage());
                         String errorCode = exception instanceof InvalidToolArgumentException
                                 ? "INVALID_TOOL_ARGUMENT" : "INVALID_TOOL_CALL";
-                        ToolResult invalid = invalidResult(request, call, exception.getMessage(), errorCode);
+                        ToolResult invalid = invalidResult(request, call, exception.getMessage(), errorCode, acquiredFacts);
                         results.add(invalid);
                         steps.add(new ToolRuntimeStep(step, "INVALID_TOOL_CALL", toolName(call), operationName(call), "FAILED", invalid));
                         messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(invalid)));
+                        messages.add(ModelMessage.system(schemaRepairGuidance(call.name(), acquiredFacts)));
                         continue;
                     }
                     // Core owns the active Store Audit dataset's identity - the model is never the
@@ -416,6 +418,7 @@ public class NativeToolLoopService {
                     Optional<Integer> datasetStoresBeforeCall = datasetStoresBefore(action);
                     ToolResult result = executeAction(request, action, step);
                     result = enrichIfNeeded(request, action, result, step);
+                    Map<String, Object> newFacts = observeAcquiredFacts(action, result, acquiredFacts);
                     logDatasetContinuity(request, action, datasetStoresBeforeCall);
                     if (isCreateDataset(action)) {
                         if (result.success()) {
@@ -476,6 +479,9 @@ public class NativeToolLoopService {
                     steps.add(new ToolRuntimeStep(step, "TOOL_CALL", action.tool(), action.operation(),
                             result.success() ? "OK" : "FAILED", result));
                     messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(result)));
+                    if (!newFacts.isEmpty()) {
+                        messages.add(ModelMessage.system(acquiredFactsBlock(acquiredFacts)));
+                    }
                     publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "SENT",
                             "Tool result sent to model", targetNode(action), step, resultMetadata(result));
                     if (marketplaceCollector != null) {
@@ -545,7 +551,8 @@ public class NativeToolLoopService {
 
                 if (freshness == InformationFreshness.MUST_BE_LIVE && !hasLiveEvidence(results)) {
                     messages.add(ModelMessage.assistant(content, List.of()));
-                    messages.add(ModelMessage.system("Live evidence is required. Use the available native web tools before answering."));
+                    messages.add(ModelMessage.system("Live evidence is required. Use public web tools only for public internet/docs, "
+                            + "or connected MCP/runtime tools when the user asks about the current state of a connected application."));
                     publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "LIVE_DATA_REQUIRED",
                             "Final answer blocked until live evidence is collected", null, step,
                             Map.of("freshness", freshness.name()));
@@ -1533,7 +1540,13 @@ public class NativeToolLoopService {
 
     private boolean hasLiveEvidence(List<ToolResult> results) {
         for (ToolResult result : results) {
-            if (!result.success() || !"web".equalsIgnoreCase(result.tool())) {
+            if (!result.success()) {
+                continue;
+            }
+            if (result.tool().startsWith("mcp_")) {
+                return true;
+            }
+            if (!"web".equalsIgnoreCase(result.tool())) {
                 continue;
             }
             if (Boolean.TRUE.equals(result.data().get("liveEvidenceSatisfied"))) {
@@ -1617,7 +1630,8 @@ public class NativeToolLoopService {
     }
 
     private boolean isDeterministicCompletionBlock(CompletionAssessment assessment) {
-        return "DETERMINISTIC_EVIDENCE_REQUIRED".equals(assessment.reason());
+        return "DETERMINISTIC_EVIDENCE_REQUIRED".equals(assessment.reason())
+                || "READ_RETRY_PERMISSION_QUESTION_NOT_COMPLETE".equals(assessment.reason());
     }
 
     private String deterministicBlockedAnswer(CompletionAssessment assessment) {
@@ -1643,15 +1657,151 @@ public class NativeToolLoopService {
                 false, "");
     }
 
-    private ToolResult invalidResult(ToolCallingRequest request, ModelToolCall call, String error, String errorCode) {
+    private ToolResult invalidResult(
+            ToolCallingRequest request,
+            ModelToolCall call,
+            String error,
+            String errorCode,
+            Map<String, Object> acquiredFacts
+    ) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("error", error == null ? "" : error);
+        data.put("expectedFields", safeExpectedFields(call.name()));
+        data.put("requiredFields", safeRequiredFields(call.name()));
+        data.put("unknownFields", unknownFields(call));
+        data.put("allowedEnums", safeEnumValues(call.name()));
+        data.put("knownValues", acquiredFacts == null ? Map.of() : new LinkedHashMap<>(acquiredFacts));
+        data.put("schemaSource", safeSchemaSource(call.name()));
+        data.put("repairHint", schemaRepairGuidance(call.name(), acquiredFacts));
         return new ToolResult(false, toolName(call), operationName(call), request.requestId(), request.conversationId(),
-                false, List.of(), "Invalid native tool call", Map.of(
-                "error", error == null ? "" : error,
-                "expectedFields", safeExpectedFields(call.name()),
-                "requiredFields", safeRequiredFields(call.name()),
-                "schemaSource", safeSchemaSource(call.name())
-        ),
+                false, List.of(), "Invalid native tool call", data,
                 errorCode, error == null ? "" : error, false, "");
+    }
+
+    private String schemaRepairGuidance(String functionName, Map<String, Object> acquiredFacts) {
+        Map<String, Object> facts = acquiredFacts == null ? Map.of() : acquiredFacts;
+        return """
+                Schema validation failed before MCP execution. Retry with the exact runtime schema field names.
+                Expected top-level fields: %s
+                Required fields: %s
+                Allowed enum values: %s
+                Known verified values from prior tool results: %s
+                Do not rename snake_case fields to camelCase. If a required runtime value such as datamodel_type is
+                still unknown, call the provider's read-only state/discovery tool first (for Roblox Studio, use
+                get_studio_state when available), then retry the original READ/SEARCH/INSPECT call. For a normal
+                Roblox edit session, use the datamodel_type value reported/allowed for edit mode, e.g. Edit when
+                the schema/state supports it.
+                """.formatted(safeExpectedFields(functionName), safeRequiredFields(functionName),
+                safeEnumValues(functionName), facts);
+    }
+
+    private String acquiredFactsBlock(Map<String, Object> acquiredFacts) {
+        return "Verified facts acquired from tool results and available for subsequent calls: " + acquiredFacts;
+    }
+
+    private Map<String, Object> observeAcquiredFacts(ToolAction action, ToolResult result, Map<String, Object> acquiredFacts) {
+        if (!result.success() || acquiredFacts == null) {
+            return Map.of();
+        }
+        Map<String, Object> before = new LinkedHashMap<>(acquiredFacts);
+        collectExactFacts(result.data(), acquiredFacts);
+        if ("mcp_roblox_list_roblox_studios".equalsIgnoreCase(action.tool())) {
+            Optional<Object> studioId = firstValueForKeys(result.data(), Set.of("studio_id", "studioId", "id"));
+            studioId.ifPresent(value -> acquiredFacts.putIfAbsent("studio_id", value));
+        }
+        if ("mcp_roblox_get_studio_state".equalsIgnoreCase(action.tool())) {
+            Optional<Object> datamodel = firstValueForKeys(result.data(), Set.of("datamodel_type", "datamodelType", "currentDatamodelType"));
+            datamodel.ifPresent(value -> acquiredFacts.put("datamodel_type", value));
+            if (!acquiredFacts.containsKey("datamodel_type")) {
+                Optional<Object> editType = firstEditDatamodelType(result.data());
+                editType.ifPresent(value -> acquiredFacts.put("datamodel_type", value));
+            }
+        }
+        Map<String, Object> changed = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : acquiredFacts.entrySet()) {
+            if (!Objects.equals(before.get(entry.getKey()), entry.getValue())) {
+                changed.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return changed;
+    }
+
+    private void collectExactFacts(Object value, Map<String, Object> acquiredFacts) {
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (entry.getKey() == null) {
+                    continue;
+                }
+                String key = String.valueOf(entry.getKey());
+                Object child = entry.getValue();
+                if (isScalar(child) && ("studio_id".equals(key) || "datamodel_type".equals(key))) {
+                    acquiredFacts.putIfAbsent(key, child);
+                }
+                collectExactFacts(child, acquiredFacts);
+            }
+            return;
+        }
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                collectExactFacts(item, acquiredFacts);
+            }
+        }
+    }
+
+    private Optional<Object> firstValueForKeys(Object value, Set<String> keys) {
+        if (value instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (entry.getKey() != null && keys.contains(String.valueOf(entry.getKey())) && isScalar(entry.getValue())) {
+                    return Optional.of(entry.getValue());
+                }
+            }
+            for (Object child : map.values()) {
+                Optional<Object> nested = firstValueForKeys(child, keys);
+                if (nested.isPresent()) {
+                    return nested;
+                }
+            }
+            return Optional.empty();
+        }
+        if (value instanceof List<?> list) {
+            for (Object child : list) {
+                Optional<Object> nested = firstValueForKeys(child, keys);
+                if (nested.isPresent()) {
+                    return nested;
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private Optional<Object> firstEditDatamodelType(Object value) {
+        if (value instanceof List<?> list) {
+            for (Object item : list) {
+                if ("Edit".equals(String.valueOf(item))) {
+                    return Optional.of("Edit");
+                }
+            }
+            for (Object item : list) {
+                Optional<Object> nested = firstEditDatamodelType(item);
+                if (nested.isPresent()) {
+                    return nested;
+                }
+            }
+            return Optional.empty();
+        }
+        if (value instanceof Map<?, ?> map) {
+            for (Object child : map.values()) {
+                Optional<Object> nested = firstEditDatamodelType(child);
+                if (nested.isPresent()) {
+                    return nested;
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private boolean isScalar(Object value) {
+        return value instanceof String || value instanceof Number || value instanceof Boolean;
     }
 
     private static final int MAX_LOGGED_LIST_ITEMS = 3;
@@ -1688,6 +1838,24 @@ public class NativeToolLoopService {
         } catch (RuntimeException exception) {
             return List.of();
         }
+    }
+
+    private Map<String, List<Object>> safeEnumValues(String functionName) {
+        try {
+            return schemaMapper.enumValues(functionName);
+        } catch (RuntimeException exception) {
+            return Map.of();
+        }
+    }
+
+    private List<String> unknownFields(ModelToolCall call) {
+        List<String> expected = safeExpectedFields(call.name());
+        if (call.arguments() == null || call.arguments().isEmpty()) {
+            return List.of();
+        }
+        return call.arguments().keySet().stream()
+                .filter(field -> !expected.contains(field))
+                .toList();
     }
 
     private String safeSchemaSource(String functionName) {

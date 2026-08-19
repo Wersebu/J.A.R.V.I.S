@@ -24,6 +24,7 @@ import com.jarvis.tools.ToolRuntimeProperties;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import com.jarvis.tools.schema.ToolArgumentDefinition;
 import com.jarvis.tools.schema.ToolDefinition;
+import com.jarvis.tools.schema.ToolJsonSchema;
 import com.jarvis.tools.schema.ToolOperationDefinition;
 import com.jarvis.tools.schema.ToolRegistry;
 import com.jarvis.tools.schema.ToolSafetyLevel;
@@ -56,6 +57,7 @@ class NativeToolLoopServiceRobloxContinuationTest {
 
     private static final String LIST_STUDIOS = "mcp_roblox_list_roblox_studios__call";
     private static final String SET_ACTIVE_STUDIO = "mcp_roblox_set_active_studio__call";
+    private static final String GET_STUDIO_STATE = "mcp_roblox_get_studio_state__call";
     private static final String SEARCH_GAME_TREE = "mcp_roblox_search_game_tree__call";
 
     @Test
@@ -170,6 +172,79 @@ class NativeToolLoopServiceRobloxContinuationTest {
     }
 
     @Test
+    void schemaRepairRejectsCamelCaseStudioIdThenContinuesWithStudioIdAndEditDatamodelType() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn(LIST_STUDIOS, Map.of()));
+        turns.add(toolCallTurn(SEARCH_GAME_TREE, Map.of("studioId", "studio-1", "query", "Folder")));
+        turns.add(toolCallTurn(GET_STUDIO_STATE, Map.of("studio_id", "studio-1")));
+        turns.add(toolCallTurn(SEARCH_GAME_TREE, Map.of(
+                "studio_id", "studio-1",
+                "datamodel_type", "Edit",
+                "query", "Folder")));
+        turns.add(textTurn("Folder paths: Workspace/Maps, ReplicatedStorage/Shared/Folders"));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        RecordingRobloxToolManager manager = new RecordingRobloxToolManager(false);
+        NativeToolLoopService service = newService(provider, strictRobloxRegistry(), manager);
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1",
+                "Podaj liste folderow dostepnych w aktualnie polaczonym projekcie Roblox Studio.",
+                "List folders in the currently connected Roblox Studio project.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.finalAnswer()).contains("Workspace/Maps", "ReplicatedStorage/Shared/Folders");
+        assertThat(manager.executedToolNames()).containsExactly(
+                "mcp_roblox_list_roblox_studios",
+                "mcp_roblox_get_studio_state",
+                "mcp_roblox_search_game_tree");
+        assertThat(manager.executedRequests())
+                .noneSatisfy(request -> assertThat(request.arguments()).containsKey("studioId"));
+        assertThat(manager.executedRequests().get(2).arguments())
+                .containsEntry("studio_id", "studio-1")
+                .containsEntry("datamodel_type", "Edit");
+        assertThat(provider.allMessageText())
+                .contains("Unknown argument")
+                .contains("studio_id")
+                .contains("datamodel_type")
+                .contains("Edit")
+                .contains("Client")
+                .contains("Server")
+                .contains("studio-1");
+    }
+
+    @Test
+    void failedSearchGameTreeAndPermissionQuestionCannotCompleteFolderGoal() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn(LIST_STUDIOS, Map.of()));
+        turns.add(toolCallTurn(GET_STUDIO_STATE, Map.of("studio_id", "studio-1")));
+        turns.add(toolCallTurn(SEARCH_GAME_TREE, Map.of(
+                "studio_id", "studio-1",
+                "datamodel_type", "Edit",
+                "query", "Folder")));
+        turns.add(textTurn("Search failed. Czy chcesz, zebym sprobowal ponownie?"));
+        turns.add(textTurn("Search failed. Czy chcesz, zebym sprobowal ponownie?"));
+        turns.add(textTurn("Search failed. Czy chcesz, zebym sprobowal ponownie?"));
+        turns.add(textTurn("Search failed. Czy chcesz, zebym sprobowal ponownie?"));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        RecordingRobloxToolManager manager = new RecordingRobloxToolManager(true);
+        NativeToolLoopService service = newService(provider, strictRobloxRegistry(), manager);
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1",
+                "Podaj liste folderow dostepnych w aktualnie polaczonym projekcie Roblox Studio.",
+                "List folders in the currently connected Roblox Studio project.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.finalAnswer()).doesNotContain("Czy chcesz");
+        assertThat(result.finalAnswer()).contains("Nie mog");
+        assertThat(provider.callCount()).isGreaterThan(4);
+    }
+
+    @Test
     void persistentInsufficiencyAdmissionWithoutEverCallingAnAnsweringToolStillTerminates() {
         Deque<ModelResponse> turns = new ArrayDeque<>();
         turns.add(toolCallTurn(LIST_STUDIOS, Map.of()));
@@ -197,9 +272,13 @@ class NativeToolLoopServiceRobloxContinuationTest {
     }
 
     private NativeToolLoopService newService(ScriptedProvider provider, ToolRegistry registry) {
+        return newService(provider, registry, new RecordingRobloxToolManager(false));
+    }
+
+    private NativeToolLoopService newService(ScriptedProvider provider, ToolRegistry registry, ToolManager toolManager) {
         StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
         return new NativeToolLoopService(
-                List.of(provider), new FakeRobloxToolManager(), query -> ToolIntent.SEARCH_WEB,
+                List.of(provider), toolManager, query -> ToolIntent.SEARCH_WEB,
                 new ToolRuntimeProperties(true, 15, 15, 2, 30, "native", 10, 20),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
                 new NativeToolSchemaMapper(registry), datasetService
@@ -213,6 +292,34 @@ class NativeToolLoopServiceRobloxContinuationTest {
         ToolDefinition searchGameTree = mcpTool("mcp_roblox_search_game_tree", List.of(
                 new ToolArgumentDefinition("query", "string", false, "Search query")));
         List<ToolDefinition> definitions = List.of(listStudios, setActiveStudio, searchGameTree);
+        return new ToolRegistry() {
+            @Override
+            public List<ToolDefinition> definitions() {
+                return definitions;
+            }
+
+            @Override
+            public String promptSection() {
+                return "";
+            }
+        };
+    }
+
+    private static ToolRegistry strictRobloxRegistry() {
+        ToolDefinition listStudios = mcpTool("mcp_roblox_list_roblox_studios", List.of());
+        ToolDefinition getStudioState = mcpTool("mcp_roblox_get_studio_state", List.of(
+                new ToolArgumentDefinition("studio_id", true, ToolJsonSchema.string("Studio id from list_roblox_studios."))
+        ));
+        ToolDefinition searchGameTree = mcpTool("mcp_roblox_search_game_tree", List.of(
+                new ToolArgumentDefinition("studio_id", true,
+                        ToolJsonSchema.string("Studio id from list_roblox_studios.")),
+                new ToolArgumentDefinition("datamodel_type", true,
+                        ToolJsonSchema.string("Datamodel type from get_studio_state.")
+                                .withEnumValues(List.of("Edit", "Client", "Server"))),
+                new ToolArgumentDefinition("query", false,
+                        ToolJsonSchema.string("Search query."))
+        ));
+        List<ToolDefinition> definitions = List.of(listStudios, getStudioState, searchGameTree);
         return new ToolRegistry() {
             @Override
             public List<ToolDefinition> definitions() {
@@ -266,7 +373,22 @@ class NativeToolLoopServiceRobloxContinuationTest {
      * is irrelevant to this test, only the classifier's reaction to the resulting {@link
      * ToolRuntimeStep}s matters.
      */
-    private static final class FakeRobloxToolManager implements ToolManager {
+    private static final class RecordingRobloxToolManager implements ToolManager {
+
+        private final boolean failSearchGameTree;
+        private final List<ToolRequest> executedRequests = new ArrayList<>();
+
+        private RecordingRobloxToolManager(boolean failSearchGameTree) {
+            this.failSearchGameTree = failSearchGameTree;
+        }
+
+        List<ToolRequest> executedRequests() {
+            return executedRequests;
+        }
+
+        List<String> executedToolNames() {
+            return executedRequests.stream().map(ToolRequest::toolName).toList();
+        }
 
         @Override
         public List<JarvisTool> listTools() {
@@ -295,6 +417,30 @@ class NativeToolLoopServiceRobloxContinuationTest {
 
         @Override
         public ToolResult execute(ToolRequest request) {
+            executedRequests.add(request);
+            if ("mcp_roblox_list_roblox_studios".equals(request.toolName())) {
+                return new ToolResult(true, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
+                        false, List.of("studio-1"), "Connected Roblox Studio instances.",
+                        Map.of("studios", List.of(Map.of("studio_id", "studio-1", "name", "MyGame"))),
+                        "", "", false, "");
+            }
+            if ("mcp_roblox_get_studio_state".equals(request.toolName())) {
+                return new ToolResult(true, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
+                        false, List.of("studio-1"), "Studio state.",
+                        Map.of("studio_id", "studio-1", "availableDatamodelTypes", List.of("Edit", "Client", "Server"), "mode", "Edit"),
+                        "", "", false, "");
+            }
+            if ("mcp_roblox_search_game_tree".equals(request.toolName()) && failSearchGameTree) {
+                return new ToolResult(false, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
+                        false, List.of("studio-1"), "search_game_tree failed.",
+                        Map.of(), "MCP_ERROR", "search_game_tree failed.", false, "");
+            }
+            if ("mcp_roblox_search_game_tree".equals(request.toolName())) {
+                return new ToolResult(true, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
+                        false, List.of("studio-1"), "Found folders.",
+                        Map.of("folders", List.of("Workspace/Maps", "ReplicatedStorage/Shared/Folders")),
+                        "", "", false, "");
+            }
             return new ToolResult(true, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
                     false, List.of(), "MCP tool completed.", Map.of(), "", "", false, "");
         }
@@ -305,6 +451,7 @@ class NativeToolLoopServiceRobloxContinuationTest {
         private final Deque<ModelResponse> turns;
         private int calls;
         private List<String> firstToolNames = List.of();
+        private final List<List<ModelMessage>> messageSnapshots = new ArrayList<>();
 
         private ScriptedProvider(Deque<ModelResponse> turns) {
             this.turns = turns;
@@ -316,6 +463,16 @@ class NativeToolLoopServiceRobloxContinuationTest {
 
         List<String> firstToolNames() {
             return firstToolNames;
+        }
+
+        String allMessageText() {
+            StringBuilder builder = new StringBuilder();
+            for (List<ModelMessage> messages : messageSnapshots) {
+                for (ModelMessage message : messages) {
+                    builder.append(message.content()).append('\n');
+                }
+            }
+            return builder.toString();
         }
 
         @Override
@@ -337,6 +494,7 @@ class NativeToolLoopServiceRobloxContinuationTest {
             if (calls == 0) {
                 firstToolNames = tools.stream().map(NativeToolDefinition::name).toList();
             }
+            messageSnapshots.add(List.copyOf(messages));
             calls++;
             return turns.isEmpty() ? textTurn("") : turns.poll();
         }

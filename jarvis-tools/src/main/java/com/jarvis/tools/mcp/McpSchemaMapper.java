@@ -40,27 +40,27 @@ public class McpSchemaMapper {
     private ToolJsonSchema schema(Map<String, Object> source, String fallbackDescription) {
         String type = string(source.get("type"), "string").toLowerCase(Locale.ROOT);
         String description = string(source.get("description"), fallbackDescription);
+        List<Object> enumValues = asObjectList(source.get("enum"));
+        ToolJsonSchema schema;
         if ("array".equals(type)) {
-            return ToolJsonSchema.arrayOf(schema(asMap(source.get("items")), ""), description);
-        }
-        if ("object".equals(type)) {
+            schema = ToolJsonSchema.arrayOf(schema(asMap(source.get("items")), ""), description);
+        } else if ("object".equals(type)) {
             Map<String, Object> rawProperties = asMap(source.get("properties"));
             Map<String, ToolJsonSchema> properties = new LinkedHashMap<>();
             for (Map.Entry<String, Object> entry : rawProperties.entrySet()) {
                 properties.put(entry.getKey(), schema(asMap(entry.getValue()), ""));
             }
-            return ToolJsonSchema.object(properties, asStringList(source.get("required")), description);
+            schema = ToolJsonSchema.object(properties, asStringList(source.get("required")), description);
+        } else if ("integer".equals(type)) {
+            schema = ToolJsonSchema.integer(description);
+        } else if ("number".equals(type)) {
+            schema = ToolJsonSchema.number(description);
+        } else if ("boolean".equals(type)) {
+            schema = ToolJsonSchema.bool(description);
+        } else {
+            schema = ToolJsonSchema.string(description);
         }
-        if ("integer".equals(type)) {
-            return ToolJsonSchema.integer(description);
-        }
-        if ("number".equals(type)) {
-            return ToolJsonSchema.number(description);
-        }
-        if ("boolean".equals(type)) {
-            return ToolJsonSchema.bool(description);
-        }
-        return ToolJsonSchema.string(description);
+        return enumValues.isEmpty() ? schema : schema.withEnumValues(enumValues);
     }
 
     private Map<String, Object> asMap(Object value) {
@@ -83,6 +83,16 @@ public class McpSchemaMapper {
         return raw.stream()
                 .filter(item -> item != null)
                 .map(String::valueOf)
+                .toList();
+    }
+
+    private List<Object> asObjectList(Object value) {
+        if (!(value instanceof List<?> raw)) {
+            return List.of();
+        }
+        return raw.stream()
+                .filter(item -> item != null)
+                .map(item -> (Object) item)
                 .toList();
     }
 
