@@ -15,6 +15,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -150,9 +152,10 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
                 model,
                 contextBudgetService.fitPrompt(model, WARMUP_PROMPT),
                 false,
-                "low",
+                warmupThink(model),
                 keepAlive,
-                contextBudgetService.ollamaOptions()
+                contextBudgetService.ollamaOptions(),
+                List.of()
         );
         try {
             HttpRequest request = HttpRequest.newBuilder()
@@ -189,6 +192,14 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
 
     private long elapsedMs(long startedNano) {
         return (System.nanoTime() - startedNano) / 1_000_000L;
+    }
+
+    private Object warmupThink(String model) {
+        String normalized = model == null ? "" : model.toLowerCase(Locale.ROOT);
+        if (normalized.startsWith("ministral-3:")) {
+            return null;
+        }
+        return "low";
     }
 
     private record WarmupResult(long loadMs, long warmupMs) {

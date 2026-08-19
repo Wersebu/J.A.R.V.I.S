@@ -40,6 +40,7 @@ class OllamaStartupModelWarmupTest {
     private HttpServer server;
     private AtomicInteger generateCallCount;
     private List<String> generatedModels;
+    private List<Map<?, ?>> generateRequests;
 
     @AfterEach
     void stopServer() {
@@ -132,6 +133,18 @@ class OllamaStartupModelWarmupTest {
         assertThat(registry.modelStatuses().getOrDefault("Vision", ModelWarmupStatus.NOT_STARTED)).isEqualTo(ModelWarmupStatus.NOT_STARTED);
     }
 
+    @Test
+    void ministralWarmupOmitsThinkBecauseOllamaRejectsThinkingForThatModel() throws IOException {
+        startGenerateServer();
+        OllamaStartupModelWarmup warmup = warmup(new FakeActiveModelService("ministral-3:14b"), new ModelStartupProperties());
+
+        warmup.run(new DefaultApplicationArguments());
+
+        assertThat(generatedModels).containsExactly("ministral-3:14b");
+        assertThat(generateRequests).hasSize(1);
+        assertThat(generateRequests.get(0).containsKey("think")).isFalse();
+    }
+
     private OllamaStartupModelWarmup warmup(ActiveModelService activeModelService, ModelStartupProperties properties) {
         return warmup(activeModelService, properties, new ModelWarmupRegistry(properties));
     }
@@ -147,12 +160,14 @@ class OllamaStartupModelWarmupTest {
     private void startGenerateServer() throws IOException {
         generateCallCount = new AtomicInteger(0);
         generatedModels = new java.util.concurrent.CopyOnWriteArrayList<>();
+        generateRequests = new java.util.concurrent.CopyOnWriteArrayList<>();
         ObjectMapper mapper = new ObjectMapper();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/generate", exchange -> {
             generateCallCount.incrementAndGet();
             byte[] requestBytes = exchange.getRequestBody().readAllBytes();
             Map<?, ?> requestBody = mapper.readValue(requestBytes, Map.class);
+            generateRequests.add(requestBody);
             generatedModels.add(String.valueOf(requestBody.get("model")));
             String responseJson = "{\"response\":\"OK\",\"done\":true,\"load_duration\":1000000,\"total_duration\":2000000}";
             byte[] bytes = responseJson.getBytes(StandardCharsets.UTF_8);
