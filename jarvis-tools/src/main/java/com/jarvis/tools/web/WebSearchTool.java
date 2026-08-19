@@ -77,7 +77,7 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
 
     @Override
     public String getDescription() {
-        return "Searches current public web information through local self-hosted SearXNG.";
+        return "Searches public internet information through local self-hosted SearXNG. Use for public web facts, documentation, news, prices, marketplace offers, and public URL reading. Do not use to inspect live state inside a connected application, editor, database, or MCP runtime.";
     }
 
     @Override
@@ -86,7 +86,8 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
                 operation(SEARCH_WEB,
                         "General-purpose live web search. Use for current facts, news, documentation, prices of a "
                                 + "single named thing, exchange/commodity rates, or any external source lookup that is not "
-                                + "about browsing real marketplace offers/listings. Never returns marketplace listings.",
+                                + "about browsing real marketplace offers/listings. Do not use for live state inside a connected "
+                                + "runtime/application; use that provider's MCP tools instead. Never returns marketplace listings.",
                         false, ToolSafetyLevel.READ,
                         arg("query", true, "Search query sent to SearXNG. Used as-is; only technical normalization is applied."),
                         arg("maxResults", false, "Maximum normalized results to return."),

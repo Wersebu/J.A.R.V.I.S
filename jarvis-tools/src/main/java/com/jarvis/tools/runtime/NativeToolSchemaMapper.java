@@ -48,9 +48,9 @@ public class NativeToolSchemaMapper {
     }
 
     /**
-     * Returns native tool definitions scoped to the request. Read-only requests receive read,
-     * discovery, and inspection operations, while mutating operations remain available for
-     * workflows that explicitly ask to write, create, execute, delete, submit, or save state.
+     * Returns the complete currently available native tool catalog. The intent, user message, and
+     * goal are advisory only; routing may influence instructions, but never removes available
+     * runtime tools from the native {@code tools} array.
      *
      * @param intent advisory capability hint
      * @param userMessage original user message
@@ -62,7 +62,9 @@ public class NativeToolSchemaMapper {
     }
 
     /**
-     * Resolves and returns detailed tool scoping diagnostics for one native loop request.
+     * Resolves routing diagnostics for one native loop request and returns the complete active
+     * native tool catalog. Provider affinity is deliberately diagnostic/instructional only: it may
+     * tell the model which provider to prefer, but it never filters the {@code tools} array.
      *
      * @param intent raw advisory intent
      * @param userMessage original user message
@@ -72,18 +74,16 @@ public class NativeToolSchemaMapper {
      */
     public ToolScopeResolution resolveScope(ToolIntent intent, String userMessage, String goal, Map<String, Object> context) {
         List<NativeToolDefinition> values = new ArrayList<>();
-        Map<String, String> rejected = new LinkedHashMap<>();
         String text = requestText(userMessage, goal, context);
         ProviderAffinity affinity = providerAffinity(text, context);
         boolean publicWeb = requestsPublicWeb(text);
         boolean connectedRuntime = requestsConnectedRuntime(text);
-        ToolIntent resolvedIntent = affinity.provider().isBlank()
+        boolean providerInspection = !affinity.provider().isBlank() && (connectedRuntime || !publicWeb || affinity.fromContext());
+        ToolIntent resolvedIntent = !providerInspection
                 ? intent
                 : ToolIntent.CONNECTED_SYSTEM_INSPECTION;
-        boolean providerScoped = !affinity.provider().isBlank() && (connectedRuntime || !publicWeb || affinity.fromContext());
-        boolean webAllowed = publicWeb && !providerScoped;
-        boolean readOnly = isReadOnlyRequest(intent, userMessage, goal) || providerScoped;
-        List<ToolOperationRole> selectedRoles = providerScoped
+        boolean readOnly = isReadOnlyRequest(intent, userMessage, goal) || providerInspection;
+        List<ToolOperationRole> selectedRoles = providerInspection
                 ? List.of(ToolOperationRole.DISCOVERY, ToolOperationRole.SELECTION, ToolOperationRole.READ,
                 ToolOperationRole.SEARCH, ToolOperationRole.INSPECT)
                 : readOnly ? List.of(ToolOperationRole.DISCOVERY, ToolOperationRole.SELECTION, ToolOperationRole.READ,
@@ -91,32 +91,11 @@ public class NativeToolSchemaMapper {
                 : List.of();
         for (ToolDefinition definition : toolRegistry.definitions()) {
             for (ToolOperationDefinition operation : definition.operations()) {
-                NativeToolDefinition nativeDefinition = toNative(definition, operation);
-                String reason = rejectionReason(definition, operation, providerScoped, affinity.provider(), webAllowed, readOnly, selectedRoles);
-                if (reason.isBlank()) {
-                    values.add(nativeDefinition);
-                } else {
-                    rejected.put(nativeDefinition.name(), reason);
-                }
-            }
-        }
-        if (values.isEmpty() && providerScoped) {
-            for (ToolDefinition definition : toolRegistry.definitions()) {
-                for (ToolOperationDefinition operation : definition.operations()) {
-                    if (isMcpTool(definition) && isReadAllowed(operation)) {
-                        NativeToolDefinition nativeDefinition = toNative(definition, operation);
-                        values.add(nativeDefinition);
-                        rejected.remove(nativeDefinition.name());
-                    }
-                }
-            }
-            if (!values.isEmpty()) {
-                affinity = new ProviderAffinity("", "fallback:mcp-read-only", false);
-                resolvedIntent = ToolIntent.CONNECTED_SYSTEM_INSPECTION;
+                values.add(toNative(definition, operation));
             }
         }
         return new ToolScopeResolution(intent, resolvedIntent, affinity.provider(), affinity.source(),
-                selectedRoles, values.stream().map(NativeToolDefinition::name).toList(), rejected, values);
+                selectedRoles, values.stream().map(NativeToolDefinition::name).toList(), Map.of(), values);
     }
 
     /**
@@ -518,9 +497,60 @@ public class NativeToolSchemaMapper {
         String functionName = definition.name().toLowerCase(Locale.ROOT) + "__" + operation.name().toLowerCase(Locale.ROOT);
         return new NativeToolDefinition(
                 functionName,
-                definition.description() + " Operation: " + operation.description(),
+                enhancedDescription(definition, operation),
                 parameters(operation)
         );
+    }
+
+    private String enhancedDescription(ToolDefinition definition, ToolOperationDefinition operation) {
+        String toolName = definition.name().toLowerCase(Locale.ROOT);
+        String operationName = operation.name().toUpperCase(Locale.ROOT);
+        if ("web".equals(toolName) && "SEARCH_WEB".equals(operationName)) {
+            return "Search the public internet through SearXNG. Use for public facts, documentation, news, rates, or source lookup. "
+                    + "Do not use to inspect the current state of a connected runtime, application, editor, database, or MCP server. "
+                    + "Requires a public-web query string. Returns ranked public search results with URLs and snippets. "
+                    + "Next step: read relevant public URLs with web__read_web_page when snippets are insufficient.";
+        }
+        if ("web".equals(toolName) && "READ_WEB_PAGE".equals(operationName)) {
+            return "Read one public HTTP/HTTPS page. Use after public web search or when the user provides an exact URL. "
+                    + "Do not use for connected runtime/application state. Requires a URL. Returns normalized visible page text and metadata. "
+                    + "Next step: cite evidence or continue public web search if the page is insufficient.";
+        }
+        if ("web".equals(toolName) && "SEARCH_MARKETPLACE".equals(operationName)) {
+            return "Search public marketplace listings/offers with prices. Use only when the user asks for live offers, buying, or listing comparison. "
+                    + "Do not use for connected runtime/application state, documentation, news, or exchange rates. Requires a product query. "
+                    + "Returns verified listing candidates. Next step: read or verify candidate pages when needed.";
+        }
+        if ("mcp_roblox_list_roblox_studios".equals(toolName)) {
+            return "Discover currently connected Roblox Studio instances only. Use first when you need a studioId for later Roblox MCP calls. "
+                    + "Do not use as the answer to project hierarchy, Folder list, object search, or structure inspection requests; it does not return the project tree. "
+                    + "Requires no prior data. Returns available studio instances and identifiers. "
+                    + "Next step after discovery: call mcp_roblox_search_game_tree__call or another read/inspect Roblox MCP tool using the discovered studioId.";
+        }
+        if ("mcp_roblox_search_game_tree".equals(toolName)) {
+            return "Read-only search of the connected Roblox Studio game tree. Use to find objects, Folders, paths, names, classes, and hierarchy matches in the open project. "
+                    + "Do not use for public Roblox documentation or internet lookup; use web tools only when the user asks for internet/docs. "
+                    + "Requires a concrete query and, when the server schema requires it, a studioId from list_roblox_studios. "
+                    + "Returns matching instances/paths/classes from the live project. Next step: inspect a known path with inspect_instance if detailed properties are needed.";
+        }
+        if ("mcp_roblox_inspect_instance".equals(toolName)) {
+            return "Inspect one known Roblox instance path/id in the connected Studio project. Use after discovery/search has identified the exact instance. "
+                    + "Do not use for unknown-tree discovery or broad folder listing; search_game_tree is the discovery/read tool for that. "
+                    + "Requires a known path/id, and studioId if required by schema. Returns properties, children, and details for that instance. "
+                    + "Next step: answer from inspected evidence or search another path if the target was wrong.";
+        }
+        if ("mcp_roblox_get_console_output".equals(toolName)) {
+            return "Read Roblox Studio console output/logs. Use for errors, warnings, prints, and runtime diagnostics. "
+                    + "Do not use as a source of project hierarchy, Folder list, or object structure. Requires a connected studioId if required by schema. "
+                    + "Returns recent console log entries. Next step: inspect/search the project tree if the user asked about structure.";
+        }
+        if (toolName.startsWith("mcp_")) {
+            ToolOperationRole role = ToolOperationClassifier.classify(definition.name(), operation.name());
+            return definition.description() + " Operation: " + operation.description()
+                    + " Use this MCP tool for the connected runtime/server it belongs to when the user asks about that live system. "
+                    + "Do not substitute public web tools for connected runtime state. Operation role: " + role + ".";
+        }
+        return definition.description() + " Operation: " + operation.description();
     }
 
     private Map<String, Object> parameters(ToolOperationDefinition operation) {

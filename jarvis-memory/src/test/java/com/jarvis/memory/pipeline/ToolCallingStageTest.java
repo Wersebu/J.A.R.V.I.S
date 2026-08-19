@@ -34,6 +34,37 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ToolCallingStageTest {
 
     @Test
+    void responseBodyToolRequestIsForwardedToNativeToolLoopEvenWhenMetadataWasLost() {
+        AtomicReference<ToolCallingRequest> captured = new AtomicReference<>();
+        ToolCallingStage stage = new ToolCallingStage(request -> {
+            captured.set(request);
+            return new ToolCallingResult(true, "Foldery: Workspace, ReplicatedStorage", List.of(), List.of());
+        }, List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        ChatRequest request = new ChatRequest("conversation-1",
+                "Podaj liste folderow dostepnych w aktualnie polaczonym projekcie Roblox Studio.", Instant.now());
+        String misplacedToolRequest = """
+                {"type":"TOOL_REQUEST","goal":"List folders in the connected Roblox Studio project","reason":"Need Roblox MCP inspection","context":{"provider":"roblox"}}
+                """;
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { })
+                .withExecution(new com.jarvis.brain.decision.ExecutionPlan(
+                                com.jarvis.brain.decision.TaskType.CONVERSATION, 1.0, 1, false, 0, 0,
+                                BrainType.FAST, "stub-model", ReasoningLevel.LOW, "test"),
+                        new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW))
+                .withResponse(misplacedToolRequest, GenerationFinishedEvent.create("conversation-1", 0,
+                        BrainType.FAST, "stub-model", null, 1, null));
+
+        PipelineContext result = stage.execute(context);
+
+        assertThat(captured.get()).isNotNull();
+        assertThat(captured.get().goal()).isEqualTo("List folders in the connected Roblox Studio project");
+        assertThat(captured.get().reason()).isEqualTo("Need Roblox MCP inspection");
+        assertThat(captured.get().context()).containsEntry("provider", "roblox");
+        assertThat(result.response()).isEqualTo("Foldery: Workspace, ReplicatedStorage");
+        assertThat(result.metadata()).containsEntry("toolCallingHandled", true);
+    }
+
+    @Test
     void streamToolFinalAnswerTrustsNativeLoopsOwnAnswerWithoutRedundantSynthesisCall() throws Exception {
         // Zero AIProviders on purpose: if the fix regresses and the stage falls through to the
         // separate synthesis call, selectProvider() throws because no provider is configured.

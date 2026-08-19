@@ -89,11 +89,18 @@ public class ToolCallingStage implements PipelineStage {
 
     @Override
     public PipelineContext execute(PipelineContext context) {
-        if (context.response() != null && !context.response().isBlank()) {
+        Optional<MainModelAction> responseToolRequest = responseToolRequest(context);
+        if (context.response() != null && !context.response().isBlank() && responseToolRequest.isEmpty()) {
             return context;
         }
-        if (!"TOOL_REQUEST".equals(String.valueOf(context.metadata().getOrDefault("mainModelAction", "")))) {
+        boolean metadataToolRequest = "TOOL_REQUEST".equals(String.valueOf(context.metadata().getOrDefault("mainModelAction", "")));
+        if (!metadataToolRequest && responseToolRequest.isEmpty()) {
             return context;
+        }
+        MainModelAction recoveredAction = responseToolRequest.orElse(null);
+        if (recoveredAction != null) {
+            LOGGER.warn("[TOOL_CALLING_STAGE] requestId={} recovered TOOL_REQUEST from response body; forwarding to NativeToolLoopService",
+                    context.requestId());
         }
         logAttachmentProvenance(context);
         List<String> imageAttachmentIds = context.images().stream().map(ImageAttachment::attachmentId).toList();
@@ -105,9 +112,9 @@ public class ToolCallingStage implements PipelineStage {
                 context.requestId(),
                 context.conversationId(),
                 context.request().message(),
-                String.valueOf(context.metadata().getOrDefault("toolGoal", "")),
-                String.valueOf(context.metadata().getOrDefault("toolReason", "")),
-                metadataMap(context.metadata().get("toolContext")),
+                toolGoal(context, recoveredAction),
+                toolReason(context, recoveredAction),
+                toolContext(context, recoveredAction),
                 toolBasePrompt(context),
                 context.brain(),
                 context.effectiveKnowledgeMode(),
@@ -128,6 +135,39 @@ public class ToolCallingStage implements PipelineStage {
         return context.withResponse(answer, finished)
                 .withMetadata("toolCallingHandled", true)
                 .withMetadata("toolCallingSteps", result.steps().size());
+    }
+
+    private Optional<MainModelAction> responseToolRequest(PipelineContext context) {
+        if (context.response() == null || context.response().isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            MainModelAction action = actionParser.parse(context.response());
+            return action.type() == MainModelActionType.TOOL_REQUEST ? Optional.of(action) : Optional.empty();
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private String toolGoal(PipelineContext context, MainModelAction recoveredAction) {
+        if (recoveredAction != null && !recoveredAction.goal().isBlank()) {
+            return recoveredAction.goal();
+        }
+        return String.valueOf(context.metadata().getOrDefault("toolGoal", ""));
+    }
+
+    private String toolReason(PipelineContext context, MainModelAction recoveredAction) {
+        if (recoveredAction != null && !recoveredAction.reason().isBlank()) {
+            return recoveredAction.reason();
+        }
+        return String.valueOf(context.metadata().getOrDefault("toolReason", ""));
+    }
+
+    private Map<String, Object> toolContext(PipelineContext context, MainModelAction recoveredAction) {
+        if (recoveredAction != null && !recoveredAction.context().isEmpty()) {
+            return recoveredAction.context();
+        }
+        return metadataMap(context.metadata().get("toolContext"));
     }
 
     /**

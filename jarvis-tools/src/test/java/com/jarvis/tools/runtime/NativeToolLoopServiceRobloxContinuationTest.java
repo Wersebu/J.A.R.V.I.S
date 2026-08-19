@@ -30,6 +30,7 @@ import com.jarvis.tools.schema.ToolSafetyLevel;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
 import java.util.Map;
@@ -146,6 +147,29 @@ class NativeToolLoopServiceRobloxContinuationTest {
     }
 
     @Test
+    void wrongSearchWebIntentStillSendsTheCompleteRuntimeToolCatalogToNativeChat() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(textTurn("Potrzebuje danych z Roblox MCP."));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        NativeToolLoopService service = newService(provider, robloxAndWebRegistry());
+
+        service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1",
+                "Podaj liste folderow dostepnych w aktualnie polaczonym projekcie Roblox Studio.",
+                "List folders in the currently connected Roblox Studio project.",
+                "Need live connected runtime inspection.",
+                Map.of("provider", "roblox"),
+                "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST,
+                List.of()
+        ));
+
+        assertThat(provider.firstToolNames())
+                .contains(LIST_STUDIOS, SEARCH_GAME_TREE, "web__search_web");
+    }
+
+    @Test
     void persistentInsufficiencyAdmissionWithoutEverCallingAnAnsweringToolStillTerminates() {
         Deque<ModelResponse> turns = new ArrayDeque<>();
         turns.add(toolCallTurn(LIST_STUDIOS, Map.of()));
@@ -189,6 +213,26 @@ class NativeToolLoopServiceRobloxContinuationTest {
         ToolDefinition searchGameTree = mcpTool("mcp_roblox_search_game_tree", List.of(
                 new ToolArgumentDefinition("query", "string", false, "Search query")));
         List<ToolDefinition> definitions = List.of(listStudios, setActiveStudio, searchGameTree);
+        return new ToolRegistry() {
+            @Override
+            public List<ToolDefinition> definitions() {
+                return definitions;
+            }
+
+            @Override
+            public String promptSection() {
+                return "";
+            }
+        };
+    }
+
+    private static ToolRegistry robloxAndWebRegistry() {
+        List<ToolDefinition> definitions = new ArrayList<>(robloxRegistry().definitions());
+        definitions.add(new ToolDefinition("web", "Public web search", List.of(
+                new ToolOperationDefinition("SEARCH_WEB", "Search public web", List.of(
+                        new ToolArgumentDefinition("query", "string", true, "Search query")
+                ), false, ToolSafetyLevel.READ)
+        )));
         return new ToolRegistry() {
             @Override
             public List<ToolDefinition> definitions() {
@@ -260,6 +304,7 @@ class NativeToolLoopServiceRobloxContinuationTest {
 
         private final Deque<ModelResponse> turns;
         private int calls;
+        private List<String> firstToolNames = List.of();
 
         private ScriptedProvider(Deque<ModelResponse> turns) {
             this.turns = turns;
@@ -267,6 +312,10 @@ class NativeToolLoopServiceRobloxContinuationTest {
 
         int callCount() {
             return calls;
+        }
+
+        List<String> firstToolNames() {
+            return firstToolNames;
         }
 
         @Override
@@ -285,6 +334,9 @@ class NativeToolLoopServiceRobloxContinuationTest {
 
         @Override
         public ModelResponse toolChat(Brain brain, List<ModelMessage> messages, List<NativeToolDefinition> tools, AIJobType jobType) {
+            if (calls == 0) {
+                firstToolNames = tools.stream().map(NativeToolDefinition::name).toList();
+            }
             calls++;
             return turns.isEmpty() ? textTurn("") : turns.poll();
         }

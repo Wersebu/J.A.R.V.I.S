@@ -33,7 +33,7 @@ class NativeToolSchemaMapperTest {
     }
 
     @Test
-    void readOnlyRequestScopesOutWriteOperations() {
+    void readOnlyRequestStillReturnsTheFullRuntimeCatalog() {
         NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(mixedRegistry());
 
         List<NativeToolDefinition> definitions = mapper.definitions(ToolIntent.NO_TOOL,
@@ -41,7 +41,7 @@ class NativeToolSchemaMapperTest {
 
         assertThat(definitions).extracting(NativeToolDefinition::name)
                 .contains("mcp_roblox_search_game_tree__call")
-                .doesNotContain("mcp_roblox_execute_luau__call");
+                .contains("mcp_roblox_execute_luau__call");
     }
 
     @Test
@@ -107,7 +107,7 @@ class NativeToolSchemaMapperTest {
     }
 
     @Test
-    void robloxConnectedProjectFolderRequestSelectsRobloxMcpToolsAndNoWebTools() {
+    void robloxConnectedProjectFolderRequestKeepsFullCatalogAndMarksRobloxAffinity() {
         NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(runtimeRegistry());
 
         ToolScopeResolution scope = mapper.resolveScope(ToolIntent.SEARCH_WEB,
@@ -116,9 +116,14 @@ class NativeToolSchemaMapperTest {
 
         assertThat(scope.resolvedIntent()).isEqualTo(ToolIntent.CONNECTED_SYSTEM_INSPECTION);
         assertThat(scope.detectedProvider()).isEqualTo("roblox");
+        assertThat(scope.selectedRoles()).contains(
+                com.jarvis.tools.workflow.ToolOperationRole.DISCOVERY,
+                com.jarvis.tools.workflow.ToolOperationRole.SEARCH,
+                com.jarvis.tools.workflow.ToolOperationRole.INSPECT);
         assertThat(scope.selectedTools())
                 .contains("mcp_roblox_list_roblox_studios__call", "mcp_roblox_search_game_tree__call")
-                .doesNotContain("web__search_web", "mcp_postgres_get_status__call");
+                .contains("web__search_web", "mcp_postgres_get_status__call", "mcp_roblox_execute_luau__call");
+        assertThat(scope.rejectedTools()).isEmpty();
     }
 
     @Test
@@ -143,8 +148,7 @@ class NativeToolSchemaMapperTest {
         assertThat(scope.resolvedIntent()).isEqualTo(ToolIntent.CONNECTED_SYSTEM_INSPECTION);
         assertThat(scope.detectedProvider()).isEqualTo("postgres");
         assertThat(scope.selectedTools())
-                .contains("mcp_postgres_get_status__call")
-                .doesNotContain("web__search_web", "mcp_roblox_search_game_tree__call");
+                .contains("mcp_postgres_get_status__call", "web__search_web", "mcp_roblox_search_game_tree__call");
     }
 
     @Test
@@ -171,8 +175,8 @@ class NativeToolSchemaMapperTest {
         assertThat(scope.detectedProvider()).isEqualTo("roblox");
         assertThat(scope.providerAffinitySource()).isEqualTo("context.provider");
         assertThat(scope.selectedTools())
-                .contains("mcp_roblox_list_roblox_studios__call", "mcp_roblox_search_game_tree__call")
-                .doesNotContain("web__search_web");
+                .contains("mcp_roblox_list_roblox_studios__call", "mcp_roblox_search_game_tree__call", "web__search_web");
+        assertThat(scope.rejectedTools()).isEmpty();
     }
 
     // Regression coverage for the root-cause bug: NativeToolSchemaMapper.jsonType() used to
