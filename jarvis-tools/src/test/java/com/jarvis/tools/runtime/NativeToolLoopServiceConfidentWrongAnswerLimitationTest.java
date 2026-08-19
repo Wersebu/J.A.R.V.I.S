@@ -39,32 +39,15 @@ import java.util.function.Consumer;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * KNOWN LIMITATION regression test - documents, rather than hides, a real gap in {@link
- * com.jarvis.tools.workflow.GenericGoalCompletionValidator}: it is phrase-based, so it only catches
- * a premature answer when the model's own words admit insufficiency. A model that calls only a
- * bootstrap/discovery tool and then states an incorrect final answer <b>with no hedging at all</b>
- * is invisible to it - there is no insufficiency phrase in the text for the pattern to match.
- *
- * <p>Scripted scenario: the user asks for the project's folders (requires in-project data), the
- * model calls only {@code list_roblox_studios} (bootstrap/discovery - it never returns folder
- * data), and then confidently states a specific, plausible-sounding but fabricated folder name with
- * no admission anything is missing. Today, Core accepts this immediately.</p>
- *
- * <p>This is exactly the gap the planned Goal Contract + explicit completion-verification turn
- * (see {@code com.jarvis.tools.workflow.goal}) is designed to close: a genuine model
- * self-assessment against declared completion criteria would need to notice that "list open
- * sessions" was never going to satisfy "list the folders", regardless of how confidently the final
- * text is phrased. Until that lands, this test exists so the gap stays visible and tracked instead
- * of silently assumed fixed - if this test ever starts failing (i.e. the wrong answer gets
- * rejected), tighten the assertions here to describe the new, better behavior instead of just
- * deleting it.</p>
+ * Regression test for the deterministic completion gate: confident text is not enough when the
+ * only successful evidence is bootstrap/discovery and the user asked for concrete project data.
  */
 class NativeToolLoopServiceConfidentWrongAnswerLimitationTest {
 
     private static final String LIST_STUDIOS = "mcp_roblox_list_roblox_studios__call";
 
     @Test
-    void confidentButFabricatedAnswerFromBootstrapOnlyEvidenceIsNotCaughtByThePhraseBasedValidator() {
+    void confidentButFabricatedAnswerFromBootstrapOnlyEvidenceIsBlocked() {
         Deque<ModelResponse> turns = new ArrayDeque<>();
         turns.add(toolCallTurn(LIST_STUDIOS, Map.of()));
         // No hedging, no admission of insufficiency - a specific, confident, but fabricated answer.
@@ -80,13 +63,9 @@ class NativeToolLoopServiceConfidentWrongAnswerLimitationTest {
                 KnowledgeMode.FAST
         ));
 
-        // Documents the known gap: Core currently has no way to know this answer is fabricated, so
-        // it accepts it immediately (callCount==2, no re-entry) exactly like a legitimate
-        // bootstrap-only answer would be accepted. This is the behavior the Goal Contract /
-        // completion-verification stage is designed to replace, not a passing test asserting this
-        // is acceptable long-term behavior.
-        assertThat(result.finalAnswer()).isEqualTo("Dostepny folder w projekcie to: Projekt bez tytulu.");
-        assertThat(provider.callCount()).isEqualTo(2);
+        assertThat(result.finalAnswer()).contains("concrete information from a target system");
+        assertThat(result.finalAnswer()).doesNotContain("Projekt bez tytulu");
+        assertThat(provider.callCount()).isGreaterThan(2);
     }
 
     private NativeToolLoopService newService(ScriptedProvider provider) {

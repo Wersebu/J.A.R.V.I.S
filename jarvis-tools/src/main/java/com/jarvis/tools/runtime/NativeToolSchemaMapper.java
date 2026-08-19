@@ -6,6 +6,7 @@ import com.jarvis.tools.schema.ToolDefinition;
 import com.jarvis.tools.schema.ToolJsonSchema;
 import com.jarvis.tools.schema.ToolOperationDefinition;
 import com.jarvis.tools.schema.ToolRegistry;
+import com.jarvis.tools.schema.ToolSafetyLevel;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -33,20 +34,33 @@ public class NativeToolSchemaMapper {
     }
 
     /**
-     * Returns native tool definitions for every registered tool.
-     *
-     * <p>The model always sees the full tool catalog. {@code intent} is kept in the
-     * signature only as an advisory hint for callers/telemetry; it must never narrow
-     * which tools the model is allowed to call — that decision belongs to the model.
+     * Returns native tool definitions for the request's inferred scope.
      *
      * @param intent advisory capability hint (not used to filter)
      * @return native tool definitions
      */
     public List<NativeToolDefinition> definitions(ToolIntent intent) {
+        return definitions(intent, "", "");
+    }
+
+    /**
+     * Returns native tool definitions scoped to the request. Read-only requests receive read,
+     * discovery, and inspection operations, while mutating operations remain available for
+     * workflows that explicitly ask to write, create, execute, delete, submit, or save state.
+     *
+     * @param intent advisory capability hint
+     * @param userMessage original user message
+     * @param goal tool goal from the main model
+     * @return native tool definitions
+     */
+    public List<NativeToolDefinition> definitions(ToolIntent intent, String userMessage, String goal) {
         List<NativeToolDefinition> values = new ArrayList<>();
+        boolean readOnly = isReadOnlyRequest(intent, userMessage, goal);
         for (ToolDefinition definition : toolRegistry.definitions()) {
             for (ToolOperationDefinition operation : definition.operations()) {
-                values.add(toNative(definition, operation));
+                if (!readOnly || isReadAllowed(operation)) {
+                    values.add(toNative(definition, operation));
+                }
             }
         }
         return values;
@@ -61,32 +75,66 @@ public class NativeToolSchemaMapper {
      * @return tool action
      */
     public ToolAction toAction(String functionName, Map<String, Object> arguments, String reason) {
-        String normalized = functionName == null ? "" : functionName.trim().toLowerCase(Locale.ROOT);
+        String normalized = normalizeFunctionName(functionName);
         int separator = normalized.indexOf("__");
-        if (separator < 1 || separator >= normalized.length() - 2) {
-            throw new IllegalArgumentException("Invalid native tool name: " + functionName);
-        }
         String toolName = normalized.substring(0, separator);
         String operationName = normalized.substring(separator + 2).toUpperCase(Locale.ROOT);
-        validateArguments(toolName, operationName, arguments);
+        Map<String, Object> normalizedArguments = normalizeArguments(toolName, operationName, arguments);
+        validateArguments(toolName, operationName, normalizedArguments);
         return new ToolAction(
                 "TOOL_CALL",
                 toolName,
                 operationName,
-                arguments,
+                normalizedArguments,
                 reason,
                 ""
         );
     }
 
     /**
-     * Rejects an argument whose runtime shape does not match its declared schema (e.g. a plain
-     * string sent where an array or object was declared) as close to the native-tool-call
-     * boundary as possible, instead of letting it silently coerce to an empty list several
-     * classes downstream. Only {@code array}/{@code object} mismatches are enforced — {@code
-     * string}/{@code number}/{@code boolean} arguments keep tolerating the loose, stringify-able
-     * values individual tools already accept, since that leniency isn't the defect being closed
-     * here and enforcing it could reject values tools have always handled.
+     * Returns required argument names for diagnostics and test assertions.
+     *
+     * @param functionName model-facing function name
+     * @return required field names
+     */
+    public List<String> requiredFields(String functionName) {
+        return findOperation(functionName)
+                .map(operation -> operation.arguments().stream()
+                        .filter(ToolArgumentDefinition::required)
+                        .map(ToolArgumentDefinition::name)
+                        .toList())
+                .orElse(List.of());
+    }
+
+    /**
+     * Returns declared top-level argument names for diagnostics.
+     *
+     * @param functionName model-facing function name
+     * @return expected field names
+     */
+    public List<String> expectedFields(String functionName) {
+        return findOperation(functionName)
+                .map(operation -> operation.arguments().stream()
+                        .map(ToolArgumentDefinition::name)
+                        .toList())
+                .orElse(List.of());
+    }
+
+    /**
+     * Describes whether a definition came from a native/static tool or an MCP dynamic tool.
+     *
+     * @param functionName model-facing function name
+     * @return schema source label
+     */
+    public String schemaSource(String functionName) {
+        String normalized = normalizeFunctionName(functionName);
+        String toolName = normalized.substring(0, normalized.indexOf("__"));
+        return toolName.startsWith("mcp_") ? "mcp-tool-schema" : "jarvis-tool-schema";
+    }
+
+    /**
+     * Rejects missing required fields, accidental MCP-style argument wrappers, placeholders, and
+     * primitive/container type mismatches at the native-tool boundary.
      *
      * @param toolName lowercased tool name
      * @param operationName uppercased operation name
@@ -94,21 +142,75 @@ public class NativeToolSchemaMapper {
      */
     private void validateArguments(String toolName, String operationName, Map<String, Object> arguments) {
         Optional<ToolOperationDefinition> operation = findOperation(toolName, operationName);
-        if (operation.isEmpty() || arguments == null) {
+        if (operation.isEmpty()) {
             return;
         }
-        for (ToolArgumentDefinition argument : operation.get().arguments()) {
-            Object value = arguments.get(argument.name());
+        Map<String, Object> safeArguments = arguments == null ? Map.of() : arguments;
+        List<ToolArgumentDefinition> definitions = operation.get().arguments();
+        if (safeArguments.containsKey("arguments") && definitions.stream().noneMatch(argument -> "arguments".equals(argument.name()))) {
+            throw new InvalidToolArgumentException("Unexpected wrapper 'arguments'. Expected top-level fields: "
+                    + expectedFieldLabel(definitions) + ".");
+        }
+        for (ToolArgumentDefinition argument : definitions) {
+            Object value = safeArguments.get(argument.name());
             if (value == null) {
+                if (argument.required() && toolName.startsWith("mcp_")) {
+                    throw new InvalidToolArgumentException("Missing required argument '" + argument.name()
+                            + "'. Expected top-level fields: " + expectedFieldLabel(definitions) + ".");
+                }
                 continue;
             }
+            if (isPlaceholder(value)) {
+                throw new InvalidToolArgumentException("Argument '" + argument.name()
+                        + "' looks like a placeholder. Use a concrete value from prior tool results.");
+            }
             ToolJsonSchema schema = argument.schema();
-            boolean isArrayMismatch = "array".equals(schema.type()) && !(value instanceof List<?>);
-            boolean isObjectMismatch = "object".equals(schema.type()) && !(value instanceof Map<?, ?>);
-            if (isArrayMismatch || isObjectMismatch) {
+            if (!matches(schema, value)) {
                 throw new InvalidToolArgumentException(describeMismatch(argument.name(), schema, value));
             }
         }
+    }
+
+    private String normalizeFunctionName(String functionName) {
+        String normalized = functionName == null ? "" : functionName.trim().toLowerCase(Locale.ROOT);
+        if (normalized.contains("__")) {
+            int separator = normalized.indexOf("__");
+            if (separator < 1 || separator >= normalized.length() - 2) {
+                throw new IllegalArgumentException("Invalid native tool name: " + functionName);
+            }
+            return normalized;
+        }
+        List<String> matches = definitions(ToolIntent.NO_TOOL).stream()
+                .map(NativeToolDefinition::name)
+                .filter(name -> name.equals(normalized + "__call") || name.startsWith(normalized + "__"))
+                .distinct()
+                .toList();
+        if (matches.size() == 1) {
+            return matches.get(0);
+        }
+        if (matches.isEmpty()) {
+            throw new IllegalArgumentException("Invalid native tool name: " + functionName);
+        }
+        throw new IllegalArgumentException("Ambiguous native tool name: " + functionName + ". Matches: " + matches);
+    }
+
+    private Optional<ToolOperationDefinition> findOperation(String functionName) {
+        String normalized = normalizeFunctionName(functionName);
+        int separator = normalized.indexOf("__");
+        return findOperation(normalized.substring(0, separator), normalized.substring(separator + 2).toUpperCase(Locale.ROOT));
+    }
+
+    private Map<String, Object> normalizeArguments(String toolName, String operationName, Map<String, Object> arguments) {
+        Map<String, Object> safeArguments = arguments == null ? Map.of() : Map.copyOf(arguments);
+        Optional<ToolOperationDefinition> operation = findOperation(toolName, operationName);
+        if (operation.isEmpty() || !operation.get().arguments().isEmpty()) {
+            return safeArguments;
+        }
+        Object wrapped = safeArguments.get("arguments");
+        if (safeArguments.size() == 1 && wrapped instanceof Map<?, ?> map && map.isEmpty()) {
+            return Map.of();
+        }
+        return safeArguments;
     }
 
     private Optional<ToolOperationDefinition> findOperation(String toolName, String operationName) {
@@ -125,16 +227,90 @@ public class NativeToolSchemaMapper {
         return Optional.empty();
     }
 
+    private boolean matches(ToolJsonSchema schema, Object value) {
+        return switch (schema.type()) {
+            case "array" -> value instanceof List<?>;
+            case "object" -> value instanceof Map<?, ?>;
+            case "integer" -> value instanceof Number number && Math.floor(number.doubleValue()) == number.doubleValue();
+            case "number" -> value instanceof Number;
+            case "boolean" -> value instanceof Boolean;
+            default -> value instanceof String;
+        };
+    }
+
     private String describeMismatch(String argumentName, ToolJsonSchema schema, Object actual) {
         String expectedLabel;
         if ("array".equals(schema.type()) && schema.items() != null && "object".equals(schema.items().type())) {
             expectedLabel = "an array of objects";
         } else if ("array".equals(schema.type())) {
             expectedLabel = "an array";
+        } else if ("object".equals(schema.type())) {
+            expectedLabel = "an object";
+        } else if ("integer".equals(schema.type())) {
+            expectedLabel = "an integer";
+        } else if ("number".equals(schema.type())) {
+            expectedLabel = "a number";
+        } else if ("boolean".equals(schema.type())) {
+            expectedLabel = "a boolean";
         } else {
-            expectedLabel = "an " + schema.type();
+            expectedLabel = "a string";
         }
         return "Argument '" + argumentName + "' must be " + expectedLabel + ", but received " + actualTypeLabel(actual) + ".";
+    }
+
+    private String expectedFieldLabel(List<ToolArgumentDefinition> definitions) {
+        if (definitions.isEmpty()) {
+            return "no arguments";
+        }
+        return definitions.stream()
+                .map(argument -> argument.name() + (argument.required() ? " (required)" : ""))
+                .toList()
+                .toString();
+    }
+
+    private boolean isPlaceholder(Object value) {
+        if (!(value instanceof String text)) {
+            return false;
+        }
+        String normalized = text.trim().toLowerCase(Locale.ROOT);
+        return normalized.isBlank()
+                || normalized.contains("placeholder")
+                || normalized.startsWith("example_")
+                || normalized.startsWith("default_")
+                || normalized.startsWith("<")
+                || normalized.endsWith("_id_here");
+    }
+
+    private boolean isReadOnlyRequest(ToolIntent intent, String userMessage, String goal) {
+        if (intent == ToolIntent.SAVE_KNOWLEDGE
+                || intent == ToolIntent.CREATE_DOCUMENT
+                || intent == ToolIntent.UPDATE_DOCUMENT
+                || intent == ToolIntent.APPEND_DOCUMENT
+                || intent == ToolIntent.ORGANIZE_KNOWLEDGE
+                || intent == ToolIntent.DELETE_KNOWLEDGE) {
+            return false;
+        }
+        String text = ((userMessage == null ? "" : userMessage) + " " + (goal == null ? "" : goal)).toLowerCase(Locale.ROOT);
+        boolean mutating = containsAny(text,
+                "create", "update", "delete", "write", "save", "store", "append", "submit", "finalize",
+                "generate", "execute", "run", "play", "click", "type", "navigate", "set ", "change");
+        boolean read = containsAny(text,
+                "list", "show", "read", "inspect", "search", "find", "tree", "folder", "folders", "structure",
+                "what is", "what are", "which", "status", "available");
+        return read && !mutating;
+    }
+
+    private boolean isReadAllowed(ToolOperationDefinition operation) {
+        return !operation.write() && operation.safetyLevel() == ToolSafetyLevel.READ;
+    }
+
+    private boolean containsAny(String text, String... needles) {
+        for (String needle : needles) {
+            if (text.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String actualTypeLabel(Object value) {

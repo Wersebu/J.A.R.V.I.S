@@ -16,13 +16,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Regression tests proving the model always sees the full tool catalog.
- * Core's advisory intent hint must never narrow which tools the model can call.
+ * Regression tests for native model-facing tool schemas and argument validation.
  */
 class NativeToolSchemaMapperTest {
 
     @Test
-    void searchWebIntentDoesNotHideKnowledgeTool() {
+    void legacyIntentOnlyCallStillReturnsTheFullCatalog() {
         NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(twoToolRegistry());
 
         List<NativeToolDefinition> definitions = mapper.definitions(ToolIntent.SEARCH_WEB);
@@ -34,15 +33,77 @@ class NativeToolSchemaMapperTest {
     }
 
     @Test
-    void everyIntentSeesTheSameFullCatalog() {
-        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(twoToolRegistry());
+    void readOnlyRequestScopesOutWriteOperations() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(mixedRegistry());
 
-        List<NativeToolDefinition> noToolIntent = mapper.definitions(ToolIntent.NO_TOOL);
-        List<NativeToolDefinition> saveKnowledgeIntent = mapper.definitions(ToolIntent.SAVE_KNOWLEDGE);
-        List<NativeToolDefinition> searchWebIntent = mapper.definitions(ToolIntent.SEARCH_WEB);
+        List<NativeToolDefinition> definitions = mapper.definitions(ToolIntent.NO_TOOL,
+                "List folders in the active project tree", "Read the folder structure");
 
-        assertThat(noToolIntent).hasSameSizeAs(saveKnowledgeIntent);
-        assertThat(noToolIntent).hasSameSizeAs(searchWebIntent);
+        assertThat(definitions).extracting(NativeToolDefinition::name)
+                .contains("mcp_roblox_search_game_tree__call")
+                .doesNotContain("mcp_roblox_execute_luau__call");
+    }
+
+    @Test
+    void mutatingRequestKeepsWriteOperationsAvailable() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(mixedRegistry());
+
+        List<NativeToolDefinition> definitions = mapper.definitions(ToolIntent.NO_TOOL,
+                "Run this Lua script in the active project", "Execute script");
+
+        assertThat(definitions).extracting(NativeToolDefinition::name)
+                .contains("mcp_roblox_execute_luau__call");
+    }
+
+    @Test
+    void missingCallSuffixIsNormalizedWhenOnlyOneOperationMatches() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(mcpRegistry());
+
+        ToolAction action = mapper.toAction("mcp_roblox_search_game_tree", Map.of("query", "Workspace"), "test");
+
+        assertThat(action.tool()).isEqualTo("mcp_roblox_search_game_tree");
+        assertThat(action.operation()).isEqualTo("CALL");
+    }
+
+    @Test
+    void missingRequiredArgumentIsRejectedBeforeExecution() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(mcpRegistry());
+
+        assertThatThrownBy(() -> mapper.toAction("mcp_roblox_search_game_tree__call", Map.of(), "test"))
+                .isInstanceOf(InvalidToolArgumentException.class)
+                .hasMessageContaining("Missing required argument 'query'");
+    }
+
+    @Test
+    void wrappedArgumentsAreRejectedWhenSchemaDeclaresTopLevelFields() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(mcpRegistry());
+
+        assertThatThrownBy(() -> mapper.toAction("mcp_roblox_search_game_tree__call",
+                Map.of("arguments", Map.of("query", "Workspace")), "test"))
+                .isInstanceOf(InvalidToolArgumentException.class)
+                .hasMessageContaining("Unexpected wrapper 'arguments'");
+    }
+
+    @Test
+    void noArgToolTreatsEmptyWrapperAsEmptyArguments() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(mcpRegistry());
+
+        ToolAction plain = mapper.toAction("mcp_roblox_list_roblox_studios__call", Map.of(), "test");
+        ToolAction wrapped = mapper.toAction("mcp_roblox_list_roblox_studios__call",
+                Map.of("arguments", Map.of()), "test");
+
+        assertThat(plain.arguments()).isEmpty();
+        assertThat(wrapped.arguments()).isEmpty();
+    }
+
+    @Test
+    void placeholderArgumentIsRejected() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(mcpRegistry());
+
+        assertThatThrownBy(() -> mapper.toAction("mcp_roblox_search_game_tree__call",
+                Map.of("query", "studio_id_placeholder"), "test"))
+                .isInstanceOf(InvalidToolArgumentException.class)
+                .hasMessageContaining("placeholder");
     }
 
     // Regression coverage for the root-cause bug: NativeToolSchemaMapper.jsonType() used to
@@ -178,6 +239,46 @@ class NativeToolSchemaMapperTest {
             @Override
             public List<ToolDefinition> definitions() {
                 return List.of(knowledge, web);
+            }
+
+            @Override
+            public String promptSection() {
+                return "";
+            }
+        };
+    }
+
+    private static ToolRegistry mixedRegistry() {
+        ToolDefinition robloxSearch = new ToolDefinition("mcp_roblox_search_game_tree", "Searches Roblox tree.", List.of(
+                new ToolOperationDefinition("CALL", "Search.", List.of(
+                        new ToolArgumentDefinition("query", "string", true, "Search query")
+                ), false, ToolSafetyLevel.READ)
+        ));
+        ToolDefinition robloxExecute = new ToolDefinition("mcp_roblox_execute_luau", "Executes Luau.", List.of(
+                new ToolOperationDefinition("CALL", "Execute.", List.of(
+                        new ToolArgumentDefinition("script", "string", true, "Script")
+                ), true, ToolSafetyLevel.WRITE)
+        ));
+        return registry(robloxSearch, robloxExecute);
+    }
+
+    private static ToolRegistry mcpRegistry() {
+        ToolDefinition searchTree = new ToolDefinition("mcp_roblox_search_game_tree", "Searches Roblox tree.", List.of(
+                new ToolOperationDefinition("CALL", "Search.", List.of(
+                        new ToolArgumentDefinition("query", "string", true, "Search query")
+                ), false, ToolSafetyLevel.READ)
+        ));
+        ToolDefinition listStudios = new ToolDefinition("mcp_roblox_list_roblox_studios", "Lists studios.", List.of(
+                new ToolOperationDefinition("CALL", "List.", List.of(), false, ToolSafetyLevel.READ)
+        ));
+        return registry(searchTree, listStudios);
+    }
+
+    private static ToolRegistry registry(ToolDefinition... definitions) {
+        return new ToolRegistry() {
+            @Override
+            public List<ToolDefinition> definitions() {
+                return List.of(definitions);
             }
 
             @Override

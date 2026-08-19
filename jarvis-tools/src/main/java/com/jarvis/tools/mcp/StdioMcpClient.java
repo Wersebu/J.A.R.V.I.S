@@ -224,7 +224,18 @@ public class StdioMcpClient implements McpClient {
         }
         Map<String, Object> structured = objectMapper.convertValue(result.path("structuredContent"), MAP_TYPE);
         boolean error = result.path("isError").asBoolean(false);
-        return new McpCallResult(!error, content, structured, error ? "MCP_TOOL_ERROR" : "", error ? "MCP tool returned isError=true" : "");
+        return new McpCallResult(!error, content, structured, error ? "MCP_TOOL_ERROR" : "",
+                error ? errorMessage(content) : "");
+    }
+
+    private String errorMessage(List<McpContentItem> content) {
+        String message = content.stream()
+                .filter(item -> "text".equalsIgnoreCase(item.type()))
+                .map(McpContentItem::text)
+                .filter(text -> text != null && !text.isBlank())
+                .findFirst()
+                .orElse("");
+        return message.isBlank() ? "MCP tool returned isError=true" : message;
     }
 
     private void drainErrors(Process childProcess) {

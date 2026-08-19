@@ -107,6 +107,7 @@ public class ToolCallingStage implements PipelineStage {
                 context.request().message(),
                 String.valueOf(context.metadata().getOrDefault("toolGoal", "")),
                 String.valueOf(context.metadata().getOrDefault("toolReason", "")),
+                metadataMap(context.metadata().get("toolContext")),
                 toolBasePrompt(context),
                 context.brain(),
                 context.effectiveKnowledgeMode(),
@@ -336,7 +337,7 @@ public class ToolCallingStage implements PipelineStage {
                                 "goal", action.goal(), "reason", action.reason()));
                 ToolCallingResult reentryResult = toolCallingRuntime.execute(new ToolCallingRequest(
                         context.requestId(), context.conversationId(), context.request().message(),
-                        action.goal(), action.reason(), toolBasePrompt(context),
+                        action.goal(), action.reason(), action.context(), toolBasePrompt(context),
                         context.brain(), context.effectiveKnowledgeMode(), context.images()));
                 if (reentryResult.handled()) {
                     publishAnswerSources(context, reentryResult);
@@ -363,6 +364,19 @@ public class ToolCallingStage implements PipelineStage {
         } catch (RuntimeException exception) {
             return Optional.empty();
         }
+    }
+
+    private Map<String, Object> metadataMap(Object value) {
+        if (!(value instanceof Map<?, ?> raw)) {
+            return Map.of();
+        }
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            if (entry.getKey() != null) {
+                result.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return result;
     }
 
     private void handleToolAnswerToken(PipelineContext context, String token, ToolAnswerStreamState streamState) {

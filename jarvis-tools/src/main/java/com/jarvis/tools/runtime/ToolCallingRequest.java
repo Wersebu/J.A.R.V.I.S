@@ -5,6 +5,7 @@ import com.jarvis.common.ai.ImageAttachment;
 import com.jarvis.common.knowledge.KnowledgeMode;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Input for a native tool-calling loop.
@@ -14,6 +15,7 @@ import java.util.List;
  * @param userMessage latest user message
  * @param goal external-capability goal selected by the main model
  * @param reason main model decision reason summary
+ * @param context structured context from the main model's tool request
  * @param basePrompt existing prompt context
  * @param brain selected brain
  * @param knowledgeMode effective knowledge mode
@@ -28,6 +30,7 @@ public record ToolCallingRequest(
         String userMessage,
         String goal,
         String reason,
+        Map<String, Object> context,
         String basePrompt,
         Brain brain,
         KnowledgeMode knowledgeMode,
@@ -38,6 +41,7 @@ public record ToolCallingRequest(
      * Creates an immutable request.
      */
     public ToolCallingRequest {
+        context = context == null ? Map.of() : Map.copyOf(context);
         images = images == null ? List.of() : List.copyOf(images);
     }
 
@@ -59,7 +63,7 @@ public record ToolCallingRequest(
             Brain brain,
             KnowledgeMode knowledgeMode
     ) {
-        this(requestId, conversationId, userMessage, "", "", basePrompt, brain, knowledgeMode, List.of());
+        this(requestId, conversationId, userMessage, "", "", Map.of(), basePrompt, brain, knowledgeMode, List.of());
     }
 
     /**
@@ -84,6 +88,33 @@ public record ToolCallingRequest(
             Brain brain,
             KnowledgeMode knowledgeMode
     ) {
-        this(requestId, conversationId, userMessage, goal, reason, basePrompt, brain, knowledgeMode, List.of());
+        this(requestId, conversationId, userMessage, goal, reason, Map.of(), basePrompt, brain, knowledgeMode, List.of());
+    }
+
+    /**
+     * Compatibility constructor for call sites with a goal/reason/images but no structured context.
+     *
+     * @param requestId request identifier
+     * @param conversationId conversation identifier
+     * @param userMessage latest user message
+     * @param goal external-capability goal selected by the main model
+     * @param reason main model decision reason summary
+     * @param basePrompt existing prompt context
+     * @param brain selected brain
+     * @param knowledgeMode effective knowledge mode
+     * @param images current-message images
+     */
+    public ToolCallingRequest(
+            String requestId,
+            String conversationId,
+            String userMessage,
+            String goal,
+            String reason,
+            String basePrompt,
+            Brain brain,
+            KnowledgeMode knowledgeMode,
+            List<ImageAttachment> images
+    ) {
+        this(requestId, conversationId, userMessage, goal, reason, Map.of(), basePrompt, brain, knowledgeMode, images);
     }
 }

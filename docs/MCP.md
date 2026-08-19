@@ -97,6 +97,33 @@ mcp_roblox_script_read
 
 This prevents collisions with native tools and with tools from other MCP servers.
 
+## Native Tool Contract
+
+Each discovered MCP tool is exposed to the model as one native function:
+
+```text
+mcp_<server>_<tool>__call
+```
+
+Core tolerates a missing `__call` suffix only when the name maps to exactly one registered native
+operation. Ambiguous names are rejected before execution.
+
+MCP `inputSchema` is the source of truth for model-facing arguments:
+
+- an object schema with named `properties` becomes top-level native arguments;
+- an object schema with empty `properties` means the tool takes no arguments;
+- the fallback `arguments` object is used only when the MCP server provides no usable object schema.
+
+For MCP tools with named properties, Core rejects accidental wrapper calls such as
+`{"arguments":{"query":"..."}}`; the model must pass `{"query":"..."}`. Required MCP fields,
+primitive/container type mismatches, and obvious placeholder values are rejected before the bridge
+or stdio MCP server is called.
+
+Native tool completion also uses tool results as evidence. For read/list/search/inspect goals,
+bootstrap-only calls such as status, discovery, or selection are not sufficient for a final answer;
+the loop must collect successful search/read/inspect/verify evidence, or return an explicit
+insufficient-evidence answer instead of accepting confident fabricated text.
+
 ## Discovery Lifecycle & Reliability
 
 A real Roblox Studio connection can go `connecting -> connected` and still end up with 0 discovered

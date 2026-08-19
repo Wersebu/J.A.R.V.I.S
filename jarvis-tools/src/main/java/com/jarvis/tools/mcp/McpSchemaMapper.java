@@ -21,18 +21,20 @@ public class McpSchemaMapper {
      * @return Jarvis argument definitions
      */
     public List<ToolArgumentDefinition> arguments(Map<String, Object> inputSchema) {
-        Map<String, Object> properties = asMap(inputSchema == null ? null : inputSchema.get("properties"));
-        List<String> required = asStringList(inputSchema == null ? null : inputSchema.get("required"));
-        List<ToolArgumentDefinition> arguments = new ArrayList<>();
-        for (Map.Entry<String, Object> entry : properties.entrySet()) {
-            ToolJsonSchema schema = schema(asMap(entry.getValue()), "");
-            arguments.add(new ToolArgumentDefinition(entry.getKey(), required.contains(entry.getKey()), schema));
+        if (inputSchema != null
+                && "object".equalsIgnoreCase(string(inputSchema.get("type"), "object"))
+                && inputSchema.containsKey("properties")) {
+            Map<String, Object> properties = asMap(inputSchema.get("properties"));
+            List<String> required = asStringList(inputSchema.get("required"));
+            List<ToolArgumentDefinition> arguments = new ArrayList<>();
+            for (Map.Entry<String, Object> entry : properties.entrySet()) {
+                ToolJsonSchema schema = schema(asMap(entry.getValue()), "");
+                arguments.add(new ToolArgumentDefinition(entry.getKey(), required.contains(entry.getKey()), schema));
+            }
+            return List.copyOf(arguments);
         }
-        if (arguments.isEmpty()) {
-            arguments.add(new ToolArgumentDefinition("arguments", false,
-                    ToolJsonSchema.object(Map.of(), List.of(), "Raw MCP tool arguments.")));
-        }
-        return List.copyOf(arguments);
+        return List.of(new ToolArgumentDefinition("arguments", false,
+                ToolJsonSchema.object(Map.of(), List.of(), "Raw MCP tool arguments.")));
     }
 
     private ToolJsonSchema schema(Map<String, Object> source, String fallbackDescription) {

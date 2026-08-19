@@ -122,7 +122,7 @@ public class NativeToolLoopService {
         }
         ToolIntent intent = resolveIntent(request);
         InformationFreshness freshness = freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason());
-        List<NativeToolDefinition> definitions = schemaMapper.definitions(intent);
+        List<NativeToolDefinition> definitions = schemaMapper.definitions(intent, request.userMessage(), request.goal());
         if (definitions.isEmpty()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
         }
@@ -537,7 +537,7 @@ public class NativeToolLoopService {
                         request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId, workflowDocumentLoaded,
                         datasetCreationAttemptFailed, lastDatasetCreationError, request.userMessage(), toolCallCount(steps),
                         isBootstrapOnlyEvidence(steps), (content + " " + response.thinking()).strip());
-                CompletionAssessment assessment = completionValidator.assess(completionContext);
+                CompletionAssessment assessment = assessCompletion(request, steps, completionContext);
                 LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={}",
                         request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId, workflowDocumentLoaded));
                 if (!assessment.complete()) {
@@ -561,6 +561,12 @@ public class NativeToolLoopService {
                                 ? recoveryGuidance(activeDatasetId, workflowDocumentLoaded, assessment.guidance())
                                 : assessment.guidance()));
                         continue;
+                    }
+                    if (isDeterministicCompletionBlock(assessment)) {
+                        LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} deterministic completion gate exhausted reason={}, returning insufficient-evidence answer",
+                                request.requestId(), assessment.reason());
+                        saveDebug(request, intent, steps, "DETERMINISTIC_COMPLETION_BLOCKED", errors);
+                        return new ToolCallingResult(true, deterministicBlockedAnswer(assessment), steps, results);
                     }
                     LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} completion-gate retries exhausted reason={}, accepting answer as-is",
                             request.requestId(), assessment.reason());
@@ -587,7 +593,7 @@ public class NativeToolLoopService {
                         request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId, workflowDocumentLoaded,
                         datasetCreationAttemptFailed, lastDatasetCreationError, request.userMessage(), toolCallCount(steps),
                         isBootstrapOnlyEvidence(steps), response.thinking().strip());
-                CompletionAssessment assessment = completionValidator.assess(completionContext);
+                CompletionAssessment assessment = assessCompletion(request, steps, completionContext);
                 LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={} path=emptyResponse",
                         request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId, workflowDocumentLoaded));
                 if (!assessment.complete() && completionGateAttempts < MAX_COMPLETION_GATE_ATTEMPTS) {
@@ -611,6 +617,12 @@ public class NativeToolLoopService {
                     continue;
                 }
                 if (!assessment.complete()) {
+                    if (isDeterministicCompletionBlock(assessment)) {
+                        LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} deterministic completion gate exhausted (emptyResponse path) reason={}, returning insufficient-evidence answer",
+                                request.requestId(), assessment.reason());
+                        saveDebug(request, intent, steps, "DETERMINISTIC_COMPLETION_BLOCKED", errors);
+                        return new ToolCallingResult(true, deterministicBlockedAnswer(assessment), steps, results);
+                    }
                     LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} completion-gate retries exhausted (emptyResponse path) reason={}, falling back to final synthesis",
                             request.requestId(), assessment.reason());
                 }
@@ -986,12 +998,14 @@ public class NativeToolLoopService {
                 User request: %s
                 Tool goal: %s
                 Tool reason: %s
+                Tool context: %s
                 Scoped native tools: %s
                 """.formatted(
                 freshness,
                 request.userMessage(),
                 request.goal(),
                 request.reason(),
+                request.context(),
                 definitions.stream().map(NativeToolDefinition::name).toList()
         );
         if (request.images().isEmpty() && existingDataset.isEmpty()) {
@@ -1437,6 +1451,72 @@ public class NativeToolLoopService {
         return marketplaceListings instanceof List<?> list && !list.isEmpty();
     }
 
+    private CompletionAssessment assessCompletion(
+            ToolCallingRequest request,
+            List<ToolRuntimeStep> steps,
+            WorkflowCompletionContext completionContext
+    ) {
+        CompletionAssessment workflowAssessment = completionValidator.assess(completionContext);
+        if (!workflowAssessment.complete()) {
+            return workflowAssessment;
+        }
+        if (!requiresNonBootstrapEvidence(request)) {
+            return workflowAssessment;
+        }
+        if (hasNonBootstrapEvidence(steps)) {
+            return workflowAssessment;
+        }
+        return new CompletionAssessment(false, "DETERMINISTIC_EVIDENCE_REQUIRED",
+                "Do not answer yet. The goal asks for concrete information from a target system. "
+                        + "Discovery/selection/status calls are not enough. Call a search, read, inspect, or verify "
+                        + "operation that returns the requested data, then answer only from that tool result. "
+                        + "If no such operation is available or it fails, state that explicitly.");
+    }
+
+    private boolean requiresNonBootstrapEvidence(ToolCallingRequest request) {
+        String text = normalize(request.userMessage() + " " + request.goal() + " " + request.reason());
+        boolean asksForConcreteData = text.matches(".*\\b(list|show|read|inspect|search|find|tree|folder|folders|structure|"
+                + "content|contents|files|scripts|children|instances|nodes|properties|describe|verify|check)\\b.*");
+        boolean statusOnly = text.matches(".*\\b(status|available|connection|connections|session|sessions|studio|studios|tools)\\b.*")
+                && !text.matches(".*\\b(tree|folder|folders|structure|content|contents|files|scripts|children|instances|nodes|properties)\\b.*");
+        boolean asksToMutate = text.matches(".*\\b(create|update|delete|write|save|store|append|submit|finalize|generate|"
+                + "execute|run|play|click|type|navigate|set|change)\\b.*");
+        return asksForConcreteData && !statusOnly && !asksToMutate;
+    }
+
+    private boolean hasNonBootstrapEvidence(List<ToolRuntimeStep> steps) {
+        for (ToolRuntimeStep step : steps) {
+            ToolResult result = step.result();
+            if (result == null || !result.success() || "system".equalsIgnoreCase(result.tool())) {
+                continue;
+            }
+            ToolOperationRole role = ToolOperationClassifier.classify(result.tool(), result.operation());
+            if (role == ToolOperationRole.SEARCH
+                    || role == ToolOperationRole.READ
+                    || role == ToolOperationRole.INSPECT
+                    || role == ToolOperationRole.VERIFY
+                    || role == ToolOperationRole.UNKNOWN && hasStructuredEvidence(result)) {
+                return hasStructuredEvidence(result);
+            }
+        }
+        return false;
+    }
+
+    private boolean hasStructuredEvidence(ToolResult result) {
+        return (result.data() != null && !result.data().isEmpty())
+                || (result.message() != null && !result.message().isBlank());
+    }
+
+    private boolean isDeterministicCompletionBlock(CompletionAssessment assessment) {
+        return "DETERMINISTIC_EVIDENCE_REQUIRED".equals(assessment.reason());
+    }
+
+    private String deterministicBlockedAnswer(CompletionAssessment assessment) {
+        return "Nie mogę rzetelnie zakończyć tego kroku, bo pętla narzędzi nie uzyskała jeszcze "
+                + "konkretnego wyniku z operacji odczytu/wyszukania/inspekcji. "
+                + assessment.guidance();
+    }
+
     private ToolResult duplicateResult(ToolCallingRequest request, ToolAction action) {
         return new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
                 false, List.of(), "Duplicate tool call blocked", Map.of("reason", "DUPLICATE_TOOL_CALL"),
@@ -1456,7 +1536,12 @@ public class NativeToolLoopService {
 
     private ToolResult invalidResult(ToolCallingRequest request, ModelToolCall call, String error, String errorCode) {
         return new ToolResult(false, toolName(call), operationName(call), request.requestId(), request.conversationId(),
-                false, List.of(), "Invalid native tool call", Map.of("error", error == null ? "" : error),
+                false, List.of(), "Invalid native tool call", Map.of(
+                "error", error == null ? "" : error,
+                "expectedFields", safeExpectedFields(call.name()),
+                "requiredFields", safeRequiredFields(call.name()),
+                "schemaSource", safeSchemaSource(call.name())
+        ),
                 errorCode, error == null ? "" : error, false, "");
     }
 
@@ -1474,8 +1559,34 @@ public class NativeToolLoopService {
      * @param call raw native model tool call
      */
     private void logNativeToolCall(ToolCallingRequest request, int step, ModelToolCall call) {
-        LOGGER.info("[NATIVE_TOOL_CALL] requestId={} step={} name={} arguments={}",
-                request.requestId(), step, call.name(), compactArgumentsForLog(call.arguments()));
+        LOGGER.info("[NATIVE_TOOL_CALL] requestId={} step={} toolCallId={} name={} schemaSource={} expectedFields={} requiredFields={} arguments={}",
+                request.requestId(), step, toolCallId(call), call.name(), safeSchemaSource(call.name()),
+                safeExpectedFields(call.name()), safeRequiredFields(call.name()),
+                compactArgumentsForLog(call.arguments()));
+    }
+
+    private List<String> safeExpectedFields(String functionName) {
+        try {
+            return schemaMapper.expectedFields(functionName);
+        } catch (RuntimeException exception) {
+            return List.of();
+        }
+    }
+
+    private List<String> safeRequiredFields(String functionName) {
+        try {
+            return schemaMapper.requiredFields(functionName);
+        } catch (RuntimeException exception) {
+            return List.of();
+        }
+    }
+
+    private String safeSchemaSource(String functionName) {
+        try {
+            return schemaMapper.schemaSource(functionName);
+        } catch (RuntimeException exception) {
+            return "unknown-schema";
+        }
     }
 
     private Map<String, Object> compactArgumentsForLog(Map<String, Object> arguments) {

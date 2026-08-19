@@ -295,13 +295,27 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
             }
         }
         boolean success = payload.path("success").asBoolean(true);
+        String errorMessage = payload.path("errorMessage").asText("");
+        if (!success && errorMessage.isBlank()) {
+            errorMessage = errorMessage(content);
+        }
         return new McpCallResult(
                 success,
                 content,
                 objectMapper.convertValue(payload.path("structuredContent"), MAP_TYPE),
                 payload.path("errorCode").asText(""),
-                payload.path("errorMessage").asText("")
+                errorMessage
         );
+    }
+
+    private String errorMessage(List<McpContentItem> content) {
+        String message = content.stream()
+                .filter(item -> "text".equalsIgnoreCase(item.type()))
+                .map(McpContentItem::text)
+                .filter(text -> text != null && !text.isBlank())
+                .findFirst()
+                .orElse("");
+        return message.isBlank() ? "MCP tool returned isError=true" : message;
     }
 
     private void completeAllExceptionally(String reason) {
