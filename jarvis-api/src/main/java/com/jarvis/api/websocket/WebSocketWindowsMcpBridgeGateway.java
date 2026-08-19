@@ -90,14 +90,23 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
     @Override
     public List<McpToolDescriptor> listTools(String serverId, McpServerProperties properties) {
         JsonNode payload = request("MCP_LIST_TOOLS", serverId, Map.of(), properties.getListToolsTimeout());
-        List<McpToolDescriptor> descriptors = new ArrayList<>();
         JsonNode tools = payload.path("tools");
         if (!tools.isArray()) {
-            return List.of();
+            // A missing/wrong-shaped "tools" field is a protocol error, never silently treated the
+            // same as a genuinely empty discovery ("connected, 0 tools") - those two outcomes used
+            // to be indistinguishable, which is exactly what let a malformed Windows-side response
+            // masquerade as a normal empty result instead of surfacing as the bug it actually is.
+            String shape = describeShape(tools);
+            LOGGER.error("[MCP_BRIDGE] listTools protocol error server={} reason=TOOLS_FIELD_NOT_ARRAY shape={}", serverId, shape);
+            throw new McpException("Windows MCP bridge returned a malformed tools/list response for server '"
+                    + serverId + "' - expected payload.tools to be an array, got " + shape + ".");
         }
+        List<McpToolDescriptor> descriptors = new ArrayList<>();
+        int skippedNameless = 0;
         for (JsonNode tool : tools) {
             String name = tool.path("name").asText("");
             if (name.isBlank()) {
+                skippedNameless++;
                 continue;
             }
             descriptors.add(new McpToolDescriptor(
@@ -108,7 +117,30 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
                     properties.getAccessLevel()
             ));
         }
+        if (skippedNameless > 0) {
+            LOGGER.warn("[MCP_BRIDGE] listTools skipped nameless tool descriptors server={} skipped={}", serverId, skippedNameless);
+        }
+        LOGGER.info("[MCP_BRIDGE] listTools server={} toolCount={} toolNames={}",
+                serverId, descriptors.size(), toolNamesSummary(descriptors));
         return List.copyOf(descriptors);
+    }
+
+    private static final int MAX_LOGGED_TOOL_NAMES = 50;
+
+    private String toolNamesSummary(List<McpToolDescriptor> descriptors) {
+        List<String> names = descriptors.stream().map(McpToolDescriptor::name).limit(MAX_LOGGED_TOOL_NAMES).toList();
+        String joined = String.join(",", names);
+        return descriptors.size() > MAX_LOGGED_TOOL_NAMES ? joined + ",...(" + descriptors.size() + " total)" : joined;
+    }
+
+    private String describeShape(JsonNode node) {
+        if (node == null || node.isMissingNode()) {
+            return "MISSING_FIELD";
+        }
+        if (node.isNull()) {
+            return "NULL";
+        }
+        return node.getNodeType().name();
     }
 
     @Override
@@ -198,11 +230,19 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
         message.put("requestId", requestId);
         message.put("serverId", serverId);
         message.put("payload", payload == null ? Map.of() : payload);
+        long startedNano = System.nanoTime();
+        LOGGER.info("[MCP_BRIDGE] event=REQUEST_SENT session={} type={} server={} requestId={} timeoutMs={}",
+                session.getId(), type, serverId, requestId, timeout.toMillis());
         try {
             send(session, message);
-            return future.get(timeout.plus(BRIDGE_RESPONSE_SLACK).toMillis(), TimeUnit.MILLISECONDS);
+            JsonNode response = future.get(timeout.plus(BRIDGE_RESPONSE_SLACK).toMillis(), TimeUnit.MILLISECONDS);
+            LOGGER.info("[MCP_BRIDGE] event=RESPONSE_RECEIVED session={} type={} server={} requestId={} durationMs={}",
+                    session.getId(), type, serverId, requestId, elapsedMs(startedNano));
+            return response;
         } catch (TimeoutException exception) {
             pending.remove(requestId);
+            LOGGER.warn("[MCP_BRIDGE] event=REQUEST_TIMEOUT session={} type={} server={} requestId={} timeoutSource=CORE_WAIT durationMs={}",
+                    session.getId(), type, serverId, requestId, elapsedMs(startedNano));
             throw new McpException("Windows MCP bridge request timed out: " + type + " server=" + serverId, exception);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
@@ -210,11 +250,22 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
             throw new McpException("Interrupted while waiting for Windows MCP bridge.", exception);
         } catch (Exception exception) {
             pending.remove(requestId);
+            LOGGER.warn("[MCP_BRIDGE] event=REQUEST_FAILED session={} type={} server={} requestId={} durationMs={} error={}",
+                    session.getId(), type, serverId, requestId, elapsedMs(startedNano), safeMessage(exception));
             if (exception instanceof McpException mcpException) {
                 throw mcpException;
             }
             throw new McpException("Windows MCP bridge request failed: " + type + " server=" + serverId, exception);
         }
+    }
+
+    private long elapsedMs(long startedNano) {
+        return (System.nanoTime() - startedNano) / 1_000_000L;
+    }
+
+    private String safeMessage(Throwable throwable) {
+        String message = throwable.getMessage();
+        return message == null ? throwable.getClass().getSimpleName() : message;
     }
 
     private void send(WebSocketSession session, Object message) {

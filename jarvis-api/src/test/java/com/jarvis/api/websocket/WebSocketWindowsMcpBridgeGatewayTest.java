@@ -1,12 +1,19 @@
 package com.jarvis.api.websocket;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jarvis.tools.mcp.McpAccessLevel;
 import com.jarvis.tools.mcp.McpCallResult;
+import com.jarvis.tools.mcp.McpException;
+import com.jarvis.tools.mcp.McpExecutionHost;
+import com.jarvis.tools.mcp.McpServerProperties;
+import com.jarvis.tools.mcp.McpToolDescriptor;
+import com.jarvis.tools.mcp.McpTransport;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -64,6 +71,88 @@ class WebSocketWindowsMcpBridgeGatewayTest {
 
         assertThatThrownBy(() -> gateway.callTool("roblox", "list_roblox_studios", Map.of(), Duration.ofMillis(10)))
                 .hasMessageContaining("timed out");
+    }
+
+    /**
+     * Regression test for Stage 4: a missing/wrong-shaped {@code payload.tools} field used to be
+     * silently treated as a genuinely empty (successful) discovery - {@code tools.isArray()} is
+     * false for both a missing field and a malformed one, and the old code returned {@code
+     * List.of()} either way. That made a real Windows-side protocol bug indistinguishable from
+     * Roblox Studio simply not being attached yet, so nothing ever surfaced the actual defect.
+     */
+    @Test
+    void listToolsRejectsAMissingToolsFieldAsAProtocolErrorInsteadOfAnEmptyList() throws Exception {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        WebSocketSession session = fakeOpenSession();
+        gateway.register(session);
+        respondImmediately(gateway, session, "{\"requestId\":\"%s\",\"success\":true,\"payload\":{}}");
+
+        assertThatThrownBy(() -> gateway.listTools("roblox", windowsBridgeServer()))
+                .isInstanceOf(McpException.class)
+                .hasMessageContaining("malformed")
+                .hasMessageContaining("roblox");
+    }
+
+    @Test
+    void listToolsRejectsAToolsFieldThatIsNotAnArray() throws Exception {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        WebSocketSession session = fakeOpenSession();
+        gateway.register(session);
+        respondImmediately(gateway, session, "{\"requestId\":\"%s\",\"success\":true,\"payload\":{\"tools\":\"unexpected-string\"}}");
+
+        assertThatThrownBy(() -> gateway.listTools("roblox", windowsBridgeServer()))
+                .isInstanceOf(McpException.class)
+                .hasMessageContaining("malformed");
+    }
+
+    @Test
+    void listToolsAcceptsAGenuinelyEmptyArrayAsAValidEmptyDiscovery() throws Exception {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        WebSocketSession session = fakeOpenSession();
+        gateway.register(session);
+        respondImmediately(gateway, session, "{\"requestId\":\"%s\",\"success\":true,\"payload\":{\"tools\":[]}}");
+
+        List<McpToolDescriptor> tools = gateway.listTools("roblox", windowsBridgeServer());
+
+        assertThat(tools).isEmpty();
+    }
+
+    @Test
+    void listToolsMapsRealToolDescriptorsIncludingNestedInputSchema() throws Exception {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        WebSocketSession session = fakeOpenSession();
+        gateway.register(session);
+        respondImmediately(gateway, session, "{\"requestId\":\"%s\",\"success\":true,\"payload\":{\"tools\":["
+                + "{\"name\":\"search_game_tree\",\"description\":\"Search the open project tree\","
+                + "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}},\"required\":[\"query\"]}}"
+                + "]}}");
+
+        List<McpToolDescriptor> tools = gateway.listTools("roblox", windowsBridgeServer());
+
+        assertThat(tools).hasSize(1);
+        assertThat(tools.getFirst().name()).isEqualTo("search_game_tree");
+        assertThat(tools.getFirst().jarvisToolName()).isEqualTo("mcp_roblox_search_game_tree");
+        assertThat(tools.getFirst().inputSchema()).containsKey("properties");
+    }
+
+    private void respondImmediately(WebSocketWindowsMcpBridgeGateway gateway, WebSocketSession session, String payloadTemplate) throws Exception {
+        doAnswer(invocation -> {
+            TextMessage message = invocation.getArgument(0);
+            String requestId = objectMapper.readTree(message.getPayload()).path("requestId").asText();
+            gateway.handleResponse(objectMapper.readTree(String.format(payloadTemplate, requestId)));
+            return null;
+        }).when(session).sendMessage(any(TextMessage.class));
+    }
+
+    private McpServerProperties windowsBridgeServer() {
+        McpServerProperties properties = new McpServerProperties();
+        properties.setEnabled(true);
+        properties.setExecutionHost(McpExecutionHost.WINDOWS);
+        properties.setTransport(McpTransport.WINDOWS_BRIDGE);
+        properties.setCommand("cmd.exe");
+        properties.setArgs(List.of("/c", "cd /d %LOCALAPPDATA%\\Roblox && .\\mcp.bat"));
+        properties.setAccessLevel(McpAccessLevel.EDIT);
+        return properties;
     }
 
     private void respondAfterDelay(

@@ -97,6 +97,51 @@ mcp_roblox_script_read
 
 This prevents collisions with native tools and with tools from other MCP servers.
 
+## Discovery Lifecycle & Reliability
+
+A real Roblox Studio connection can go `connecting -> connected` and still end up with 0 discovered
+tools if `tools/list` fails or comes back empty right after - `CONNECTED` on its own only ever meant
+"the MCP handshake succeeded", never "tools were actually discovered" or "the external application
+is attached". The lifecycle is now enforced end to end, with each phase logged distinctly instead of
+collapsing into one `CONNECTED` state:
+
+```text
+BRIDGE_CONNECTED (Windows WebSocket registered)
+  -> PROCESS_STARTING / PROCESS_STARTED (mcp.bat launched, real PID logged)
+  -> INITIALIZING -> MCP_INITIALIZED (JSON-RPC initialize + notifications/initialized done)
+  -> DISCOVERING -> TOOLS_LIST_RECEIVED (real tool count/names logged)
+  -> tools registered in DefaultToolRegistry / ToolManager
+```
+
+Three reliability fixes close the gaps found while diagnosing a real "connects fine, 0 tools" run:
+
+- **No orphaned MCP process on reconnect.** `WindowsMcpProcessClient#close()` used to call only
+  `Process#destroy()`, which terminates just the immediate child - a batch-file wrapper (`mcp.bat`)
+  spawning a real interpreter process underneath it left that grandchild running orphaned, still
+  holding whatever local resource (port, named pipe, the Roblox Studio plugin connection) the next
+  launched process then failed to acquire. `close()` now walks `Process#toHandle().descendants()`
+  and destroys the whole tree, waits a short grace period, and force-destroys anything still alive.
+  `DefaultMcpServerManager` (Core side) also now closes the previous `McpClient` - sending Windows a
+  real `MCP_DISCONNECT` - before a reactivation replaces it, instead of just dropping the Java
+  reference and leaving Windows unaware the old process should be torn down.
+- **A silently-dead process is never reused.** `WindowsMcpProcessClient` used to trust its own
+  in-memory `connected` flag alone; a process that crashed on its own (e.g. Roblox Studio was closed)
+  left `connected=true` unchanged, so the next call reused the dead client and failed instead of
+  reconnecting. `initialize()`/`ensureConnected()` now also check `Process#isAlive()` and
+  transparently relaunch when the flag and reality disagree.
+- **A genuinely empty discovery is retried, bounded, not cached forever.** `DefaultMcpServerManager`
+  used to treat any `CONNECTED` server with an empty `tools/list` result as final and never retried -
+  the exact failure mode when Roblox Studio (or "Assistant -> Manage MCP Servers -> Enable Studio as
+  MCP server") had not attached yet at the moment of the first `tools/list` call. It now retries up
+  to 5 times with a short backoff between attempts, then stops automatically with a clear
+  `lastError` explaining what to check - and a manual reconnect (`POST /api/v1/mcp/{serverId}/connect`,
+  or a fresh Windows bridge registration) always clears that bound for a genuinely fresh attempt.
+
+A missing or wrong-shaped `payload.tools` field in a `MCP_BRIDGE_RESPONSE` is also no longer treated
+as a valid empty discovery - `WebSocketWindowsMcpBridgeGateway#listTools` now rejects it outright as a
+protocol error (`TOOLS_FIELD_NOT_ARRAY`), so a real Windows-side bug can never masquerade as "Roblox
+Studio just isn't attached yet".
+
 ## API
 
 ```bash
@@ -151,8 +196,9 @@ Manual smoke test once the Windows bridge is available:
 4. Start Core.
 5. Open Windows UI; it registers the bridge over the persistent WebSocket automatically.
 6. Verify `GET /api/v1/mcp/status` reports `bridgeConnected=true` and the Roblox server can reach `CONNECTED` after discovery.
-7. Verify `GET /api/v1/tools` includes `mcp_roblox_*` tools.
-8. Execute a safe read-only Roblox MCP operation first.
+7. Verify `GET /api/v1/tools` includes `mcp_roblox_*` tools, and that `discoveredTools` in `/api/v1/mcp/status` is greater than 0 (not just `state=CONNECTED` - see [Discovery Lifecycle & Reliability](#discovery-lifecycle--reliability), `CONNECTED` alone does not guarantee tools were found).
+8. Execute a safe read-only Roblox MCP operation first (e.g. `list_roblox_studios`, then `search_game_tree`) - never an editing operation as the first real call.
+9. Close and reopen the Windows UI (or otherwise force a bridge reconnect) at least once, then use Task Manager (or `Get-Process java`) to confirm no orphaned `java.exe`/`mcp.bat`-launched process remains from the previous session - the reconnect fix in [Discovery Lifecycle & Reliability](#discovery-lifecycle--reliability) is specifically about this.
 
 ## Structured And Binary Content
 
@@ -178,22 +224,69 @@ Core does not collapse MCP responses into a blind `toString()`. Large binary pay
 | `MCP request timed out` | `tools/call` exceeded `call-timeout` | Increase timeout or investigate the external app |
 | Roblox unavailable | Roblox Studio is closed or MCP script is missing | Start Roblox Studio and verify `mcp.bat` |
 | First `tools/call` after connect times out, later calls succeed | Roblox Studio (or its companion MCP plugin) was still starting/attaching when the first call was made - the `roblox` server's `call-timeout` is intentionally higher (`60s`) than the generic default for exactly this reason | Wait for Studio to fully load before issuing the first tool call, or retry once Studio is confirmed running |
+| `state=CONNECTED` but `discoveredTools=0` right after connecting | `tools/list` legitimately returned 0 tools (e.g. Studio/plugin not attached yet at that exact moment) | This now retries automatically (bounded, with a short backoff) - wait a few seconds, or force it immediately with `POST /api/v1/mcp/roblox/connect`; check `lastError` for the exact attempt count once retries are exhausted |
+| `Windows MCP bridge returned a malformed tools/list response ... expected payload.tools to be an array` | The Windows bridge sent a response shaped differently than the documented `{"payload":{"tools":[...]}}` contract (a real protocol bug, not a normal empty discovery) | Check the Windows bridge's own logs for the `MCP_LIST_TOOLS` request/response around that time; this is deliberately never treated the same as a genuine empty tool list |
+| Reconnect after a Windows bridge drop still can't discover tools | A previous MCP process was left running (orphaned) and is holding a resource the new one needs (e.g. a local port/pipe the external application only allows one listener on) | Fixed as of this version - `close()` now kills the whole process tree, and Core closes the previous client (sending `MCP_DISCONNECT`) before reactivating; if it still happens, check for orphaned processes manually and file it as a new bug |
 
 Core's own wait for a bridge response is always a few seconds longer than whatever timeout it told the Windows client to use internally (`BRIDGE_RESPONSE_SLACK` in `WebSocketWindowsMcpBridgeGateway`). Without that slack, Core's side of the round trip could time out at (or fractionally before) the Windows client's own watchdog, discarding the pending request; a real, on-time Windows response then had nowhere to go and was logged and dropped as a stale response (`[MCP_BRIDGE] stale response requestId=...`) instead of reaching the model with the actual, specific failure reason (stderr excerpt, JSON-RPC error, etc.).
 
 ## Logs
 
-MCP logs use the `[MCP]` prefix:
+**Core side** - `[MCP]` for the server-manager lifecycle, `[MCP_BRIDGE]` for the WebSocket transport to Windows:
 
 ```text
-[MCP] connecting: roblox
-[MCP] connected: roblox
-[MCP] discovered 24 tools
-[MCP] call: roblox.script_read
-[MCP] completed: 183 ms
-[MCP] disconnected
+[MCP] connecting server=roblox host=WINDOWS transport=WINDOWS_BRIDGE
+[MCP] connected server=roblox
+[MCP] tools/list requested server=roblox
+[MCP] discovered server=roblox tools=26 names=list_roblox_studios,search_game_tree,... durationMs=340
+[MCP] call server=roblox tool=search_game_tree requestId=8639bc66-...
+[MCP] completed server=roblox tool=search_game_tree success=true
+[MCP_BRIDGE] Windows bridge registered session=cf206496-...
+[MCP_BRIDGE] event=REQUEST_SENT session=cf206496-... type=MCP_LIST_TOOLS server=roblox requestId=a2dc405e-... timeoutMs=5000
+[MCP_BRIDGE] event=RESPONSE_RECEIVED session=cf206496-... type=MCP_LIST_TOOLS server=roblox requestId=a2dc405e-... durationMs=11
+[MCP_BRIDGE] listTools server=roblox toolCount=26 toolNames=list_roblox_studios,search_game_tree,...
+[MCP_BRIDGE] activation finished server=roblox state=CONNECTED tools=26
 ```
 
-Secrets and large binary payloads are intentionally not logged.
+A bounded empty-discovery retry and its eventual, explicit give-up look like this - never a silent
+"0 tools" left uninvestigated:
+
+```text
+[MCP] discovery connected but empty server=roblox attempts=1/5
+[MCP] discovery connected but empty server=roblox attempts=2/5
+[MCP] discovery exhausted server=roblox attempts=5 - automatic retries stopped, manual reconnect required
+```
+
+**Windows side** - `[MCP-BRIDGE]` for both the WebSocket-facing bridge service and the per-server
+process client, including the real OS PID for every process-lifecycle event:
+
+```text
+[MCP-BRIDGE] event=BRIDGE_CONNECTED session=1847293651
+[MCP-BRIDGE] event=BRIDGE_REQUEST_RECEIVED type=MCP_CONNECT server=roblox requestId=...
+[MCP-BRIDGE][roblox] event=PROCESS_STARTING command=cmd.exe /c cd /d %LOCALAPPDATA%\Roblox && .\mcp.bat
+[MCP-BRIDGE][roblox] event=PROCESS_STARTED pid=24144
+[MCP-BRIDGE][roblox] event=INITIALIZING pid=24144
+[MCP-BRIDGE][roblox] event=MCP_INITIALIZED pid=24144 durationMs=329
+[MCP-BRIDGE] event=BRIDGE_REQUEST_FINISHED type=MCP_CONNECT server=roblox requestId=... success=true durationMs=340
+[MCP-BRIDGE][roblox] event=DISCOVERING pid=24144
+[MCP-BRIDGE][roblox] event=TOOLS_LIST_RECEIVED pid=24144 durationMs=14 toolCount=26 toolNames=list_roblox_studios,search_game_tree,...
+```
+
+A stale process detected and transparently relaunched, and a full process-tree kill on a genuine
+reconnect (real output from the real-process regression tests):
+
+```text
+[MCP-BRIDGE][roblox] event=STALE_CONNECTION_DETECTED pid=24144 reason=PROCESS_NOT_ALIVE - reinitializing
+[MCP-BRIDGE][roblox] event=DESTROYING_DESCENDANT pid=16640 command=unknown
+[MCP-BRIDGE][roblox] event=PROCESS_STOPPED pid=24144 exitCode=1 descendantsKilled=1
+[MCP-BRIDGE][roblox] event=PROCESS_STARTED pid=31172
+...
+[MCP-BRIDGE][roblox] event=DESTROYING_DESCENDANT pid=2472 command=java.exe
+[MCP-BRIDGE][roblox] event=DESTROYING_DESCENDANT pid=35172 command=conhost.exe
+[MCP-BRIDGE][roblox] event=PROCESS_STOPPED pid=16736 exitCode=0 descendantsKilled=2
+```
+
+Secrets and large binary payloads are intentionally not logged - only counts, ids, PIDs, tool names,
+timings, and sanitized bounded stderr excerpts.
 
 The Windows bridge drains MCP process stderr continuously and keeps a bounded, sanitized diagnostics buffer. This prevents external MCP servers from blocking on a full stderr pipe while still surfacing useful startup and runtime errors.

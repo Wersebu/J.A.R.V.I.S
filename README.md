@@ -2,9 +2,9 @@
 
 Jarvis (J.A.R.V.I.S. Core) is a long-term AI operating system backend foundation: a headless Spring Boot service that orchestrates local Ollama models behind a provider-independent AI contract, with brain routing, native tool calling, a Knowledge Workspace, web/marketplace/location tools, cognitive memory, and real-time streaming to a separate desktop client.
 
-Current version: **`2.17.2`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
+Current version: **`2.17.3`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
 
-MCP Windows bridge lifecycle is automatic: when the Windows client registers its bridge, Core asynchronously initializes enabled Windows-hosted MCP servers, discovers their tools, and refreshes MCP status without requiring manual reconnect calls.
+MCP Windows bridge lifecycle is automatic: when the Windows client registers its bridge, Core asynchronously initializes enabled Windows-hosted MCP servers, discovers their tools, and refreshes MCP status without requiring manual reconnect calls. A reconnect never leaves an orphaned MCP process behind, a silently-dead process is detected and transparently relaunched instead of reused, and a genuinely empty `tools/list` result is retried a bounded number of times instead of being cached as final forever (see [Discovery Lifecycle & Reliability](docs/MCP.md#discovery-lifecycle--reliability)).
 
 ## Requirements
 
@@ -80,7 +80,7 @@ All configuration lives under the `jarvis:` root key in `jarvis-core/src/main/re
 
 ```yaml
 jarvis:
-  version: "2.17.2"
+  version: "2.17.3"
   ai:
     identity-file: file:config/jarvis.md
     context-window: 16384
@@ -257,7 +257,7 @@ LLM
   -> external app, e.g. Roblox Studio
 ```
 
-With `jarvis.mcp.enabled=false`, no MCP discovery occurs and regular chat/tool behavior is unchanged. In the default dev profile Roblox MCP is enabled through the Windows bridge, so Core waits for the Windows UI to register the bridge before it can discover Roblox tools. See [docs/MCP.md](docs/MCP.md) for configuration, Roblox Studio setup, status endpoints, troubleshooting, and the Windows bridge flow.
+With `jarvis.mcp.enabled=false`, no MCP discovery occurs and regular chat/tool behavior is unchanged. In the default dev profile Roblox MCP is enabled through the Windows bridge, so Core waits for the Windows UI to register the bridge before it can discover Roblox tools. `CONNECTED` alone never implies tools were actually discovered - `DefaultMcpServerManager` tracks discovery as its own phase, retries a genuinely empty result a bounded number of times with backoff, and a manual reconnect (`POST /api/v1/mcp/{serverId}/connect`) always clears that bound for a fresh attempt. On the Windows side, `WindowsMcpProcessClient` kills the *entire* process tree it spawned (not just the immediate `cmd.exe` child) on close/reconnect, and verifies the underlying OS process is still alive before ever reusing it. See [docs/MCP.md](docs/MCP.md) for configuration, Roblox Studio setup, status endpoints, the full discovery lifecycle, troubleshooting, and the Windows bridge flow.
 
 `NativeToolLoopService` drives the actual loop: it exposes the *full* tool catalog to the model on every turn (which tool to call is always the model's own decision, never Core's), executes whatever the model calls, and feeds results back until the model returns a plain-text final answer. Loop safety:
 
