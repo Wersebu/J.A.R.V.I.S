@@ -759,8 +759,14 @@ public class NativeToolLoopService {
     }
 
     private ToolResult toolExecutionFailedResult(ToolCallingRequest request, ToolAction action, String error) {
+        // message() must carry the real error text, not a generic label - toolExecutionFinishedMessage()
+        // above prefers message() whenever it is non-blank, so a hardcoded "Tool execution failed" here
+        // would silently shadow the actual, useful errorMessage() (e.g. an MCP bridge timeout reason)
+        // and surface a meaningless label to the user instead, exactly the bug this class already fixed
+        // once for the generic "Tool execution finished" success label.
+        String detail = error == null || error.isBlank() ? "Tool execution failed" : error;
         return new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
-                false, List.of(), "Tool execution failed", Map.of("error", error == null ? "" : error),
+                false, List.of(), detail, Map.of("error", error == null ? "" : error),
                 "TOOL_EXECUTION_FAILED", error == null ? "" : error, false, "");
     }
 

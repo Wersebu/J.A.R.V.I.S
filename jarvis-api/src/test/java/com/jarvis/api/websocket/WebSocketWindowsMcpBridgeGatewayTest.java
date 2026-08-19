@@ -1,0 +1,98 @@
+package com.jarvis.api.websocket;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jarvis.tools.mcp.McpCallResult;
+import org.junit.jupiter.api.Test;
+import org.springframework.web.socket.TextMessage;
+import org.springframework.web.socket.WebSocketSession;
+
+import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+/**
+ * Regression test for a race between Core's own bridge-request wait and the Windows client's
+ * internal watchdog: both used to be handed the exact same {@code Duration} (e.g. {@code
+ * callTimeoutMs} built from the same {@code McpServerProperties.getCallTimeout()} sent to Windows
+ * in {@code MCP_CONNECT}), so Core's {@code future.get(timeout)} always fired first (its clock
+ * starts before Windows even receives the request) and discarded the pending future - a real,
+ * on-time Windows response then arrived to find no matching entry in {@code pending} and was
+ * logged and dropped as a "stale response", never reaching the model. {@link
+ * WebSocketWindowsMcpBridgeGateway} now waits {@code timeout + BRIDGE_RESPONSE_SLACK} before
+ * giving up, so a response that genuinely respects the timeout it was told to use on the Windows
+ * side can still be matched to its future.
+ */
+class WebSocketWindowsMcpBridgeGatewayTest {
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Test
+    void aResponseArrivingAfterTheRequestedTimeoutButWithinTheSlackWindowStillSucceeds() throws Exception {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        WebSocketSession session = fakeOpenSession();
+        gateway.register(session);
+
+        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+        try {
+            respondAfterDelay(gateway, session, scheduler, 200, true);
+
+            // Requested timeout (50ms) is far shorter than how long the simulated Windows round
+            // trip actually takes (200ms) - without the slack this would throw before the response
+            // ever had a chance to arrive.
+            McpCallResult result = gateway.callTool("roblox", "list_roblox_studios", Map.of(), Duration.ofMillis(50));
+
+            assertThat(result.success()).isTrue();
+        } finally {
+            scheduler.shutdownNow();
+        }
+    }
+
+    @Test
+    void aResponseThatNeverArrivesStillTimesOutEventually() {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        WebSocketSession session = fakeOpenSession();
+        gateway.register(session);
+
+        assertThatThrownBy(() -> gateway.callTool("roblox", "list_roblox_studios", Map.of(), Duration.ofMillis(10)))
+                .hasMessageContaining("timed out");
+    }
+
+    private void respondAfterDelay(
+            WebSocketWindowsMcpBridgeGateway gateway,
+            WebSocketSession session,
+            ScheduledExecutorService scheduler,
+            long delayMs,
+            boolean success
+    ) throws Exception {
+        doAnswer(invocation -> {
+            TextMessage message = invocation.getArgument(0);
+            String requestId = objectMapper.readTree(message.getPayload()).path("requestId").asText();
+            scheduler.schedule(() -> {
+                try {
+                    gateway.handleResponse(objectMapper.readTree(
+                            "{\"requestId\":\"" + requestId + "\",\"success\":" + success
+                                    + ",\"payload\":{\"content\":[]}}"));
+                } catch (Exception ignored) {
+                    // Test-only best effort delivery.
+                }
+            }, delayMs, TimeUnit.MILLISECONDS);
+            return null;
+        }).when(session).sendMessage(any(TextMessage.class));
+    }
+
+    private WebSocketSession fakeOpenSession() {
+        WebSocketSession session = mock(WebSocketSession.class);
+        when(session.isOpen()).thenReturn(true);
+        when(session.getId()).thenReturn("session-1");
+        return session;
+    }
+}

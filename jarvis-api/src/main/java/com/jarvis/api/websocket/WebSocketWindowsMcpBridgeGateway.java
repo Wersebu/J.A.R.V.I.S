@@ -40,6 +40,20 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
 
+    /**
+     * Every timeout Core hands to the Windows bridge (via {@code initialize}'s
+     * {@code startupTimeoutMs}/{@code initializeTimeoutMs}/{@code listToolsTimeoutMs}/{@code callTimeoutMs})
+     * is also the exact duration {@link WindowsMcpBridgeGateway} itself waits for on this side - the
+     * Windows client's own internal watchdog (see {@code WindowsMcpProcessClient}) starts its clock
+     * strictly after receiving and dispatching the request, so without extra slack here Core's own
+     * {@code future.get} always times out first (or ties). That discards the pending future
+     * (see {@link #handleResponse}) moments before the Windows side's own more specific, more
+     * informative failure - stderr excerpts, the exact JSON-RPC error, etc. - would have arrived, so
+     * it is logged and dropped as a "stale response" instead of ever reaching the model. Waiting this
+     * much longer than what was told to Windows lets the Windows-side timeout always win the race.
+     */
+    private static final Duration BRIDGE_RESPONSE_SLACK = Duration.ofSeconds(5);
+
     private final ObjectMapper objectMapper;
     private final AtomicReference<WebSocketSession> bridgeSession = new AtomicReference<>();
     private final Map<String, CompletableFuture<JsonNode>> pending = new ConcurrentHashMap<>();
@@ -186,7 +200,7 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
         message.put("payload", payload == null ? Map.of() : payload);
         try {
             send(session, message);
-            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            return future.get(timeout.plus(BRIDGE_RESPONSE_SLACK).toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException exception) {
             pending.remove(requestId);
             throw new McpException("Windows MCP bridge request timed out: " + type + " server=" + serverId, exception);

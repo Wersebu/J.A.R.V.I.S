@@ -79,6 +79,11 @@ class NativeToolLoopServiceExecutionFailureTest {
         assertThat(failed.success()).isFalse();
         assertThat(failed.errorCode()).isEqualTo("TOOL_EXECUTION_FAILED");
         assertThat(failed.errorMessage()).contains("Path traversal is not allowed");
+        // message() must carry the real reason too, not a generic "Tool execution failed" label -
+        // the UI-facing progress stream (toolExecutionFinishedMessage) prefers message() whenever it
+        // is non-blank, so a generic literal here would silently shadow the real errorMessage() and
+        // surface a meaningless status to the user instead of the actual failure reason.
+        assertThat(failed.message()).contains("Path traversal is not allowed");
     }
 
     private static ModelResponse toolCallTurn(String name, Map<String, Object> arguments) {

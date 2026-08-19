@@ -61,7 +61,12 @@ jarvis:
         startup-timeout: 10s
         initialize-timeout: 10s
         list-tools-timeout: 5s
-        call-timeout: 30s
+        # Roblox Studio must actually be running and its companion plugin attached before a real
+        # tools/call (e.g. list_roblox_studios) can answer - unlike a local, always-ready STDIO MCP
+        # server, this Windows-hosted server can legitimately take longer than a generic default on
+        # a cold start. 30s was observed timing out twice in a row before succeeding once Studio
+        # finished attaching.
+        call-timeout: 60s
   web-search:
     enabled: true
     base-url: http://127.0.0.1:8888

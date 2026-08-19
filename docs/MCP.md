@@ -177,6 +177,9 @@ Core does not collapse MCP responses into a blind `toString()`. Large binary pay
 | `tools/list timeout` | Discovery is slow or blocked | Check the MCP server and transport |
 | `MCP request timed out` | `tools/call` exceeded `call-timeout` | Increase timeout or investigate the external app |
 | Roblox unavailable | Roblox Studio is closed or MCP script is missing | Start Roblox Studio and verify `mcp.bat` |
+| First `tools/call` after connect times out, later calls succeed | Roblox Studio (or its companion MCP plugin) was still starting/attaching when the first call was made - the `roblox` server's `call-timeout` is intentionally higher (`60s`) than the generic default for exactly this reason | Wait for Studio to fully load before issuing the first tool call, or retry once Studio is confirmed running |
+
+Core's own wait for a bridge response is always a few seconds longer than whatever timeout it told the Windows client to use internally (`BRIDGE_RESPONSE_SLACK` in `WebSocketWindowsMcpBridgeGateway`). Without that slack, Core's side of the round trip could time out at (or fractionally before) the Windows client's own watchdog, discarding the pending request; a real, on-time Windows response then had nowhere to go and was logged and dropped as a stale response (`[MCP_BRIDGE] stale response requestId=...`) instead of reaching the model with the actual, specific failure reason (stderr excerpt, JSON-RPC error, etc.).
 
 ## Logs
 
