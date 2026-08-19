@@ -52,4 +52,10 @@ class DefaultToolIntentDetectorTest {
         assertThat(detector.detect("pogrupuj te adresy i zaproponuj optymalna kolejnosc"))
                 .isEqualTo(ToolIntent.LOCATION);
     }
+
+    @Test
+    void detectsCurrentlyConnectedStudioInspectionAsConnectedSystemNotWeb() {
+        assertThat(detector.detect("Podaj liste folderow dostepnych w aktualnie polaczonym projekcie Roblox Studio"))
+                .isEqualTo(ToolIntent.CONNECTED_SYSTEM_INSPECTION);
+    }
 }

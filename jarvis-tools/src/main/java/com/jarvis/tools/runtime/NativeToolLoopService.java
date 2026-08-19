@@ -122,7 +122,9 @@ public class NativeToolLoopService {
         }
         ToolIntent intent = resolveIntent(request);
         InformationFreshness freshness = freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason());
-        List<NativeToolDefinition> definitions = schemaMapper.definitions(intent, request.userMessage(), request.goal());
+        ToolScopeResolution scope = schemaMapper.resolveScope(intent, request.userMessage(), request.goal(), request.context());
+        ToolIntent resolvedIntent = scope.resolvedIntent();
+        List<NativeToolDefinition> definitions = scope.definitions();
         if (definitions.isEmpty()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
         }
@@ -132,7 +134,7 @@ public class NativeToolLoopService {
         int maxCalls = request.knowledgeMode() == KnowledgeMode.RESEARCH
                 ? properties.maxCallsResearch()
                 : properties.maxCallsFast();
-        if (intent == ToolIntent.SEARCH_WEB || intent == ToolIntent.LOCATION) {
+        if (resolvedIntent == ToolIntent.SEARCH_WEB || resolvedIntent == ToolIntent.LOCATION) {
             // LOCATION in particular covers multi-store geocoding/scheduling work (read workflow,
             // create dataset, verify, geocode, optimize route, notify, final answer) - a plain web
             // search rarely needs this many turns, but capping both at the same floor is still
@@ -199,11 +201,16 @@ public class NativeToolLoopService {
         messages.add(ModelMessage.user(request.userMessage(), request.images()));
 
         publish(request, CognitiveEventType.TOOL_LOOP_STARTED, "STARTED", "Native tool loop started", null, 0,
-                Map.of("runtime", "native", "intent", intent.name(), "freshness", freshness.name(), "tools", definitions.size()));
-        LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} intent={} freshness={} tools={}",
-                request.requestId(), intent, freshness, definitions.size());
-        LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} phase=TOOL_LOOP_START availableTools={} intentHint={} autoTriggered=false",
-                request.requestId(), definitions.stream().map(NativeToolDefinition::name).distinct().toList(), intent);
+                Map.of("runtime", "native", "rawIntent", intent.name(), "resolvedIntent", resolvedIntent.name(),
+                        "freshness", freshness.name(), "detectedProvider", scope.detectedProvider(),
+                        "providerAffinitySource", scope.providerAffinitySource(), "selectedRoles", scope.selectedRoles(),
+                        "tools", definitions.size()));
+        LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} rawIntent={} resolvedIntent={} freshness={} detectedProvider={} providerAffinitySource={} selectedRoles={} selectedTools={} rejectedTools={} tools={}",
+                request.requestId(), intent, resolvedIntent, freshness, scope.detectedProvider(),
+                scope.providerAffinitySource(), scope.selectedRoles(), scope.selectedTools(), scope.rejectedTools(), definitions.size());
+        LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} phase=TOOL_LOOP_START rawIntent={} resolvedIntent={} availableTools={} intentHint={} detectedProvider={} providerAffinitySource={} selectedRoles={} rejectedTools={} autoTriggered=false",
+                request.requestId(), intent, resolvedIntent, scope.selectedTools(), intent,
+                scope.detectedProvider(), scope.providerAffinitySource(), scope.selectedRoles(), scope.rejectedTools());
         LOGGER.info("[AGENT_CONTEXT] requestId={} conversationId={} model={} images={} datasetId={} datasetStores={} nativeTools=true vision={}",
                 request.requestId(), request.conversationId(), request.brain() == null ? "" : request.brain().model(),
                 request.images().size(),

@@ -37,7 +37,11 @@ public class DefaultToolIntentDetector implements ToolIntentDetector {
                 "driving", "route", "mapa", "mape")) {
             return ToolIntent.LOCATION;
         }
-        if (containsAny(value, "internet", "w internecie", "web", "online", "aktualn", "cena", "ceny", "kurs", "notowan",
+        if (containsAny(value, "podlacz", "polacz", "aktywn", "aktualnie polacz", "aktualnie podlacz",
+                "biezac", "otwart", "runtime", "studio", "connected", "attached", "active project", "current project")) {
+            return ToolIntent.CONNECTED_SYSTEM_INSPECTION;
+        }
+        if (containsAny(value, "internet", "w internecie", "web", "online", "cena", "ceny", "kurs", "notowan",
                 "rynek", "wtorn", "uzywan", "po ile", "ile chodzi", "chodzi uzywan", "kosztuje", "koszt", "wycena",
                 "news", "wiadomosci", "zloto", "zlot", "xau", "walut", "sprawdz w sieci", "wyszukaj w sieci",
                 "latest", "current price", "price", "market", "exchange rate", "rate", "gold")) {

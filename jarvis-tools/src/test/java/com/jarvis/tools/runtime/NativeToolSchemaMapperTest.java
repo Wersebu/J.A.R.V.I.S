@@ -106,6 +106,75 @@ class NativeToolSchemaMapperTest {
                 .hasMessageContaining("placeholder");
     }
 
+    @Test
+    void robloxConnectedProjectFolderRequestSelectsRobloxMcpToolsAndNoWebTools() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(runtimeRegistry());
+
+        ToolScopeResolution scope = mapper.resolveScope(ToolIntent.SEARCH_WEB,
+                "Podaj liste folderow dostepnych w aktualnie polaczonym projekcie Roblox Studio.",
+                "Inspect the currently connected Roblox Studio project folders.", Map.of());
+
+        assertThat(scope.resolvedIntent()).isEqualTo(ToolIntent.CONNECTED_SYSTEM_INSPECTION);
+        assertThat(scope.detectedProvider()).isEqualTo("roblox");
+        assertThat(scope.selectedTools())
+                .contains("mcp_roblox_list_roblox_studios__call", "mcp_roblox_search_game_tree__call")
+                .doesNotContain("web__search_web", "mcp_postgres_get_status__call");
+    }
+
+    @Test
+    void publicInternetDocumentationRequestAllowsWebToolsEvenWhenProviderNameIsMentioned() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(runtimeRegistry());
+
+        ToolScopeResolution scope = mapper.resolveScope(ToolIntent.SEARCH_WEB,
+                "Znajdz w internecie dokumentacje Roblox search_game_tree",
+                "Find public documentation for Roblox search_game_tree.", Map.of());
+
+        assertThat(scope.selectedTools()).contains("web__search_web");
+    }
+
+    @Test
+    void currentlyConnectedSystemRequestPrefersMatchingMcpProviderOverWeb() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(runtimeRegistry());
+
+        ToolScopeResolution scope = mapper.resolveScope(ToolIntent.SEARCH_WEB,
+                "Sprawdz aktualnie podlaczony system postgres",
+                "Inspect connected system postgres.", Map.of());
+
+        assertThat(scope.resolvedIntent()).isEqualTo(ToolIntent.CONNECTED_SYSTEM_INSPECTION);
+        assertThat(scope.detectedProvider()).isEqualTo("postgres");
+        assertThat(scope.selectedTools())
+                .contains("mcp_postgres_get_status__call")
+                .doesNotContain("web__search_web", "mcp_roblox_search_game_tree__call");
+    }
+
+    @Test
+    void missingMcpProviderAndDocumentationRequestAllowsWeb() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(runtimeRegistry());
+
+        ToolScopeResolution scope = mapper.resolveScope(ToolIntent.SEARCH_WEB,
+                "Znajdz w internecie dokumentacje systemu snowflake",
+                "Find public docs for snowflake.", Map.of());
+
+        assertThat(scope.detectedProvider()).isBlank();
+        assertThat(scope.selectedTools()).contains("web__search_web");
+    }
+
+    @Test
+    void contextProviderAffinityWinsOverWrongSearchWebIntentHint() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(runtimeRegistry());
+
+        ToolScopeResolution scope = mapper.resolveScope(ToolIntent.SEARCH_WEB,
+                "Podaj liste folderow w aktualnie polaczonym projekcie",
+                "List connected project folders.", Map.of("provider", "roblox"));
+
+        assertThat(scope.resolvedIntent()).isEqualTo(ToolIntent.CONNECTED_SYSTEM_INSPECTION);
+        assertThat(scope.detectedProvider()).isEqualTo("roblox");
+        assertThat(scope.providerAffinitySource()).isEqualTo("context.provider");
+        assertThat(scope.selectedTools())
+                .contains("mcp_roblox_list_roblox_studios__call", "mcp_roblox_search_game_tree__call")
+                .doesNotContain("web__search_web");
+    }
+
     // Regression coverage for the root-cause bug: NativeToolSchemaMapper.jsonType() used to
     // collapse every non-number/boolean argument type - including array and object - down to the
     // literal string "string", so the model's native tool-calling grammar never saw a real array
@@ -272,6 +341,31 @@ class NativeToolSchemaMapperTest {
                 new ToolOperationDefinition("CALL", "List.", List.of(), false, ToolSafetyLevel.READ)
         ));
         return registry(searchTree, listStudios);
+    }
+
+    private static ToolRegistry runtimeRegistry() {
+        ToolDefinition web = new ToolDefinition("web", "Searches the public web.", List.of(
+                new ToolOperationDefinition("SEARCH_WEB", "Search public web.", List.of(
+                        new ToolArgumentDefinition("query", "string", true, "Search query")
+                ), false, ToolSafetyLevel.READ)
+        ));
+        ToolDefinition robloxSearch = new ToolDefinition("mcp_roblox_search_game_tree", "Search Roblox tree.", List.of(
+                new ToolOperationDefinition("CALL", "Search tree.", List.of(
+                        new ToolArgumentDefinition("query", "string", true, "Search query")
+                ), false, ToolSafetyLevel.READ)
+        ));
+        ToolDefinition robloxList = new ToolDefinition("mcp_roblox_list_roblox_studios", "List Roblox studios.", List.of(
+                new ToolOperationDefinition("CALL", "List studios.", List.of(), false, ToolSafetyLevel.READ)
+        ));
+        ToolDefinition robloxExecute = new ToolDefinition("mcp_roblox_execute_luau", "Execute Luau.", List.of(
+                new ToolOperationDefinition("CALL", "Execute script.", List.of(
+                        new ToolArgumentDefinition("script", "string", true, "Script")
+                ), true, ToolSafetyLevel.WRITE)
+        ));
+        ToolDefinition postgresStatus = new ToolDefinition("mcp_postgres_get_status", "Inspect Postgres.", List.of(
+                new ToolOperationDefinition("CALL", "Get status.", List.of(), false, ToolSafetyLevel.READ)
+        ));
+        return registry(web, robloxSearch, robloxList, robloxExecute, postgresStatus);
     }
 
     private static ToolRegistry registry(ToolDefinition... definitions) {

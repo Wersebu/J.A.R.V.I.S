@@ -7,14 +7,18 @@ import com.jarvis.tools.schema.ToolJsonSchema;
 import com.jarvis.tools.schema.ToolOperationDefinition;
 import com.jarvis.tools.schema.ToolRegistry;
 import com.jarvis.tools.schema.ToolSafetyLevel;
+import com.jarvis.tools.workflow.ToolOperationClassifier;
+import com.jarvis.tools.workflow.ToolOperationRole;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Converts Jarvis tool registry definitions into provider-independent native function definitions.
@@ -54,16 +58,65 @@ public class NativeToolSchemaMapper {
      * @return native tool definitions
      */
     public List<NativeToolDefinition> definitions(ToolIntent intent, String userMessage, String goal) {
+        return resolveScope(intent, userMessage, goal, Map.of()).definitions();
+    }
+
+    /**
+     * Resolves and returns detailed tool scoping diagnostics for one native loop request.
+     *
+     * @param intent raw advisory intent
+     * @param userMessage original user message
+     * @param goal tool goal from the main model
+     * @param context structured tool request context
+     * @return selected definitions and routing diagnostics
+     */
+    public ToolScopeResolution resolveScope(ToolIntent intent, String userMessage, String goal, Map<String, Object> context) {
         List<NativeToolDefinition> values = new ArrayList<>();
-        boolean readOnly = isReadOnlyRequest(intent, userMessage, goal);
+        Map<String, String> rejected = new LinkedHashMap<>();
+        String text = requestText(userMessage, goal, context);
+        ProviderAffinity affinity = providerAffinity(text, context);
+        boolean publicWeb = requestsPublicWeb(text);
+        boolean connectedRuntime = requestsConnectedRuntime(text);
+        ToolIntent resolvedIntent = affinity.provider().isBlank()
+                ? intent
+                : ToolIntent.CONNECTED_SYSTEM_INSPECTION;
+        boolean providerScoped = !affinity.provider().isBlank() && (connectedRuntime || !publicWeb || affinity.fromContext());
+        boolean webAllowed = publicWeb && !providerScoped;
+        boolean readOnly = isReadOnlyRequest(intent, userMessage, goal) || providerScoped;
+        List<ToolOperationRole> selectedRoles = providerScoped
+                ? List.of(ToolOperationRole.DISCOVERY, ToolOperationRole.SELECTION, ToolOperationRole.READ,
+                ToolOperationRole.SEARCH, ToolOperationRole.INSPECT)
+                : readOnly ? List.of(ToolOperationRole.DISCOVERY, ToolOperationRole.SELECTION, ToolOperationRole.READ,
+                ToolOperationRole.SEARCH, ToolOperationRole.INSPECT, ToolOperationRole.VERIFY, ToolOperationRole.UNKNOWN)
+                : List.of();
         for (ToolDefinition definition : toolRegistry.definitions()) {
             for (ToolOperationDefinition operation : definition.operations()) {
-                if (!readOnly || isReadAllowed(operation)) {
-                    values.add(toNative(definition, operation));
+                NativeToolDefinition nativeDefinition = toNative(definition, operation);
+                String reason = rejectionReason(definition, operation, providerScoped, affinity.provider(), webAllowed, readOnly, selectedRoles);
+                if (reason.isBlank()) {
+                    values.add(nativeDefinition);
+                } else {
+                    rejected.put(nativeDefinition.name(), reason);
                 }
             }
         }
-        return values;
+        if (values.isEmpty() && providerScoped) {
+            for (ToolDefinition definition : toolRegistry.definitions()) {
+                for (ToolOperationDefinition operation : definition.operations()) {
+                    if (isMcpTool(definition) && isReadAllowed(operation)) {
+                        NativeToolDefinition nativeDefinition = toNative(definition, operation);
+                        values.add(nativeDefinition);
+                        rejected.remove(nativeDefinition.name());
+                    }
+                }
+            }
+            if (!values.isEmpty()) {
+                affinity = new ProviderAffinity("", "fallback:mcp-read-only", false);
+                resolvedIntent = ToolIntent.CONNECTED_SYSTEM_INSPECTION;
+            }
+        }
+        return new ToolScopeResolution(intent, resolvedIntent, affinity.provider(), affinity.source(),
+                selectedRoles, values.stream().map(NativeToolDefinition::name).toList(), rejected, values);
     }
 
     /**
@@ -300,6 +353,132 @@ public class NativeToolSchemaMapper {
         return read && !mutating;
     }
 
+    private String rejectionReason(
+            ToolDefinition definition,
+            ToolOperationDefinition operation,
+            boolean providerScoped,
+            String provider,
+            boolean webAllowed,
+            boolean readOnly,
+            List<ToolOperationRole> selectedRoles
+    ) {
+        ToolOperationRole role = ToolOperationClassifier.classify(definition.name(), operation.name());
+        if (providerScoped) {
+            if (!isMcpTool(definition)) {
+                return "connected-provider scope excludes non-MCP tool";
+            }
+            String currentProvider = providerId(definition.name());
+            if (!provider.isBlank() && !provider.equals(currentProvider)) {
+                return "different MCP provider";
+            }
+            if (!selectedRoles.contains(role)) {
+                return "operation role not selected for connected inspection: " + role;
+            }
+            if (!isReadAllowed(operation)) {
+                return "operation is not read-only";
+            }
+            return "";
+        }
+        if (isWebTool(definition) && !webAllowed && readOnly) {
+            return "web not requested";
+        }
+        if (readOnly && !isReadAllowed(operation)) {
+            return "read-only request excludes mutating operation";
+        }
+        return "";
+    }
+
+    private ProviderAffinity providerAffinity(String text, Map<String, Object> context) {
+        Set<String> providers = mcpProviders();
+        String contextProvider = contextProvider(context);
+        if (!contextProvider.isBlank() && providers.contains(contextProvider)) {
+            return new ProviderAffinity(contextProvider, "context.provider", true);
+        }
+        for (String provider : providers) {
+            if (mentionsProvider(text, provider)) {
+                return new ProviderAffinity(provider, "message-or-goal-provider-name", false);
+            }
+        }
+        return new ProviderAffinity("", "", false);
+    }
+
+    private Set<String> mcpProviders() {
+        Set<String> providers = new LinkedHashSet<>();
+        for (ToolDefinition definition : toolRegistry.definitions()) {
+            if (isMcpTool(definition)) {
+                providers.add(providerId(definition.name()));
+            }
+        }
+        return providers;
+    }
+
+    private String contextProvider(Map<String, Object> context) {
+        if (context == null || context.isEmpty()) {
+            return "";
+        }
+        for (String key : List.of("provider", "system", "server", "mcpServer", "runtime")) {
+            Object value = context.get(key);
+            if (value != null) {
+                return normalizeToken(String.valueOf(value));
+            }
+        }
+        return "";
+    }
+
+    private boolean mentionsProvider(String text, String provider) {
+        String normalizedProvider = normalizeToken(provider);
+        return text.matches(".*\\b" + java.util.regex.Pattern.quote(normalizedProvider) + "\\b.*");
+    }
+
+    private boolean requestsConnectedRuntime(String text) {
+        return containsAny(text,
+                "connected", "attached", "active", "currently connected", "current project",
+                "podlacz", "polacz", "aktywn", "aktualnie polacz", "aktualnie podlacz",
+                "biezac", "otwart", "runtime", "studio", "projekt");
+    }
+
+    private boolean requestsPublicWeb(String text) {
+        return containsAny(text,
+                "internet", "w internecie", "web", "online", "public", "publiczn", "documentation",
+                "docs", "dokumentacj", "wyszukaj w sieci", "sprawdz w sieci", "google",
+                "cena", "ceny", "koszt", "kosztuje", "po ile", "uzywan", "rynek", "market",
+                "marketplace", "listing", "listings", "oferta", "oferty", "kupic", "buy", "price");
+    }
+
+    private String requestText(String userMessage, String goal, Map<String, Object> context) {
+        return normalize((userMessage == null ? "" : userMessage) + " "
+                + (goal == null ? "" : goal) + " "
+                + (context == null ? "" : context.toString()));
+    }
+
+    private String normalize(String value) {
+        String normalized = java.text.Normalizer.normalize(value == null ? "" : value.toLowerCase(Locale.ROOT),
+                java.text.Normalizer.Form.NFD);
+        return normalized.replaceAll("\\p{M}", "");
+    }
+
+    private String normalizeToken(String value) {
+        return normalize(value).replaceAll("[^a-z0-9]+", "");
+    }
+
+    private boolean isMcpTool(ToolDefinition definition) {
+        return definition.name().toLowerCase(Locale.ROOT).startsWith("mcp_");
+    }
+
+    private boolean isWebTool(ToolDefinition definition) {
+        return "web".equalsIgnoreCase(definition.name());
+    }
+
+    private String providerId(String toolName) {
+        String normalized = toolName.toLowerCase(Locale.ROOT);
+        if (!normalized.startsWith("mcp_")) {
+            return "";
+        }
+        String remainder = normalized.substring("mcp_".length());
+        int separator = remainder.indexOf('_');
+        return separator < 1 ? remainder : remainder.substring(0, separator);
+    }
+
     private boolean isReadAllowed(ToolOperationDefinition operation) {
         return !operation.write() && operation.safetyLevel() == ToolSafetyLevel.READ;
     }
@@ -311,6 +490,9 @@ public class NativeToolSchemaMapper {
             }
         }
         return false;
+    }
+
+    private record ProviderAffinity(String provider, String source, boolean fromContext) {
     }
 
     private String actualTypeLabel(Object value) {
