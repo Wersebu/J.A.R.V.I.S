@@ -235,6 +235,34 @@ See `NativeToolLoopServiceRobloxContinuationTest` for the full scripted regressi
 
 Not yet built: the Windows UI conversation-switcher (needs this API - next stage), the complete-turns context reducer, rolling summary generation, and the token-based context budget manager. See `SQLiteConversationRepositoryTest`, `SQLiteConversationMessageRepositoryTest`, `DurableConversationMigrationTest`, `SQLiteConversationMemoryServiceDualWriteTest`, and `ConversationControllerTest` for the regression coverage.
 
+### AI/Tool Diagnostic Trace
+
+> **This is a DEBUG-only feature.** When enabled it can log an entire conversation, system prompt, tool arguments, and tool results verbatim to the application log. Known secret-shaped keys (`Authorization`, `api_key`, `password`, `cookie`, `token`, ...) are redacted before logging, and binary/base64-looking values (images, other blobs) are never dumped - but ordinary conversation content, user data, and tool results **are** logged in full. Never enable this in an environment where logs are shipped somewhere untrusted, and never commit or share a log captured with it enabled without reviewing it first.
+
+Three independent flags under `jarvis.diagnostics` (all default `false`, deliberately never tied to the separate, pre-existing `log-prompt-preview` flag):
+
+```yaml
+jarvis:
+  diagnostics:
+    log-full-ai-request: false   # exact outbound Ollama request JSON, post context-budgeting
+    log-tool-calls: false        # model tool calls, tool-execution-begin, MCP-call-begin
+    log-tool-results: false      # tool/MCP results
+```
+
+When enabled, every stage of `USER -> MODEL -> TOOL_CALL -> MCP -> TOOL_RESULT -> MODEL -> ...` is logged under the `AI_TRACE` logger as a readable, delimited block:
+
+- **`AI REQUEST BEGIN/END`** (`log-full-ai-request`) - `OllamaProvider` logs the *exact* `String` it hands to `HttpRequest.BodyPublishers.ofString(...)`, serialized exactly once and reused for both the log and the real HTTP body - the log can never drift from what was actually sent (no separate "preview" prompt from an earlier pipeline stage). For the plain `stream()` path this is the real, post-`ContextBudgetService.fitPrompt()` prompt text, not the pre-budget one. Includes `requestId`, `model`, `endpoint`, `jobType`, `reasoningLevel`, `turn` (see below), and `payloadBytes`.
+- **`MODEL TOOL CALL`** (`log-tool-calls`) - every native tool call the model generates this turn, with its exact arguments.
+- **`TOOL EXECUTION BEGIN`** (`log-tool-calls`) - right before `ToolManager.execute(...)` runs, showing `source=NATIVE` or `source=MCP` and, for MCP, `mcpServer`.
+- **`MCP CALL BEGIN`** (`log-tool-calls`) - at the real MCP transport boundary (`DefaultMcpServerManager#call`), showing **both** the model-facing name (`mcp_<server>_<tool>`) and the real MCP tool name actually sent to the MCP server - a mismatch between the two was a plausible root cause under investigation, so both are always shown together, never just one.
+- **`TOOL RESULT`** (`log-tool-results`) - `success`/`changed`/`errorCode`/`errorMessage` plus the full result data; for MCP results this includes `content`, `structuredContent`, and `mcpServer`/`mcpTool` (already present on every MCP `ToolResult`).
+
+**Turn correlation**: `requestId` is stable across every turn of one tool-loop execution (`InferenceDiagnosticsContext`, unchanged). The tool loop's 1-based `turn` number is threaded across the `NativeToolLoopService -> AIProvider` boundary via a thread-scoped `AiTraceTurnContext` (`jarvis-common`) rather than an `AIProvider.toolChat(...)` interface change - that would have been a much larger, riskier change for a pure observability feature. One `requestId` + increasing `turn` values is enough to reconstruct the full `AI REQUEST turn=1 -> MODEL TOOL CALL -> MCP CALL -> TOOL RESULT -> AI REQUEST turn=2 -> FINAL ANSWER` sequence from the log alone.
+
+**Cost when disabled**: every logging call point starts with a single `volatile` boolean read (`AiTraceSettings`) and returns immediately - no pretty-printing, no redaction, no serialization happens unless the relevant flag is on.
+
+See `AiTraceLoggerTest` (formatting/redaction/binary-omission unit tests), `OllamaProviderAiTraceTest` (proves the logged JSON is byte-identical to the real HTTP body), and `NativeToolLoopServiceAiTraceMcpIntegrationTest` (full real-MCP-path end-to-end trace, including turn correlation and the model-facing-vs-real MCP tool name).
+
 ### Vision / Image Attachments
 
 Chat requests may attach images (resolved through the same temporary-workspace mechanism as file attachments). `ImageAttachmentStage` loads them into the pipeline, and `ModelExecutionStage` gates the call behind the active model's detected `VISION` capability - a non-vision model never silently receives image bytes it can't use. Vision-capable requests are sent through Ollama's `/api/chat` transport (per-message `images` field), not `/api/generate`, because at least one real chat-templated multimodal model has been observed to silently ignore `/api/generate`'s top-level `images` field. When an image is attached, the prompt also carries an explicit `=== ATTACHED IMAGES ===` note, so a model reasoning strictly from prompt text doesn't talk itself into concluding no image was provided.

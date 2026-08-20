@@ -29,6 +29,13 @@ jarvis:
     request-history-size: 100
     log-prompt-preview: false
     expose-debug-api: true
+    # Full AI/tool diagnostic trace (see docs/AI_TRACE.md and README "Diagnostics"): logs the exact
+    # outbound Ollama request payload, every model tool call, tool/MCP execution boundary, and tool
+    # results. DEBUG-only - can log an entire conversation, system prompt, and tool arguments
+    # verbatim. Independent of log-prompt-preview above. Defaults to off; negligible cost when off.
+    log-full-ai-request: false
+    log-tool-calls: false
+    log-tool-results: false
   tools:
     enabled: true
     runtime: native

@@ -14,7 +14,12 @@ import com.jarvis.common.ai.NativeToolDefinition;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.knowledge.KnowledgeMode;
+import com.jarvis.common.trace.AiTraceLogger;
+import com.jarvis.common.trace.AiTraceSettings;
+import com.jarvis.common.trace.AiTraceTurnContext;
 import com.jarvis.tools.ToolException;
+import com.jarvis.tools.mcp.McpJarvisTool;
+import com.jarvis.tools.mcp.McpToolDescriptor;
 import com.jarvis.tools.ToolManager;
 import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
@@ -117,6 +122,18 @@ public class NativeToolLoopService {
      * @return tool-calling result
      */
     public ToolCallingResult execute(ToolCallingRequest request) {
+        // AiTraceTurnContext is a thread-scoped diagnostic value (see its javadoc) set per turn
+        // below - this wrapper guarantees it is always cleared when the loop finishes, regardless
+        // of which of executeInternal's several return points was hit, so a pooled thread never
+        // leaks a stale turn number into a later, unrelated model call.
+        try {
+            return executeInternal(request);
+        } finally {
+            AiTraceTurnContext.clear();
+        }
+    }
+
+    private ToolCallingResult executeInternal(ToolCallingRequest request) {
         if (!properties.isEnabled()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
         }
@@ -236,6 +253,7 @@ public class NativeToolLoopService {
                 !request.images().isEmpty());
 
         for (int step = 1; step <= maxCalls; step++) {
+            AiTraceTurnContext.set(step);
             if (Duration.between(started, Instant.now()).toSeconds() > properties.timeoutSeconds()) {
                 errors.add("TIMEOUT");
                 break;
@@ -251,10 +269,13 @@ public class NativeToolLoopService {
                 LOGGER.info("[AGENT_LOOP] requestId={} turn={} action=TOOL_REQUEST calls={}",
                         request.requestId(), step, response.toolCalls().size());
                 messages.add(ModelMessage.assistant(response.content(), response.toolCalls()));
+                int toolCallIndex = 0;
                 for (ModelToolCall call : response.toolCalls()) {
                     publish(request, CognitiveEventType.NATIVE_TOOL_CALL_RECEIVED, "RECEIVED",
                             "Native tool call received", null, step, Map.of("name", call.name(), "arguments", call.arguments()));
                     logNativeToolCall(request, step, call);
+                    logModelToolCallTrace(request, step, toolCallIndex, call);
+                    toolCallIndex++;
                     ToolAction action;
                     try {
                         action = schemaMapper.toAction(call.name(), call.arguments(), "Native model tool call");
@@ -773,6 +794,7 @@ public class NativeToolLoopService {
                 "Native model tool call step " + step,
                 action.arguments()
         );
+        logToolExecutionTrace(request, action);
         publish(request, CognitiveEventType.TOOL_EXECUTION_STARTED, "EXECUTING",
                 "Tool execution started", targetNode(action), step, actionMetadata(action));
         ToolResult result;
@@ -788,9 +810,62 @@ public class NativeToolLoopService {
                     request.requestId(), action.tool(), action.operation(), error, exception);
             result = toolExecutionFailedResult(request, action, error);
         }
+        logToolResultTrace(request, action, result);
         publish(request, CognitiveEventType.TOOL_EXECUTION_FINISHED, result.success() ? "FINISHED" : "FAILED",
                 toolExecutionFinishedMessage(result), targetNode(action), step, resultMetadata(result));
         return result;
+    }
+
+    /**
+     * Logs a model-generated tool call for the full diagnostic AI/tool trace (see {@link
+     * AiTraceLogger}) - gated by {@link AiTraceSettings#logToolCalls()}, near-zero cost when
+     * disabled.
+     */
+    private void logModelToolCallTrace(ToolCallingRequest request, int step, int index, ModelToolCall call) {
+        if (!AiTraceSettings.logToolCalls()) {
+            return;
+        }
+        AiTraceLogger.logModelToolCall(request.requestId(), step, index, call.name(), call.arguments());
+    }
+
+    /**
+     * Logs a tool execution about to start - {@code source}/{@code mcpServer} identify whether this
+     * resolves to an {@link McpJarvisTool} without guessing from the model-facing name's {@code
+     * mcp_} prefix. The precise MCP-boundary log naming both the model-facing and real MCP tool
+     * name (see {@link AiTraceLogger#logMcpCallBegin}) is emitted separately, at the actual MCP
+     * transport boundary in {@code DefaultMcpServerManager#call} - not duplicated here.
+     */
+    private void logToolExecutionTrace(ToolCallingRequest request, ToolAction action) {
+        if (!AiTraceSettings.logToolCalls()) {
+            return;
+        }
+        Optional<McpToolDescriptor> mcpDescriptor = mcpDescriptorFor(action.tool());
+        AiTraceLogger.logToolExecutionBegin(request.requestId(), request.conversationId(), action.tool(), action.operation(),
+                mcpDescriptor.isPresent() ? "MCP" : "NATIVE", mcpDescriptor.map(McpToolDescriptor::serverId).orElse(""),
+                action.arguments());
+    }
+
+    /**
+     * Logs a finished tool execution's result for the full diagnostic AI/tool trace.
+     */
+    private void logToolResultTrace(ToolCallingRequest request, ToolAction action, ToolResult result) {
+        if (!AiTraceSettings.logToolResults()) {
+            return;
+        }
+        AiTraceLogger.logToolResult(request.requestId(), action.tool(), result.success(), result.changed(),
+                result.errorCode(), result.errorMessage(), result.data());
+    }
+
+    /**
+     * Resolves {@code toolName} to its {@link McpToolDescriptor} when it is backed by an {@link
+     * McpJarvisTool} - the single place this loop distinguishes an MCP-sourced tool call from a
+     * native one, rather than guessing from the model-facing name's {@code mcp_} prefix.
+     */
+    private Optional<McpToolDescriptor> mcpDescriptorFor(String toolName) {
+        return toolManager.findTool(toolName)
+                .filter(McpJarvisTool.class::isInstance)
+                .map(McpJarvisTool.class::cast)
+                .map(McpJarvisTool::descriptor);
     }
 
     /**

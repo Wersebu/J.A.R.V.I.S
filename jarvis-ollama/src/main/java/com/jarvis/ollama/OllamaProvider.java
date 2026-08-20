@@ -29,6 +29,8 @@ import com.jarvis.common.event.TokenEvent;
 import com.jarvis.common.model.ActiveModelService;
 import com.jarvis.common.model.ModelCapability;
 import com.jarvis.common.model.QwenThinkingBudgetMode;
+import com.jarvis.common.trace.AiTraceLogger;
+import com.jarvis.common.trace.AiTraceTurnContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -194,6 +196,11 @@ public class OllamaProvider implements AIProvider {
                     LOGGER.info("[JARVIS][requestId={}][OLLAMA] Sending images via /api/chat count={} model={}",
                             requestId, images.size(), brain.model());
                 }
+                // Logs the exact requestJson String already built above - never a second,
+                // independently re-serialized copy - so the trace log is guaranteed to match the
+                // real HTTP body below, including the post-context-budgeting prompt text.
+                AiTraceLogger.logOutboundAiRequest(requestId, brain.model(), endpoint, jobType.name(),
+                        brain.reasoningLevel().name(), AiTraceTurnContext.current(), requestJson);
                 HttpRequest httpRequest = HttpRequest.newBuilder()
                         .uri(URI.create(endpoint))
                         .timeout(Duration.ofMinutes(5))
@@ -316,12 +323,18 @@ public class OllamaProvider implements AIProvider {
                         properties.keepAlive(),
                         contextBudgetService.ollamaOptions()
                 );
+                // Serialized exactly once - this same String is what gets logged AND what becomes
+                // the HTTP body below, so the trace log can never drift from the real payload (see
+                // AiTraceLogger#logOutboundAiRequest javadoc).
+                String requestJson = objectMapper.writeValueAsString(requestBody);
+                AiTraceLogger.logOutboundAiRequest(requestId, brain.model(), endpoint, jobType.name(),
+                        brain.reasoningLevel().name(), AiTraceTurnContext.current(), requestJson);
                 long started = System.nanoTime();
                 HttpRequest httpRequest = HttpRequest.newBuilder()
                         .uri(URI.create(endpoint))
                         .timeout(Duration.ofMinutes(5))
                         .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(requestBody)))
+                        .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                         .build();
                 HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
                 long durationMs = nanosToMillis(System.nanoTime() - started);

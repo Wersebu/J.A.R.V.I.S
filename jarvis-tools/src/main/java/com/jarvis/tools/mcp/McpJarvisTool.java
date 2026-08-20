@@ -39,6 +39,17 @@ public class McpJarvisTool implements JarvisTool, ToolSchemaProvider {
         return descriptor.jarvisToolName();
     }
 
+    /**
+     * Returns this tool's MCP descriptor - used by diagnostic tracing to show both the model-facing
+     * name ({@link McpToolDescriptor#jarvisToolName()}) and the real MCP tool/server names a call
+     * resolves to, without the caller needing to re-derive them from the concatenated name.
+     *
+     * @return the MCP tool descriptor
+     */
+    public McpToolDescriptor descriptor() {
+        return descriptor;
+    }
+
     @Override
     public String getDescription() {
         return "MCP tool from server '" + descriptor.serverId() + "': " + descriptor.description();

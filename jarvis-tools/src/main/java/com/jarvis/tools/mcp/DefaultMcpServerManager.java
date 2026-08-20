@@ -1,5 +1,7 @@
 package com.jarvis.tools.mcp;
 
+import com.jarvis.common.trace.AiTraceLogger;
+import com.jarvis.common.trace.AiTraceSettings;
 import com.jarvis.tools.ToolRequest;
 import org.springframework.beans.factory.ObjectProvider;
 import org.slf4j.Logger;
@@ -285,6 +287,14 @@ public class DefaultMcpServerManager implements McpServerManager {
             return new McpCallResult(false, List.of(), Map.of(), "MCP_NOT_CONNECTED", lastErrors.getOrDefault(descriptor.serverId(), "MCP server is not connected."));
         }
         LOGGER.info("[MCP] call server={} tool={} requestId={}", descriptor.serverId(), descriptor.name(), request.requestId());
+        // Deliberately shows both the model-facing name (mcp_<server>_<tool>) and the real tool
+        // name about to be sent over the wire - a mismatch between the two is a plausible root
+        // cause for a tool silently doing the wrong thing, and this is the actual transport
+        // boundary where descriptor.name() is used, not a guess derived from the prefixed name.
+        if (AiTraceSettings.logToolCalls()) {
+            AiTraceLogger.logMcpCallBegin(request.requestId(), descriptor.serverId(), descriptor.jarvisToolName(),
+                    descriptor.name(), request.arguments());
+        }
         McpCallResult result = clients.get(descriptor.serverId()).callTool(descriptor.name(), request.arguments(), server.getCallTimeout());
         LOGGER.info("[MCP] completed server={} tool={} success={}", descriptor.serverId(), descriptor.name(), result.success());
         return result;
