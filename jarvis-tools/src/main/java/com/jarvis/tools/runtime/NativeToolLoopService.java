@@ -319,7 +319,7 @@ public class NativeToolLoopService {
                         ToolResult invalid = invalidResult(request, call, exception.getMessage(), errorCode, acquiredFacts);
                         results.add(invalid);
                         steps.add(new ToolRuntimeStep(step, "INVALID_TOOL_CALL", toolName(call), operationName(call), "FAILED", invalid));
-                        messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(invalid)));
+                        messages.add(toolResultMessage(request, step, call, compactToolResult(invalid)));
                         messages.add(ModelMessage.system(schemaRepairGuidance(call.name(), acquiredFacts)));
                         continue;
                     }
@@ -340,7 +340,7 @@ public class NativeToolLoopService {
                             ToolResult mismatch = datasetIdMismatchResult(request, action, activeDatasetId, supplied, workflowDocumentLoaded);
                             results.add(mismatch);
                             steps.add(new ToolRuntimeStep(step, "STORE_DATASET_ID_MISMATCH", action.tool(), action.operation(), "BLOCKED", mismatch));
-                            messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(mismatch)));
+                            messages.add(toolResultMessage(request, step, call, compactToolResult(mismatch)));
                             messages.add(ModelMessage.system(workflowStatusBlock(request, activeDatasetId, workflowDocumentLoaded)));
                             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "STORE_DATASET_ID_MISMATCH",
                                     "Supplied datasetId does not match the active Store Audit dataset", null, step, Map.of(
@@ -364,7 +364,7 @@ public class NativeToolLoopService {
                             ToolResult blocked = docGateRejection.get();
                             results.add(blocked);
                             steps.add(new ToolRuntimeStep(step, "STORE_AUDIT_WORKFLOW_DOCUMENT_NOT_LOADED", action.tool(), action.operation(), "BLOCKED", blocked));
-                            messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(blocked)));
+                            messages.add(toolResultMessage(request, step, call, compactToolResult(blocked)));
                             messages.add(ModelMessage.system(workflowStatusBlock(request, activeDatasetId, workflowDocumentLoaded)));
                             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "STORE_AUDIT_WORKFLOW_DOCUMENT_NOT_LOADED",
                                     "GEOCODE_DATASET blocked - required workflow document not read yet", null, step, Map.of(
@@ -388,7 +388,7 @@ public class NativeToolLoopService {
                             ToolResult blocked = noProgress.get();
                             results.add(blocked);
                             steps.add(new ToolRuntimeStep(step, "GET_DATASET_NO_PROGRESS", action.tool(), action.operation(), "BLOCKED", blocked));
-                            messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(blocked)));
+                            messages.add(toolResultMessage(request, step, call, compactToolResult(blocked)));
                             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "GET_DATASET_NO_PROGRESS",
                                     "Repeated GET_DATASET blocked - dataset unchanged since the last call", null, step,
                                     Map.of("tool", action.tool(), "operation", action.operation(), "activeDatasetId", activeDatasetId));
@@ -402,7 +402,7 @@ public class NativeToolLoopService {
                         ToolResult duplicate = duplicateResult(request, action);
                         results.add(duplicate);
                         steps.add(new ToolRuntimeStep(step, "DUPLICATE_TOOL_CALL", action.tool(), action.operation(), "BLOCKED", duplicate));
-                        messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(duplicate)));
+                        messages.add(toolResultMessage(request, step, call, compactToolResult(duplicate)));
                         publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "DUPLICATE_TOOL_CALL",
                                 "Duplicate tool call blocked", null, step, Map.of(
                                         "tool", action.tool(), "operation", action.operation(), "arguments", action.arguments()));
@@ -418,7 +418,7 @@ public class NativeToolLoopService {
                         ToolResult noProgress = noProgressResult(request, action, repeatCount);
                         results.add(noProgress);
                         steps.add(new ToolRuntimeStep(step, "NO_PROGRESS_BLOCKED", action.tool(), action.operation(), "BLOCKED", noProgress));
-                        messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(noProgress)));
+                        messages.add(toolResultMessage(request, step, call, compactToolResult(noProgress)));
                         publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "NO_PROGRESS_BLOCKED",
                                 "Repeated tool operation blocked, no progress detected", null, step, Map.of(
                                         "tool", action.tool(), "operation", action.operation(), "repeatCount", repeatCount));
@@ -429,7 +429,7 @@ public class NativeToolLoopService {
                             ToolResult blocked = rawGeocodeAfterFailedDatasetResult(request, action);
                             results.add(blocked);
                             steps.add(new ToolRuntimeStep(step, "RAW_GEOCODE_AFTER_DATASET_FAILURE_BLOCKED", action.tool(), action.operation(), "BLOCKED", blocked));
-                            messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(blocked)));
+                            messages.add(toolResultMessage(request, step, call, compactToolResult(blocked)));
                             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "RAW_GEOCODE_AFTER_DATASET_FAILURE_BLOCKED",
                                     "Raw batch geocoding blocked after a failed dataset creation attempt", null, step, Map.of(
                                             "tool", action.tool(), "operation", action.operation()));
@@ -444,7 +444,7 @@ public class NativeToolLoopService {
                             ToolResult blocked = rawGeocodeLimitResult(request, action, projectedTotal);
                             results.add(blocked);
                             steps.add(new ToolRuntimeStep(step, "RAW_GEOCODE_WITHOUT_DATASET_BLOCKED", action.tool(), action.operation(), "BLOCKED", blocked));
-                            messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(blocked)));
+                            messages.add(toolResultMessage(request, step, call, compactToolResult(blocked)));
                             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "RAW_GEOCODE_WITHOUT_DATASET_BLOCKED",
                                     "Raw batch geocoding blocked without a storeDataset", null, step, Map.of(
                                             "tool", action.tool(), "operation", action.operation(), "projectedTotal", projectedTotal));
@@ -530,7 +530,7 @@ public class NativeToolLoopService {
                     results.add(result);
                     steps.add(new ToolRuntimeStep(step, "TOOL_CALL", action.tool(), action.operation(),
                             result.success() ? "OK" : "FAILED", result));
-                    messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(result)));
+                    messages.add(toolResultMessage(request, step, call, compactToolResult(result)));
                     if (!newFacts.isEmpty()) {
                         messages.add(ModelMessage.system(acquiredFactsBlock(acquiredFacts)));
                     }
@@ -557,7 +557,7 @@ public class NativeToolLoopService {
                             results.add(retryResult);
                             steps.add(new ToolRuntimeStep(step, "TOOL_CALL", "web", "READ_WEB_PAGE",
                                     retryResult.success() ? "OK" : "FAILED", retryResult));
-                            messages.add(ModelMessage.tool(toolCallId(call), compactToolResult(retryResult)));
+                            messages.add(toolResultMessage(request, step, call, compactToolResult(retryResult)));
                             if (marketplaceCollector != null) {
                                 drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages, toolCallId(call), step);
                             }
@@ -1640,7 +1640,13 @@ public class NativeToolLoopService {
             results.add(result);
             steps.add(new ToolRuntimeStep(step, "TOOL_CALL", action.tool(), action.operation(),
                     result.success() ? "OK" : "FAILED", result));
-            messages.add(ModelMessage.tool(toolCallId, compactToolResult(result)));
+            // No single ModelToolCall exists for these Core-synthesized candidate reads (they never
+            // came from the model itself) - the native function name is reconstructed from the
+            // action that actually ran, using the exact same tool__operation convention every real
+            // native function name already follows (see NativeToolSchemaMapper#toNative).
+            String candidateContent = compactToolResult(result);
+            logNativeToolResultMessageTrace(request, step, toolCallId, nativeFunctionName(action), candidateContent);
+            messages.add(ModelMessage.tool(toolCallId, nativeFunctionName(action), candidateContent));
             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "SENT",
                     "Marketplace candidate result sent to model", targetNode(action), step, resultMetadata(result));
             executed = true;
@@ -2505,6 +2511,50 @@ public class NativeToolLoopService {
         String name = nativeToolName == null ? "" : nativeToolName;
         int separator = name.indexOf("__");
         return separator < 1 ? "" : name.substring(separator + 2).toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * Reconstructs the native function name (the exact {@code tool__operation} shape the model
+     * calls, e.g. {@code web__read_web_page}) for an internally-synthesized tool call that never had
+     * a real {@link ModelToolCall} of its own (see {@link #drainMarketplaceCandidates}) - the
+     * inverse of {@link #toolName(String)}/{@link #operationName(String)}, using the exact same
+     * convention {@code NativeToolSchemaMapper#toNative} builds it with.
+     *
+     * @param action the tool action that actually executed
+     * @return native function name
+     */
+    private String nativeFunctionName(ToolAction action) {
+        return action.tool().toLowerCase(Locale.ROOT) + "__" + action.operation().toLowerCase(Locale.ROOT);
+    }
+
+    /**
+     * Builds a {@code role=tool} message carrying both the tool call id and the exact native
+     * function name the originating assistant turn used - required for Ollama to correctly
+     * associate this result with that tool call on the next {@code /api/chat} turn (a missing native
+     * function name here was the confirmed root cause of a real "no user query found in messages"
+     * HTTP 500 during multi-turn native tool continuation). Also emits the compact {@code
+     * [NATIVE_TOOL_RESULT_MESSAGE]} correlation trace line - never the full content, which {@link
+     * #logToolResultTrace} already covers when {@code log-tool-results} is on.
+     *
+     * @param request tool-calling request
+     * @param step current tool-loop turn number
+     * @param call the model tool call this result belongs to
+     * @param content the compacted tool result content
+     * @return the tool result message to append to the running message list
+     */
+    private ModelMessage toolResultMessage(ToolCallingRequest request, int step, ModelToolCall call, String content) {
+        String toolCallId = toolCallId(call);
+        logNativeToolResultMessageTrace(request, step, toolCallId, call.name(), content);
+        return ModelMessage.tool(toolCallId, call.name(), content);
+    }
+
+    private void logNativeToolResultMessageTrace(ToolCallingRequest request, int step, String toolCallId, String toolName, String content) {
+        if (!AiTraceSettings.logToolCalls()) {
+            return;
+        }
+        int contentBytes = content == null ? 0 : content.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        LOGGER.info("[NATIVE_TOOL_RESULT_MESSAGE] requestId={} turn={} toolCallId={} toolName={} contentBytes={}",
+                request.requestId(), step, toolCallId, toolName, contentBytes);
     }
 
     private boolean isWebSearch(ToolAction action) {

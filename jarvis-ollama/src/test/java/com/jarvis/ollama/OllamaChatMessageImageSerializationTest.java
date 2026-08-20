@@ -56,4 +56,30 @@ class OllamaChatMessageImageSerializationTest {
 
         assertThat(json).doesNotContain("think");
     }
+
+    // Regression coverage for the confirmed root cause of a real "no user query found in messages"
+    // HTTP 500 during multi-turn native tool continuation: a tool-role message with no tool_name
+    // field at all. See NativeToolLoopServiceMultiTurnToolResultTest for the end-to-end flow.
+
+    @Test
+    void toolResultMessageSerializesWithExactToolNameAndToolCallId() throws Exception {
+        OllamaChatMessage message = new OllamaChatMessage(
+                "tool", "{\"session_id\":\"studio-123\"}", "", List.of(), "call_123", "list_sessions", List.of());
+
+        JsonNode json = objectMapper.readTree(objectMapper.writeValueAsString(message));
+
+        assertThat(json.path("role").asText()).isEqualTo("tool");
+        assertThat(json.path("tool_name").asText()).isEqualTo("list_sessions");
+        assertThat(json.path("tool_call_id").asText()).isEqualTo("call_123");
+        assertThat(json.path("content").asText()).isEqualTo("{\"session_id\":\"studio-123\"}");
+    }
+
+    @Test
+    void toolNameFieldIsOmittedEntirelyForNonToolMessages() throws Exception {
+        OllamaChatMessage assistantMessage = new OllamaChatMessage("assistant", "hello", "", List.of(), "");
+
+        String json = objectMapper.writeValueAsString(assistantMessage);
+
+        assertThat(json).doesNotContain("tool_name");
+    }
 }

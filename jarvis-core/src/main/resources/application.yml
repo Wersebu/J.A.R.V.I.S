@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.18.1"
+  version: "2.18.2"
   websocket:
     max-text-message-size: 4194304
     max-binary-message-size: 8388608
