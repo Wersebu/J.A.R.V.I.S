@@ -3,21 +3,20 @@ package com.jarvis.tools.workflow.goal;
 import java.util.List;
 
 /**
- * Explicit, model-declared decomposition of what the current request actually requires - designed
- * to be created once, before the first tool call, and then carried through the rest of the tool
- * loop as real Core-held state (not re-derived from scratch each turn), so the model can never lose
- * sight of the original goal behind a narrow intermediate tool result.
+ * Explicit decomposition of what the current request actually requires. It is created once before
+ * the first real tool call and carried through the rest of the native tool loop as real Core-held
+ * state (not re-derived from scratch each turn), so the model can never lose sight of the original
+ * goal behind a narrow intermediate tool result.
  *
- * <p><b>Design status: not yet wired into {@code NativeToolLoopService}.</b> This package exists to
- * pin down a clean, reviewable shape for the mechanism described in the project's Goal Contract
- * requirement, ahead of the dedicated stage that actually creates, threads, and verifies against
- * it. See {@link com.jarvis.tools.workflow.GenericGoalCompletionValidator}'s class javadoc for why
- * it is not folded into the current phrase-based safety net.</p>
+ * <p><b>Runtime status: wired into {@code NativeToolLoopService}.</b> The loop stores the active
+ * contract in {@code AgentExecutionState}, appends {@link AcquiredEvidence} after tool results and
+ * runtime recovery actions, and accepts a proposed final answer only after a structured {@link
+ * CompletionVerification} returns {@link CompletionDecision#COMPLETE}. A {@code CONTINUE} decision
+ * re-enters the same native tool loop with the full tool catalog still available.</p>
  *
- * <p>Deliberately generic - nothing here or in any planned caller may hardcode a specific domain
- * (Roblox, Store Audit, or otherwise). {@code completionCriteria} and {@code requiredOutcome} are
- * always model-authored text for the specific request at hand, never a fixed catalog Core selects
- * from.</p>
+ * <p>Deliberately generic - nothing here or in any caller may hardcode a specific domain (Roblox,
+ * Store Audit, or otherwise). {@code completionCriteria} and {@code requiredOutcome} are text for
+ * the specific request at hand, never a fixed catalog Core selects from.</p>
  *
  * @param originalGoal the user's original request, verbatim or a faithful restatement
  * @param requiredOutcome what a genuinely complete answer must actually contain/accomplish

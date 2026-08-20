@@ -91,6 +91,56 @@ class NativeToolLoopServiceRobloxContinuationTest {
     }
 
     @Test
+    void reportedMapVillageCaseContinuesWithFullToolsUntilConcreteEvidenceCompletesGoal() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn(LIST_STUDIOS, Map.of()));
+        turns.add(toolCallTurn(GET_STUDIO_STATE, Map.of("studio_id", "studio-1")));
+        turns.add(textTurn("To nadal za malo: mam tylko stan Studio, brakuje kodu generowania mapy i rozmiaru wioski."));
+        turns.add(toolCallTurn(SEARCH_GAME_TREE, Map.of("studio_id", "studio-1", "datamodel_type", "Edit", "query", "map village generator")));
+        turns.add(toolCallTurn(SCRIPT_READ, Map.of("studio_id", "studio-1", "datamodel_type", "Edit", "path", "ServerScriptService/MapGenerator.server.lua")));
+        turns.add(textTurn("Mapa ma 2048x2048, a generator tworzy jedna wioske na sektor 256x256."));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        NativeToolLoopService service = newService(provider, recoveryRobloxRegistry(), new RecordingRobloxToolManager(false));
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1",
+                "Sprawdz czy mapa Roblox nie jest za mala dla tylu wiosek.",
+                "Verify map size and village generation code.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.finalAnswer()).contains("2048x2048", "256x256");
+        assertThat(provider.toolNamesByCall())
+                .anySatisfy(names -> assertThat(names).contains(SEARCH_GAME_TREE, SCRIPT_READ));
+        assertThat(provider.allMessageText())
+                .contains("GOAL CONTINUATION STATUS")
+                .contains("Sprawdz czy mapa Roblox nie jest za mala");
+    }
+
+    @Test
+    void noToolLessDecisionPointWhileGoalContractIsIncomplete() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn(LIST_STUDIOS, Map.of()));
+        turns.add(textTurn("To nie jest jeszcze odpowiedz; potrzebuje odczytac drzewo gry."));
+        turns.add(toolCallTurn(SEARCH_GAME_TREE, Map.of("query", "Village")));
+        turns.add(textTurn("Znalazlem VillageGenerator w ServerScriptService."));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        NativeToolLoopService service = newService(provider, robloxRegistry());
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1",
+                "Znajdz folder lub skrypt odpowiedzialny za wioski.",
+                "Search connected Roblox project for village generation.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.finalAnswer()).contains("VillageGenerator");
+        assertThat(provider.toolNamesByCall()).allSatisfy(names -> assertThat(names).isNotEmpty());
+    }
+
+    @Test
     void multipleOpenStudiosSelectionStillCountsAsBootstrapOnly() {
         Deque<ModelResponse> turns = new ArrayDeque<>();
         turns.add(toolCallTurn(LIST_STUDIOS, Map.of()));
@@ -407,12 +457,12 @@ class NativeToolLoopServiceRobloxContinuationTest {
                 KnowledgeMode.FAST
         ));
 
-        // The bounded completion-gate retry budget (shared with Store Audit, never doubled) still
-        // guarantees termination even when the model keeps admitting insufficiency without ever
-        // calling an answering-capable tool - it must not hang or loop forever.
+        // The workflow gate and GoalContract verifier have separate bounded budgets. Together they
+        // still guarantee termination even when the model keeps admitting insufficiency without
+        // ever calling an answering-capable tool - it must not hang or loop forever.
         assertThat(result.handled()).isTrue();
-        assertThat(result.finalAnswer()).isEqualTo(insufficient);
-        assertThat(provider.callCount()).isEqualTo(5);
+        assertThat(result.finalAnswer()).contains("Nie mogę rzetelnie zakończyć");
+        assertThat(provider.callCount()).isLessThanOrEqualTo(8);
     }
 
     private NativeToolLoopService newService(ScriptedProvider provider, ToolRegistry registry) {
@@ -750,6 +800,7 @@ class NativeToolLoopServiceRobloxContinuationTest {
         private final Deque<ModelResponse> turns;
         private int calls;
         private List<String> firstToolNames = List.of();
+        private final List<List<String>> toolNamesByCall = new ArrayList<>();
         private final List<List<ModelMessage>> messageSnapshots = new ArrayList<>();
 
         private ScriptedProvider(Deque<ModelResponse> turns) {
@@ -762,6 +813,10 @@ class NativeToolLoopServiceRobloxContinuationTest {
 
         List<String> firstToolNames() {
             return firstToolNames;
+        }
+
+        List<List<String>> toolNamesByCall() {
+            return toolNamesByCall;
         }
 
         String allMessageText() {
@@ -790,6 +845,7 @@ class NativeToolLoopServiceRobloxContinuationTest {
 
         @Override
         public ModelResponse toolChat(Brain brain, List<ModelMessage> messages, List<NativeToolDefinition> tools, AIJobType jobType) {
+            toolNamesByCall.add(tools.stream().map(NativeToolDefinition::name).toList());
             if (calls == 0) {
                 firstToolNames = tools.stream().map(NativeToolDefinition::name).toList();
             }

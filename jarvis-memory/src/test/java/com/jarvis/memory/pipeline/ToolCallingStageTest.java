@@ -484,16 +484,15 @@ class ToolCallingStageTest {
         assertThat(captured.get().images()).isEmpty();
     }
 
-    // Regression for the second half of the reported bug: the native tool loop exhausted its
-    // budget with no final text, ToolCallingStage's own tool-less "final synthesis" call ran, and
-    // that call's answer was itself a {"type":"TOOL_REQUEST",...} envelope written as text - Core
-    // must execute that request (re-enter the real tool runtime), not turn it into an apology.
+    // Final synthesis is narration-only after the native loop's GoalContract verification. If the
+    // tool-less synthesis turn emits a TOOL_REQUEST envelope anyway, this stage must not turn it
+    // into a new tool-decision point.
     @Test
-    void streamToolFinalAnswerReentersTheToolRuntimeWhenFinalSynthesisReturnsATextToolRequest() throws Exception {
-        AtomicReference<ToolCallingRequest> reentryRequest = new AtomicReference<>();
+    void streamToolFinalAnswerDoesNotReenterTheToolRuntimeWhenFinalSynthesisReturnsATextToolRequest() throws Exception {
+        AtomicReference<ToolCallingRequest> unexpectedReentry = new AtomicReference<>();
         ToolCallingStage stage = new ToolCallingStage(
                 request -> {
-                    reentryRequest.set(request);
+                    unexpectedReentry.set(request);
                     return new ToolCallingResult(true, "Real answer after reentry.", List.of(), List.of());
                 },
                 List.of(new StubToolRequestStreamingProvider()),
@@ -513,16 +512,14 @@ class ToolCallingStageTest {
         method.setAccessible(true);
         String answer = (String) method.invoke(stage, context, loopResult);
 
-        assertThat(answer).isEqualTo("Real answer after reentry.");
-        assertThat(reentryRequest.get()).isNotNull();
-        assertThat(reentryRequest.get().goal()).isEqualTo("Geocode the extracted store addresses");
+        assertThat(answer).isEqualTo("Zakonczylem prace z narzedziami, ale nie otrzymalem czytelnej tresci koncowej odpowiedzi.");
+        assertThat(unexpectedReentry.get()).isNull();
     }
 
-    // The re-entry above must be bounded: if even the re-entered call keeps returning another
-    // TOOL_REQUEST-as-text, this stage must eventually stop and fall back to the honest apology
-    // rather than recursing forever.
+    // A repeated TOOL_REQUEST-as-text from final synthesis also falls back immediately; there is no
+    // final-synthesis re-entry recursion path anymore.
     @Test
-    void streamToolFinalAnswerStopsReenteringAfterTheBoundedRetryLimitAndFallsBackToAnHonestApology() throws Exception {
+    void streamToolFinalAnswerFallsBackWhenFinalSynthesisReturnsAToolRequestEnvelope() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(
                 request -> new ToolCallingResult(true, "", List.of(), List.of()), // reentry also returns blank
                 List.of(new StubToolRequestStreamingProvider()),

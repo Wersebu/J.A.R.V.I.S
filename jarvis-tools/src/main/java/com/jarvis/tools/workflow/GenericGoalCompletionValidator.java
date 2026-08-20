@@ -19,7 +19,7 @@ import java.util.regex.Pattern;
  * Roblox Studio currently connected?"). It only blocks when the model's own text signals the
  * insufficiency itself, so a legitimate short answer is never rejected.</p>
  *
- * <h2>Known limitation - this is a safety-net fallback, not the real fix</h2>
+ * <h2>Safety-net role</h2>
  *
  * <p>This validator is phrase-based: it only catches the case where the model's own words admit
  * the answer is incomplete. It is blind to a <b>confidently wrong</b> answer - a model that calls
@@ -38,17 +38,12 @@ import java.util.regex.Pattern;
  * miss) - it never depends on thinking being present to function safely, but it also cannot use an
  * absent thinking channel as extra evidence.</p>
  *
- * <p>The actual fix for both gaps is an explicit, model-declared <b>Goal Contract</b> created before
- * the first tool call (original goal, required outcome, completion criteria) carried through the
- * loop as real state, plus a short structured completion-verification turn - a genuine model
- * self-assessment against that contract (COMPLETE/CONTINUE/BLOCKED), not a regex over free text -
- * before any {@code FINAL_ANSWER} is accepted. That mechanism is designed (see the {@code
- * com.jarvis.tools.workflow.goal} package: {@code GoalContract}, {@code CompletionCriterion}, {@code
- * CompletionVerification}, {@code GoalCompletionVerifier}) but deliberately not wired into the loop
- * yet - it changes the loop's call-budget/latency shape and needs its own dedicated stage rather
- * than being bolted onto this fix. Until it lands, this phrase-based validator remains an imperfect
- * but strictly-additive safety net: it catches a real, previously-unhandled failure mode (the
- * Roblox folder-listing bug) without weakening anything that worked before it existed.</p>
+ * <p>The actual completion authority is now the explicit <b>Goal Contract</b> lifecycle in {@code
+ * NativeToolLoopService}: one {@code GoalContract} is stored in {@code AgentExecutionState},
+ * evidence is appended after tool results/recovery, and {@code CompletionVerification} must return
+ * {@code COMPLETE} before a proposed final answer or final synthesis is accepted. This validator
+ * remains as an early, conservative safety net that produces useful corrective guidance for the
+ * known bootstrap-only failure mode before the structured verifier runs.</p>
  */
 public class GenericGoalCompletionValidator implements WorkflowCompletionValidator {
 

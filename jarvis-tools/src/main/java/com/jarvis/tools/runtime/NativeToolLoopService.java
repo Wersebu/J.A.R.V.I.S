@@ -37,6 +37,12 @@ import com.jarvis.tools.workflow.ToolOperationClassifier;
 import com.jarvis.tools.workflow.ToolOperationRole;
 import com.jarvis.tools.workflow.WorkflowCompletionContext;
 import com.jarvis.tools.workflow.WorkflowCompletionValidator;
+import com.jarvis.tools.workflow.goal.AcquiredEvidence;
+import com.jarvis.tools.workflow.goal.CompletionCriterion;
+import com.jarvis.tools.workflow.goal.CompletionDecision;
+import com.jarvis.tools.workflow.goal.CompletionVerification;
+import com.jarvis.tools.workflow.goal.GoalCompletionVerifier;
+import com.jarvis.tools.workflow.goal.GoalContract;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -76,6 +82,7 @@ public class NativeToolLoopService {
     private final AiListingVerifier listingVerifier;
     private final StoreAuditDatasetService datasetService;
     private final WorkflowCompletionValidator completionValidator;
+    private final GoalCompletionVerifier goalCompletionVerifier;
 
     /**
      * Creates the native tool loop service.
@@ -113,6 +120,7 @@ public class NativeToolLoopService {
                 new StoreAuditWorkflowCompletionValidator(datasetService),
                 new GenericGoalCompletionValidator()
         ));
+        this.goalCompletionVerifier = this::verifyGoalCompletion;
     }
 
     /**
@@ -166,12 +174,14 @@ public class NativeToolLoopService {
         Map<String, Long> toolsByProvider = toolsByProvider(definitions);
         Map<ToolOperationRole, Long> toolsByOperationRole = toolsByOperationRole(definitions);
         List<String> requiredEvidence = requiredEvidence(request, resolvedIntent, scope.detectedProvider());
-        Map<String, Object> acquiredFacts = new LinkedHashMap<>();
-        Set<String> callFingerprints = new LinkedHashSet<>();
-        Map<String, Integer> operationRepeatCounts = new LinkedHashMap<>();
-        ConnectedRuntimeState runtimeState = new ConnectedRuntimeState();
+        AgentExecutionState agentState = new AgentExecutionState(createGoalContract(request, requiredEvidence),
+                messages, steps, results, errors);
+        Map<String, Object> acquiredFacts = agentState.acquiredFacts();
+        Set<String> callFingerprints = agentState.callFingerprints();
+        Map<String, Integer> operationRepeatCounts = agentState.operationRepeatCounts();
+        ConnectedRuntimeState runtimeState = agentState.runtimeState();
         ToolFailureClassifier failureClassifier = new ToolFailureClassifier();
-        Map<String, Integer> recoveryAttempts = new LinkedHashMap<>();
+        Map<String, Integer> recoveryAttempts = agentState.recoveryAttempts();
         Optional<StoreAuditDataset> existingDataset = datasetService.findLatestForConversation(request.conversationId());
         boolean datasetAvailable = existingDataset.isPresent();
         if (datasetAvailable) {
@@ -211,7 +221,6 @@ public class NativeToolLoopService {
         // gates a workflow that has none.
         boolean workflowDocumentLoaded = completionValidator.requiredDocumentPath().isEmpty();
         int malformedContinuationAttempts = 0;
-        int completionGateAttempts = 0;
         // Separate from completionGateAttempts above: that counter bounds how many times guidance
         // is pushed back, but a re-entry decided upon at exactly the last allowed step previously
         // had nowhere to actually run - the outer for-loop's own step<=maxCalls condition ended the
@@ -219,7 +228,6 @@ public class NativeToolLoopService {
         // actually honored. This bounded extension (small, capped) is granted only when the normal
         // budget is genuinely exhausted at the moment a legitimate re-entry is decided, so recovery
         // gets a REAL turn instead of an empty promise - never unbounded, never granted otherwise.
-        int completionRecoveryExtensionsUsed = 0;
         int emptyResponseRetries = 0;
         // Bounded repair for a malformed/truncated native tool call from the provider (see
         // RECOVERABLE_PROVIDER_TOOL_CALL_FAILURE) - separate from completionRecoveryExtensionsUsed
@@ -228,6 +236,7 @@ public class NativeToolLoopService {
         int providerToolCallRepairAttempts = 0;
         boolean providerToolCallRepairExtensionGranted = false;
         messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions, existingDataset)));
+        messages.add(ModelMessage.system(goalContractStatusBlock(agentState.goalContract())));
         messages.add(ModelMessage.user(request.userMessage(), request.images()));
 
         publish(request, CognitiveEventType.TOOL_LOOP_STARTED, "STARTED", "Native tool loop started", null, 0,
@@ -260,6 +269,8 @@ public class NativeToolLoopService {
                 existingDataset.map(StoreAuditDataset::datasetId).orElse(""),
                 existingDataset.map(dataset -> dataset.stores().size()).orElse(0),
                 !request.images().isEmpty());
+        LOGGER.info("[GOAL_CONTRACT_CREATED] requestId={} originalGoal=\"{}\" criteria={}",
+                request.requestId(), agentState.goalContract().originalGoal(), agentState.goalContract().completionCriteria().size());
 
         for (int step = 1; step <= maxCalls; step++) {
             AiTraceTurnContext.set(step);
@@ -322,6 +333,8 @@ public class NativeToolLoopService {
                         ToolResult invalid = invalidResult(request, call, exception.getMessage(), errorCode, acquiredFacts);
                         results.add(invalid);
                         steps.add(new ToolRuntimeStep(step, "INVALID_TOOL_CALL", toolName(call), operationName(call), "FAILED", invalid));
+                        recordGoalEvidence(request, agentState, new ToolAction("TOOL_CALL", toolName(call), operationName(call),
+                                call.arguments(), "Invalid native model tool call", ""), invalid);
                         messages.add(toolResultMessage(request, step, call, compactToolResult(invalid)));
                         messages.add(ModelMessage.system(schemaRepairGuidance(call.name(), acquiredFacts)));
                         continue;
@@ -343,6 +356,7 @@ public class NativeToolLoopService {
                             ToolResult mismatch = datasetIdMismatchResult(request, action, activeDatasetId, supplied, workflowDocumentLoaded);
                             results.add(mismatch);
                             steps.add(new ToolRuntimeStep(step, "STORE_DATASET_ID_MISMATCH", action.tool(), action.operation(), "BLOCKED", mismatch));
+                            recordGoalEvidence(request, agentState, action, mismatch);
                             messages.add(toolResultMessage(request, step, call, compactToolResult(mismatch)));
                             messages.add(ModelMessage.system(workflowStatusBlock(request, activeDatasetId, workflowDocumentLoaded)));
                             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "STORE_DATASET_ID_MISMATCH",
@@ -368,6 +382,7 @@ public class NativeToolLoopService {
                             ToolResult blocked = docGateRejection.get();
                             results.add(blocked);
                             steps.add(new ToolRuntimeStep(step, "STORE_AUDIT_WORKFLOW_DOCUMENT_NOT_LOADED", action.tool(), action.operation(), "BLOCKED", blocked));
+                            recordGoalEvidence(request, agentState, action, blocked);
                             messages.add(toolResultMessage(request, step, call, compactToolResult(blocked)));
                             messages.add(ModelMessage.system(workflowStatusBlock(request, activeDatasetId, workflowDocumentLoaded)));
                             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "STORE_AUDIT_WORKFLOW_DOCUMENT_NOT_LOADED",
@@ -392,6 +407,7 @@ public class NativeToolLoopService {
                             ToolResult blocked = noProgress.get();
                             results.add(blocked);
                             steps.add(new ToolRuntimeStep(step, "GET_DATASET_NO_PROGRESS", action.tool(), action.operation(), "BLOCKED", blocked));
+                            recordGoalEvidence(request, agentState, action, blocked);
                             messages.add(toolResultMessage(request, step, call, compactToolResult(blocked)));
                             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "GET_DATASET_NO_PROGRESS",
                                     "Repeated GET_DATASET blocked - dataset unchanged since the last call", null, step,
@@ -406,6 +422,7 @@ public class NativeToolLoopService {
                         ToolResult duplicate = duplicateResult(request, action);
                         results.add(duplicate);
                         steps.add(new ToolRuntimeStep(step, "DUPLICATE_TOOL_CALL", action.tool(), action.operation(), "BLOCKED", duplicate));
+                        recordGoalEvidence(request, agentState, action, duplicate);
                         messages.add(toolResultMessage(request, step, call, compactToolResult(duplicate)));
                         publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "DUPLICATE_TOOL_CALL",
                                 "Duplicate tool call blocked", null, step, Map.of(
@@ -422,6 +439,7 @@ public class NativeToolLoopService {
                         ToolResult noProgress = noProgressResult(request, action, repeatCount);
                         results.add(noProgress);
                         steps.add(new ToolRuntimeStep(step, "NO_PROGRESS_BLOCKED", action.tool(), action.operation(), "BLOCKED", noProgress));
+                        recordGoalEvidence(request, agentState, action, noProgress);
                         messages.add(toolResultMessage(request, step, call, compactToolResult(noProgress)));
                         publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "NO_PROGRESS_BLOCKED",
                                 "Repeated tool operation blocked, no progress detected", null, step, Map.of(
@@ -433,6 +451,7 @@ public class NativeToolLoopService {
                             ToolResult blocked = rawGeocodeAfterFailedDatasetResult(request, action);
                             results.add(blocked);
                             steps.add(new ToolRuntimeStep(step, "RAW_GEOCODE_AFTER_DATASET_FAILURE_BLOCKED", action.tool(), action.operation(), "BLOCKED", blocked));
+                            recordGoalEvidence(request, agentState, action, blocked);
                             messages.add(toolResultMessage(request, step, call, compactToolResult(blocked)));
                             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "RAW_GEOCODE_AFTER_DATASET_FAILURE_BLOCKED",
                                     "Raw batch geocoding blocked after a failed dataset creation attempt", null, step, Map.of(
@@ -448,6 +467,7 @@ public class NativeToolLoopService {
                             ToolResult blocked = rawGeocodeLimitResult(request, action, projectedTotal);
                             results.add(blocked);
                             steps.add(new ToolRuntimeStep(step, "RAW_GEOCODE_WITHOUT_DATASET_BLOCKED", action.tool(), action.operation(), "BLOCKED", blocked));
+                            recordGoalEvidence(request, agentState, action, blocked);
                             messages.add(toolResultMessage(request, step, call, compactToolResult(blocked)));
                             publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "RAW_GEOCODE_WITHOUT_DATASET_BLOCKED",
                                     "Raw batch geocoding blocked without a storeDataset", null, step, Map.of(
@@ -482,6 +502,7 @@ public class NativeToolLoopService {
                             results.add(event.result());
                             steps.add(new ToolRuntimeStep(step, event.actionLabel(), event.action().tool(),
                                     event.action().operation(), event.result().success() ? "OK" : "FAILED", event.result()));
+                            recordGoalEvidence(request, agentState, event.action(), event.result());
                             messages.add(ModelMessage.tool(toolCallId(call), nativeFunctionName(event.action()),
                                     compactToolResult(event.result())));
                         }
@@ -495,6 +516,7 @@ public class NativeToolLoopService {
                                 results.add(event.result());
                                 steps.add(new ToolRuntimeStep(step, event.actionLabel(), event.action().tool(),
                                         event.action().operation(), event.result().success() ? "OK" : "FAILED", event.result()));
+                                recordGoalEvidence(request, agentState, event.action(), event.result());
                                 messages.add(ModelMessage.tool(toolCallId(call), nativeFunctionName(event.action()),
                                         compactToolResult(event.result())));
                             }
@@ -563,6 +585,7 @@ public class NativeToolLoopService {
                     results.add(result);
                     steps.add(new ToolRuntimeStep(step, "TOOL_CALL", action.tool(), action.operation(),
                             result.success() ? "OK" : "FAILED", result));
+                    recordGoalEvidence(request, agentState, action, result);
                     messages.add(toolResultMessage(request, step, call, compactToolResult(result)));
                     if (!newFacts.isEmpty()) {
                         messages.add(ModelMessage.system(acquiredFactsBlock(acquiredFacts)));
@@ -590,6 +613,8 @@ public class NativeToolLoopService {
                             results.add(retryResult);
                             steps.add(new ToolRuntimeStep(step, "TOOL_CALL", "web", "READ_WEB_PAGE",
                                     retryResult.success() ? "OK" : "FAILED", retryResult));
+                            recordGoalEvidence(request, agentState,
+                                    new ToolAction("TOOL_CALL", "web", "READ_WEB_PAGE", Map.of(), "Core candidate retry", ""), retryResult);
                             messages.add(toolResultMessage(request, step, call, compactToolResult(retryResult)));
                             if (marketplaceCollector != null) {
                                 drainMarketplaceCandidates(request, marketplaceCollector, results, steps, messages, toolCallId(call), step);
@@ -656,25 +681,28 @@ public class NativeToolLoopService {
                 LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={}",
                         request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId, workflowDocumentLoaded));
                 if (!assessment.complete()) {
-                    if (completionGateAttempts < MAX_COMPLETION_GATE_ATTEMPTS) {
-                        completionGateAttempts++;
+                    if (agentState.completionAttempts() < MAX_COMPLETION_GATE_ATTEMPTS) {
+                        int attempt = agentState.incrementCompletionAttempts();
                         boolean recoveryExtension = false;
-                        if (step >= maxCalls && completionRecoveryExtensionsUsed == 0) {
-                            completionRecoveryExtensionsUsed = MAX_COMPLETION_RECOVERY_EXTENSIONS;
+                        if (step >= maxCalls && agentState.completionRecoveryExtensionsUsed() == 0) {
+                            agentState.completionRecoveryExtensionsUsed(MAX_COMPLETION_RECOVERY_EXTENSIONS);
                             maxCalls += MAX_COMPLETION_RECOVERY_EXTENSIONS;
                             recoveryExtension = true;
                             LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} COMPLETION_RECOVERY_BUDGET_EXTENDED maxCalls={} extensionsGranted={}",
                                     request.requestId(), step, maxCalls, MAX_COMPLETION_RECOVERY_EXTENSIONS);
                         }
                         LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} REENTER_TOOL_LOOP reason=WORKFLOW_NOT_COMPLETE attempt={}",
-                                request.requestId(), step, completionGateAttempts);
+                                request.requestId(), step, attempt);
                         publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
                                 "Workflow not complete yet, continuing tool loop", null, step,
-                                Map.of("reason", assessment.reason(), "attempt", completionGateAttempts));
+                                Map.of("reason", assessment.reason(), "attempt", attempt));
                         messages.add(ModelMessage.assistant(content, List.of()));
                         messages.add(ModelMessage.system(recoveryExtension
                                 ? recoveryGuidance(activeDatasetId, workflowDocumentLoaded, assessment.guidance())
                                 : assessment.guidance()));
+                        messages.add(ModelMessage.system(goalContinueStatusBlock(agentState.goalContract(),
+                                new CompletionVerification(CompletionDecision.CONTINUE, List.of(), List.of(assessment.reason()),
+                                        assessment.guidance(), assessment.reason()), results)));
                         continue;
                     }
                     if (isDeterministicCompletionBlock(assessment)) {
@@ -685,6 +713,37 @@ public class NativeToolLoopService {
                     }
                     LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} completion-gate retries exhausted reason={}, accepting answer as-is",
                             request.requestId(), assessment.reason());
+                }
+                CompletionVerification verification = results.isEmpty()
+                        ? new CompletionVerification(CompletionDecision.COMPLETE, List.of(), List.of(), "",
+                        "No tool evidence was collected in this loop; preserving the existing no-tool final-answer path.")
+                        : goalCompletionVerifier.verify(agentState.goalContract(), content);
+                LOGGER.info("[GOAL_COMPLETION_CHECK] requestId={} step={} decision={} missing={} reason=\"{}\"",
+                        request.requestId(), step, verification.decision(), verification.missingCriteria(), verification.reason());
+                if (verification.decision() == CompletionDecision.CONTINUE
+                        && agentState.goalCompletionAttempts() < MAX_COMPLETION_GATE_ATTEMPTS) {
+                    int attempt = agentState.incrementGoalCompletionAttempts();
+                    if (step >= maxCalls && agentState.completionRecoveryExtensionsUsed() == 0) {
+                        agentState.completionRecoveryExtensionsUsed(MAX_COMPLETION_RECOVERY_EXTENSIONS);
+                        maxCalls += MAX_COMPLETION_RECOVERY_EXTENSIONS;
+                    }
+                    LOGGER.info("[AGENT_CONTINUE] requestId={} step={} attempt={} reason=GOAL_CONTRACT_INCOMPLETE",
+                            request.requestId(), step, attempt);
+                    messages.add(ModelMessage.assistant(content, List.of()));
+                    messages.add(ModelMessage.system(goalContinueStatusBlock(agentState.goalContract(), verification, results)));
+                    continue;
+                }
+                if (verification.decision() == CompletionDecision.BLOCKED) {
+                    LOGGER.warn("[AGENT_FINISH] requestId={} step={} status=BLOCKED reason=\"{}\"",
+                            request.requestId(), step, verification.reason());
+                } else if (verification.decision() == CompletionDecision.CONTINUE) {
+                    LOGGER.warn("[AGENT_FINISH] requestId={} step={} status=INCOMPLETE_BUDGET_EXHAUSTED reason=\"{}\"",
+                            request.requestId(), step, verification.reason());
+                    saveDebug(request, intent, steps, "GOAL_CONTRACT_INCOMPLETE", errors);
+                    return new ToolCallingResult(true, deterministicBlockedAnswer(new CompletionAssessment(false,
+                            "GOAL_CONTRACT_INCOMPLETE", verification.reason())), steps, results);
+                } else {
+                    LOGGER.info("[AGENT_FINISH] requestId={} step={} status=COMPLETE", request.requestId(), step);
                 }
 
                 saveDebug(request, intent, steps, "FINISHED", errors);
@@ -711,24 +770,27 @@ public class NativeToolLoopService {
                 CompletionAssessment assessment = assessCompletion(request, steps, completionContext);
                 LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={} path=emptyResponse",
                         request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId, workflowDocumentLoaded));
-                if (!assessment.complete() && completionGateAttempts < MAX_COMPLETION_GATE_ATTEMPTS) {
-                    completionGateAttempts++;
+                if (!assessment.complete() && agentState.completionAttempts() < MAX_COMPLETION_GATE_ATTEMPTS) {
+                    int attempt = agentState.incrementCompletionAttempts();
                     boolean recoveryExtension = false;
-                    if (step >= maxCalls && completionRecoveryExtensionsUsed == 0) {
-                        completionRecoveryExtensionsUsed = MAX_COMPLETION_RECOVERY_EXTENSIONS;
+                    if (step >= maxCalls && agentState.completionRecoveryExtensionsUsed() == 0) {
+                        agentState.completionRecoveryExtensionsUsed(MAX_COMPLETION_RECOVERY_EXTENSIONS);
                         maxCalls += MAX_COMPLETION_RECOVERY_EXTENSIONS;
                         recoveryExtension = true;
                         LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} COMPLETION_RECOVERY_BUDGET_EXTENDED maxCalls={} extensionsGranted={} path=emptyResponse",
                                 request.requestId(), step, maxCalls, MAX_COMPLETION_RECOVERY_EXTENSIONS);
                     }
                     LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} REENTER_TOOL_LOOP reason=WORKFLOW_NOT_COMPLETE attempt={} path=emptyResponse",
-                            request.requestId(), step, completionGateAttempts);
+                            request.requestId(), step, attempt);
                     publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
                             "Workflow not complete yet after an empty model turn, continuing tool loop", null, step,
-                            Map.of("reason", assessment.reason(), "attempt", completionGateAttempts));
+                            Map.of("reason", assessment.reason(), "attempt", attempt));
                     messages.add(ModelMessage.system(recoveryExtension
                             ? recoveryGuidance(activeDatasetId, workflowDocumentLoaded, assessment.guidance())
                             : assessment.guidance()));
+                    messages.add(ModelMessage.system(goalContinueStatusBlock(agentState.goalContract(),
+                            new CompletionVerification(CompletionDecision.CONTINUE, List.of(), List.of(assessment.reason()),
+                                    assessment.guidance(), assessment.reason()), results)));
                     continue;
                 }
                 if (!assessment.complete()) {
@@ -741,6 +803,29 @@ public class NativeToolLoopService {
                     LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} completion-gate retries exhausted (emptyResponse path) reason={}, falling back to final synthesis",
                             request.requestId(), assessment.reason());
                 }
+                CompletionVerification verification = goalCompletionVerifier.verify(agentState.goalContract(), response.thinking().strip());
+                LOGGER.info("[GOAL_COMPLETION_CHECK] requestId={} step={} decision={} missing={} reason=\"{}\" path=emptyResponse",
+                        request.requestId(), step, verification.decision(), verification.missingCriteria(), verification.reason());
+                if (verification.decision() == CompletionDecision.CONTINUE
+                        && agentState.goalCompletionAttempts() < MAX_COMPLETION_GATE_ATTEMPTS) {
+                    int attempt = agentState.incrementGoalCompletionAttempts();
+                    if (step >= maxCalls && agentState.completionRecoveryExtensionsUsed() == 0) {
+                        agentState.completionRecoveryExtensionsUsed(MAX_COMPLETION_RECOVERY_EXTENSIONS);
+                        maxCalls += MAX_COMPLETION_RECOVERY_EXTENSIONS;
+                    }
+                    LOGGER.info("[AGENT_CONTINUE] requestId={} step={} attempt={} reason=GOAL_CONTRACT_INCOMPLETE path=emptyResponse",
+                            request.requestId(), step, attempt);
+                    messages.add(ModelMessage.system(goalContinueStatusBlock(agentState.goalContract(), verification, results)));
+                    continue;
+                }
+                if (verification.decision() == CompletionDecision.CONTINUE) {
+                    LOGGER.warn("[AGENT_FINISH] requestId={} step={} status=INCOMPLETE_BUDGET_EXHAUSTED reason=\"{}\" path=emptyResponse",
+                            request.requestId(), step, verification.reason());
+                    saveDebug(request, intent, steps, "GOAL_CONTRACT_INCOMPLETE", errors);
+                    return new ToolCallingResult(true, deterministicBlockedAnswer(new CompletionAssessment(false,
+                            "GOAL_CONTRACT_INCOMPLETE", verification.reason())), steps, results);
+                }
+                LOGGER.info("[FINAL_SYNTHESIS] requestId={} goalComplete=true", request.requestId());
                 saveDebug(request, intent, steps, "FINAL_SYNTHESIS_REQUIRED", errors);
                 publish(request, CognitiveEventType.FINAL_SYNTHESIS_STARTED, "STARTED",
                         "Final synthesis fallback requested", null, step, Map.of("results", results.size()));
@@ -2044,6 +2129,139 @@ public class NativeToolLoopService {
                         + "Discovery/selection/status calls are not enough. Call a search, read, inspect, or verify "
                         + "operation that returns the requested data, then answer only from that tool result. "
                         + "If no such operation is available or it fails, state that explicitly.");
+    }
+
+    private GoalContract createGoalContract(ToolCallingRequest request, List<String> requiredEvidence) {
+        List<CompletionCriterion> criteria = new ArrayList<>();
+        criteria.add(new CompletionCriterion("original_goal", "Answer the user's original request: " + request.userMessage(), false));
+        if (requiredEvidence != null) {
+            int index = 1;
+            for (String evidence : requiredEvidence) {
+                if (!evidence.isBlank()) {
+                    criteria.add(new CompletionCriterion("evidence_" + index++, evidence, false));
+                }
+            }
+        }
+        if (criteria.size() == 1) {
+            criteria.add(new CompletionCriterion("verified_answer",
+                    "Use tool evidence when the request needs current, external, runtime, or repository state.", false));
+        }
+        String requiredOutcome = request.goal() == null || request.goal().isBlank()
+                ? request.userMessage()
+                : request.goal();
+        return new GoalContract(request.userMessage(), requiredOutcome, criteria, List.of(),
+                criteria.stream().map(CompletionCriterion::id).toList(), false);
+    }
+
+    private void recordGoalEvidence(
+            ToolCallingRequest request,
+            AgentExecutionState state,
+            ToolAction action,
+            ToolResult result
+    ) {
+        AcquiredEvidence evidence = new AcquiredEvidence(action.tool(), action.operation(), evidenceSummary(result));
+        state.goalContract(state.goalContract().withEvidence(evidence));
+        LOGGER.info("[GOAL_EVIDENCE] requestId={} tool={} operation={} success={} summary=\"{}\"",
+                request.requestId(), action.tool(), action.operation(), result.success(), evidence.summary());
+    }
+
+    private String evidenceSummary(ToolResult result) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(result.success() ? "success" : "failure");
+        if (!result.message().isBlank()) {
+            builder.append(": ").append(result.message());
+        }
+        if (!result.errorCode().isBlank()) {
+            builder.append(" [").append(result.errorCode()).append("]");
+        }
+        if (result.data() != null && !result.data().isEmpty()) {
+            builder.append(" dataKeys=").append(result.data().keySet());
+        }
+        String summary = builder.toString();
+        return summary.length() <= 500 ? summary : summary.substring(0, 500);
+    }
+
+    private CompletionVerification verifyGoalCompletion(GoalContract contract, String proposedFinalAnswer) {
+        String answer = Objects.toString(proposedFinalAnswer, "").strip();
+        List<String> missing = new ArrayList<>();
+        if (contract.acquiredEvidence().isEmpty()) {
+            missing.add("tool_evidence");
+        }
+        if (answer.isBlank()) {
+            missing.add("final_answer");
+        }
+        if (admitsInsufficiency(answer)) {
+            missing.add("model_admitted_incomplete_answer");
+        }
+        if (missing.isEmpty()) {
+            List<String> satisfied = contract.completionCriteria().stream()
+                    .map(CompletionCriterion::id)
+                    .filter(id -> !id.isBlank())
+                    .toList();
+            return new CompletionVerification(CompletionDecision.COMPLETE, satisfied, List.of(), "",
+                    "Proposed answer is non-empty, no insufficiency was detected, and tool evidence exists.");
+        }
+        return new CompletionVerification(CompletionDecision.CONTINUE, List.of(), missing,
+                missing.contains("tool_evidence") ? "collect evidence with a relevant tool" : "close the missing criteria",
+                "Goal contract is not satisfied yet: " + missing);
+    }
+
+    private boolean admitsInsufficiency(String content) {
+        String normalized = normalize(content);
+        return normalized.contains("to nie jest")
+                || normalized.contains("brakuje")
+                || normalized.contains("nie mam jeszcze")
+                || normalized.contains("potrzebuje kolejnego")
+                || normalized.contains("potrzebuje jeszcze")
+                || normalized.contains("musze jeszcze")
+                || normalized.contains("niewystarczaj")
+                || normalized.contains("za malo")
+                || normalized.contains("may be")
+                || normalized.contains("might be")
+                || normalized.contains("not enough")
+                || normalized.contains("insufficient")
+                || normalized.contains("incomplete")
+                || normalized.contains("missing")
+                || normalized.contains("still need");
+    }
+
+    private String goalContractStatusBlock(GoalContract contract) {
+        return """
+                GOAL CONTRACT
+                Original goal: %s
+                Required outcome: %s
+                Criteria: %s
+                The original goal remains authoritative. Intermediate tool goals are subgoals only.
+                """.formatted(contract.originalGoal(), contract.requiredOutcome(), contract.completionCriteria());
+    }
+
+    private String goalContinueStatusBlock(
+            GoalContract contract,
+            CompletionVerification verification,
+            List<ToolResult> results
+    ) {
+        return """
+                GOAL CONTINUATION STATUS
+                Original goal: %s
+                Satisfied criteria: %s
+                Remaining criteria: %s
+                Latest evidence: %s
+                Recommended missing evidence: %s
+                Continue the same native tool loop with the available tools. Do not ask the user to retry a safe read/search/inspect action.
+                """.formatted(
+                contract.originalGoal(),
+                verification.satisfiedCriteria(),
+                verification.missingCriteria(),
+                latestEvidence(results),
+                verification.nextGoal().isBlank() ? verification.reason() : verification.nextGoal());
+    }
+
+    private String latestEvidence(List<ToolResult> results) {
+        if (results == null || results.isEmpty()) {
+            return "none";
+        }
+        ToolResult result = results.get(results.size() - 1);
+        return result.tool() + "." + result.operation() + " success=" + result.success() + " message=" + result.message();
     }
 
     private boolean requiresNonBootstrapEvidence(ToolCallingRequest request) {
