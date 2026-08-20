@@ -59,6 +59,10 @@ class NativeToolLoopServiceRobloxContinuationTest {
     private static final String SET_ACTIVE_STUDIO = "mcp_roblox_set_active_studio__call";
     private static final String GET_STUDIO_STATE = "mcp_roblox_get_studio_state__call";
     private static final String SEARCH_GAME_TREE = "mcp_roblox_search_game_tree__call";
+    private static final String SCRIPT_READ = "mcp_roblox_script_read__call";
+    private static final String MULTI_EDIT = "mcp_roblox_multi_edit__call";
+    private static final String GET_CONSOLE_OUTPUT = "mcp_roblox_get_console_output__call";
+    private static final String INSPECT_CLIENT = "mcp_roblox_inspect_client_runtime__call";
 
     @Test
     void bootstrapOnlyAnswerIsRejectedThenSearchGameTreeProducesTheRealFolderList() {
@@ -245,6 +249,146 @@ class NativeToolLoopServiceRobloxContinuationTest {
     }
 
     @Test
+    void staleStudioIdRediscoveryRebindsAndRetriesOriginalReadWithoutClarification() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn(SCRIPT_READ, Map.of("studio_id", "studio-A", "path", "ServerScriptService/Fall.server.lua")));
+        turns.add(textTurn("Root cause read."));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        RecoveringRobloxToolManager manager = new RecoveringRobloxToolManager();
+        NativeToolLoopService service = newService(provider, recoveryRobloxRegistry(), manager);
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1",
+                "sprawdz dlaczego gracz spada",
+                "Read the Roblox script related to falling.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.finalAnswer()).isEqualTo("Root cause read.");
+        assertThat(manager.executedToolNames()).containsExactly(
+                "mcp_roblox_script_read",
+                "mcp_roblox_list_roblox_studios",
+                "mcp_roblox_script_read");
+        assertThat(manager.executedRequests().get(2).arguments()).containsEntry("studio_id", "studio-B");
+        assertThat(manager.executedRequests().stream()
+                .filter(request -> request.toolName().equals("mcp_roblox_script_read"))
+                .map(request -> request.arguments().get("studio_id"))
+                .toList()).containsExactly("studio-A", "studio-B");
+    }
+
+    @Test
+    void playModeEditRecoveryStopsPlayRetriesWriteAndReadsBack() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn(MULTI_EDIT, Map.of(
+                "studio_id", "studio-1",
+                "datamodel_type", "Edit",
+                "edits", List.of(Map.of("path", "ServerScriptService/Fall.server.lua", "newText", "print('fixed')")))));
+        turns.add(textTurn("Zmienilem skrypt i zweryfikowalem odczytem."));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        RecoveringRobloxToolManager manager = new RecoveringRobloxToolManager();
+        manager.mode = "Play";
+        NativeToolLoopService service = newService(provider, recoveryRobloxRegistry(), manager);
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1",
+                "napraw ten skrypt Roblox",
+                "Modify the Roblox script.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.finalAnswer()).contains("zweryfikowalem");
+        assertThat(manager.executedToolNames()).containsExactly(
+                "mcp_roblox_multi_edit",
+                "mcp_roblox_get_studio_state",
+                "mcp_roblox_start_stop_play",
+                "mcp_roblox_get_studio_state",
+                "mcp_roblox_multi_edit",
+                "mcp_roblox_script_read");
+        assertThat(manager.executedRequests().get(2).arguments()).containsEntry("is_start", false);
+    }
+
+    @Test
+    void editModeClientToolRecoveryStartsPlayThenRetriesClientInspect() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn(INSPECT_CLIENT, Map.of("studio_id", "studio-1", "datamodel_type", "Client")));
+        turns.add(textTurn("Client state inspected."));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        RecoveringRobloxToolManager manager = new RecoveringRobloxToolManager();
+        manager.mode = "Edit";
+        NativeToolLoopService service = newService(provider, recoveryRobloxRegistry(), manager);
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1",
+                "sprawdz runtime clienta",
+                "Inspect Client runtime.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.finalAnswer()).isEqualTo("Client state inspected.");
+        assertThat(manager.executedToolNames()).containsExactly(
+                "mcp_roblox_inspect_client_runtime",
+                "mcp_roblox_get_studio_state",
+                "mcp_roblox_start_stop_play",
+                "mcp_roblox_get_studio_state",
+                "mcp_roblox_inspect_client_runtime");
+        assertThat(manager.executedRequests().get(2).arguments()).containsEntry("is_start", true);
+    }
+
+    @Test
+    void notFoundScriptReadSearchesTreeAndRetriesResolvedPath() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn(SCRIPT_READ, Map.of("studio_id", "studio-1", "path", "ServerScriptService/Missing.lua")));
+        turns.add(textTurn("Resolved and read moved script."));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        RecoveringRobloxToolManager manager = new RecoveringRobloxToolManager();
+        NativeToolLoopService service = newService(provider, recoveryRobloxRegistry(), manager);
+
+        service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1",
+                "przeczytaj skrypt Missing.lua",
+                "Read a Roblox script.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(manager.executedToolNames()).containsExactly(
+                "mcp_roblox_script_read",
+                "mcp_roblox_search_game_tree",
+                "mcp_roblox_script_read");
+        assertThat(manager.executedRequests().get(2).arguments())
+                .containsEntry("path", "ServerScriptService/Actual/Missing.lua");
+    }
+
+    @Test
+    void consoleClueAloneCannotCompleteRootCauseDiagnosisUntilScriptIsRead() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCallTurn(GET_CONSOLE_OUTPUT, Map.of("studio_id", "studio-1")));
+        turns.add(textTurn("Przyczyna to FooBar w skrypcie."));
+        turns.add(toolCallTurn(SCRIPT_READ, Map.of("studio_id", "studio-1", "path", "ServerScriptService/Fall.server.lua")));
+        turns.add(textTurn("Zweryfikowana przyczyna: skrypt odwoluje sie do FooBar."));
+        ScriptedProvider provider = new ScriptedProvider(turns);
+        RecoveringRobloxToolManager manager = new RecoveringRobloxToolManager();
+        NativeToolLoopService service = newService(provider, recoveryRobloxRegistry(), manager);
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1",
+                "sprawdz dlaczego gracz spada",
+                "Diagnose why the Roblox player falls.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.finalAnswer()).contains("Zweryfikowana przyczyna");
+        assertThat(manager.executedToolNames()).containsExactly(
+                "mcp_roblox_get_console_output",
+                "mcp_roblox_script_read");
+        assertThat(provider.callCount()).isEqualTo(4);
+    }
+
+    @Test
     void persistentInsufficiencyAdmissionWithoutEverCallingAnAnsweringToolStillTerminates() {
         Deque<ModelResponse> turns = new ArrayDeque<>();
         turns.add(toolCallTurn(LIST_STUDIOS, Map.of()));
@@ -320,6 +464,55 @@ class NativeToolLoopServiceRobloxContinuationTest {
                         ToolJsonSchema.string("Search query."))
         ));
         List<ToolDefinition> definitions = List.of(listStudios, getStudioState, searchGameTree);
+        return new ToolRegistry() {
+            @Override
+            public List<ToolDefinition> definitions() {
+                return definitions;
+            }
+
+            @Override
+            public String promptSection() {
+                return "";
+            }
+        };
+    }
+
+    private static ToolRegistry recoveryRobloxRegistry() {
+        ToolDefinition listStudios = mcpTool("mcp_roblox_list_roblox_studios", List.of());
+        ToolDefinition getStudioState = mcpTool("mcp_roblox_get_studio_state", List.of(
+                new ToolArgumentDefinition("studio_id", true, ToolJsonSchema.string("Studio id."))
+        ));
+        ToolDefinition startStopPlay = mcpTool("mcp_roblox_start_stop_play", List.of(
+                new ToolArgumentDefinition("studio_id", true, ToolJsonSchema.string("Studio id.")),
+                new ToolArgumentDefinition("is_start", true, ToolJsonSchema.bool("True to start Play, false to stop."))
+        ));
+        ToolDefinition searchGameTree = mcpTool("mcp_roblox_search_game_tree", List.of(
+                new ToolArgumentDefinition("studio_id", false, ToolJsonSchema.string("Studio id.")),
+                new ToolArgumentDefinition("datamodel_type", false, ToolJsonSchema.string("Datamodel type.")),
+                new ToolArgumentDefinition("query", false, ToolJsonSchema.string("Search query."))
+        ));
+        ToolDefinition scriptRead = mcpTool("mcp_roblox_script_read", List.of(
+                new ToolArgumentDefinition("studio_id", true, ToolJsonSchema.string("Studio id.")),
+                new ToolArgumentDefinition("datamodel_type", false, ToolJsonSchema.string("Datamodel type.")),
+                new ToolArgumentDefinition("path", true, ToolJsonSchema.string("Script path."))
+        ));
+        ToolDefinition multiEdit = mcpTool("mcp_roblox_multi_edit", List.of(
+                new ToolArgumentDefinition("studio_id", true, ToolJsonSchema.string("Studio id.")),
+                new ToolArgumentDefinition("datamodel_type", true, ToolJsonSchema.string("Datamodel type.")),
+                new ToolArgumentDefinition("edits", true, ToolJsonSchema.arrayOf(ToolJsonSchema.object(Map.of(
+                        "path", ToolJsonSchema.string("Script path."),
+                        "newText", ToolJsonSchema.string("New source.")
+                ), List.of("path"), "One edit."), "Edits."))
+        ));
+        ToolDefinition console = mcpTool("mcp_roblox_get_console_output", List.of(
+                new ToolArgumentDefinition("studio_id", true, ToolJsonSchema.string("Studio id."))
+        ));
+        ToolDefinition inspectClient = mcpTool("mcp_roblox_inspect_client_runtime", List.of(
+                new ToolArgumentDefinition("studio_id", true, ToolJsonSchema.string("Studio id.")),
+                new ToolArgumentDefinition("datamodel_type", true, ToolJsonSchema.string("Datamodel type."))
+        ));
+        List<ToolDefinition> definitions = List.of(listStudios, getStudioState, startStopPlay, searchGameTree,
+                scriptRead, multiEdit, console, inspectClient);
         return new ToolRegistry() {
             @Override
             public List<ToolDefinition> definitions() {
@@ -443,6 +636,112 @@ class NativeToolLoopServiceRobloxContinuationTest {
             }
             return new ToolResult(true, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
                     false, List.of(), "MCP tool completed.", Map.of(), "", "", false, "");
+        }
+    }
+
+    private static final class RecoveringRobloxToolManager implements ToolManager {
+
+        private final List<ToolRequest> executedRequests = new ArrayList<>();
+        private String mode = "Edit";
+        private boolean sourceChanged;
+
+        List<ToolRequest> executedRequests() {
+            return executedRequests;
+        }
+
+        List<String> executedToolNames() {
+            return executedRequests.stream().map(ToolRequest::toolName).toList();
+        }
+
+        @Override
+        public List<JarvisTool> listTools() {
+            return List.of();
+        }
+
+        @Override
+        public Optional<JarvisTool> findTool(String name) {
+            return Optional.of(new JarvisTool() {
+                @Override
+                public String getName() {
+                    return name;
+                }
+
+                @Override
+                public String getDescription() {
+                    return "stub";
+                }
+
+                @Override
+                public ToolResult execute(ToolRequest request) {
+                    throw new UnsupportedOperationException("Not used directly");
+                }
+            });
+        }
+
+        @Override
+        public ToolResult execute(ToolRequest request) {
+            executedRequests.add(request);
+            String tool = request.toolName();
+            if ("mcp_roblox_list_roblox_studios".equals(tool)) {
+                return success(request, "Connected Roblox Studio instances.",
+                        Map.of("studios", List.of(Map.of("studio_id", "studio-B", "name", "MyGame", "placeId", "place-1"))));
+            }
+            if ("mcp_roblox_get_studio_state".equals(tool)) {
+                return success(request, "Studio state.", Map.of("studio_id", studioId(request), "mode", mode));
+            }
+            if ("mcp_roblox_start_stop_play".equals(tool)) {
+                boolean start = Boolean.TRUE.equals(request.arguments().get("is_start"));
+                mode = start ? "Client" : "Edit";
+                return success(request, "Mode changed.", Map.of("studio_id", studioId(request), "mode", mode));
+            }
+            if ("mcp_roblox_script_read".equals(tool)) {
+                String studioId = studioId(request);
+                String path = String.valueOf(request.arguments().getOrDefault("path", ""));
+                if ("studio-A".equals(studioId)) {
+                    return failure(request, "SESSION_NOT_CONNECTED", "The requested studio_id is not connected");
+                }
+                if (path.endsWith("Missing.lua") && !path.contains("Actual")) {
+                    return failure(request, "TARGET_NOT_FOUND", "Target not found");
+                }
+                return success(request, "Script source.", Map.of("studio_id", studioId, "path", path,
+                        "source", sourceChanged ? "print('fixed')" : "workspace.Terrain.FooBar"));
+            }
+            if ("mcp_roblox_search_game_tree".equals(tool)) {
+                return success(request, "Found script.", Map.of("matches",
+                        List.of(Map.of("path", "ServerScriptService/Actual/Missing.lua", "className", "Script"))));
+            }
+            if ("mcp_roblox_multi_edit".equals(tool)) {
+                if (!"Edit".equals(mode)) {
+                    return failure(request, "WRONG_RUNTIME_MODE", "multi_edit requires Edit datamodel");
+                }
+                sourceChanged = true;
+                return success(request, "Write request accepted.", Map.of("changed", true));
+            }
+            if ("mcp_roblox_get_console_output".equals(tool)) {
+                return success(request, "Runtime error: FooBar is not a valid member of Workspace",
+                        Map.of("entries", List.of("Runtime error: FooBar is not a valid member of Workspace")));
+            }
+            if ("mcp_roblox_inspect_client_runtime".equals(tool)) {
+                if ("Edit".equals(mode)) {
+                    return failure(request, "WRONG_RUNTIME_MODE", "Client unavailable; requires Client datamodel");
+                }
+                return success(request, "Client runtime state.", Map.of("mode", mode));
+            }
+            return success(request, "MCP tool completed.", Map.of());
+        }
+
+        private String studioId(ToolRequest request) {
+            return String.valueOf(request.arguments().getOrDefault("studio_id", ""));
+        }
+
+        private ToolResult success(ToolRequest request, String message, Map<String, Object> data) {
+            return new ToolResult(true, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
+                    false, List.of("studio-1"), message, data, "", "", false, "");
+        }
+
+        private ToolResult failure(ToolRequest request, String code, String message) {
+            return new ToolResult(false, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
+                    false, List.of(), message, Map.of(), code, message, false, "");
         }
     }
 

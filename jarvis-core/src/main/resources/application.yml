@@ -22,7 +22,7 @@ jarvis:
     prompt-max-characters: 24000
   ai:
     identity-file: file:config/jarvis.md
-    context-window: 16384
+    context-window: 100000
     reserved-output-tokens: 2048
   diagnostics:
     enabled: true

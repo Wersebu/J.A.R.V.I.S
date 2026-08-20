@@ -7,7 +7,7 @@
     <parent>
         <groupId>com.jarvis</groupId>
         <artifactId>jarvis-parent</artifactId>
-        <version>2.18.2-SNAPSHOT</version>
+        <version>2.18.3-SNAPSHOT</version>
     </parent>
 
     <artifactId>jarvis-ollama</artifactId>
@@ -41,5 +41,4 @@
         </dependency>
     </dependencies>
 </project>
-
 

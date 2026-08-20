@@ -169,6 +169,9 @@ public class NativeToolLoopService {
         Map<String, Object> acquiredFacts = new LinkedHashMap<>();
         Set<String> callFingerprints = new LinkedHashSet<>();
         Map<String, Integer> operationRepeatCounts = new LinkedHashMap<>();
+        ConnectedRuntimeState runtimeState = new ConnectedRuntimeState();
+        ToolFailureClassifier failureClassifier = new ToolFailureClassifier();
+        Map<String, Integer> recoveryAttempts = new LinkedHashMap<>();
         Optional<StoreAuditDataset> existingDataset = datasetService.findLatestForConversation(request.conversationId());
         boolean datasetAvailable = existingDataset.isPresent();
         if (datasetAvailable) {
@@ -352,6 +355,7 @@ public class NativeToolLoopService {
                         }
                         action = resolved.get();
                     }
+                    action = runtimeState.bind(action);
                     // Hard precondition, enforced by Core rather than left to the model remembering
                     // a prose instruction: GEOCODE_DATASET on a LOCKED dataset must never run before
                     // the required workflow document has actually been read this loop - rejected
@@ -470,6 +474,35 @@ public class NativeToolLoopService {
                     Optional<Integer> datasetStoresBeforeCall = datasetStoresBefore(action);
                     ToolResult result = executeAction(request, action, step);
                     result = enrichIfNeeded(request, action, result, step);
+                    Optional<RecoveryOutcome> recovered = tryRecoverToolAction(
+                            request, action, result, runtimeState, failureClassifier, recoveryAttempts, step);
+                    if (recovered.isPresent()) {
+                        RecoveryOutcome outcome = recovered.get();
+                        for (RecoveryEvent event : outcome.events()) {
+                            results.add(event.result());
+                            steps.add(new ToolRuntimeStep(step, event.actionLabel(), event.action().tool(),
+                                    event.action().operation(), event.result().success() ? "OK" : "FAILED", event.result()));
+                            messages.add(ModelMessage.tool(toolCallId(call), nativeFunctionName(event.action()),
+                                    compactToolResult(event.result())));
+                        }
+                        action = outcome.finalAction();
+                        result = enrichIfNeeded(request, action, outcome.finalResult(), step);
+                        Optional<RecoveryOutcome> followUpRecovery = tryRecoverToolAction(
+                                request, action, result, runtimeState, failureClassifier, recoveryAttempts, step);
+                        if (followUpRecovery.isPresent()) {
+                            RecoveryOutcome followUp = followUpRecovery.get();
+                            for (RecoveryEvent event : followUp.events()) {
+                                results.add(event.result());
+                                steps.add(new ToolRuntimeStep(step, event.actionLabel(), event.action().tool(),
+                                        event.action().operation(), event.result().success() ? "OK" : "FAILED", event.result()));
+                                messages.add(ModelMessage.tool(toolCallId(call), nativeFunctionName(event.action()),
+                                        compactToolResult(event.result())));
+                            }
+                            action = followUp.finalAction();
+                            result = enrichIfNeeded(request, action, followUp.finalResult(), step);
+                        }
+                    }
+                    runtimeState.observe(action, result);
                     Map<String, Object> newFacts = observeAcquiredFacts(action, result, acquiredFacts);
                     logDatasetContinuity(request, action, datasetStoresBeforeCall);
                     if (isCreateDataset(action)) {
@@ -865,6 +898,202 @@ public class NativeToolLoopService {
         return result;
     }
 
+    private Optional<RecoveryOutcome> tryRecoverToolAction(
+            ToolCallingRequest request,
+            ToolAction originalAction,
+            ToolResult originalResult,
+            ConnectedRuntimeState runtimeState,
+            ToolFailureClassifier failureClassifier,
+            Map<String, Integer> recoveryAttempts,
+            int step
+    ) {
+        ToolRecoveryHint hint = failureClassifier.classify(originalAction, originalResult);
+        if (!hint.recoverable()) {
+            return Optional.empty();
+        }
+        String key = originalAction.tool().toLowerCase(Locale.ROOT) + "::"
+                + originalAction.operation().toUpperCase(Locale.ROOT) + "::" + hint.reason();
+        int attempt = recoveryAttempts.merge(key, 1, Integer::sum);
+        if (attempt > MAX_SAME_ACTION_RECOVERY_ATTEMPTS) {
+            LOGGER.warn("[RUNTIME_RECOVERY] requestId={} reason={} action=GIVE_UP attempts={} tool={} operation={}",
+                    request.requestId(), hint.reason(), attempt - 1, originalAction.tool(), originalAction.operation());
+            return Optional.empty();
+        }
+        return switch (hint.reason()) {
+            case STALE_SESSION -> recoverStaleRuntimeSession(request, originalAction, runtimeState, step);
+            case WRONG_RUNTIME_MODE -> recoverRuntimeMode(request, originalAction, runtimeState, hint.requiredMode(), step);
+            case TARGET_NOT_FOUND -> recoverTargetPath(request, originalAction, runtimeState, step);
+            case WRITE_VERIFICATION_REQUIRED -> verifyWriteReadBack(request, originalAction, originalResult, runtimeState, step);
+            case RETRYABLE_TRANSIENT -> retryOriginalAction(request, originalAction, "TRANSIENT_RETRY", step);
+            default -> Optional.empty();
+        };
+    }
+
+    private Optional<RecoveryOutcome> recoverStaleRuntimeSession(
+            ToolCallingRequest request,
+            ToolAction originalAction,
+            ConnectedRuntimeState runtimeState,
+            int step
+    ) {
+        if (!isRobloxAction(originalAction)) {
+            return Optional.empty();
+        }
+        String oldRuntimeId = Objects.toString(originalAction.arguments().getOrDefault("studio_id", ""), "");
+        runtimeState.invalidate(oldRuntimeId);
+        ToolAction discovery = new ToolAction("TOOL_CALL", "mcp_roblox_list_roblox_studios", "CALL",
+                Map.of(), "Core stale-session recovery discovery", "");
+        ToolResult discoveryResult = executeAction(request, discovery, step);
+        runtimeState.observe(discovery, discoveryResult);
+        Optional<String> newRuntimeId = runtimeState.extractSingleRuntimeId(discoveryResult);
+        if (newRuntimeId.isEmpty() || !discoveryResult.success()) {
+            return Optional.of(new RecoveryOutcome(originalAction, discoveryResult,
+                    List.of(new RecoveryEvent("RUNTIME_RECOVERY_DISCOVERY", discovery, discoveryResult))));
+        }
+        ToolAction retry = runtimeState.rebind(originalAction, newRuntimeId.get());
+        ToolResult retryResult = executeAction(request, retry, step);
+        runtimeState.observe(retry, retryResult);
+        LOGGER.info("[RUNTIME_RECOVERY] reason=STALE_SESSION provider=roblox oldRuntimeId={} newRuntimeId={} action=REDISCOVER_AND_RETRY success={}",
+                oldRuntimeId, newRuntimeId.get(), retryResult.success());
+        publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "RUNTIME_RECOVERY",
+                "Roblox session changed; rediscovered connected Studio and retried the original tool call",
+                targetNode(retry), step, Map.of("reason", "STALE_SESSION", "oldRuntimeId", oldRuntimeId,
+                        "newRuntimeId", newRuntimeId.get(), "action", "REDISCOVER_AND_RETRY"));
+        return Optional.of(new RecoveryOutcome(retry, retryResult, List.of(
+                new RecoveryEvent("RUNTIME_RECOVERY_BLOCKER", originalAction, originalResultForLog(originalAction, request)),
+                new RecoveryEvent("RUNTIME_RECOVERY_DISCOVERY", discovery, discoveryResult)
+        )));
+    }
+
+    private ToolResult originalResultForLog(ToolAction action, ToolCallingRequest request) {
+        return new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
+                false, List.of(), "Recoverable runtime blocker handled by Core.",
+                Map.of("recovered", true), "RECOVERABLE_BLOCKER_HANDLED", "", false, "");
+    }
+
+    private Optional<RecoveryOutcome> recoverRuntimeMode(
+            ToolCallingRequest request,
+            ToolAction originalAction,
+            ConnectedRuntimeState runtimeState,
+            String requiredMode,
+            int step
+    ) {
+        if (!isRobloxAction(originalAction)) {
+            return Optional.empty();
+        }
+        String mode = requiredMode == null || requiredMode.isBlank() ? "Edit" : requiredMode;
+        ToolAction boundOriginal = runtimeState.bind(originalAction);
+        String runtimeId = Objects.toString(boundOriginal.arguments().getOrDefault("studio_id", runtimeState.runtimeId()), "");
+        if (runtimeId.isBlank()) {
+            return Optional.empty();
+        }
+        ToolAction stateBefore = new ToolAction("TOOL_CALL", "mcp_roblox_get_studio_state", "CALL",
+                Map.of("studio_id", runtimeId), "Core mode recovery state check", "");
+        ToolResult stateBeforeResult = executeAction(request, stateBefore, step);
+        runtimeState.observe(stateBefore, stateBeforeResult);
+        boolean start = !"Edit".equalsIgnoreCase(mode);
+        ToolAction transition = new ToolAction("TOOL_CALL", "mcp_roblox_start_stop_play", "CALL",
+                Map.of("studio_id", runtimeId, "is_start", start), "Core mode recovery transition", "");
+        ToolResult transitionResult = executeAction(request, transition, step);
+        ToolAction stateAfter = new ToolAction("TOOL_CALL", "mcp_roblox_get_studio_state", "CALL",
+                Map.of("studio_id", runtimeId), "Core mode recovery verification", "");
+        ToolResult stateAfterResult = executeAction(request, stateAfter, step);
+        runtimeState.observe(stateAfter, stateAfterResult);
+        ToolAction retry = ensureDatamodelType(boundOriginal, mode);
+        ToolResult retryResult = executeAction(request, retry, step);
+        runtimeState.observe(retry, retryResult);
+        LOGGER.info("[RUNTIME_MODE_RECOVERY] current={} required={} action={} success={}",
+                runtimeState.currentMode(), mode, start ? "START_PLAY_AND_RETRY" : "STOP_PLAY_AND_RETRY", retryResult.success());
+        publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "RUNTIME_MODE_RECOVERY",
+                start ? "Starting Roblox Play mode for runtime inspection" : "Stopping Roblox Play mode for Edit-only operation",
+                targetNode(retry), step, Map.of("requiredMode", mode, "isStart", start));
+        return Optional.of(new RecoveryOutcome(retry, retryResult, List.of(
+                new RecoveryEvent("RUNTIME_MODE_STATE_BEFORE", stateBefore, stateBeforeResult),
+                new RecoveryEvent("RUNTIME_MODE_TRANSITION", transition, transitionResult),
+                new RecoveryEvent("RUNTIME_MODE_STATE_AFTER", stateAfter, stateAfterResult)
+        )));
+    }
+
+    private Optional<RecoveryOutcome> recoverTargetPath(
+            ToolCallingRequest request,
+            ToolAction originalAction,
+            ConnectedRuntimeState runtimeState,
+            int step
+    ) {
+        if (!isRobloxAction(originalAction)) {
+            return Optional.empty();
+        }
+        String query = pathSearchQuery(originalAction);
+        if (query.isBlank()) {
+            return Optional.empty();
+        }
+        Map<String, Object> args = new LinkedHashMap<>();
+        if (runtimeState.hasRuntimeId()) {
+            args.put("studio_id", runtimeState.runtimeId());
+        }
+        Object datamodel = originalAction.arguments().get("datamodel_type");
+        if (datamodel != null) {
+            args.put("datamodel_type", datamodel);
+        }
+        args.put("query", query);
+        ToolAction search = new ToolAction("TOOL_CALL", "mcp_roblox_search_game_tree", "CALL", args,
+                "Core target rediscovery after path not found", "");
+        ToolResult searchResult = executeAction(request, search, step);
+        runtimeState.observe(search, searchResult);
+        Optional<String> foundPath = firstPath(searchResult);
+        if (foundPath.isEmpty()) {
+            return Optional.of(new RecoveryOutcome(originalAction, searchResult,
+                    List.of(new RecoveryEvent("TARGET_REDISCOVERY", search, searchResult))));
+        }
+        ToolAction retry = replacePath(originalAction, foundPath.get());
+        ToolResult retryResult = executeAction(request, retry, step);
+        LOGGER.info("[RUNTIME_RECOVERY] reason=TARGET_NOT_FOUND provider=roblox query={} resolvedPath={} action=REDISCOVER_PATH_AND_RETRY success={}",
+                query, foundPath.get(), retryResult.success());
+        return Optional.of(new RecoveryOutcome(retry, retryResult,
+                List.of(new RecoveryEvent("TARGET_REDISCOVERY", search, searchResult))));
+    }
+
+    private Optional<RecoveryOutcome> verifyWriteReadBack(
+            ToolCallingRequest request,
+            ToolAction writeAction,
+            ToolResult writeResult,
+            ConnectedRuntimeState runtimeState,
+            int step
+    ) {
+        if (!isRobloxAction(writeAction) || !writeAction.tool().toLowerCase(Locale.ROOT).contains("multi_edit")) {
+            return Optional.empty();
+        }
+        Optional<String> path = firstEditedPath(writeAction);
+        if (path.isEmpty()) {
+            return Optional.empty();
+        }
+        Map<String, Object> args = new LinkedHashMap<>();
+        if (runtimeState.hasRuntimeId()) {
+            args.put("studio_id", runtimeState.runtimeId());
+        }
+        Object datamodel = writeAction.arguments().get("datamodel_type");
+        if (datamodel != null) {
+            args.put("datamodel_type", datamodel);
+        }
+        args.put("path", path.get());
+        ToolAction readBack = new ToolAction("TOOL_CALL", "mcp_roblox_script_read", "CALL", args,
+                "Core write read-back verification", "");
+        ToolResult readBackResult = executeAction(request, readBack, step);
+        LOGGER.info("[WRITE_VERIFICATION] target={} writeSucceeded={} readBackVerified={}",
+                path.get(), writeResult.success(), readBackResult.success());
+        return Optional.of(new RecoveryOutcome(writeAction, writeResult,
+                List.of(new RecoveryEvent("WRITE_READ_BACK_VERIFICATION", readBack, readBackResult))));
+    }
+
+    private Optional<RecoveryOutcome> retryOriginalAction(
+            ToolCallingRequest request,
+            ToolAction originalAction,
+            String label,
+            int step
+    ) {
+        ToolResult retry = executeAction(request, originalAction, step);
+        return Optional.of(new RecoveryOutcome(originalAction, retry, List.of(new RecoveryEvent(label, originalAction, retry))));
+    }
+
     /**
      * Logs a model-generated tool call for the full diagnostic AI/tool trace (see {@link
      * AiTraceLogger}) - gated by {@link AiTraceSettings#logToolCalls()}, near-zero cost when
@@ -903,6 +1132,90 @@ public class NativeToolLoopService {
         }
         AiTraceLogger.logToolResult(request.requestId(), action.tool(), result.success(), result.changed(),
                 result.errorCode(), result.errorMessage(), result.data());
+    }
+
+    private boolean isRobloxAction(ToolAction action) {
+        return action != null && action.tool().toLowerCase(Locale.ROOT).startsWith("mcp_roblox_");
+    }
+
+    private ToolAction ensureDatamodelType(ToolAction action, String mode) {
+        if (mode == null || mode.isBlank() || action.arguments().containsKey("datamodel_type")) {
+            return action;
+        }
+        Map<String, Object> arguments = new LinkedHashMap<>(action.arguments());
+        arguments.put("datamodel_type", mode);
+        return new ToolAction(action.action(), action.tool(), action.operation(), arguments, action.reason(), action.answer());
+    }
+
+    private String pathSearchQuery(ToolAction action) {
+        for (String key : List.of("path", "file_path", "script_path", "target", "instance_path")) {
+            Object value = action.arguments().get(key);
+            if (value == null || String.valueOf(value).isBlank()) {
+                continue;
+            }
+            String path = String.valueOf(value).replace('\\', '/');
+            int slash = path.lastIndexOf('/');
+            return slash >= 0 && slash < path.length() - 1 ? path.substring(slash + 1) : path;
+        }
+        return "";
+    }
+
+    private Optional<String> firstPath(ToolResult result) {
+        for (String key : List.of("path", "file_path", "script_path", "resolvedPath")) {
+            Object value = result.data().get(key);
+            if (value != null && !String.valueOf(value).isBlank()) {
+                return Optional.of(String.valueOf(value));
+            }
+        }
+        for (String key : List.of("matches", "results", "instances", "scripts")) {
+            Object value = result.data().get(key);
+            if (!(value instanceof List<?> list) || list.isEmpty()) {
+                continue;
+            }
+            Object first = list.get(0);
+            if (first instanceof Map<?, ?> map) {
+                for (String pathKey : List.of("path", "fullName", "file_path", "script_path", "id")) {
+                    Object path = map.get(pathKey);
+                    if (path != null && !String.valueOf(path).isBlank()) {
+                        return Optional.of(String.valueOf(path));
+                    }
+                }
+            } else if (first != null && !String.valueOf(first).isBlank()) {
+                return Optional.of(String.valueOf(first));
+            }
+        }
+        return Optional.empty();
+    }
+
+    private ToolAction replacePath(ToolAction action, String path) {
+        Map<String, Object> arguments = new LinkedHashMap<>(action.arguments());
+        for (String key : List.of("path", "file_path", "script_path", "target", "instance_path")) {
+            if (arguments.containsKey(key)) {
+                arguments.put(key, path);
+                return new ToolAction(action.action(), action.tool(), action.operation(), arguments, action.reason(), action.answer());
+            }
+        }
+        arguments.put("path", path);
+        return new ToolAction(action.action(), action.tool(), action.operation(), arguments, action.reason(), action.answer());
+    }
+
+    private Optional<String> firstEditedPath(ToolAction action) {
+        for (String key : List.of("path", "file_path", "script_path")) {
+            Object value = action.arguments().get(key);
+            if (value != null && !String.valueOf(value).isBlank()) {
+                return Optional.of(String.valueOf(value));
+            }
+        }
+        Object edits = action.arguments().get("edits");
+        if (edits instanceof List<?> list && !list.isEmpty() && list.get(0) instanceof Map<?, ?> edit) {
+            for (String key : List.of("path", "file_path", "script_path")) {
+                Object value = edit.get(key);
+                if (value != null && !String.valueOf(value).isBlank()) {
+                    return Optional.of(String.valueOf(value));
+                }
+            }
+        }
+        return Optional.empty();
     }
 
     /**
@@ -1712,6 +2025,14 @@ public class NativeToolLoopService {
         if (!workflowAssessment.complete()) {
             return workflowAssessment;
         }
+        if (requiresRootCauseVerification(request) && hasDiagnosticClueWithoutVerification(steps)) {
+            LOGGER.info("[GOAL_PROGRESS] rootGoal=\"{}\" subgoal=ROOT_CAUSE_DIAGNOSIS blocker=UNVERIFIED_CONSOLE_CLUE evidenceLevel=CLUE completionAllowed=false reason=ROOT_CAUSE_NOT_VERIFIED",
+                    request.userMessage());
+            return new CompletionAssessment(false, "ROOT_CAUSE_NOT_VERIFIED",
+                    "Do not answer yet. Console/log output is a clue, not a verified root cause. "
+                            + "Search/read/inspect the referenced script, symbol, path, or runtime state before claiming a cause. "
+                            + "Original user request: \"" + request.userMessage() + "\"");
+        }
         if (!requiresNonBootstrapEvidence(request)) {
             return workflowAssessment;
         }
@@ -1757,6 +2078,34 @@ public class NativeToolLoopService {
     private boolean hasStructuredEvidence(ToolResult result) {
         return (result.data() != null && !result.data().isEmpty())
                 || (result.message() != null && !result.message().isBlank());
+    }
+
+    private boolean requiresRootCauseVerification(ToolCallingRequest request) {
+        String text = normalize(request.userMessage() + " " + request.goal() + " " + request.reason());
+        return text.matches(".*\\b(why|diagnos|debug|bug|error|failing|falling|check|fix|root.?cause|"
+                + "dlaczego|czemu|sprawdz|blad|bledu|bug|napraw|spadam|spada|przyczyn)\\b.*");
+    }
+
+    private boolean hasDiagnosticClueWithoutVerification(List<ToolRuntimeStep> steps) {
+        boolean diagnosticClue = false;
+        boolean verified = false;
+        for (ToolRuntimeStep step : steps) {
+            ToolResult result = step.result();
+            if (result == null || !result.success()) {
+                continue;
+            }
+            String signature = (result.tool() + " " + result.operation()).toLowerCase(Locale.ROOT);
+            if (signature.contains("console") || signature.contains("log") || signature.contains("output")) {
+                diagnosticClue = true;
+                continue;
+            }
+            ToolOperationRole role = ToolOperationClassifier.classify(result.tool(), result.operation());
+            if (role == ToolOperationRole.SEARCH || role == ToolOperationRole.READ
+                    || role == ToolOperationRole.INSPECT || role == ToolOperationRole.VERIFY) {
+                verified = true;
+            }
+        }
+        return diagnosticClue && !verified;
     }
 
     private boolean isDeterministicCompletionBlock(CompletionAssessment assessment) {
@@ -2261,6 +2610,8 @@ public class NativeToolLoopService {
      */
     private static final int MAX_COMPLETION_GATE_ATTEMPTS = 3;
 
+    private static final int MAX_SAME_ACTION_RECOVERY_ATTEMPTS = 2;
+
     /**
      * The first time a completion-gate re-entry is decided upon at (or past) the normal step
      * budget, {@code maxCalls} is bumped by this many turns IN ONE SHOT (not incrementally one at a
@@ -2294,6 +2645,15 @@ public class NativeToolLoopService {
      * stay bounded like every other re-entry budget in this loop.
      */
     private static final int MAX_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS = 2;
+
+    private record RecoveryEvent(String actionLabel, ToolAction action, ToolResult result) {
+    }
+
+    private record RecoveryOutcome(ToolAction finalAction, ToolResult finalResult, List<RecoveryEvent> events) {
+        private RecoveryOutcome {
+            events = events == null ? List.of() : List.copyOf(events);
+        }
+    }
 
     /**
      * A provider failure message matching this is treated as a recoverable native-tool-call
