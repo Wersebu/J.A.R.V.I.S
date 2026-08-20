@@ -293,6 +293,121 @@ class NativeToolSchemaMapperTest {
         assertThat(action.operation()).isEqualTo("CREATE_DATASET");
     }
 
+    // Regression coverage for the reported production bug: search_game_tree's optional string
+    // "keywords" sent as "" by the model was rejected as a "placeholder" before the call ever
+    // reached MCP, even though it is an OPTIONAL field and "" simply means the model had nothing to
+    // filter by. See NativeToolSchemaMapper#normalizeArguments/#isLiteralPlaceholder javadoc.
+
+    @Test
+    void optionalBlankStringArgumentIsOmittedRatherThanRejected() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(searchGameTreeFullSchemaRegistry());
+
+        ToolAction action = mapper.toAction("mcp_roblox_search_game_tree__call", Map.of(
+                "path", "Workspace",
+                "keywords", "",
+                "instance_type", "Folder",
+                "studio_id", "abc-123",
+                "datamodel_type", "Edit",
+                "max_depth", 5
+        ), "test");
+
+        assertThat(action.arguments()).doesNotContainKey("keywords");
+        assertThat(action.arguments())
+                .containsEntry("path", "Workspace")
+                .containsEntry("instance_type", "Folder")
+                .containsEntry("studio_id", "abc-123")
+                .containsEntry("datamodel_type", "Edit")
+                .containsEntry("max_depth", 5);
+    }
+
+    @Test
+    void requiredBlankStringArgumentIsStillRejected() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(searchGameTreeFullSchemaRegistry());
+
+        assertThatThrownBy(() -> mapper.toAction("mcp_roblox_search_game_tree__call", Map.of(
+                "studio_id", "",
+                "datamodel_type", "Edit"
+        ), "test"))
+                .isInstanceOf(InvalidToolArgumentException.class)
+                .hasMessageContaining("Missing required argument 'studio_id'");
+    }
+
+    @Test
+    void literalPlaceholderAngleBracketValueIsRejected() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(searchGameTreeFullSchemaRegistry());
+
+        assertThatThrownBy(() -> mapper.toAction("mcp_roblox_search_game_tree__call", Map.of(
+                "studio_id", "<studio_id>",
+                "datamodel_type", "Edit"
+        ), "test"))
+                .isInstanceOf(InvalidToolArgumentException.class)
+                .hasMessageContaining("placeholder");
+    }
+
+    @Test
+    void literalPlaceholderExampleIdValueIsRejected() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(searchGameTreeFullSchemaRegistry());
+
+        assertThatThrownBy(() -> mapper.toAction("mcp_roblox_search_game_tree__call", Map.of(
+                "studio_id", "example_id",
+                "datamodel_type", "Edit"
+        ), "test"))
+                .isInstanceOf(InvalidToolArgumentException.class)
+                .hasMessageContaining("placeholder");
+    }
+
+    @Test
+    void normalConcreteRequiredStringIsAccepted() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(searchGameTreeFullSchemaRegistry());
+
+        ToolAction action = mapper.toAction("mcp_roblox_search_game_tree__call", Map.of(
+                "studio_id", "3fe2edf5-1043-43dc-8db3-38b3b980522a",
+                "datamodel_type", "Edit"
+        ), "test");
+
+        assertThat(action.tool()).isEqualTo("mcp_roblox_search_game_tree");
+        assertThat(action.arguments()).containsEntry("studio_id", "3fe2edf5-1043-43dc-8db3-38b3b980522a");
+    }
+
+    @Test
+    void exactReportedSearchGameTreeModelOutputPassesValidationWithKeywordsOmitted() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(searchGameTreeFullSchemaRegistry());
+
+        // The exact model output from the production bug report.
+        ToolAction action = mapper.toAction("mcp_roblox_search_game_tree__call", Map.of(
+                "path", "Workspace",
+                "keywords", "",
+                "instance_type", "Folder",
+                "studio_id", "3fe2edf5-1043-43dc-8db3-38b3b980522a",
+                "datamodel_type", "Edit",
+                "max_depth", 5
+        ), "test");
+
+        assertThat(action.tool()).isEqualTo("mcp_roblox_search_game_tree");
+        assertThat(action.operation()).isEqualTo("CALL");
+        assertThat(action.arguments()).doesNotContainKey("keywords");
+    }
+
+    /**
+     * Matches the real MCP {@code search_game_tree} schema from the bug report exactly: fields
+     * {@code datamodel_type, head_limit, instance_type, keywords, max_depth, path, studio_id},
+     * required only {@code datamodel_type, studio_id}.
+     */
+    private static ToolRegistry searchGameTreeFullSchemaRegistry() {
+        ToolDefinition searchTree = new ToolDefinition("mcp_roblox_search_game_tree", "Searches Roblox tree.", List.of(
+                new ToolOperationDefinition("CALL", "Search.", List.of(
+                        new ToolArgumentDefinition("datamodel_type", true, ToolJsonSchema.string("Roblox datamodel type.")),
+                        new ToolArgumentDefinition("head_limit", false, ToolJsonSchema.integer("Result limit.")),
+                        new ToolArgumentDefinition("instance_type", false, ToolJsonSchema.string("Instance class filter.")),
+                        new ToolArgumentDefinition("keywords", false, ToolJsonSchema.string("Optional keyword filter.")),
+                        new ToolArgumentDefinition("max_depth", false, ToolJsonSchema.integer("Max tree depth.")),
+                        new ToolArgumentDefinition("path", false, ToolJsonSchema.string("Root path to search from.")),
+                        new ToolArgumentDefinition("studio_id", true, ToolJsonSchema.string("Exact connected Studio id."))
+                ), false, ToolSafetyLevel.READ)
+        ));
+        return registry(searchTree);
+    }
+
     @SuppressWarnings("unchecked")
     private static Map<String, Object> parametersFor(NativeToolSchemaMapper mapper, String functionName) {
         return mapper.definitions(ToolIntent.LOCATION).stream()

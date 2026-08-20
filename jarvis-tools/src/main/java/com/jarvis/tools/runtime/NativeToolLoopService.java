@@ -218,6 +218,12 @@ public class NativeToolLoopService {
         // gets a REAL turn instead of an empty promise - never unbounded, never granted otherwise.
         int completionRecoveryExtensionsUsed = 0;
         int emptyResponseRetries = 0;
+        // Bounded repair for a malformed/truncated native tool call from the provider (see
+        // RECOVERABLE_PROVIDER_TOOL_CALL_FAILURE) - separate from completionRecoveryExtensionsUsed
+        // above (a different recovery budget for a different problem), granted at most once per
+        // loop, and only when a repair attempt is actually decided at the last available step.
+        int providerToolCallRepairAttempts = 0;
+        boolean providerToolCallRepairExtensionGranted = false;
         messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions, existingDataset)));
         messages.add(ModelMessage.user(request.userMessage(), request.images()));
 
@@ -262,6 +268,31 @@ public class NativeToolLoopService {
             try {
                 response = selectProvider(request).toolChat(request.brain(), messages, definitions, AIJobType.MAIN_MODEL);
             } catch (AIProviderException exception) {
+                if (isRecoverableProviderToolCallFailure(exception)
+                        && providerToolCallRepairAttempts < MAX_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS) {
+                    providerToolCallRepairAttempts++;
+                    // Mirrors the existing completion-recovery-extension pattern: a repair attempt
+                    // decided right at the normal step budget must still get a real turn to run in,
+                    // not just a "continue" the outer for-loop immediately ends after. Granted once,
+                    // bounded to the same small size as the repair budget itself - never unbounded,
+                    // never a substitute for raising maxCallsFast/maxCallsResearch.
+                    if (step >= maxCalls && !providerToolCallRepairExtensionGranted) {
+                        providerToolCallRepairExtensionGranted = true;
+                        maxCalls += MAX_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS;
+                    }
+                    String error = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+                    LOGGER.warn("[PROVIDER_TOOL_REPAIR] requestId={} step={} attempt={}/{} reason=MALFORMED_TOOL_JSON error={}",
+                            request.requestId(), step, providerToolCallRepairAttempts, MAX_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS, error);
+                    publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "PROVIDER_TOOL_REPAIR",
+                            "Provider returned a malformed native tool call; requesting a corrected retry", null, step,
+                            Map.of("attempt", providerToolCallRepairAttempts, "reason", "MALFORMED_TOOL_JSON", "error", error));
+                    // Deliberately does NOT append an assistant turn (there is no valid assistant
+                    // message to append - the provider never produced one) and keeps messages/results
+                    // untouched otherwise, so the model still has its full prior context (successful
+                    // tool results, the original goal, everything) when it retries.
+                    messages.add(ModelMessage.system(PROVIDER_TOOL_REPAIR_GUIDANCE));
+                    continue;
+                }
                 return handleProviderFailure(request, intent, steps, results, errors, messages, exception, step);
             }
             publishThinking(request, response);
@@ -716,6 +747,20 @@ public class NativeToolLoopService {
         return new ToolCallingResult(true, fallback, steps, results);
     }
 
+    /**
+     * Classifies whether {@code exception} looks like a recoverable native-tool-call
+     * serialization/parsing failure (see {@link #RECOVERABLE_PROVIDER_TOOL_CALL_FAILURE}) as opposed
+     * to a connection/timeout/availability/auth failure, which must never enter the same bounded
+     * repair loop - retrying those with a "fix your JSON" message cannot help and only burns budget.
+     *
+     * @param exception the provider failure to classify
+     * @return true when a bounded repair attempt is worth trying
+     */
+    private boolean isRecoverableProviderToolCallFailure(AIProviderException exception) {
+        String message = exception.getMessage();
+        return message != null && RECOVERABLE_PROVIDER_TOOL_CALL_FAILURE.matcher(message).find();
+    }
+
     private ToolCallingResult handleProviderFailure(
             ToolCallingRequest request,
             ToolIntent intent,
@@ -749,9 +794,13 @@ public class NativeToolLoopService {
             }
         }
 
+        // Diagnostic, not generic: the real provider failure reason (e.g. Ollama's own "error
+        // parsing tool call: unexpected end of JSON input") is short, safe to show, and far more
+        // actionable than a one-size-fits-all apology - never a stack trace, but never hidden either.
         String answer = !results.isEmpty()
                 ? ""
-                : "Nie udalo mi sie teraz bezpiecznie wykonac narzedzia, poniewaz model zwrocil niepoprawne wywolanie narzedzia.";
+                : "Nie udalo mi sie bezpiecznie wykonac narzedzia, poniewaz wystapil blad podczas generowania "
+                        + "wywolania narzedzia przez model/dostawce: " + error;
         steps.add(new ToolRuntimeStep(step, "MODEL_TOOL_TURN_FAILED", "", "", "FAILED", null));
         saveDebug(request, intent, steps, "MODEL_TOOL_TURN_FAILED", errors);
         publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "MODEL_TOOL_TURN_FAILED",
@@ -2229,6 +2278,36 @@ public class NativeToolLoopService {
      * branch in {@link #execute}.
      */
     private static final int MAX_EMPTY_RESPONSE_RETRIES = 2;
+
+    /**
+     * Above this many consecutive turns where the provider fails to even produce a parseable native
+     * tool call (malformed/truncated arguments JSON - see {@link #isRecoverableProviderToolCallFailure}),
+     * this loop stops retrying and falls back to {@link #handleProviderFailure}'s safe text answer.
+     * A single malformed response must never end the whole tool loop outright - the model still has
+     * the original tools available and can usually just retry the call correctly - but this must
+     * stay bounded like every other re-entry budget in this loop.
+     */
+    private static final int MAX_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS = 2;
+
+    /**
+     * A provider failure message matching this is treated as a recoverable native-tool-call
+     * serialization/parsing problem (the provider received the request but could not turn the
+     * model's own output into a structured tool call) - eligible for {@link
+     * #MAX_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS}-bounded repair. Deliberately narrow: connection
+     * failures, timeouts, and auth errors must never match this and must never trigger the same
+     * repair loop, since retrying those the same way cannot help and would just waste the budget.
+     */
+    private static final java.util.regex.Pattern RECOVERABLE_PROVIDER_TOOL_CALL_FAILURE = java.util.regex.Pattern.compile(
+            "(?i)error parsing tool call|unexpected end of json|malformed[^.]*(tool.?call|arguments|json)"
+                    + "|invalid[^.]*tool.?call[^.]*json|json[^.]*pars(e|ing)[^.]*error");
+
+    private static final String PROVIDER_TOOL_REPAIR_GUIDANCE = """
+            The previous native tool call could not be parsed because its arguments JSON was malformed or incomplete.
+            Retry the required tool call using valid JSON.
+            Use the exact runtime schema.
+            Omit optional fields when they have no value instead of sending empty placeholder strings.
+            Continue working toward the original goal.
+            """;
 
     private static final String EMPTY_RESPONSE_RETRY_NOTE =
             "Your last turn returned neither a tool call nor any text content. You must do exactly one of: "

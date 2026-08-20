@@ -1,6 +1,7 @@
 package com.jarvis.tools.runtime;
 
 import com.jarvis.common.ai.NativeToolDefinition;
+import com.jarvis.common.trace.AiTraceLogger;
 import com.jarvis.tools.schema.ToolArgumentDefinition;
 import com.jarvis.tools.schema.ToolDefinition;
 import com.jarvis.tools.schema.ToolJsonSchema;
@@ -216,14 +217,19 @@ public class NativeToolSchemaMapper {
         }
         for (ToolArgumentDefinition argument : definitions) {
             Object value = safeArguments.get(argument.name());
-            if (value == null) {
+            // A required argument sent as a blank string is treated exactly like a missing one -
+            // never silently accepted as "no problem", see NativeToolSchemaMapperTest's required-blank
+            // coverage. An optional blank string never reaches this point at all: normalizeArguments
+            // already strips it before validation runs (see its javadoc for why).
+            boolean missing = value == null || (argument.required() && isBlankString(value));
+            if (missing) {
                 if (argument.required() && toolName.startsWith("mcp_")) {
                     throw new InvalidToolArgumentException("Missing required argument '" + argument.name()
                             + "'. Expected top-level fields: " + expectedFieldLabel(definitions) + ".");
                 }
                 continue;
             }
-            if (isPlaceholder(value)) {
+            if (isLiteralPlaceholder(value)) {
                 throw new InvalidToolArgumentException("Argument '" + argument.name()
                         + "' looks like a placeholder. Use a concrete value from prior tool results.");
             }
@@ -267,17 +273,64 @@ public class NativeToolSchemaMapper {
         return findOperation(normalized.substring(0, separator), normalized.substring(separator + 2).toUpperCase(Locale.ROOT));
     }
 
+    /**
+     * Normalizes a model tool call's arguments before validation.
+     *
+     * <p>Handles two independent, generic (never tool-specific) cases:</p>
+     * <ol>
+     *     <li>an operation with zero declared arguments called with an accidental empty {@code
+     *     {"arguments": {}}} wrapper - unwrapped to {@code {}}, unchanged behavior;</li>
+     *     <li><b>optional blank string omission</b>: a model very commonly "fills in" an optional
+     *     field it has nothing to say with an empty string (e.g. {@code keywords=""}) rather than
+     *     omitting it outright - schema-wise this is indistinguishable from not providing it at all
+     *     when the field is declared optional and typed as a string. Stripping it here, before
+     *     validation, means an optional blank string is never mistaken for a literal placeholder and
+     *     never reaches the downstream tool at all - the tool only ever sees a field it was actually
+     *     given a value for. A <em>required</em> string argument sent as {@code ""} is deliberately
+     *     left untouched here - see the required-blank handling in {@link #validateArguments}, which
+     *     must still reject it.</li>
+     * </ol>
+     *
+     * @param toolName lowercased tool name
+     * @param operationName uppercased operation name
+     * @param arguments raw arguments as sent by the model
+     * @return normalized arguments, safe to validate
+     */
     private Map<String, Object> normalizeArguments(String toolName, String operationName, Map<String, Object> arguments) {
         Map<String, Object> safeArguments = arguments == null ? Map.of() : Map.copyOf(arguments);
         Optional<ToolOperationDefinition> operation = findOperation(toolName, operationName);
-        if (operation.isEmpty() || !operation.get().arguments().isEmpty()) {
+        if (operation.isEmpty()) {
             return safeArguments;
         }
-        Object wrapped = safeArguments.get("arguments");
-        if (safeArguments.size() == 1 && wrapped instanceof Map<?, ?> map && map.isEmpty()) {
-            return Map.of();
+        List<ToolArgumentDefinition> declared = operation.get().arguments();
+        if (declared.isEmpty()) {
+            Object wrapped = safeArguments.get("arguments");
+            if (safeArguments.size() == 1 && wrapped instanceof Map<?, ?> map && map.isEmpty()) {
+                return Map.of();
+            }
+            return safeArguments;
         }
-        return safeArguments;
+        List<String> omittedOptionalBlanks = new ArrayList<>();
+        Map<String, Object> normalized = new LinkedHashMap<>(safeArguments);
+        for (ToolArgumentDefinition argument : declared) {
+            if (argument.required() || !"string".equals(argument.schema().type())) {
+                continue;
+            }
+            Object value = normalized.get(argument.name());
+            if (isBlankString(value)) {
+                normalized.remove(argument.name());
+                omittedOptionalBlanks.add(argument.name());
+            }
+        }
+        if (!omittedOptionalBlanks.isEmpty()) {
+            String functionName = toolName + "__" + operationName.toLowerCase(Locale.ROOT);
+            AiTraceLogger.logNativeToolArgumentNormalization(functionName, omittedOptionalBlanks);
+        }
+        return Map.copyOf(normalized);
+    }
+
+    private boolean isBlankString(Object value) {
+        return value instanceof String text && text.isBlank();
     }
 
     private Optional<ToolOperationDefinition> findOperation(String toolName, String operationName) {
@@ -335,13 +388,23 @@ public class NativeToolSchemaMapper {
                 .toString();
     }
 
-    private boolean isPlaceholder(Object value) {
-        if (!(value instanceof String text)) {
+    /**
+     * Detects a literal placeholder value the model invented instead of a real one (e.g. {@code
+     * "<studio_id>"}, {@code "example_id"}, {@code "xxx_id_here"}) - distinct from an empty string,
+     * which is never a placeholder in this sense (see {@link #normalizeArguments} for optional
+     * blank-string handling, and the required-blank check in {@link #validateArguments}). A blank
+     * string can never match any of these patterns, so this method is never called with one that
+     * still needs to be treated as a placeholder.
+     *
+     * @param value candidate argument value
+     * @return true when the value looks like an invented placeholder rather than real data
+     */
+    private boolean isLiteralPlaceholder(Object value) {
+        if (!(value instanceof String text) || text.isBlank()) {
             return false;
         }
         String normalized = text.trim().toLowerCase(Locale.ROOT);
-        return normalized.isBlank()
-                || normalized.contains("placeholder")
+        return normalized.contains("placeholder")
                 || normalized.startsWith("example_")
                 || normalized.startsWith("default_")
                 || normalized.startsWith("<")

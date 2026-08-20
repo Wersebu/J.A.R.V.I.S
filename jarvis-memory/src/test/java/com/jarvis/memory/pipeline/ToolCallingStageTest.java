@@ -114,6 +114,52 @@ class ToolCallingStageTest {
         assertThat(answer).doesNotContain("Nie udalo mi sie zweryfikowac aktualnych ofert");
     }
 
+    // Regression coverage for the reported bug: a tool loop that ends with no successful result and
+    // no final text used to always show the fully generic "Zakonczylem prace z narzedziami, ale
+    // model nie zwrocil tresci odpowiedzi." - hiding a real, already human-readable failure reason
+    // (e.g. an INVALID_TOOL_ARGUMENT rejection) behind an apology that gives the user nothing to
+    // act on. fallbackToolAnswer must now surface that real reason when one is available.
+
+    @Test
+    void fallbackToolAnswerSurfacesTheRealFailureReasonInsteadOfAGenericApology() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        ToolResult invalidArgument = new ToolResult(false, "mcp_roblox_search_game_tree", "CALL", "request-1", "conversation-1",
+                false, List.of(), "Invalid native tool call", Map.of(),
+                "INVALID_TOOL_ARGUMENT", "Argument 'keywords' looks like a placeholder. Use a concrete value from prior tool results.",
+                false, "");
+        ToolCallingResult loopResult = new ToolCallingResult(true, "", List.of(), List.of(invalidArgument));
+
+        ChatRequest request = new ChatRequest("conversation-1", "podaj strukture folderow", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("fallbackToolAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).contains("mcp_roblox_search_game_tree");
+        assertThat(answer).contains("keywords");
+        assertThat(answer).contains("placeholder");
+        assertThat(answer).doesNotContain("Zakonczylem prace z narzedziami, ale model nie zwrocil tresci odpowiedzi.");
+    }
+
+    @Test
+    void fallbackToolAnswerKeepsTheGenericSafeMessageWhenNoResultsExistAtAll() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        ToolCallingResult loopResult = new ToolCallingResult(true, "", List.of(), List.of());
+        ChatRequest request = new ChatRequest("conversation-1", "hello", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("fallbackToolAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).isEqualTo("Zakonczylem prace z narzedziami, ale model nie zwrocil tresci odpowiedzi.");
+    }
+
     @Test
     void streamToolFinalAnswerStillReturnsMarketplaceFailureTemplateWhenNoOtherAnswerExists() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
@@ -204,13 +250,20 @@ class ToolCallingStageTest {
         assertThat(answer).isEqualTo(plainAnswer);
     }
 
-    // Regression for the exact reported bug: the model's second native tool call in the loop was
-    // malformed, got rejected as INVALID_TOOL_CALL (message literally "Invalid native tool call"),
-    // the loop then ran out of its call budget with a blank finalAnswer, and that internal,
-    // developer-facing error message leaked straight into the chat as if it were the assistant's
-    // real answer.
+    // Originally a regression for the exact reported bug: the model's second native tool call in
+    // the loop was malformed, got rejected as INVALID_TOOL_CALL with a literally useless message
+    // ("Invalid native tool call" - no diagnostic value at all), the loop then ran out of its call
+    // budget with a blank finalAnswer, and that useless label leaked straight into the chat as if it
+    // were the assistant's real answer. Fixed at the time by skipping failed results entirely and
+    // always falling back to the fully generic apology.
+    //
+    // That generic-always fallback later turned out to be its own bug: it also hid genuinely useful,
+    // already human-readable failure reasons (e.g. "Argument 'keywords' looks like a placeholder")
+    // behind an apology that gave the user nothing to act on. fallbackToolAnswer now surfaces a
+    // failed result's specific errorMessage()/errorCode() - never the useless literal message() this
+    // test originally guarded against, which is why the first assertion below is unchanged.
     @Test
-    void fallbackToolAnswerNeverSurfacesAFailedToolResultsInternalErrorMessage() throws Exception {
+    void fallbackToolAnswerSurfacesTheSpecificErrorReasonButNeverTheUselessGenericToolCallLabel() throws Exception {
         ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
                 List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
 
@@ -229,8 +282,11 @@ class ToolCallingStageTest {
         method.setAccessible(true);
         String answer = (String) method.invoke(stage, context, loopResult);
 
+        // Still never the useless literal label...
         assertThat(answer).doesNotContain("Invalid native tool call");
-        assertThat(answer).isEqualTo("Zakonczylem prace z narzedziami, ale model nie zwrocil tresci odpowiedzi.");
+        // ...but now names the real tool and the real, specific, already-safe-to-show reason.
+        assertThat(answer).contains("location.GEOCODE");
+        assertThat(answer).contains("Unrecognized field \"records\"");
     }
 
     @Test

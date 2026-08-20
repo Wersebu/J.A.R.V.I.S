@@ -341,7 +341,14 @@ public class OllamaProvider implements AIProvider {
                 if (httpResponse.statusCode() < 200 || httpResponse.statusCode() >= 300) {
                     LOGGER.error("[JARVIS][requestId={}][OLLAMA] NATIVE_TOOL_CHAT_HTTP_ERROR status={} body={}",
                             requestId, httpResponse.statusCode(), httpResponse.body());
-                    throw new OllamaException("Ollama native tool chat failed with status " + httpResponse.statusCode());
+                    // The real reason (e.g. Ollama's own "error parsing tool call: unexpected end of
+                    // JSON input" when the model's function-call arguments were malformed/truncated)
+                    // must reach the caller, not just the log - NativeToolLoopService needs it to
+                    // distinguish a recoverable native-tool-call parsing failure from a genuine
+                    // provider/connection failure. Bounded so a huge body is never dumped into an
+                    // exception message.
+                    throw new OllamaException("Ollama native tool chat failed with status " + httpResponse.statusCode()
+                            + ": " + truncate(httpResponse.body(), 500));
                 }
                 OllamaChatResponse response = objectMapper.readValue(httpResponse.body(), OllamaChatResponse.class);
                 ModelResponse modelResponse = toModelResponse(response);
@@ -992,6 +999,11 @@ public class OllamaProvider implements AIProvider {
             return compact;
         }
         return compact.substring(0, 500) + "...";
+    }
+
+    private String truncate(String value, int maxChars) {
+        String safe = value == null ? "" : value;
+        return safe.length() <= maxChars ? safe : safe.substring(0, maxChars) + "...";
     }
 
     private String tokenSummary(GenerationStreamState state) {

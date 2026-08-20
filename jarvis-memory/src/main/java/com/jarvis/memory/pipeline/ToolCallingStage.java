@@ -896,7 +896,51 @@ public class ToolCallingStage implements PipelineStage {
                 return toolResult.message();
             }
         }
+        // Nothing succeeded, and the loop itself never produced final text (result.finalAnswer() was
+        // blank) - a generic "I finished but got nothing readable" hides the actual, useful reason
+        // (e.g. INVALID_TOOL_ARGUMENT: "Argument 'x' looks like a placeholder", or a real MCP tool
+        // error) behind a message that gives the user nothing to act on. Show the real, already
+        // human-readable reason from the last failed tool call instead, when one is available.
+        Optional<ToolResult> lastFailure = lastFailedResult(result);
+        if (lastFailure.isPresent()) {
+            return incompleteToolWorkflowMessage(lastFailure.get());
+        }
         return "Zakonczylem prace z narzedziami, ale model nie zwrocil tresci odpowiedzi.";
+    }
+
+    /**
+     * Finds the most recent failed tool result, regardless of tool - used only as a last resort in
+     * {@link #fallbackToolAnswer}, after every successful-result candidate has already been checked.
+     *
+     * @param result the finished tool-calling result
+     * @return the last failed result, if any
+     */
+    private Optional<ToolResult> lastFailedResult(ToolCallingResult result) {
+        for (int index = result.results().size() - 1; index >= 0; index--) {
+            ToolResult toolResult = result.results().get(index);
+            if (!toolResult.success()) {
+                return Optional.of(toolResult);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Builds an honest, plain-text explanation naming the real tool/operation and failure reason -
+     * safe to show directly (a validation/tool-result error message, never a stack trace), never a
+     * generic apology that would obscure why the task actually did not finish.
+     *
+     * @param failure the last failed tool result
+     * @return diagnostic-but-safe failure message
+     */
+    private String incompleteToolWorkflowMessage(ToolResult failure) {
+        String reason = !failure.errorMessage().isBlank() ? failure.errorMessage()
+                : !failure.message().isBlank() ? failure.message() : failure.errorCode();
+        if (reason == null || reason.isBlank()) {
+            return "Zakonczylem prace z narzedziami, ale model nie zwrocil tresci odpowiedzi.";
+        }
+        return "Nie udalo mi sie ukonczyc zadania - wywolanie " + failure.tool() + "." + failure.operation()
+                + " zakonczylo sie bledem: " + reason;
     }
 
     private Optional<ToolResult> lastWebResult(ToolCallingResult result, String operation) {

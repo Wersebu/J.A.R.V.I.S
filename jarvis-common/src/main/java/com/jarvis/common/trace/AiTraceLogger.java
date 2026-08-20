@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.regex.Pattern;
 
 /**
@@ -302,6 +303,25 @@ public final class AiTraceLogger {
                 %s
                 ==================================================""".formatted(
                 requestId, tool, success, changed, errorCode, errorMessage, prettyPrintSafe(dataJson));
+    }
+
+    // ------------------------------------------------------------------
+    // Native tool argument normalization (optional blank-string omission).
+    // ------------------------------------------------------------------
+
+    /**
+     * Logs which optional, blank-string arguments a model tool call was normalized to omit before
+     * validation/execution - a single compact line, not a full pretty-printed block, since there is
+     * no large payload here worth the redaction/binary-omission machinery.
+     *
+     * @param tool model-facing function name (e.g. {@code mcp_roblox_search_game_tree__call})
+     * @param omittedOptionalBlankArguments names of optional string arguments stripped for being blank
+     */
+    public static void logNativeToolArgumentNormalization(String tool, List<String> omittedOptionalBlankArguments) {
+        if (!AiTraceSettings.logToolCalls() || omittedOptionalBlankArguments == null || omittedOptionalBlankArguments.isEmpty()) {
+            return;
+        }
+        LOGGER.info("[NATIVE_TOOL_NORMALIZATION] tool={} omittedOptionalBlankArguments={}", tool, omittedOptionalBlankArguments);
     }
 
     // ------------------------------------------------------------------

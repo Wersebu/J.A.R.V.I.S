@@ -2,7 +2,7 @@
 
 Jarvis (J.A.R.V.I.S. Core) is a long-term AI operating system backend foundation: a headless Spring Boot service that orchestrates local Ollama models behind a provider-independent AI contract, with brain routing, native tool calling, a Knowledge Workspace, web/marketplace/location tools, cognitive memory, and real-time streaming to a separate desktop client.
 
-Current version: **`2.18.0`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
+Current version: **`2.18.1`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
 
 MCP Windows bridge lifecycle is automatic: when the Windows client registers its bridge, Core asynchronously initializes enabled Windows-hosted MCP servers, discovers their tools, and refreshes MCP status without requiring manual reconnect calls. A reconnect never leaves an orphaned MCP process behind, a silently-dead process is detected and transparently relaunched instead of reused, and a genuinely empty `tools/list` result is retried a bounded number of times instead of being cached as final forever (see [Discovery Lifecycle & Reliability](docs/MCP.md#discovery-lifecycle--reliability)).
 
@@ -262,6 +262,8 @@ When enabled, every stage of `USER -> MODEL -> TOOL_CALL -> MCP -> TOOL_RESULT -
 **Cost when disabled**: every logging call point starts with a single `volatile` boolean read (`AiTraceSettings`) and returns immediately - no pretty-printing, no redaction, no serialization happens unless the relevant flag is on.
 
 See `AiTraceLoggerTest` (formatting/redaction/binary-omission unit tests), `OllamaProviderAiTraceTest` (proves the logged JSON is byte-identical to the real HTTP body), and `NativeToolLoopServiceAiTraceMcpIntegrationTest` (full real-MCP-path end-to-end trace, including turn correlation and the model-facing-vs-real MCP tool name).
+
+**Optional MCP argument normalization and provider tool-call repair** (see also `NativeToolSchemaMapperTest`, `NativeToolLoopServiceProviderToolRepairTest`): a model very commonly fills an optional field it has nothing to say with an empty string (e.g. `keywords=""`) instead of omitting it - schema-wise this is indistinguishable from not providing it. `NativeToolSchemaMapper` now normalizes an optional string argument's blank value to "field omitted" before validation/execution (logged as `[NATIVE_TOOL_NORMALIZATION]` when `log-tool-calls` is on), driven entirely by the runtime schema's `required` flag - never a hardcoded per-tool exception. A *required* string sent as `""` is still rejected exactly as before. Separately, if the provider itself fails to parse a native tool call (malformed/truncated arguments JSON), `NativeToolLoopService` now gives the model a small, bounded number of chances (`MAX_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS`, currently 2) to retry with the same tool definitions still available, logged as `[PROVIDER_TOOL_REPAIR] attempt=N/2`, before falling back to the existing safe-text-only recovery. A connection/timeout/availability failure is never treated as a repairable tool-call parsing problem. Neither change touches `max-calls-fast`/`max-calls-research`/`timeout-seconds`.
 
 ### Vision / Image Attachments
 
