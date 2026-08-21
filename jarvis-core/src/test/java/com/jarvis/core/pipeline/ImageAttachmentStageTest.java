@@ -140,8 +140,41 @@ class ImageAttachmentStageTest {
         CognitiveEvent summary = eventBus.lastEvent(CognitiveEventType.CONVERSATION_IMAGES);
         assertThat(summary).isNotNull();
         assertThat(summary.metadata()).containsEntry("current", 0).containsEntry("historicalAvailable", 1)
-                .containsEntry("selected", 1).containsEntry("selectionReason", "GENERAL_HISTORICAL_REFERENCE");
+                .containsEntry("selected", 1).containsEntry("selectionReason", "HISTORICAL_IMAGE_REFERENCE");
         assertThat(String.valueOf(summary.metadata().get("images"))).doesNotContainIgnoringCase("base64");
+    }
+
+    // Exact reported production regression: "co wyslalem ci wczesniej w zalaczniku?" ("what did I
+    // send you earlier in the attachment?") contains no image/photo/screen word at all, only the
+    // attachment noun "zalaczniku" - Core previously never detected this as a historical-image
+    // reference at all, so the model got only "Status: AVAILABLE" metadata with no pixels and spent
+    // several minutes reasoning about whether it could see the image.
+    @Test
+    void attachmentWordingResolvesToTheSingleAvailableImageWithUnambiguousInspectionFlag() throws Exception {
+        var workspace = workspaceService.createWorkspace("conversation-1");
+        var uploaded = workspaceService.storeInput(workspace.workspaceId(), "conversation-1", List.of(
+                new MockMultipartFile("files", "1000018102.jpg", "image/jpeg", pngBytes(10, 10))));
+        AttachmentReference reference = new AttachmentReference(uploaded.getFirst().workspaceId(), uploaded.getFirst().attachmentId());
+
+        stage.execute(contextWithAttachments("conversation-1", "req-1", "co to za zdjecie?", List.of(reference)));
+        PipelineContext result = stage.execute(contextWithAttachments("conversation-1", "req-2",
+                "co wyslalem ci wczesniej w zalaczniku?", List.of()));
+
+        assertThat(result.images()).hasSize(1);
+        ImageAttachment resolved = result.images().getFirst();
+        assertThat(resolved.originalFileName()).isEqualTo("1000018102.jpg");
+        assertThat(Base64.getDecoder().decode(resolved.base64Data())).isNotEmpty();
+
+        String block = String.valueOf(result.metadata().get("conversationImagesPromptBlock"));
+        assertThat(block).contains("1000018102.jpg", "Storage status: AVAILABLE",
+                "Passed as native visual input in this request: YES", "Model can inspect image now: YES");
+        // The exact bug being fixed: an entry must never claim AVAILABLE while also saying the model
+        // cannot currently inspect it, with no explanation of that contradiction.
+        assertThat(block).doesNotContain("Passed as native visual input in this request: NO\n  Model can inspect image now: YES");
+
+        CognitiveEvent summary = eventBus.lastEvent(CognitiveEventType.CONVERSATION_IMAGES);
+        assertThat(summary).isNotNull();
+        assertThat(summary.metadata()).containsEntry("selected", 1);
     }
 
     @Test

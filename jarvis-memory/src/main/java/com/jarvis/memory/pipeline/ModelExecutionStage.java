@@ -10,6 +10,9 @@ import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.event.GenerationFinishedEvent;
 import com.jarvis.common.event.ThinkingTokenEvent;
 import com.jarvis.common.event.TokenEvent;
+import com.jarvis.common.image.ConversationImageContext;
+import com.jarvis.common.image.ConversationImageRecord;
+import com.jarvis.common.image.ImageSelectionReason;
 import com.jarvis.common.model.ActiveModelService;
 import com.jarvis.common.model.ModelCapability;
 import org.slf4j.Logger;
@@ -82,6 +85,10 @@ public class ModelExecutionStage implements PipelineStage {
     public PipelineContext execute(PipelineContext context) {
         if (context.response() != null && !context.response().isBlank()) {
             return context;
+        }
+        PipelineContext gated = applyConversationImageGate(context);
+        if (gated != null) {
+            return gated;
         }
         if (!context.images().isEmpty()) {
             java.util.Set<ModelCapability> activeCapabilities = activeModelService.activeModelCapabilities();
@@ -223,6 +230,79 @@ public class ModelExecutionStage implements PipelineStage {
      * @param context pipeline context with unresolved images
      * @return context carrying the friendly fallback answer
      */
+    /**
+     * Deterministic pre-model check for a historical-image reference the conversation-image
+     * resolver could not merge into {@code context.images()} on its own (see {@code
+     * ConversationImageResolver}/{@code ImageAttachmentStage}) - resolves the outcome (ask to
+     * re-upload an expired image, or ask which of several images was meant) and returns a response
+     * without ever calling the model. The model must never be handed "the user referenced an image,
+     * figure out whether you can see it" - that is exactly how a several-minutes-long reasoning
+     * spiral about the model's own data availability was produced in production.
+     *
+     * <p>Returns {@code null} when there is nothing to gate on - either no reference was detected at
+     * all, or the resolver already merged a real historical image into {@code context.images()}
+     * (the overwhelmingly common, successful case), in which case execution proceeds exactly as
+     * before this gate existed.</p>
+     *
+     * @param context pipeline context
+     * @return a short-circuited response context, or {@code null} to proceed normally
+     */
+    private PipelineContext applyConversationImageGate(PipelineContext context) {
+        if (!(context.metadata().get("conversationImageContext") instanceof ConversationImageContext imageContext)) {
+            return null;
+        }
+        ImageSelectionReason reason = imageContext.selectionReason();
+        boolean referenceDetected = reason == ImageSelectionReason.HISTORICAL_IMAGE_REFERENCE
+                || reason == ImageSelectionReason.GENERAL_HISTORICAL_REFERENCE
+                || reason == ImageSelectionReason.AMBIGUOUS_REFERENCE;
+        if (!referenceDetected) {
+            return null;
+        }
+        boolean historicalImageSelected = imageContext.selectedImagesForModel().size() > imageContext.currentMessageImages().size();
+        if (historicalImageSelected) {
+            return null;
+        }
+        String message;
+        if (reason == ImageSelectionReason.AMBIGUOUS_REFERENCE) {
+            message = ambiguousReferenceMessage(imageContext);
+        } else if (!imageContext.expiredHistoricalImages().isEmpty()) {
+            message = expiredReferenceMessage(imageContext);
+        } else {
+            // A reference was made, but this conversation genuinely never had any image, available
+            // or expired - nothing to resolve deterministically; let the model answer truthfully.
+            return null;
+        }
+        TELEMETRY_LOGGER.info("[CONVERSATION_IMAGE_GATE] requestId={} reason={} availableHistorical={} expiredHistorical={} shortCircuited=true",
+                context.requestId(), reason, imageContext.availableHistoricalImages().size(), imageContext.expiredHistoricalImages().size());
+        cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "CONVERSATION_IMAGE_GATE",
+                "Historical image reference resolved deterministically without calling the model", null, Map.of(
+                        "reason", reason.name(),
+                        "availableHistorical", imageContext.availableHistoricalImages().size(),
+                        "expiredHistorical", imageContext.expiredHistoricalImages().size()
+                ));
+        return finishStreamedUserFacingResponse(context, message, new StreamState())
+                .withMetadata("mainModelAction", MainModelActionType.FINAL_ANSWER.name());
+    }
+
+    private String ambiguousReferenceMessage(ConversationImageContext imageContext) {
+        List<String> labels = imageContext.availableHistoricalImages().stream()
+                .map(record -> record.conversationLabel() + " (" + record.originalFileName() + ")")
+                .toList();
+        return "W tej rozmowie jest kilka wczesniejszych obrazow: " + String.join(", ", labels)
+                + ". Ktory z nich mam sprawdzic? Podaj jego etykiete (np. \""
+                + imageContext.availableHistoricalImages().get(0).conversationLabel() + "\") albo nazwe pliku.";
+    }
+
+    private String expiredReferenceMessage(ConversationImageContext imageContext) {
+        List<String> fileNames = imageContext.expiredHistoricalImages().stream()
+                .map(ConversationImageRecord::originalFileName)
+                .distinct()
+                .toList();
+        return "Obraz, o ktory pytasz (" + String.join(", ", fileNames) + "), nie jest juz dostepny w "
+                + "tymczasowym schowku - jego dane wygasly lub zostaly usuniete. Wyslij go ponownie, "
+                + "jesli potrzebujesz jego zawartosci do odpowiedzi.";
+    }
+
     private PipelineContext respondNoVisionSupport(PipelineContext context) {
         cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "NO_VISION_SUPPORT",
                 "Active model does not support vision, image request rejected without calling the model", null, Map.of(

@@ -137,7 +137,8 @@ public class ImageAttachmentStage implements PipelineStage {
         publishDiagnosticSummary(context, imageContext);
 
         PipelineContext updated = context.withImages(finalImages)
-                .withMetadata("currentMessageImageAttachmentIds", List.copyOf(currentAttachmentIds));
+                .withMetadata("currentMessageImageAttachmentIds", List.copyOf(currentAttachmentIds))
+                .withMetadata("conversationImageContext", imageContext);
         String promptBlock = buildConversationImagesPromptBlock(imageContext);
         if (!promptBlock.isBlank()) {
             updated = updated.withMetadata("conversationImagesPromptBlock", promptBlock);
@@ -307,27 +308,43 @@ public class ImageAttachmentStage implements PipelineStage {
             builder.append(".\n\n");
         }
         if (hasHistorical) {
-            builder.append("You may refer to and analyze images marked AVAILABLE and passed as native visual "
-                    + "input in this request. Do not claim that they are unavailable merely because they were "
-                    + "uploaded in an earlier message.\n"
-                    + "The user previously uploaded any image marked EXPIRED or MISSING, but its temporary data "
-                    + "is no longer available. Do not claim that you can still see or analyze it. If the current "
-                    + "request requires its visual contents, ask the user to upload it again.\n");
+            // "Storage status: AVAILABLE" must never be read as "the model can see the pixels" - a
+            // model that conflated the two (Core still holding the temporary file) with (this
+            // request's images[] actually contains it) previously reasoned for several minutes about
+            // whether it could see an image it was never actually given. "Model can inspect image
+            // now" is the one field that answers that question; everything else is provenance only.
+            builder.append("An image is visually available to you only when: Model can inspect image now: YES.\n"
+                    + "Storage status: AVAILABLE means only that J.A.R.V.I.S. Core still has the temporary file. "
+                    + "It does not mean that the image pixels were supplied to this model request.\n"
+                    + "Never claim to see, read, describe or analyze an image when: Model can inspect image now: NO.\n"
+                    + "Do not reason at length about whether an image might be visible. Trust the explicit "
+                    + "Model can inspect image now field.\n"
+                    + "If Storage status is AVAILABLE but Model can inspect image now is NO, tell the user which "
+                    + "earlier image you would need (its label or file name) and ask them to refer to it more "
+                    + "specifically so Core can attach it on the next message - you have no tool to attach it "
+                    + "yourself mid-turn.\n"
+                    + "Ask the user to upload the image again only when its Storage status is EXPIRED, MISSING, "
+                    + "DELETED or INVALID.\n");
         }
         builder.append("\n=== END CONVERSATION IMAGES ===");
         return builder.toString();
     }
 
     private void appendImageEntry(StringBuilder builder, ConversationImageRecord record, boolean passedNatively) {
+        boolean canInspectNow = record.status() == ConversationImageStatus.AVAILABLE && passedNatively;
         builder.append("- ").append(record.conversationLabel()).append('\n')
                 .append("  Source message: ").append(record.sourceMessageOrdinal()).append('\n')
                 .append("  File name: ").append(record.originalFileName()).append('\n')
-                .append("  Status: ").append(record.status()).append('\n');
+                .append("  Storage status: ").append(record.status()).append('\n');
         if (record.status() == ConversationImageStatus.AVAILABLE) {
             builder.append("  Expires at: ").append(record.expiresAt()).append('\n');
         }
         builder.append("  Passed as native visual input in this request: ").append(passedNatively ? "YES" : "NO").append('\n')
-                .append('\n');
+                .append("  Model can inspect image now: ").append(canInspectNow ? "YES" : "NO").append('\n');
+        if (record.status() != ConversationImageStatus.AVAILABLE) {
+            builder.append("  Required action: Ask the user to upload this image again if its contents are needed.\n");
+        }
+        builder.append('\n');
     }
 
     private record ResolvedImage(ImageAttachment image, AttachmentMetadata metadata) {

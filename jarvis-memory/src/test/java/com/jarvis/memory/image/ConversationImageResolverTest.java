@@ -68,31 +68,51 @@ class ConversationImageResolverTest {
                 .containsExactly("current", "a");
     }
 
+    // A vague reference with several historical messages to choose from selects every image from
+    // the single most recent message that has any - never the whole archive at once.
     @Test
-    void generalReferenceIncludesAvailableHistoricalImagesUpToTheLimit() {
-        List<ConversationImageRecord> historical = List.of(image("a", 1, 1), image("b", 2, 1), image("c", 3, 1));
+    void generalReferenceSelectsEveryImageFromTheMostRecentMessageOnly() {
+        List<ConversationImageRecord> historical = List.of(image("a", 1, 1), image("b", 2, 1),
+                image("c", 3, 1), image("d", 3, 2));
 
         ConversationImageContext context = resolver.resolve(
                 "wroc do tamtego obrazu z wczesniej", List.of(), historical, defaultProperties());
 
         assertThat(context.selectionReason()).isEqualTo(ImageSelectionReason.GENERAL_HISTORICAL_REFERENCE);
-        assertThat(context.selectedImagesForModel()).hasSize(3);
+        assertThat(context.selectedImagesForModel()).extracting(ConversationImageRecord::attachmentId)
+                .containsExactly("c", "d");
     }
 
+    // A single available image is never ambiguous by elimination - selected automatically even
+    // under REFERENCED_ONLY, since there is no guessing involved.
     @Test
-    void referencedOnlyModeNeverAttachesOnAVagueReference() {
+    void singleAvailableImageIsAutoSelectedEvenUnderReferencedOnlyMode() {
         List<ConversationImageRecord> historical = List.of(image("a", 1, 1));
         ConversationImageProperties properties = new ConversationImageProperties(true, Duration.ofMinutes(60), 8, 16_000_000L,
                 ConversationImageProperties.AutoAttachMode.REFERENCED_ONLY);
 
         ConversationImageContext context = resolver.resolve("a co z tamtym zdjeciem?", List.of(), historical, properties);
 
+        assertThat(context.selectedImagesForModel()).extracting(ConversationImageRecord::attachmentId).containsExactly("a");
+        assertThat(context.selectionReason()).isEqualTo(ImageSelectionReason.HISTORICAL_IMAGE_REFERENCE);
+    }
+
+    // Several genuine candidates and REFERENCED_ONLY mode - a vague reference must never guess.
+    @Test
+    void referencedOnlyModeAsksInsteadOfGuessingWhenSeveralCandidatesExist() {
+        List<ConversationImageRecord> historical = List.of(image("a", 1, 1), image("b", 2, 1));
+        ConversationImageProperties properties = new ConversationImageProperties(true, Duration.ofMinutes(60), 8, 16_000_000L,
+                ConversationImageProperties.AutoAttachMode.REFERENCED_ONLY);
+
+        ConversationImageContext context = resolver.resolve("a co z tamtym zdjeciem?", List.of(), historical, properties);
+
         assertThat(context.selectedImagesForModel()).isEmpty();
+        assertThat(context.selectionReason()).isEqualTo(ImageSelectionReason.AMBIGUOUS_REFERENCE);
     }
 
     @Test
     void maxActiveImagesLimitTrimsHistoricalSelectionAndReportsSkipped() {
-        List<ConversationImageRecord> historical = List.of(image("a", 1, 1), image("b", 2, 1), image("c", 3, 1));
+        List<ConversationImageRecord> historical = List.of(image("a", 1, 1), image("b", 1, 2), image("c", 1, 3));
         ConversationImageProperties properties = new ConversationImageProperties(true, Duration.ofMinutes(60), 2, 16_000_000L,
                 ConversationImageProperties.AutoAttachMode.REFERENCED_OR_RECENT);
 
@@ -105,7 +125,7 @@ class ConversationImageResolverTest {
     @Test
     void maxTotalBytesLimitTrimsHistoricalSelectionAndReportsSkipped() {
         ConversationImageRecord big1 = imageWithSize("a", 1, 1, 10_000_000L);
-        ConversationImageRecord big2 = imageWithSize("b", 2, 1, 10_000_000L);
+        ConversationImageRecord big2 = imageWithSize("b", 1, 2, 10_000_000L);
         ConversationImageProperties properties = new ConversationImageProperties(true, Duration.ofMinutes(60), 8, 15_000_000L,
                 ConversationImageProperties.AutoAttachMode.REFERENCED_OR_RECENT);
 
@@ -114,6 +134,103 @@ class ConversationImageResolverTest {
 
         assertThat(context.selectedImagesForModel()).hasSize(1);
         assertThat(context.skippedDueToLimit()).hasSize(1);
+    }
+
+    // The byte limit is too small even for a single image - Core cannot safely proceed and must
+    // ask the user instead of silently sending nothing while still claiming a reference was handled.
+    @Test
+    void limitTooSmallForEvenOneImageIsReportedAsAmbiguous() {
+        ConversationImageRecord huge = imageWithSize("a", 1, 1, 20_000_000L);
+        ConversationImageProperties properties = new ConversationImageProperties(true, Duration.ofMinutes(60), 8, 1_000_000L,
+                ConversationImageProperties.AutoAttachMode.REFERENCED_OR_RECENT);
+
+        ConversationImageContext context = resolver.resolve("pokaz mi wczesniejsze zdjecia", List.of(), List.of(huge, imageWithSize("b", 1, 2, 20_000_000L)), properties);
+
+        assertThat(context.selectedImagesForModel()).isEmpty();
+        assertThat(context.selectionReason()).isEqualTo(ImageSelectionReason.AMBIGUOUS_REFERENCE);
+    }
+
+    // The exact reported production bug: "co wyslalem ci wczesniej w zalaczniku?" contains neither
+    // "zdjecie"/"obraz"/"screen" nor an ordinal - only the attachment noun "zalaczniku" and the verb
+    // "wyslalem". Both must be enough to trigger the single available image being selected.
+    @Test
+    void attachmentWordingTriggersTheSameResolutionAsImageWording() {
+        List<ConversationImageRecord> historical = List.of(image("a", 1, 1));
+
+        ConversationImageContext context = resolver.resolve(
+                "co wyslalem ci wczesniej w zalaczniku?", List.of(), historical, defaultProperties());
+
+        assertThat(context.selectedImagesForModel()).extracting(ConversationImageRecord::attachmentId).containsExactly("a");
+        assertThat(context.selectionReason()).isEqualTo(ImageSelectionReason.HISTORICAL_IMAGE_REFERENCE);
+    }
+
+    // "what did I send earlier?" with no noun at all - only the send-verb implies a reference.
+    @Test
+    void sendVerbAloneWithNoNounStillTriggersResolutionWithASingleImage() {
+        List<ConversationImageRecord> historical = List.of(image("a", 1, 1));
+
+        ConversationImageContext context = resolver.resolve(
+                "co wyslalem wczesniej?", List.of(), historical, defaultProperties());
+
+        assertThat(context.selectedImagesForModel()).extracting(ConversationImageRecord::attachmentId).containsExactly("a");
+    }
+
+    @Test
+    void whatWasInThePhotoResolvesToTheSingleAvailableImage() {
+        List<ConversationImageRecord> historical = List.of(image("a", 1, 1));
+
+        ConversationImageContext context = resolver.resolve(
+                "co bylo na zdjeciu?", List.of(), historical, defaultProperties());
+
+        assertThat(context.selectedImagesForModel()).extracting(ConversationImageRecord::attachmentId).containsExactly("a");
+    }
+
+    @Test
+    void returnToThePreviousScreenshotResolvesToTheMostRecentImage() {
+        List<ConversationImageRecord> historical = List.of(image("a", 1, 1), image("b", 2, 1));
+
+        ConversationImageContext context = resolver.resolve(
+                "wroc do poprzedniego screena", List.of(), historical, defaultProperties());
+
+        assertThat(context.selectedImagesForModel()).extracting(ConversationImageRecord::attachmentId).containsExactly("b");
+    }
+
+    @Test
+    void analyzeTheEarlierFileResolvesToTheSingleAvailableImage() {
+        List<ConversationImageRecord> historical = List.of(image("a", 1, 1));
+
+        ConversationImageContext context = resolver.resolve(
+                "przeanalizuj wczesniejszy plik", List.of(), historical, defaultProperties());
+
+        assertThat(context.selectedImagesForModel()).extracting(ConversationImageRecord::attachmentId).containsExactly("a");
+    }
+
+    // A common typo ("zdjeciu" -> "zdejciu", a transposition within one edit) must still resolve -
+    // typo tolerance is required, not just exact spelling.
+    @Test
+    void misspelledReferenceWordStillResolvesViaFuzzyMatching() {
+        List<ConversationImageRecord> historical = List.of(image("a", 1, 1));
+
+        ConversationImageContext context = resolver.resolve(
+                "co bylo na tym zdjeciuu?", List.of(), historical, defaultProperties());
+
+        assertThat(context.selectedImagesForModel()).extracting(ConversationImageRecord::attachmentId).containsExactly("a");
+    }
+
+    // A reference to an image that has since expired must be recognized as such (not silently
+    // dropped as "no reference") so the caller can ask the user to re-upload.
+    @Test
+    void referenceToAnExpiredImageIsRecognizedWithNoAvailableSelection() {
+        ConversationImageRecord expired = new ConversationImageRecord("id-a", "conversation-1", "m1", 1, 1, "image-1",
+                "a", "workspace-1", "a.png", "png", 1000, Instant.now().minusSeconds(7200),
+                Instant.now().minusSeconds(3600), ConversationImageStatus.EXPIRED);
+
+        ConversationImageContext context = resolver.resolve(
+                "co wyslalem ci wczesniej w zalaczniku?", List.of(), List.of(expired), defaultProperties());
+
+        assertThat(context.selectedImagesForModel()).isEmpty();
+        assertThat(context.expiredHistoricalImages()).containsExactly(expired);
+        assertThat(context.selectionReason()).isNotEqualTo(ImageSelectionReason.NONE);
     }
 
     // The complex multi-set scenario from the task: message 1 has images A/B, message 3 has C,

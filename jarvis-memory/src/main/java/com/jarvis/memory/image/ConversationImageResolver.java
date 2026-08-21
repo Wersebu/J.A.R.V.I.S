@@ -41,6 +41,30 @@ public class ConversationImageResolver {
             "grafika", "grafike", "grafiki", "picture", "pictures", "image", "images", "photo", "photos"
     );
 
+    // Broader than "photo/image" wording on purpose - a user very commonly refers back to what they
+    // uploaded as "the attachment" or "the file", not "the image", especially in Polish. The exact
+    // regression this set fixes: "co wyslalem ci wczesniej w zalaczniku?" ("what did I send you
+    // earlier in the attachment?") previously matched none of IMAGE_NOUNS at all, so no historical
+    // reference was ever detected and the model got only metadata, never the pixels.
+    private static final Set<String> ATTACHMENT_NOUNS = Set.of(
+            "zalacznik", "zalaczniki", "zalaczniku", "zalacznika", "zalacznikiem", "zalacznikow", "zalacznikami",
+            "plik", "pliku", "pliki", "plikow", "plikiem", "plikami",
+            "attachment", "attachments", "file", "files", "attached"
+    );
+
+    // "co wyslalem wczesniej?" / "what did I send earlier?" has no image/attachment noun at all -
+    // only the verb itself implies "the thing I sent (as an attachment)". Treated as a reference
+    // cue on its own, same as an image/attachment noun.
+    private static final Set<String> SEND_VERBS = Set.of(
+            "wyslalem", "wyslales", "wyslal", "wyslala", "wysylalem", "wysylales",
+            "przeslalem", "przeslales", "przeslal", "przeslala", "przesylalem", "przesylales",
+            "sent", "uploaded"
+    );
+
+    // Minimum token length before fuzzy (edit-distance) matching kicks in - short words have too
+    // many accidental one-edit neighbors to fuzzy-match safely.
+    private static final int FUZZY_MIN_LENGTH = 5;
+
     private static final Map<String, Integer> ORDINAL_WORDS = Map.ofEntries(
             Map.entry("pierwsze", 1), Map.entry("pierwszy", 1), Map.entry("pierwsza", 1), Map.entry("pierwszej", 1),
             Map.entry("drugie", 2), Map.entry("drugi", 2), Map.entry("druga", 2), Map.entry("drugiej", 2),
@@ -50,7 +74,9 @@ public class ConversationImageResolver {
     );
 
     private static final Set<String> LAST_WORDS = Set.of(
-            "ostatnie", "ostatni", "ostatnia", "ostatniej", "ostatnim", "last");
+            "ostatnie", "ostatni", "ostatnia", "ostatniej", "ostatnim", "last",
+            "poprzedni", "poprzednia", "poprzednie", "poprzedniej", "poprzednim", "poprzedniego", "poprzednich", "previous",
+            "wczesniejszy", "wczesniejsza", "wczesniejsze", "wczesniejszej", "wczesniejszym", "wczesniejszego", "earlier");
 
     private static final Set<String> MESSAGE_WORDS = Set.of(
             "wiadomosci", "wiadomosc", "wiadomosciach", "wiadomoscia", "message", "wiadomosc.");
@@ -83,7 +109,7 @@ public class ConversationImageResolver {
                         .thenComparingInt(ConversationImageRecord::ordinalInMessage))
                 .toList();
 
-        if (!properties.enabled() || availableHistorical.isEmpty()) {
+        if (!properties.enabled() || (availableHistorical.isEmpty() && expiredHistorical.isEmpty())) {
             return new ConversationImageContext(currentMessageImages, availableHistorical, expiredHistorical,
                     currentMessageImages, List.of(), currentMessageImages.isEmpty()
                             ? ImageSelectionReason.NONE : ImageSelectionReason.CURRENT_ONLY);
@@ -141,20 +167,77 @@ public class ConversationImageResolver {
         List<ConversationImageRecord> skipped = new ArrayList<>();
         ImageSelectionReason reason;
 
+        // A reference is "present" from a matched noun/verb cue, OR from an ordinal reference that
+        // was attempted but failed to resolve (e.g. "drugie zdjecie" when there is no second image) -
+        // either way the user clearly asked about a historical image and Core must not silently
+        // treat the message as if nothing had been asked for.
+        boolean referenceCuePresent = ordinalReferenceAttempted
+                || containsAnyReferenceCue(tokens);
+
         if (!explicitMatches.isEmpty()) {
             reason = ImageSelectionReason.HISTORICAL_IMAGE_REFERENCE;
             selected.addAll(explicitMatches);
-        } else if (containsAnyImageNoun(tokens) && !ordinalReferenceAttempted
-                && properties.autoAttachMode() == ConversationImageProperties.AutoAttachMode.REFERENCED_OR_RECENT) {
+        } else if (referenceCuePresent && availableHistorical.isEmpty()) {
+            // A reference was made, but nothing is currently available (everything expired/missing) -
+            // not ambiguous, just unmet. ModelExecutionStage's deterministic gate tells this apart
+            // from "nothing was ever uploaded" by checking expiredHistoricalImages() itself.
             reason = ImageSelectionReason.GENERAL_HISTORICAL_REFERENCE;
-            List<ConversationImageRecord> mostRecentFirst = new ArrayList<>(availableHistorical);
-            java.util.Collections.reverse(mostRecentFirst);
-            selected.addAll(mostRecentFirst);
+        } else if (referenceCuePresent && availableHistorical.size() == 1) {
+            // Only one candidate exists at all - unambiguous by elimination, matching the required
+            // "co wyslalem ci wczesniej w zalaczniku?" regression scenario exactly.
+            reason = ImageSelectionReason.HISTORICAL_IMAGE_REFERENCE;
+            selected.add(availableHistorical.get(0));
+        } else if (referenceCuePresent && properties.autoAttachMode() == ConversationImageProperties.AutoAttachMode.REFERENCED_ONLY) {
+            // Several candidates exist and this mode never guesses on a vague reference - the user
+            // must be asked to name one before any model call happens.
+            reason = ImageSelectionReason.AMBIGUOUS_REFERENCE;
+        } else if (referenceCuePresent) {
+            // Several candidates - take every image from the single most recent message that has
+            // any, bounded by the configured limits below.
+            int lastOrdinal = availableHistorical.stream().mapToInt(ConversationImageRecord::sourceMessageOrdinal).max().orElse(0);
+            List<ConversationImageRecord> lastMessageImages = availableHistorical.stream()
+                    .filter(record -> record.sourceMessageOrdinal() == lastOrdinal)
+                    .sorted(Comparator.comparingInt(ConversationImageRecord::ordinalInMessage))
+                    .toList();
+            reason = ImageSelectionReason.GENERAL_HISTORICAL_REFERENCE;
+            selected.addAll(lastMessageImages);
         } else {
             reason = currentMessageImages.isEmpty() ? ImageSelectionReason.NONE : ImageSelectionReason.CURRENT_ONLY;
         }
 
         List<ConversationImageRecord> withinLimits = enforceLimits(selected, currentMessageImages.size(), properties, skipped);
+        boolean historicalSelected = withinLimits.size() > currentMessageImages.size();
+
+        // The configured limit ate every candidate from the last-message selection above - treat
+        // this as "Core could not safely resolve exactly which one" (per the safe-fallback
+        // requirement) and retry with just the single most recent available image, which is far
+        // more likely to fit than a whole message's worth of images.
+        if (reason == ImageSelectionReason.GENERAL_HISTORICAL_REFERENCE && !historicalSelected && !availableHistorical.isEmpty()) {
+            ConversationImageRecord mostRecent = availableHistorical.get(availableHistorical.size() - 1);
+            List<ConversationImageRecord> retrySelected = new ArrayList<>(currentMessageImages);
+            retrySelected.add(mostRecent);
+            List<ConversationImageRecord> retrySkipped = new ArrayList<>();
+            List<ConversationImageRecord> retryWithinLimits = enforceLimits(retrySelected, currentMessageImages.size(), properties, retrySkipped);
+            if (retryWithinLimits.size() > currentMessageImages.size()) {
+                withinLimits = retryWithinLimits;
+                skipped = retrySkipped;
+                historicalSelected = true;
+            }
+        }
+
+        // A reference was detected and historical candidates exist, but nothing could safely be
+        // selected (limit exhausted even after the single-image retry, or REFERENCED_ONLY forbade
+        // guessing) - the caller must ask the user to name the image instead of silently proceeding
+        // as if no reference had been made, or letting the model guess.
+        if ((reason == ImageSelectionReason.HISTORICAL_IMAGE_REFERENCE || reason == ImageSelectionReason.GENERAL_HISTORICAL_REFERENCE)
+                && !historicalSelected && !availableHistorical.isEmpty()) {
+            reason = ImageSelectionReason.AMBIGUOUS_REFERENCE;
+        }
+        // An ordinal/noun/verb reference was made but there is no available historical image at all
+        // (everything expired/missing, or nothing was ever uploaded) - not ambiguous, just unmet;
+        // ModelExecutionStage's deterministic gate distinguishes this from AMBIGUOUS by checking
+        // expiredHistoricalImages() itself, so leave the reason as GENERAL_HISTORICAL_REFERENCE here
+        // rather than overloading AMBIGUOUS_REFERENCE for a different real-world situation.
 
         LOGGER.info("[CONVERSATION_IMAGES] conversationId={} current={} historicalAvailable={} historicalExpired={} "
                         + "selected={} selectedBytes={} selectionReason={}",
@@ -230,13 +313,87 @@ public class ConversationImageResolver {
         return targetGlobal >= 1 && targetGlobal <= ordered.size() ? ordered.get(targetGlobal - 1) : null;
     }
 
-    private boolean containsAnyImageNoun(List<String> tokens) {
+    /**
+     * True when the message contains any word suggesting the user is referring back to something
+     * they uploaded earlier - an image/screenshot noun, an attachment/file noun, or a "send" verb
+     * with no object ("co wyslalem wczesniej?"). Matches exactly (after diacritic/case
+     * normalization) or within one edit (typo tolerance) for words long enough for that to be safe.
+     *
+     * @param tokens the normalized, tokenized message text
+     * @return true when a reference cue is present anywhere in the message
+     */
+    private boolean containsAnyReferenceCue(List<String> tokens) {
         for (String token : tokens) {
-            if (IMAGE_NOUNS.contains(token)) {
+            if (isReferenceWord(token, IMAGE_NOUNS) || isReferenceWord(token, ATTACHMENT_NOUNS)
+                    || isReferenceWord(token, SEND_VERBS)) {
                 return true;
             }
         }
         return false;
+    }
+
+    private boolean isNounToken(String token) {
+        return isReferenceWord(token, IMAGE_NOUNS) || isReferenceWord(token, ATTACHMENT_NOUNS);
+    }
+
+    /**
+     * Matches {@code token} against {@code vocabulary} exactly, or - for tokens at least {@link
+     * #FUZZY_MIN_LENGTH} characters long - within a single character edit (insertion, deletion, or
+     * substitution), so a common typo ("zdjecie" -> "zdejcie") still matches. Never fuzzy-matches
+     * short words, where a one-edit neighborhood is large enough to risk false positives.
+     *
+     * @param token candidate token
+     * @param vocabulary the word set to match against
+     * @return true when {@code token} matches a word in {@code vocabulary}
+     */
+    private boolean isReferenceWord(String token, Set<String> vocabulary) {
+        if (vocabulary.contains(token)) {
+            return true;
+        }
+        if (token.length() < FUZZY_MIN_LENGTH) {
+            return false;
+        }
+        for (String word : vocabulary) {
+            if (Math.abs(word.length() - token.length()) <= 1 && levenshteinDistanceAtMostOne(token, word)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Cheap edit-distance-at-most-one check (no full DP table needed) - true when {@code a} can be
+     * turned into {@code b} with a single insertion, deletion, or substitution.
+     */
+    private boolean levenshteinDistanceAtMostOne(String a, String b) {
+        int lengthA = a.length();
+        int lengthB = b.length();
+        if (Math.abs(lengthA - lengthB) > 1) {
+            return false;
+        }
+        int i = 0;
+        int j = 0;
+        boolean editUsed = false;
+        while (i < lengthA && j < lengthB) {
+            if (a.charAt(i) == b.charAt(j)) {
+                i++;
+                j++;
+                continue;
+            }
+            if (editUsed) {
+                return false;
+            }
+            editUsed = true;
+            if (lengthA == lengthB) {
+                i++;
+                j++;
+            } else if (lengthA > lengthB) {
+                i++;
+            } else {
+                j++;
+            }
+        }
+        return true;
     }
 
     /**
@@ -254,7 +411,7 @@ public class ConversationImageResolver {
         List<Reference> references = new ArrayList<>();
         Set<Integer> consumed = new java.util.HashSet<>();
         for (int index = 0; index < tokens.size(); index++) {
-            if (consumed.contains(index) || !IMAGE_NOUNS.contains(tokens.get(index))) {
+            if (consumed.contains(index) || !isNounToken(tokens.get(index))) {
                 continue;
             }
             Integer imageOrdinal = null;
