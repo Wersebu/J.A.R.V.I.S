@@ -68,6 +68,14 @@ public class PromptBuilderStage implements PipelineStage {
                 context.memoryContext(),
                 promptContext
         );
+        Object conversationImagesBlock = context.metadata().get("conversationImagesPromptBlock");
+        if (conversationImagesBlock instanceof String block && !block.isBlank()) {
+            // Appended here (not inside PromptBuilder itself) so every consumer of context.prompt()
+            // - the main model's decision call and ToolCallingStage.toolBasePrompt()'s tool-loop
+            // base prompt alike - sees the same conversation-image status/provenance text without
+            // either of them needing to know this metadata key exists.
+            prompt = prompt + "\n\n" + block;
+        }
         long durationMs = Duration.between(startedAt, Instant.now()).toMillis();
         LOGGER.info("[JARVIS] Prompt built characters={} estimatedTokens={} conversationMessages={} documents={}",
                 prompt.length(), prompt.length() / 4, context.conversation().size(), context.knowledgeContext().sourceCount());

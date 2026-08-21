@@ -81,6 +81,43 @@ class NativeToolLoopServiceMultimodalContinuityTest {
         }
     }
 
+    // Conversation image memory (ImageAttachmentStage) merges historical images re-attached from an
+    // earlier message into the SAME ToolCallingRequest.images() list the current message's own
+    // images already travel through - this loop deliberately treats every entry in that list
+    // uniformly (it has no notion of "current" vs "historical"), so a historical image that made it
+    // into the merged list must persist across every tool-loop turn exactly like a current one does.
+    @Test
+    void historicalImagesMergedIntoTheRequestSurviveEveryToolLoopTurnJustLikeCurrentOnes() {
+        ImageAttachment currentPhoto = new ImageAttachment("base64-current", "village-map.png", "attachment-current");
+        ImageAttachment historicalPhoto = new ImageAttachment("base64-historical", "village-before.png", "attachment-historical");
+        RecordingProvider provider = new RecordingProvider();
+        NativeToolLoopService service = new NativeToolLoopService(
+                List.of(provider), new EchoToolManager(), query -> ToolIntent.NO_TOOL,
+                new ToolRuntimeProperties(true, 4, 8, 2, 30, "native"),
+                new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
+                new NativeToolSchemaMapper(knowledgeRegistry()),
+                new StoreAuditDatasetService(new NoopCognitiveEventBus())
+        );
+
+        service.execute(new ToolCallingRequest(
+                "request-3", "conversation-1",
+                "sprawdz jeszcze raz drugie zdjecie i porownaj je z tym co ustalilismy",
+                "READ Work/Scheduling/StoreAuditScheduleWorkflow.md",
+                "Need the workflow procedure before extracting store data.",
+                "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST,
+                List.of(currentPhoto, historicalPhoto)
+        ));
+
+        assertThat(provider.capturedMessageLists).hasSizeGreaterThanOrEqualTo(2);
+        for (List<ModelMessage> captured : provider.capturedMessageLists) {
+            ModelMessage userTurn = captured.stream().filter(message -> "user".equals(message.role())).findFirst().orElseThrow();
+            assertThat(userTurn.images()).extracting(ImageAttachment::originalFileName)
+                    .containsExactly("village-map.png", "village-before.png");
+        }
+    }
+
     // The model previously had no way to know a real current-message attachment id and fell back
     // to inventing one (e.g. "attachment_0"), which then always failed storeDataset's provenance
     // check. ImageAttachmentStage now threads the real AttachmentReference.attachmentId() through,

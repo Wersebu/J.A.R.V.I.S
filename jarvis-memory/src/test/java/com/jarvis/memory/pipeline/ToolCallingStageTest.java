@@ -552,9 +552,9 @@ class ToolCallingStageTest {
         ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
         PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
 
-        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class);
+        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class, ToolCallingResult.class);
         method.setAccessible(true);
-        String guarded = (String) method.invoke(stage, context, raw);
+        String guarded = (String) method.invoke(stage, context, raw, new ToolCallingResult(false, "", List.of(), List.of()));
 
         assertThat(guarded).doesNotContain("\"type\"", "TOOL_REQUEST", "\"goal\"", "importantEntities");
     }
@@ -570,9 +570,9 @@ class ToolCallingStageTest {
         ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
         PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
 
-        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class);
+        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class, ToolCallingResult.class);
         method.setAccessible(true);
-        String guarded = (String) method.invoke(stage, context, fenced);
+        String guarded = (String) method.invoke(stage, context, fenced, new ToolCallingResult(false, "", List.of(), List.of()));
 
         assertThat(guarded).doesNotContain("\"type\"", "TOOL_REQUEST", "```");
     }
@@ -589,9 +589,9 @@ class ToolCallingStageTest {
         ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
         PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
 
-        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class);
+        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class, ToolCallingResult.class);
         method.setAccessible(true);
-        String guarded = (String) method.invoke(stage, context, prefixed);
+        String guarded = (String) method.invoke(stage, context, prefixed, new ToolCallingResult(false, "", List.of(), List.of()));
 
         assertThat(guarded).doesNotContain("\"type\"", "TOOL_REQUEST");
     }
@@ -607,9 +607,9 @@ class ToolCallingStageTest {
         ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
         PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
 
-        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class);
+        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class, ToolCallingResult.class);
         method.setAccessible(true);
-        String guarded = (String) method.invoke(stage, context, structured);
+        String guarded = (String) method.invoke(stage, context, structured, new ToolCallingResult(false, "", List.of(), List.of()));
 
         assertThat(guarded).isEqualTo("Grafik jest gotowy.");
     }
@@ -624,9 +624,9 @@ class ToolCallingStageTest {
         ChatRequest request = new ChatRequest("conversation-1", "przygotuj grafik na sierpien", Instant.now());
         PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
 
-        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class);
+        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class, ToolCallingResult.class);
         method.setAccessible(true);
-        String guarded = (String) method.invoke(stage, context, plain);
+        String guarded = (String) method.invoke(stage, context, plain, new ToolCallingResult(false, "", List.of(), List.of()));
 
         assertThat(guarded).isEqualTo(plain);
     }
@@ -692,6 +692,121 @@ class ToolCallingStageTest {
             eventSink.publish(TokenEvent.create(conversationId, json));
             eventSink.publish(GenerationFinishedEvent.create(conversationId, 0, BrainType.FAST, "stub-model", 0, 0, 0.0d));
         }
+    }
+
+    // Regression coverage for the reported bug: a native tool loop that stopped because its own
+    // turn budget ran out (blank finalAnswer, real results collected) used to be handed to a
+    // tool-less "narrate what happened" synthesis call, which could itself ask for more tools -
+    // a TOOL_REQUEST the pipeline had no way to act on, previously masked behind the fully generic
+    // "Zakonczylem prace z narzedziami..." apology. It must now report the real, structured reason
+    // directly, without ever attempting that synthesis call.
+    @Test
+    void streamToolFinalAnswerReportsMaxTurnsReachedInsteadOfAttemptingToolLessSynthesis() throws Exception {
+        // Zero AIProviders on purpose: if the fix regresses and the stage falls through to the
+        // tool-less synthesis call, selectProvider() throws instead of silently succeeding.
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        com.jarvis.tools.runtime.ToolLoopTerminationInfo terminationInfo = new com.jarvis.tools.runtime.ToolLoopTerminationInfo(
+                com.jarvis.tools.runtime.ToolLoopTerminationReason.MAX_TURNS_REACHED, false, false, 15, 15,
+                19, 17, 2, 522_000L, "mcp_roblox_read_script", "CALL", "MCP_ERROR",
+                "Server datamodel is not available in Edit mode.", "", "odczytanie WorldVillageService",
+                List.of("Answer the user's original request: napraw skrypt"), false, false);
+        ToolCallingResult loopResult = new ToolCallingResult(true, "", List.of(), List.of(), terminationInfo);
+
+        ChatRequest request = new ChatRequest("conversation-1", "przeanalizuj, napraw i przetestuj wioski", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("streamToolFinalAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).contains("limit 15 tur");
+        assertThat(answer).contains("19");
+        assertThat(answer).contains("17");
+        assertThat(answer).contains("mcp_roblox_read_script");
+        assertThat(answer).contains("Server datamodel is not available in Edit mode.");
+        assertThat(answer).contains("nie wprowadzono");
+        assertThat(answer).contains("nie wykonano");
+        assertThat(answer).contains("odczytanie WorldVillageService");
+        assertThat(answer).doesNotContain("Zakonczylem prace z narzedziami");
+    }
+
+    @Test
+    void streamToolFinalAnswerReportsTimeoutWithElapsedTimeInsteadOfMaxTurns() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        com.jarvis.tools.runtime.ToolLoopTerminationInfo terminationInfo = new com.jarvis.tools.runtime.ToolLoopTerminationInfo(
+                com.jarvis.tools.runtime.ToolLoopTerminationReason.TIMEOUT, false, false, 30, 12,
+                16, 16, 0, 1_804_000L, "web", "SEARCH_WEB", "", "", "", "",
+                List.of(), false, false);
+        ToolCallingResult loopResult = new ToolCallingResult(true, "", List.of(), List.of(), terminationInfo);
+
+        ChatRequest request = new ChatRequest("conversation-1", "zbadaj dokladnie ten temat", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("streamToolFinalAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).contains("przekroczono limit czasu");
+        assertThat(answer).contains("30 min 4 s");
+        assertThat(answer).contains("12/30");
+        assertThat(answer).doesNotContain("limit 30 tur");
+    }
+
+    // A single MCP error followed by successful tool calls must never be reported as the
+    // termination cause - only as background/diagnostic context on an otherwise real reason.
+    @Test
+    void streamToolFinalAnswerShowsAPriorMcpErrorAsBackgroundNotAsTheMainReason() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        com.jarvis.tools.runtime.ToolLoopTerminationInfo terminationInfo = new com.jarvis.tools.runtime.ToolLoopTerminationInfo(
+                com.jarvis.tools.runtime.ToolLoopTerminationReason.MAX_TURNS_REACHED, false, false, 15, 15,
+                19, 17, 2, 522_000L, "mcp_roblox_read_script", "CALL", "MCP_ERROR",
+                "Server datamodel is not available in Edit mode.", "", "", List.of(), false, false);
+        ToolCallingResult loopResult = new ToolCallingResult(true, "", List.of(), List.of(), terminationInfo);
+
+        ChatRequest request = new ChatRequest("conversation-1", "napraw wioski", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("streamToolFinalAnswer", PipelineContext.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String answer = (String) method.invoke(stage, context, loopResult);
+
+        assertThat(answer).startsWith("Nie udalo sie ukonczyc zadania: osiagnieto limit 15 tur modelu.");
+        assertThat(answer).contains("nie byl glowna przyczyna zakonczenia");
+        assertThat(answer).contains("Server datamodel is not available in Edit mode.");
+    }
+
+    // Regression coverage: when the tool-less final-synthesis turn itself returns a TOOL_REQUEST
+    // envelope, the guard must name what it still needed and why the loop was not resumed, not a
+    // generic "I finished but got nothing readable" apology, and never leak the raw JSON envelope.
+    @Test
+    void finalProtocolGuardReportsFinalSynthesisRequestedMoreToolsWithRealBudgetAndGoal() throws Exception {
+        ToolCallingStage stage = new ToolCallingStage(request -> new ToolCallingResult(false, "", List.of(), List.of()),
+                List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+
+        com.jarvis.tools.runtime.ToolLoopTerminationInfo terminationInfo = new com.jarvis.tools.runtime.ToolLoopTerminationInfo(
+                com.jarvis.tools.runtime.ToolLoopTerminationReason.MAX_TURNS_REACHED, false, false, 15, 15,
+                19, 17, 2, 522_000L, "mcp_roblox_read_script", "CALL", "", "", "", "", List.of(), false, false);
+        ToolCallingResult loopResult = new ToolCallingResult(true, "", List.of(), List.of(), terminationInfo);
+
+        String raw = "{\"type\": \"TOOL_REQUEST\", \"goal\": \"odczytac VillageGenerationService i WorldVillageService\", "
+                + "\"reason\": \"Wciaz potrzebuje przeczytac te dwa skrypty przed wprowadzeniem poprawki.\"}";
+        ChatRequest request = new ChatRequest("conversation-1", "napraw wioski", Instant.now());
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1", request, event -> { }, event -> { });
+
+        Method method = ToolCallingStage.class.getDeclaredMethod("finalProtocolGuard", PipelineContext.class, String.class, ToolCallingResult.class);
+        method.setAccessible(true);
+        String guarded = (String) method.invoke(stage, context, raw, loopResult);
+
+        assertThat(guarded).doesNotContain("\"type\"", "\"goal\"");
+        assertThat(guarded).contains("poprosil o dalszy dostep do narzedzi");
+        assertThat(guarded).contains("odczytac VillageGenerationService i WorldVillageService");
+        assertThat(guarded).contains("limit 15 tur");
     }
 
     private static final class NoopCognitiveEventBus implements CognitiveEventBus {

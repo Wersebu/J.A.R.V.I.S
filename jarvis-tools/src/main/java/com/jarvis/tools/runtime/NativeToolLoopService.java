@@ -156,6 +156,7 @@ public class NativeToolLoopService {
         MarketplaceListingCollector marketplaceCollector = null;
 
         Instant started = Instant.now();
+        int turnsUsed = 0;
         int maxCalls = request.knowledgeMode() == KnowledgeMode.RESEARCH
                 ? properties.maxCallsResearch()
                 : properties.maxCallsFast();
@@ -274,6 +275,7 @@ public class NativeToolLoopService {
 
         for (int step = 1; step <= maxCalls; step++) {
             AiTraceTurnContext.set(step);
+            turnsUsed = step;
             if (Duration.between(started, Instant.now()).toSeconds() > properties.timeoutSeconds()) {
                 errors.add("TIMEOUT");
                 break;
@@ -307,7 +309,7 @@ public class NativeToolLoopService {
                     messages.add(ModelMessage.system(PROVIDER_TOOL_REPAIR_GUIDANCE));
                     continue;
                 }
-                return handleProviderFailure(request, intent, steps, results, errors, messages, exception, step);
+                return handleProviderFailure(request, intent, steps, results, errors, messages, exception, step, started, maxCalls);
             }
             publishThinking(request, response);
             if (response.hasToolCalls()) {
@@ -598,9 +600,14 @@ public class NativeToolLoopService {
 
                     if (result.requiresApproval()) {
                         saveDebug(request, intent, steps, "WAITING_APPROVAL", errors);
+                        ToolLoopTerminationInfo approvalInfo = buildTerminationInfo(ToolLoopTerminationReason.WAITING_FOR_APPROVAL,
+                                false, false, started, step, maxCalls, steps, results, "",
+                                "Zatwierdzenie lub odrzucenie przygotowanej zmiany przez uzytkownika.",
+                                remainingCriteriaDescriptions(agentState.goalContract()));
+                        logTerminationSummary(request, approvalInfo);
                         publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "WAITING_APPROVAL",
-                                "Native tool loop waiting for approval", targetNode(action), step, resultMetadata(result));
-                        return new ToolCallingResult(true, "", steps, results);
+                                "Native tool loop waiting for approval", targetNode(action), step, terminationMetadata(resultMetadata(result), approvalInfo));
+                        return new ToolCallingResult(true, "", steps, results, approvalInfo);
                     }
                     if (!result.success() && isWebPageRead(action)) {
                         // A retried failed page-read has no reliable signal distinguishing
@@ -709,7 +716,11 @@ public class NativeToolLoopService {
                         LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} deterministic completion gate exhausted reason={}, returning insufficient-evidence answer",
                                 request.requestId(), assessment.reason());
                         saveDebug(request, intent, steps, "DETERMINISTIC_COMPLETION_BLOCKED", errors);
-                        return new ToolCallingResult(true, deterministicBlockedAnswer(assessment), steps, results);
+                        ToolLoopTerminationInfo blockInfo = buildTerminationInfo(ToolLoopTerminationReason.INCOMPLETE_GOAL,
+                                false, false, started, step, maxCalls, steps, results, content, assessment.guidance(),
+                                remainingCriteriaDescriptions(agentState.goalContract()));
+                        logTerminationSummary(request, blockInfo);
+                        return new ToolCallingResult(true, deterministicBlockedAnswer(assessment), steps, results, blockInfo);
                     }
                     LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} completion-gate retries exhausted reason={}, accepting answer as-is",
                             request.requestId(), assessment.reason());
@@ -740,19 +751,27 @@ public class NativeToolLoopService {
                     LOGGER.warn("[AGENT_FINISH] requestId={} step={} status=INCOMPLETE_BUDGET_EXHAUSTED reason=\"{}\"",
                             request.requestId(), step, verification.reason());
                     saveDebug(request, intent, steps, "GOAL_CONTRACT_INCOMPLETE", errors);
+                    ToolLoopTerminationInfo blockedInfo = buildTerminationInfo(ToolLoopTerminationReason.INCOMPLETE_GOAL,
+                            false, false, started, step, maxCalls, steps, results, content,
+                            verification.nextGoal().isBlank() ? verification.reason() : verification.nextGoal(),
+                            verification.missingCriteria());
+                    logTerminationSummary(request, blockedInfo);
                     return new ToolCallingResult(true, deterministicBlockedAnswer(new CompletionAssessment(false,
-                            "GOAL_CONTRACT_INCOMPLETE", verification.reason())), steps, results);
+                            "GOAL_CONTRACT_INCOMPLETE", verification.reason())), steps, results, blockedInfo);
                 } else {
                     LOGGER.info("[AGENT_FINISH] requestId={} step={} status=COMPLETE", request.requestId(), step);
                 }
 
                 saveDebug(request, intent, steps, "FINISHED", errors);
+                ToolLoopTerminationInfo finishedInfo = buildTerminationInfo(ToolLoopTerminationReason.COMPLETED,
+                        true, true, started, step, maxCalls, steps, results, content, "", List.of());
+                logTerminationSummary(request, finishedInfo);
                 publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "FINISHED",
-                        "Native tool loop finished with model answer", null, step, Map.of("results", results.size()));
+                        "Native tool loop finished with model answer", null, step, terminationMetadata(Map.of("results", results.size()), finishedInfo));
                 LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} phase=TOOL_LOOP_END toolCalls={} toolExecuted={} autoTriggered=false",
                         request.requestId(), results.size(), !results.isEmpty());
                 LOGGER.info("[AGENT_LOOP] requestId={} turn={} action=FINAL_ANSWER", request.requestId(), step);
-                return new ToolCallingResult(true, content, steps, results);
+                return new ToolCallingResult(true, content, steps, results, finishedInfo);
             }
 
             if (!results.isEmpty()) {
@@ -798,7 +817,11 @@ public class NativeToolLoopService {
                         LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} deterministic completion gate exhausted (emptyResponse path) reason={}, returning insufficient-evidence answer",
                                 request.requestId(), assessment.reason());
                         saveDebug(request, intent, steps, "DETERMINISTIC_COMPLETION_BLOCKED", errors);
-                        return new ToolCallingResult(true, deterministicBlockedAnswer(assessment), steps, results);
+                        ToolLoopTerminationInfo blockInfo = buildTerminationInfo(ToolLoopTerminationReason.INCOMPLETE_GOAL,
+                                false, false, started, step, maxCalls, steps, results, "", assessment.guidance(),
+                                remainingCriteriaDescriptions(agentState.goalContract()));
+                        logTerminationSummary(request, blockInfo);
+                        return new ToolCallingResult(true, deterministicBlockedAnswer(assessment), steps, results, blockInfo);
                     }
                     LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} completion-gate retries exhausted (emptyResponse path) reason={}, falling back to final synthesis",
                             request.requestId(), assessment.reason());
@@ -822,14 +845,22 @@ public class NativeToolLoopService {
                     LOGGER.warn("[AGENT_FINISH] requestId={} step={} status=INCOMPLETE_BUDGET_EXHAUSTED reason=\"{}\" path=emptyResponse",
                             request.requestId(), step, verification.reason());
                     saveDebug(request, intent, steps, "GOAL_CONTRACT_INCOMPLETE", errors);
+                    ToolLoopTerminationInfo blockedInfo = buildTerminationInfo(ToolLoopTerminationReason.INCOMPLETE_GOAL,
+                            false, false, started, step, maxCalls, steps, results, "",
+                            verification.nextGoal().isBlank() ? verification.reason() : verification.nextGoal(),
+                            verification.missingCriteria());
+                    logTerminationSummary(request, blockedInfo);
                     return new ToolCallingResult(true, deterministicBlockedAnswer(new CompletionAssessment(false,
-                            "GOAL_CONTRACT_INCOMPLETE", verification.reason())), steps, results);
+                            "GOAL_CONTRACT_INCOMPLETE", verification.reason())), steps, results, blockedInfo);
                 }
                 LOGGER.info("[FINAL_SYNTHESIS] requestId={} goalComplete=true", request.requestId());
                 saveDebug(request, intent, steps, "FINAL_SYNTHESIS_REQUIRED", errors);
+                ToolLoopTerminationInfo synthesisInfo = buildTerminationInfo(ToolLoopTerminationReason.COMPLETED,
+                        true, true, started, step, maxCalls, steps, results, "", "", List.of());
+                logTerminationSummary(request, synthesisInfo);
                 publish(request, CognitiveEventType.FINAL_SYNTHESIS_STARTED, "STARTED",
-                        "Final synthesis fallback requested", null, step, Map.of("results", results.size()));
-                return new ToolCallingResult(true, "", steps, results);
+                        "Final synthesis fallback requested", null, step, terminationMetadata(Map.of("results", results.size()), synthesisInfo));
+                return new ToolCallingResult(true, "", steps, results, synthesisInfo);
             }
             // A model turn with neither a tool call nor any text content (no results yet either,
             // so there is nothing to fall back to) is most often a transient model-level hiccup -
@@ -858,11 +889,19 @@ public class NativeToolLoopService {
             fallback = appendIncompleteWorkflowNote(fallback, activeDatasetId, workflowDocumentLoaded);
         }
         saveDebug(request, intent, steps, errors.isEmpty() ? "FINISHED" : "FAILED", errors);
+        ToolLoopTerminationReason exhaustedReason = classifyExhaustedLoopReason(errors, steps);
+        String exhaustedNextAction = datasetTouchedThisLoop && !activeDatasetId.isBlank()
+                ? nextRequiredActionFor(activeDatasetId, workflowDocumentLoaded)
+                : String.join("; ", errors);
+        ToolLoopTerminationInfo exhaustedInfo = buildTerminationInfo(exhaustedReason, false, false, started, turnsUsed,
+                maxCalls, steps, results, "", exhaustedNextAction, remainingCriteriaDescriptions(agentState.goalContract()));
+        logTerminationSummary(request, exhaustedInfo);
         publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, errors.isEmpty() ? "FINISHED" : "FAILED",
-                "Native tool loop finished", null, steps.size(), Map.of("errors", errors, "results", results.size()));
+                "Native tool loop finished", null, steps.size(),
+                terminationMetadata(Map.of("errors", errors, "results", results.size()), exhaustedInfo));
         LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} phase=TOOL_LOOP_END toolCalls={} toolExecuted={} autoTriggered=false",
                 request.requestId(), results.size(), !results.isEmpty());
-        return new ToolCallingResult(true, fallback, steps, results);
+        return new ToolCallingResult(true, fallback, steps, results, exhaustedInfo);
     }
 
     /**
@@ -887,7 +926,9 @@ public class NativeToolLoopService {
             List<String> errors,
             List<ModelMessage> messages,
             AIProviderException exception,
-            int step
+            int step,
+            Instant started,
+            int maxCalls
     ) {
         String error = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
         errors.add(error);
@@ -905,10 +946,13 @@ public class NativeToolLoopService {
             if (!content.isBlank()) {
                 steps.add(new ToolRuntimeStep(step, "MODEL_FALLBACK", "", "", "FINISHED", null));
                 saveDebug(request, intent, steps, "MODEL_FALLBACK", errors);
+                ToolLoopTerminationInfo fallbackInfo = buildTerminationInfo(ToolLoopTerminationReason.PROVIDER_FAILURE,
+                        false, false, started, step, maxCalls, steps, results, content, "", List.of(), "PROVIDER_ERROR", error);
+                logTerminationSummary(request, fallbackInfo);
                 publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "MODEL_FALLBACK",
                         "Native tool loop finished with safe text fallback", null, step,
-                        Map.of("results", results.size(), "error", error));
-                return new ToolCallingResult(true, content, steps, results);
+                        terminationMetadata(Map.of("results", results.size(), "error", error), fallbackInfo));
+                return new ToolCallingResult(true, content, steps, results, fallbackInfo);
             }
         }
 
@@ -921,10 +965,13 @@ public class NativeToolLoopService {
                         + "wywolania narzedzia przez model/dostawce: " + error;
         steps.add(new ToolRuntimeStep(step, "MODEL_TOOL_TURN_FAILED", "", "", "FAILED", null));
         saveDebug(request, intent, steps, "MODEL_TOOL_TURN_FAILED", errors);
+        ToolLoopTerminationInfo failureInfo = buildTerminationInfo(ToolLoopTerminationReason.PROVIDER_FAILURE,
+                false, false, started, step, maxCalls, steps, results, "", "", List.of(), "PROVIDER_ERROR", error);
+        logTerminationSummary(request, failureInfo);
         publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "MODEL_TOOL_TURN_FAILED",
                 "Native tool loop stopped after provider tool-call failure", null, step,
-                Map.of("errors", errors, "results", results.size()));
-        return new ToolCallingResult(true, answer, steps, results);
+                terminationMetadata(Map.of("errors", errors, "results", results.size()), failureInfo));
+        return new ToolCallingResult(true, answer, steps, results, failureInfo);
     }
 
     private Optional<ModelResponse> fallbackTextTurn(
@@ -1814,6 +1861,208 @@ public class NativeToolLoopService {
             }
         }
         return anySuccessful;
+    }
+
+    /**
+     * Builds the structured termination account for a return point that has no explicit
+     * provider/tool error of its own to report - the last failure (if any) is derived from
+     * {@code steps}. See {@link #buildTerminationInfo(ToolLoopTerminationReason, boolean, boolean,
+     * Instant, int, int, List, List, String, String, List, String, String)} for the full form.
+     */
+    private ToolLoopTerminationInfo buildTerminationInfo(
+            ToolLoopTerminationReason reason,
+            boolean completed,
+            boolean goalSatisfied,
+            Instant started,
+            int usedTurns,
+            int configuredMaxTurns,
+            List<ToolRuntimeStep> steps,
+            List<ToolResult> results,
+            String lastModelContent,
+            String nextRequiredAction,
+            List<String> remainingGoalCriteria
+    ) {
+        return buildTerminationInfo(reason, completed, goalSatisfied, started, usedTurns, configuredMaxTurns,
+                steps, results, lastModelContent, nextRequiredAction, remainingGoalCriteria, "", "");
+    }
+
+    /**
+     * Builds the structured account of how this loop execution ended, from real, already-collected
+     * loop state only - never by parsing the model's own text. {@code executedToolCalls}/{@code
+     * successfulToolCalls}/{@code failedToolCalls} count only genuine {@code TOOL_CALL} steps
+     * (blocked/rejected/invalid calls are excluded, matching {@link #toolCallCount(List)}), and
+     * {@code lastToolName}/{@code lastToolOperation}/{@code lastErrorCode}/{@code lastErrorMessage}
+     * are read from the most recent matching step, most-recent first.
+     *
+     * @param reason why the loop stopped
+     * @param completed whether a real, verified final answer was produced
+     * @param goalSatisfied whether the goal contract was verified complete
+     * @param started when this loop execution began
+     * @param usedTurns how many model turns actually ran
+     * @param configuredMaxTurns the effective turn budget in force at this return point
+     * @param steps every step recorded so far this loop
+     * @param results every tool result recorded so far this loop
+     * @param lastModelContent the model's own last final-answer text, blank if none
+     * @param nextRequiredAction plain-text description of the next required step, blank if none
+     * @param remainingGoalCriteria goal-contract criteria not confirmed satisfied
+     * @param explicitErrorCode overrides the derived last error code when non-blank (e.g. a provider
+     *         failure that never became a {@link ToolResult})
+     * @param explicitErrorMessage overrides the derived last error message when non-blank
+     * @return the structured termination account
+     */
+    private ToolLoopTerminationInfo buildTerminationInfo(
+            ToolLoopTerminationReason reason,
+            boolean completed,
+            boolean goalSatisfied,
+            Instant started,
+            int usedTurns,
+            int configuredMaxTurns,
+            List<ToolRuntimeStep> steps,
+            List<ToolResult> results,
+            String lastModelContent,
+            String nextRequiredAction,
+            List<String> remainingGoalCriteria,
+            String explicitErrorCode,
+            String explicitErrorMessage
+    ) {
+        int executed = 0;
+        int successful = 0;
+        int failed = 0;
+        for (ToolRuntimeStep step : steps) {
+            if (!"TOOL_CALL".equals(step.action()) || step.result() == null) {
+                continue;
+            }
+            executed++;
+            if (step.result().success()) {
+                successful++;
+            } else {
+                failed++;
+            }
+        }
+        String lastToolName = "";
+        String lastToolOperation = "";
+        for (int index = steps.size() - 1; index >= 0; index--) {
+            ToolRuntimeStep step = steps.get(index);
+            if (step.tool() != null && !step.tool().isBlank()) {
+                lastToolName = step.tool();
+                lastToolOperation = step.operation();
+                break;
+            }
+        }
+        String lastErrorCode = "";
+        String lastErrorMessage = "";
+        for (int index = steps.size() - 1; index >= 0; index--) {
+            ToolResult stepResult = steps.get(index).result();
+            if (stepResult != null && !stepResult.success()) {
+                lastErrorCode = stepResult.errorCode();
+                lastErrorMessage = !stepResult.errorMessage().isBlank() ? stepResult.errorMessage() : stepResult.message();
+                break;
+            }
+        }
+        if (explicitErrorMessage != null && !explicitErrorMessage.isBlank()) {
+            lastErrorCode = explicitErrorCode == null ? "" : explicitErrorCode;
+            lastErrorMessage = explicitErrorMessage;
+        }
+        boolean changesMade = results.stream().anyMatch(result -> result.success() && result.changed());
+        boolean verificationPerformed = steps.stream().anyMatch(step -> "TOOL_CALL".equals(step.action())
+                && step.result() != null && step.result().success() && isVerificationRole(
+                        ToolOperationClassifier.classify(step.tool(), step.operation())));
+        long elapsedMs = Duration.between(started, Instant.now()).toMillis();
+        return new ToolLoopTerminationInfo(reason, completed, goalSatisfied, configuredMaxTurns, usedTurns,
+                executed, successful, failed, elapsedMs, lastToolName, lastToolOperation, lastErrorCode,
+                lastErrorMessage, Objects.toString(lastModelContent, ""), Objects.toString(nextRequiredAction, ""),
+                remainingGoalCriteria, changesMade, verificationPerformed);
+    }
+
+    private boolean isVerificationRole(ToolOperationRole role) {
+        return role == ToolOperationRole.VERIFY || role == ToolOperationRole.EXECUTE;
+    }
+
+    /**
+     * Classifies why the loop's outer {@code for} exhausted without any of the earlier, more
+     * specific return points firing - the only real signals available at this point are the two
+     * hard-break markers appended to {@code errors} ({@code TIMEOUT}, {@code
+     * EMPTY_MODEL_RESPONSE_WITHOUT_TOOL_CALL}) and the executed steps themselves. Never guesses from
+     * the model's own text.
+     *
+     * @param errors accumulated hard-break markers for this loop
+     * @param steps every step recorded so far this loop
+     * @return the most specific reason the real state supports
+     */
+    private ToolLoopTerminationReason classifyExhaustedLoopReason(List<String> errors, List<ToolRuntimeStep> steps) {
+        if (errors.contains("TIMEOUT")) {
+            return ToolLoopTerminationReason.TIMEOUT;
+        }
+        if (errors.contains("EMPTY_MODEL_RESPONSE_WITHOUT_TOOL_CALL")) {
+            return ToolLoopTerminationReason.EMPTY_MODEL_RESPONSE;
+        }
+        if (!steps.isEmpty() && "NO_PROGRESS_BLOCKED".equals(steps.get(steps.size() - 1).action())) {
+            return ToolLoopTerminationReason.MAX_OPERATION_REPEATS_REACHED;
+        }
+        int executed = 0;
+        int successful = 0;
+        int failed = 0;
+        String lastFailedTool = "";
+        for (ToolRuntimeStep step : steps) {
+            if (!"TOOL_CALL".equals(step.action()) || step.result() == null) {
+                continue;
+            }
+            executed++;
+            if (step.result().success()) {
+                successful++;
+            } else {
+                failed++;
+                lastFailedTool = step.tool();
+            }
+        }
+        // Every executed call this loop was an MCP call and every single one of them failed - the
+        // loop made literally zero forward progress, which is the one case where a tool-level
+        // failure (rather than the turn budget itself) is honestly the real story. A single failed
+        // MCP call followed by successful ones must never be reported this way - it is still just
+        // MAX_TURNS_REACHED, with the failure visible via lastErrorCode/lastErrorMessage instead.
+        if (executed > 0 && successful == 0 && failed > 0 && lastFailedTool.toLowerCase(Locale.ROOT).startsWith("mcp_")) {
+            return ToolLoopTerminationReason.MCP_FAILURE;
+        }
+        return ToolLoopTerminationReason.MAX_TURNS_REACHED;
+    }
+
+    private List<String> remainingCriteriaDescriptions(GoalContract contract) {
+        return contract.completionCriteria().stream().map(CompletionCriterion::description).toList();
+    }
+
+    /**
+     * Merges a termination info's wire-safe metadata into an existing metadata map for a {@code
+     * TOOL_LOOP_FINISHED}/{@code FINAL_SYNTHESIS_STARTED} publish call, without disturbing any
+     * existing key.
+     *
+     * @param base the event's own metadata
+     * @param info the termination info to merge in
+     * @return combined, immutable metadata map
+     */
+    private Map<String, Object> terminationMetadata(Map<String, Object> base, ToolLoopTerminationInfo info) {
+        Map<String, Object> merged = new LinkedHashMap<>(base == null ? Map.of() : base);
+        merged.putAll(info.toMetadata());
+        return merged;
+    }
+
+    /**
+     * Logs one unambiguous, greppable summary line for how this loop execution ended - always
+     * emitted regardless of {@code log-full-ai-request}/{@code log-tool-calls}/{@code
+     * log-tool-results}, since it never carries prompt/file/image content, only scalar counters and
+     * short diagnostic codes/messages already considered safe to log elsewhere in this class (tool
+     * names, operations, error codes).
+     *
+     * @param request the request this loop executed for
+     * @param info the termination info to summarize
+     */
+    private void logTerminationSummary(ToolCallingRequest request, ToolLoopTerminationInfo info) {
+        LOGGER.info("[TOOL_LOOP_TERMINATED] requestId={} conversationId={} reason={} completed={} goalSatisfied={} "
+                        + "turns={}/{} toolCalls={} successful={} failed={} elapsedMs={} lastTool={} lastOperation={} "
+                        + "lastErrorCode={} nextRequiredAction={} changesMade={} verificationPerformed={}",
+                request.requestId(), request.conversationId(), info.terminationReason(), info.completed(), info.goalSatisfied(),
+                info.usedModelTurns(), info.configuredMaxTurns(), info.executedToolCalls(), info.successfulToolCalls(),
+                info.failedToolCalls(), info.elapsedMs(), info.lastToolName(), info.lastToolOperation(),
+                info.lastErrorCode(), info.nextRequiredAction(), info.changesMade(), info.verificationPerformed());
     }
 
     private String datasetStageLabel(String datasetId) {

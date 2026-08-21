@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.18.2"
+  version: "2.20.0"
   websocket:
     max-text-message-size: 4194304
     max-binary-message-size: 8388608
@@ -168,6 +168,12 @@ jarvis:
       include-tool-results: true
       include-system-events: false
       include-thinking: false
+    images:
+      enabled: true
+      retention: 60m
+      max-active-images: 8
+      max-total-bytes: 16777216
+      auto-attach-mode: REFERENCED_OR_RECENT
 
 brains:
   FAST:

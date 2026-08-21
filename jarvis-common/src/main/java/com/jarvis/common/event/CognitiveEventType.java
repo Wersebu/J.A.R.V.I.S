@@ -310,5 +310,7 @@ public enum CognitiveEventType {
     /** A structured workflow dataset's records were updated (e.g. geolocation results) without changing record count. */
     WORKFLOW_DATASET_UPDATED,
     /** A structured workflow dataset invariant (e.g. record count) was violated and the offending operation was rejected. */
-    WORKFLOW_DATASET_INVARIANT_VIOLATION
+    WORKFLOW_DATASET_INVARIANT_VIOLATION,
+    /** Conversation-scoped image memory diagnostic summary for one request (current/historical/selected image counts and per-image status). */
+    CONVERSATION_IMAGES
 }

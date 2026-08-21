@@ -16,6 +16,8 @@ import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import com.jarvis.tools.runtime.ToolCallingRequest;
 import com.jarvis.tools.runtime.ToolCallingResult;
 import com.jarvis.tools.runtime.ToolCallingRuntime;
+import com.jarvis.tools.runtime.ToolLoopTerminationInfo;
+import com.jarvis.tools.runtime.ToolLoopTerminationReason;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.annotation.Order;
@@ -103,7 +105,10 @@ public class ToolCallingStage implements PipelineStage {
                     context.requestId());
         }
         logAttachmentProvenance(context);
-        List<String> imageAttachmentIds = context.images().stream().map(ImageAttachment::attachmentId).toList();
+        // Store Audit provenance must only ever see the CURRENT message's own attachments - never a
+        // historical image conversation-image-memory re-attached from an earlier message, or the
+        // model could cite an old photo's position as if it were freshly uploaded with this message.
+        List<String> imageAttachmentIds = currentMessageImageAttachmentIds(context);
         storeAuditDatasetService.registerAttachments(context.requestId(), context.conversationId(), imageAttachmentIds);
         if (!imageAttachmentIds.isEmpty()) {
             LOGGER.info("[STORE_AUDIT] requestId={} attachments={}", context.requestId(), imageAttachmentIds.size());
@@ -129,7 +134,7 @@ public class ToolCallingStage implements PipelineStage {
             publishAnswerSources(context, result);
             answer = streamToolFinalAnswer(context, result);
         }
-        answer = finalProtocolGuard(context, answer);
+        answer = finalProtocolGuard(context, answer, result);
         GenerationFinishedEvent finished = GenerationFinishedEvent.create(context.conversationId(), 0, context.brain().type(),
                 context.model(), null, Math.max(1, answer.length() / 4), null);
         return context.withResponse(answer, finished)
@@ -184,11 +189,13 @@ public class ToolCallingStage implements PipelineStage {
      *
      * @param context pipeline context
      * @param candidate this stage's answer, about to become the user-facing response
+     * @param result the tool-calling result this answer was built from - carries the structured
+     *         {@link ToolLoopTerminationInfo} used to explain a blocked TOOL_REQUEST honestly
      * @return {@code candidate} unchanged unless it is itself a structured envelope, in which case
      *         a FINAL_ANSWER/CLARIFICATION is unwrapped and a TOOL_REQUEST is replaced with an
      *         honest, plain-text explanation of what remains unfinished
      */
-    private String finalProtocolGuard(PipelineContext context, String candidate) {
+    private String finalProtocolGuard(PipelineContext context, String candidate, ToolCallingResult result) {
         if (candidate == null || candidate.isBlank()) {
             return candidate;
         }
@@ -201,7 +208,9 @@ public class ToolCallingStage implements PipelineStage {
                     LOGGER.warn("[TOOL_CALLING_STAGE] requestId={} FINAL_PROTOCOL_GUARD blocked a TOOL_REQUEST "
                                     + "envelope from reaching the user goal=\"{}\"",
                             context.requestId(), action.goal());
-                    yield incompleteWorkflowMessage(context);
+                    yield result.terminationInfo().terminationReason() == ToolLoopTerminationReason.UNKNOWN
+                            ? incompleteWorkflowMessage(context)
+                            : finalSynthesisRequestedMoreToolsMessage(action, result.terminationInfo());
                 }
             };
         } catch (RuntimeException exception) {
@@ -231,6 +240,146 @@ public class ToolCallingStage implements PipelineStage {
     }
 
     /**
+     * Reasons for which the native tool loop itself already knows it did not reach a verified
+     * answer - a blank {@code finalAnswer} for one of these must never be handed to a tool-less
+     * final-synthesis turn (that is exactly how the loop's own honest "I stopped" state used to be
+     * discarded in favor of asking the model to narrate, which could itself re-request tools it had
+     * no way to act on). {@link ToolLoopTerminationReason#COMPLETED}, {@link
+     * ToolLoopTerminationReason#WAITING_FOR_APPROVAL} (handled elsewhere), and {@link
+     * ToolLoopTerminationReason#UNKNOWN} (an older/backward-compatible result with no real
+     * termination data) are deliberately excluded.
+     *
+     * @param reason the loop's own termination reason
+     * @return true when the reason means the loop stopped without a verified answer
+     */
+    private boolean isStuckTermination(ToolLoopTerminationReason reason) {
+        return switch (reason) {
+            case MAX_TURNS_REACHED, TIMEOUT, MAX_FAILURES_REACHED, MAX_OPERATION_REPEATS_REACHED,
+                    EMPTY_MODEL_RESPONSE, PROVIDER_FAILURE, MCP_FAILURE, INCOMPLETE_GOAL -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * Plain-text headline naming the real, structural reason the loop stopped - never inferred from
+     * the model's own text.
+     *
+     * @param info the loop's structured termination account
+     * @return one Polish sentence naming the stop reason
+     */
+    private String terminationHeadline(ToolLoopTerminationInfo info) {
+        return switch (info.terminationReason()) {
+            case MAX_TURNS_REACHED -> "Nie udalo sie ukonczyc zadania: osiagnieto limit " + info.configuredMaxTurns() + " tur modelu.";
+            case TIMEOUT -> "Nie udalo sie ukonczyc zadania: przekroczono limit czasu petli narzedziowej (praca trwala "
+                    + formatElapsed(info.elapsedMs()) + ").";
+            case MAX_FAILURES_REACHED -> "Nie udalo sie ukonczyc zadania: osiagnieto limit nieudanych wywolan narzedzi.";
+            case MAX_OPERATION_REPEATS_REACHED -> "Nie udalo sie ukonczyc zadania: to samo wywolanie narzedzia powtorzylo sie zbyt wiele razy bez postepu.";
+            case EMPTY_MODEL_RESPONSE -> "Nie udalo sie ukonczyc zadania: model przestal zwracac tresc lub wywolania narzedzi.";
+            case PROVIDER_FAILURE -> "Nie udalo sie ukonczyc zadania: dostawca modelu zglosil blad podczas generowania wywolania narzedzia.";
+            case MCP_FAILURE -> "Nie udalo sie ukonczyc zadania: wszystkie wywolane narzedzia MCP zakonczyly sie bledem.";
+            case INCOMPLETE_GOAL -> "Nie udalo sie w pelni ukonczyc zadania: cel nie zostal potwierdzony jako spelniony.";
+            default -> "Nie udalo sie ukonczyc zadania.";
+        };
+    }
+
+    /**
+     * Builds the full structured "tool loop terminated" report shown to the user when the loop
+     * stopped without a verified answer - every line comes from {@link ToolLoopTerminationInfo}'s
+     * real counters, never from parsing the model's own text.
+     *
+     * @param info the loop's structured termination account
+     * @return the full plain-text report
+     */
+    private String buildTerminationReport(ToolLoopTerminationInfo info) {
+        StringBuilder builder = new StringBuilder();
+        builder.append(terminationHeadline(info)).append("\n\n");
+        builder.append("Wykonano:\n")
+                .append("- tury modelu: ").append(info.usedModelTurns()).append("/").append(info.configuredMaxTurns()).append(",\n")
+                .append("- wywolania narzedzi: ").append(info.executedToolCalls()).append(",\n")
+                .append("- udane: ").append(info.successfulToolCalls()).append(",\n")
+                .append("- nieudane: ").append(info.failedToolCalls()).append(",\n")
+                .append("- czas pracy: ").append(formatElapsed(info.elapsedMs())).append(".\n");
+        if (!info.lastToolName().isBlank()) {
+            builder.append("\nOstatnia wykonana operacja:\n")
+                    .append(info.lastToolName());
+            if (!info.lastToolOperation().isBlank()) {
+                builder.append('.').append(info.lastToolOperation());
+            }
+            builder.append('\n');
+        }
+        if (!info.lastErrorMessage().isBlank()) {
+            builder.append("\nOstatni blad");
+            builder.append(info.terminationReason() == ToolLoopTerminationReason.MAX_TURNS_REACHED
+                            || info.terminationReason() == ToolLoopTerminationReason.TIMEOUT
+                    ? " (nie byl glowna przyczyna zakonczenia)" : "").append(":\n")
+                    .append(info.lastErrorMessage()).append('\n');
+        }
+        builder.append("\nCo udalo sie zrobic:\n")
+                .append("- modyfikacja projektu: ").append(info.changesMade() ? "wprowadzona" : "nie wprowadzono").append(",\n")
+                .append("- weryfikacja/test: ").append(info.verificationPerformed() ? "wykonana" : "nie wykonano").append(".\n");
+        if (!info.remainingGoalCriteria().isEmpty()) {
+            builder.append("\nCzego zabraklo:\n");
+            for (String criterion : info.remainingGoalCriteria()) {
+                builder.append("- ").append(criterion).append('\n');
+            }
+        }
+        if (!info.nextRequiredAction().isBlank()) {
+            builder.append("\nNastepny planowany krok:\n").append(info.nextRequiredAction());
+        }
+        return builder.toString().strip();
+    }
+
+    /**
+     * Builds the message shown when the tool-less final-synthesis turn itself asked for more tools
+     * ({@link ToolLoopTerminationReason#FINAL_SYNTHESIS_REQUESTED_MORE_TOOLS}) instead of answering -
+     * naming exactly what it still needed (from its own TOOL_REQUEST envelope) and why the loop was
+     * not resumed (the original loop's own termination budget, already spent).
+     *
+     * @param action the synthesis turn's own parsed TOOL_REQUEST
+     * @param loopInfo the original native loop's structured termination account
+     * @return the full plain-text report
+     */
+    private String finalSynthesisRequestedMoreToolsMessage(MainModelAction action, ToolLoopTerminationInfo loopInfo) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("Model nie zakonczyl zadania. Po zamknieciu petli narzedziowej poprosil o dalszy dostep do narzedzi.\n\n");
+        builder.append("Potrzebowal jeszcze:\n");
+        boolean any = false;
+        if (!action.goal().isBlank()) {
+            builder.append("- ").append(action.goal()).append('\n');
+            any = true;
+        }
+        if (!action.reason().isBlank()) {
+            builder.append("- ").append(action.reason()).append('\n');
+            any = true;
+        }
+        for (Map.Entry<String, Object> entry : action.context().entrySet()) {
+            builder.append("- ").append(entry.getKey()).append(": ").append(entry.getValue()).append('\n');
+            any = true;
+        }
+        if (!any) {
+            builder.append("- dalszych operacji narzedziowych (model nie podal szczegolow)\n");
+        }
+        builder.append("\nPetla nie zostala wznowiona, poniewaz ")
+                .append(loopInfo.terminationReason() == ToolLoopTerminationReason.TIMEOUT
+                        ? "przekroczono limit czasu petli narzedziowej."
+                        : "osiagnieto limit " + loopInfo.configuredMaxTurns() + " tur.");
+        return builder.toString();
+    }
+
+    /**
+     * Formats an elapsed duration as {@code "X min Y s"} (or just {@code "Y s"} under a minute).
+     *
+     * @param elapsedMs elapsed time in milliseconds
+     * @return human-readable duration
+     */
+    private String formatElapsed(long elapsedMs) {
+        long totalSeconds = Math.max(0, elapsedMs / 1000);
+        long minutes = totalSeconds / 60;
+        long seconds = totalSeconds % 60;
+        return minutes > 0 ? minutes + " min " + seconds + " s" : seconds + " s";
+    }
+
+    /**
      * Logs a diagnostic line comparing the full current-message attachment set against the
      * image-only subset actually used for provenance registration, so a future test run can
      * pinpoint whether a provenance mismatch originates from upload, {@code ImageAttachmentStage},
@@ -240,10 +389,30 @@ public class ToolCallingStage implements PipelineStage {
      */
     private void logAttachmentProvenance(PipelineContext context) {
         List<String> registeredIds = context.request().attachments().stream().map(AttachmentReference::attachmentId).toList();
-        List<String> imageContextIds = context.images().stream().map(ImageAttachment::attachmentId).toList();
+        List<String> imageContextIds = currentMessageImageAttachmentIds(context);
         boolean mappingConsistent = new LinkedHashSet<>(registeredIds).containsAll(imageContextIds);
         LOGGER.info("[ATTACHMENT_PROVENANCE] requestId={} registeredAttachments={} imageAttachments={} registeredIds={} imageContextIds={} mappingConsistent={}",
                 context.requestId(), registeredIds.size(), imageContextIds.size(), registeredIds, imageContextIds, mappingConsistent);
+    }
+
+    /**
+     * Returns only the image attachment ids that belong to the CURRENT message, as recorded by
+     * {@code ImageAttachmentStage} - {@code context.images()} itself may also contain historical
+     * images conversation-image-memory re-attached from an earlier message, which must never be
+     * mistaken for a current-message attachment (Store Audit provenance, attachment-provenance
+     * diagnostics). Falls back to {@code context.images()} unfiltered when the stage never ran
+     * (e.g. a test building {@link PipelineContext} directly), preserving prior behavior exactly.
+     *
+     * @param context pipeline context
+     * @return current-message-only image attachment ids
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> currentMessageImageAttachmentIds(PipelineContext context) {
+        Object stored = context.metadata().get("currentMessageImageAttachmentIds");
+        if (stored instanceof List<?> list) {
+            return list.stream().map(String::valueOf).toList();
+        }
+        return context.images().stream().map(ImageAttachment::attachmentId).toList();
     }
 
     /**
@@ -274,7 +443,17 @@ public class ToolCallingStage implements PipelineStage {
             // structured streaming parser) - unwrap it here too so the raw JSON never reaches the
             // user. parsedStructuredToolAnswer() falls through to the original text unchanged for
             // genuinely plain answers (no leading/trailing braces to parse).
-            return publishBufferedFallback(context, parsedStructuredToolAnswer(result.finalAnswer(), result.finalAnswer()), "tool-fallback");
+            return publishBufferedFallback(context,
+                    parsedStructuredToolAnswer(result.finalAnswer(), result.finalAnswer(), result.terminationInfo()), "tool-fallback");
+        }
+        if (isStuckTermination(result.terminationInfo().terminationReason())) {
+            // The native loop itself already knows it did not reach a verified answer (turn/timeout
+            // budget exhausted, a retry limit exhausted, a provider/MCP failure with no forward
+            // progress...) - re-asking a tool-less "narrate what happened" turn here is exactly how a
+            // blank finalAnswer used to turn into a second TOOL_REQUEST the loop could no longer act
+            // on (see FINAL_SYNTHESIS_REQUESTED_MORE_TOOLS). Report the real, structured reason
+            // directly instead of ever attempting that tool-less synthesis call for this case.
+            return publishBufferedFallback(context, buildTerminationReport(result.terminationInfo()), "tool-loop-terminated");
         }
         if (marketplaceResearch(result)) {
             // Pure marketplace research with no listings and no other model answer available -
@@ -291,7 +470,7 @@ public class ToolCallingStage implements PipelineStage {
         String fallback = fallbackToolAnswer(context, result);
         String answer;
         try {
-            answer = streamToolFinalSynthesis(context, prompt, fallback);
+            answer = streamToolFinalSynthesis(context, prompt, fallback, result.terminationInfo());
         } catch (AIProviderException exception) {
             answer = publishBufferedFallback(context, fallback, "tool-fallback");
         }
@@ -326,22 +505,23 @@ public class ToolCallingStage implements PipelineStage {
                 streamState.finishedEvent = finishedEvent;
             }
         });
-        String answer = finishToolAnswerStream(context, streamState, fallback);
+        String answer = finishToolAnswerStream(context, streamState, fallback, ToolLoopTerminationInfo.unknown());
         return answer.isBlank() ? fallback : answer;
     }
 
     /**
      * Streams the tool-less final-synthesis narration call. This call never re-enters the native
-     * tool runtime; if it emits a {@code TOOL_REQUEST} envelope, the protocol guard converts that
-     * into an honest incomplete-workflow message instead of treating the synthesis turn as a new
-     * decision point.
+     * tool runtime; if it emits a {@code TOOL_REQUEST} envelope, {@code terminationInfo} (the
+     * native loop's own already-computed reason it stopped) drives an honest explanation instead of
+     * treating the synthesis turn as a new decision point.
      *
      * @param context pipeline context
      * @param prompt final-synthesis prompt
      * @param fallback safe fallback text if nothing usable comes back
+     * @param terminationInfo the native loop's structured termination account for this result
      * @return final user-facing answer text
      */
-    private String streamToolFinalSynthesis(PipelineContext context, String prompt, String fallback) {
+    private String streamToolFinalSynthesis(PipelineContext context, String prompt, String fallback, ToolLoopTerminationInfo terminationInfo) {
         ToolAnswerStreamState streamState = new ToolAnswerStreamState();
         selectProvider(context).stream(context.conversationId(), context.brain(), prompt, AIJobType.MAIN_MODEL, event -> {
             if (event instanceof TokenEvent tokenEvent) {
@@ -351,7 +531,7 @@ public class ToolCallingStage implements PipelineStage {
                 streamState.finishedEvent = finishedEvent;
             }
         });
-        String answer = finishToolAnswerStream(context, streamState, fallback);
+        String answer = finishToolAnswerStream(context, streamState, fallback, terminationInfo);
         return answer.isBlank() ? fallback : answer;
     }
 
@@ -471,13 +651,14 @@ public class ToolCallingStage implements PipelineStage {
         return newlineIndex + 1 >= stripped.length() && stripped.length() < FENCE_DETECTION_PROBE_CHARS;
     }
 
-    private String finishToolAnswerStream(PipelineContext context, ToolAnswerStreamState streamState, String fallback) {
+    private String finishToolAnswerStream(PipelineContext context, ToolAnswerStreamState streamState, String fallback,
+            ToolLoopTerminationInfo terminationInfo) {
         String answer = streamState.answer.toString();
         if (streamState.structured && answer.isBlank()) {
             // streamState.raw is only a pre-decision scratch buffer, cleared the moment structured
             // mode is decided (see handleToolAnswerToken) - parser.raw() is what actually holds the
             // full structured content accumulated across every token, single- or multi-token alike.
-            answer = parsedStructuredToolAnswer(streamState.parser.raw(), fallback);
+            answer = parsedStructuredToolAnswer(streamState.parser.raw(), fallback, terminationInfo);
             if (!answer.isBlank()) {
                 streamToolAnswerChunk(context, answer, streamState);
             }
@@ -510,7 +691,7 @@ public class ToolCallingStage implements PipelineStage {
         return answer;
     }
 
-    private String parsedStructuredToolAnswer(String raw, String fallback) {
+    private String parsedStructuredToolAnswer(String raw, String fallback, ToolLoopTerminationInfo terminationInfo) {
         try {
             MainModelAction action = actionParser.parse(raw);
             return switch (action.type()) {
@@ -520,11 +701,13 @@ public class ToolCallingStage implements PipelineStage {
                 // plain-text content is never legitimate user-facing text - it is protocol JSON
                 // the model wrote out of habit after the loop already ended (usually with a prose
                 // preamble in front of it, which is exactly why actionParser.parse() above still
-                // succeeded: it strips surrounding text and parses just the {...} block). The
-                // caller passes the *same* raw text as `fallback`, so returning it here would leak
-                // that JSON scaffolding verbatim to the user - never do that; say so honestly
-                // instead.
-                case TOOL_REQUEST -> "Zakonczylem prace z narzedziami, ale nie otrzymalem czytelnej tresci koncowej odpowiedzi.";
+                // succeeded: it strips surrounding text and parses just the {...} block). Report the
+                // real FINAL_SYNTHESIS_REQUESTED_MORE_TOOLS state (turn/call budget already spent,
+                // what the model still asked for) instead of a generic apology - never leak the raw
+                // JSON scaffolding itself.
+                case TOOL_REQUEST -> terminationInfo.terminationReason() == ToolLoopTerminationReason.UNKNOWN
+                        ? "Zakonczylem prace z narzedziami, ale nie otrzymalem czytelnej tresci koncowej odpowiedzi."
+                        : finalSynthesisRequestedMoreToolsMessage(action, terminationInfo);
             };
         } catch (RuntimeException exception) {
             // raw genuinely was not a JSON envelope at all (no {...} to extract) - it is plain

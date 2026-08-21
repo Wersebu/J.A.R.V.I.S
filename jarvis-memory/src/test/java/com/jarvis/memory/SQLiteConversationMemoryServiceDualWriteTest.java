@@ -3,6 +3,8 @@ package com.jarvis.memory;
 import com.jarvis.common.memory.ConversationMessage;
 import com.jarvis.common.memory.MessageRole;
 import com.jarvis.memory.cognitive.MemoryProperties;
+import com.jarvis.memory.image.ConversationImageProperties;
+import com.jarvis.memory.image.SQLiteConversationImageRegistry;
 import com.jarvis.memory.sqlite.SQLiteConnectionFactory;
 import com.jarvis.memory.sqlite.SQLiteConversationMessageRepository;
 import com.jarvis.memory.sqlite.SQLiteConversationRepository;
@@ -44,7 +46,9 @@ class SQLiteConversationMemoryServiceDualWriteTest {
                 new MemoryProperties(tempDir.resolve("jarvis-memory-test.db").toString(), WORKING_HISTORY_LENGTH, null, null, null, null));
         conversations = new SQLiteConversationRepository(connectionFactory);
         durableMessages = new SQLiteConversationMessageRepository(connectionFactory);
-        service = new SQLiteConversationMemoryService(workingMemoryStore, conversations, durableMessages);
+        SQLiteConversationImageRegistry images = new SQLiteConversationImageRegistry(connectionFactory,
+                new ConversationImageProperties(true, null, 0, 0, null));
+        service = new SQLiteConversationMemoryService(workingMemoryStore, conversations, durableMessages, images);
     }
 
     @Test

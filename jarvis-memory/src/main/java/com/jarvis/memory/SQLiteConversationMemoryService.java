@@ -1,5 +1,6 @@
 package com.jarvis.memory;
 
+import com.jarvis.common.image.ConversationImageRegistry;
 import com.jarvis.common.memory.ConversationMessage;
 import com.jarvis.memory.cognitive.WorkingMemoryStore;
 import com.jarvis.memory.conversation.ConversationMessageRepository;
@@ -28,6 +29,7 @@ public class SQLiteConversationMemoryService implements ConversationMemoryServic
     private final WorkingMemoryStore workingMemoryStore;
     private final ConversationRepository conversationRepository;
     private final ConversationMessageRepository conversationMessageRepository;
+    private final ConversationImageRegistry conversationImageRegistry;
 
     /**
      * Creates the SQLite conversation memory service.
@@ -35,15 +37,18 @@ public class SQLiteConversationMemoryService implements ConversationMemoryServic
      * @param workingMemoryStore working memory store
      * @param conversationRepository durable conversation metadata store
      * @param conversationMessageRepository durable, never-trimmed conversation message store
+     * @param conversationImageRegistry durable conversation-scoped image registry
      */
     public SQLiteConversationMemoryService(
             WorkingMemoryStore workingMemoryStore,
             ConversationRepository conversationRepository,
-            ConversationMessageRepository conversationMessageRepository
+            ConversationMessageRepository conversationMessageRepository,
+            ConversationImageRegistry conversationImageRegistry
     ) {
         this.workingMemoryStore = workingMemoryStore;
         this.conversationRepository = conversationRepository;
         this.conversationMessageRepository = conversationMessageRepository;
+        this.conversationImageRegistry = conversationImageRegistry;
     }
 
     @Override
@@ -65,6 +70,9 @@ public class SQLiteConversationMemoryService implements ConversationMemoryServic
         int deleted = workingMemoryStore.deleteConversation(conversationId);
         conversationMessageRepository.deleteAll(conversationId);
         conversationRepository.delete(conversationId);
+        // Metadata only - the physical temporary-workspace files (if any still exist) remain that
+        // service's own safe deletion mechanism's responsibility, never duplicated here.
+        conversationImageRegistry.deleteConversation(conversationId);
         return deleted;
     }
 

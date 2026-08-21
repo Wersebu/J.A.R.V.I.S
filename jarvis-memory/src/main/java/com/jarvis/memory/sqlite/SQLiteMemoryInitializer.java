@@ -102,6 +102,7 @@ public class SQLiteMemoryInitializer implements InitializingBean {
             addColumnIfMissing(statement, "semantic_memory", "embedding_vector", "TEXT");
             createDurableConversationTables(statement);
             migrateWorkingMemoryIntoDurableConversationTables(statement);
+            createConversationImageTable(statement);
             LOGGER.info("[JARVIS] Cognitive Memory SQLite initialized.");
         } catch (SQLException exception) {
             throw new IllegalStateException("Could not initialize SQLite memory tables", exception);
@@ -188,6 +189,41 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                 (id, conversation_id, request_id, sequence_number, role, message_type, content, created_at, status, metadata_json)
                 SELECT id, conversation_id, request_id, sequence_number, role, message_type, content, created_at, status, '{}'
                 FROM working_memory
+                """);
+    }
+
+    /**
+     * Creates the conversation-scoped image registry table (metadata/references only - see {@code
+     * ConversationImageRecord}'s javadoc for why no image bytes/base64 ever land here). {@code
+     * (conversation_id, attachment_id)} is unique so registering the same attachment twice for the
+     * same conversation is naturally idempotent via {@code INSERT OR IGNORE}.
+     */
+    private void createConversationImageTable(Statement statement) throws SQLException {
+        statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS conversation_images (
+                    id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL DEFAULT '',
+                    source_message_ordinal INTEGER NOT NULL DEFAULT 1,
+                    ordinal_in_message INTEGER NOT NULL DEFAULT 1,
+                    conversation_label TEXT NOT NULL DEFAULT '',
+                    attachment_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    original_file_name TEXT NOT NULL DEFAULT '',
+                    media_type TEXT NOT NULL DEFAULT '',
+                    size_bytes INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'AVAILABLE'
+                )
+                """);
+        statement.executeUpdate("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_images_identity
+                ON conversation_images(conversation_id, attachment_id)
+                """);
+        statement.executeUpdate("""
+                CREATE INDEX IF NOT EXISTS idx_conversation_images_conversation
+                ON conversation_images(conversation_id, source_message_ordinal, ordinal_in_message)
                 """);
     }
 
