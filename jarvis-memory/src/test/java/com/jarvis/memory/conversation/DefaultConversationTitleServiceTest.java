@@ -57,7 +57,10 @@ class DefaultConversationTitleServiceTest {
         assertThat(record.titleSource()).isEqualTo("GENERATED");
         assertThat(provider.jobType).isEqualTo(AIJobType.BACKGROUND);
         assertThat(eventBus.events).extracting(CognitiveEvent::event)
-                .containsExactly(CognitiveEventType.CONVERSATION_TITLE_UPDATED);
+                .containsExactly(
+                        CognitiveEventType.CONVERSATION_TITLE_UPDATED,
+                        CognitiveEventType.CONVERSATION_UPDATED
+                );
     }
 
     @Test

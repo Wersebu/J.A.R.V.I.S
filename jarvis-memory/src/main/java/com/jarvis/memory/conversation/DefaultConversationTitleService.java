@@ -75,12 +75,15 @@ public class DefaultConversationTitleService implements ConversationTitleService
             }
             boolean applied = conversationRepository.updateGeneratedTitleIfDefault(conversationId, title);
             if (applied) {
+                Map<String, Object> metadata = Map.of(
+                        "conversationId", conversationId,
+                        "title", title,
+                        "titleSource", "GENERATED"
+                );
                 eventBus.publish(CognitiveEventType.CONVERSATION_TITLE_UPDATED, "UPDATED",
-                        "Conversation title generated", null, Map.of(
-                                "conversationId", conversationId,
-                                "title", title,
-                                "titleSource", "GENERATED"
-                        ));
+                        "Conversation title generated", null, metadata);
+                eventBus.publish(CognitiveEventType.CONVERSATION_UPDATED, "UPDATED",
+                        "Conversation metadata updated", null, metadata);
             }
         } catch (RuntimeException exception) {
             LOGGER.warn("[CONVERSATION_TITLE] generation failed conversationId={}", conversationId, exception);

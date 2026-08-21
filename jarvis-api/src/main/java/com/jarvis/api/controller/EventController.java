@@ -56,6 +56,7 @@ public class EventController {
                 schema(CognitiveEventType.KNOWLEDGE_INJECTION_FINISHED, "Knowledge injection finished.", "sources", "charactersInjected", "estimatedTokens"),
                 schema(CognitiveEventType.PROMPT_BUILD_STARTED, "Prompt build started.", "documentsUsed"),
                 schema(CognitiveEventType.PROMPT_BUILD_FINISHED, "Prompt build finished.", "promptBuildTimeMs", "promptCharacters", "estimatedPromptTokens"),
+                schema(CognitiveEventType.CONVERSATION_UPDATED, "Conversation metadata changed.", "conversationId", "title", "titleSource"),
                 schema(CognitiveEventType.MODEL_REQUEST_STARTED, "Model request started.", "model", "endpoint", "provider"),
                 schema(CognitiveEventType.WAITING_FIRST_TOKEN, "Waiting for first token.", "model", "requestLatencyMs"),
                 schema(CognitiveEventType.FIRST_TOKEN_RECEIVED, "First token received.", "latencyMs", "model"),

@@ -43,6 +43,8 @@ public enum CognitiveEventType {
     /** Conversation assistant response was persisted. */
     CONVERSATION_ASSISTANT_RESPONSE_PERSISTED,
     CONVERSATION_TITLE_UPDATED,
+    /** Durable conversation metadata was updated. */
+    CONVERSATION_UPDATED,
     /** Conversation context loading failed. */
     CONVERSATION_CONTEXT_ERROR,
     /** Prompt builder injected memory into the final prompt. */
