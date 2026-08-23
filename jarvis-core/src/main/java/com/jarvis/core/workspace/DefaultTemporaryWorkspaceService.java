@@ -1,6 +1,7 @@
 package com.jarvis.core.workspace;
 
 import com.jarvis.api.service.TemporaryWorkspaceService;
+import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.dto.AttachmentMetadata;
 import com.jarvis.common.dto.AttachmentReference;
 import com.jarvis.common.dto.TemporaryWorkspaceMetadata;
@@ -74,7 +75,7 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
             Files.createDirectories(workspace.resolve("extracted"));
             Files.createDirectories(workspace.resolve("output"));
             Instant now = Instant.now();
-            saveWorkspaceProperties(workspace, workspaceId, conversationId, now, now);
+            saveWorkspaceProperties(workspace, workspaceId, CurrentUserContext.requiredUserId(), conversationId, now, now);
             LOGGER.info("[WORKSPACE] created id={} conversationId={}", workspaceId, conversationId);
             return metadata(workspaceId);
         } catch (IOException exception) {
@@ -168,6 +169,7 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
         try {
             Path workspace = workspacePath(workspaceId);
             Properties props = loadWorkspaceProperties(workspace);
+            ensureOwner(props);
             return new TemporaryWorkspaceMetadata(
                     workspaceId,
                     props.getProperty("conversationId", ""),
@@ -187,6 +189,7 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
         ReentrantReadWriteLock lock = lock(workspaceId);
         lock.writeLock().lock();
         try {
+            ensureOwner(loadWorkspaceProperties(workspacePath(workspaceId)));
             deleteTree(workspacePath(workspaceId));
             locks.remove(workspaceId);
             LOGGER.info("[WORKSPACE] deleted id={}", workspaceId);
@@ -387,8 +390,9 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
             Files.createDirectories(workspace.resolve("extracted"));
             Files.createDirectories(workspace.resolve("output"));
             Instant now = Instant.now();
-            saveWorkspaceProperties(workspace, workspaceId, conversationId, now, now);
+            saveWorkspaceProperties(workspace, workspaceId, CurrentUserContext.requiredUserId(), conversationId, now, now);
         }
+        ensureOwner(loadWorkspaceProperties(workspace));
         return workspace;
     }
 
@@ -398,6 +402,7 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
         saveWorkspaceProperties(
                 workspace,
                 workspaceId,
+                props.getProperty("userId", CurrentUserContext.LOCAL_USER_ID),
                 props.getProperty("conversationId", ""),
                 Instant.parse(props.getProperty("createdAt")),
                 Instant.now()
@@ -406,6 +411,7 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
     }
 
     private List<AttachmentMetadata> attachments(String workspaceId) throws IOException {
+        ensureOwner(loadWorkspaceProperties(workspacePath(workspaceId)));
         Path metadataDirectory = workspacePath(workspaceId).resolve("input").resolve(METADATA_DIRECTORY);
         if (!Files.exists(metadataDirectory)) {
             return List.of();
@@ -419,6 +425,7 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
     }
 
     private AttachmentMetadata attachment(String workspaceId, String attachmentId) throws IOException {
+        ensureOwner(loadWorkspaceProperties(workspacePath(workspaceId)));
         Path path = safeResolve(workspacePath(workspaceId).resolve("input").resolve(METADATA_DIRECTORY), attachmentId + ".properties");
         if (!Files.exists(path)) {
             throw new IllegalArgumentException("Temporary attachment not found: " + attachmentId);
@@ -476,6 +483,7 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
     private void saveWorkspaceProperties(
             Path workspace,
             String workspaceId,
+            String userId,
             String conversationId,
             Instant createdAt,
             Instant lastAccessAt
@@ -483,6 +491,7 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
         Files.createDirectories(workspace);
         Properties props = new Properties();
         props.setProperty("workspaceId", workspaceId);
+        props.setProperty("userId", userId == null || userId.isBlank() ? CurrentUserContext.requiredUserId() : userId);
         props.setProperty("conversationId", conversationId == null ? "" : conversationId);
         props.setProperty("createdAt", createdAt.toString());
         props.setProperty("lastAccessAt", lastAccessAt.toString());
@@ -513,6 +522,13 @@ public class DefaultTemporaryWorkspaceService implements TemporaryWorkspaceServi
     private void validateWorkspaceId(String value) {
         if (value == null || !value.matches("[a-zA-Z0-9._-]{1,80}")) {
             throw new IllegalArgumentException("Invalid temporary workspace identifier.");
+        }
+    }
+
+    private void ensureOwner(Properties props) {
+        String owner = props.getProperty("userId", CurrentUserContext.LOCAL_USER_ID);
+        if (!owner.equals(CurrentUserContext.requiredUserId())) {
+            throw new IllegalArgumentException("Temporary workspace not found.");
         }
     }
 

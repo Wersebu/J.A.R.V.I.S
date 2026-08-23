@@ -21,6 +21,8 @@ import java.time.Instant;
  */
 public record ConversationRecord(
         String id,
+        String userId,
+        String folderId,
         String title,
         Instant createdAt,
         Instant updatedAt,
@@ -46,7 +48,21 @@ public record ConversationRecord(
             String rollingSummary,
             long summaryUntilSequence
     ) {
-        this(id, title, createdAt, updatedAt, archived, lastModel, "DEFAULT", rollingSummary, summaryUntilSequence);
+        this(id, "local-user", "", title, createdAt, updatedAt, archived, lastModel, "DEFAULT", rollingSummary, summaryUntilSequence);
+    }
+
+    public ConversationRecord(
+            String id,
+            String title,
+            Instant createdAt,
+            Instant updatedAt,
+            boolean archived,
+            String lastModel,
+            String titleSource,
+            String rollingSummary,
+            long summaryUntilSequence
+    ) {
+        this(id, "local-user", "", title, createdAt, updatedAt, archived, lastModel, titleSource, rollingSummary, summaryUntilSequence);
     }
 
     /**
@@ -54,6 +70,8 @@ public record ConversationRecord(
      */
     public ConversationRecord {
         id = id == null ? "" : id;
+        userId = userId == null || userId.isBlank() ? "local-user" : userId;
+        folderId = folderId == null ? "" : folderId;
         title = title == null || title.isBlank() ? DEFAULT_TITLE : title;
         lastModel = lastModel == null ? "" : lastModel;
         titleSource = titleSource == null || titleSource.isBlank() ? "DEFAULT" : titleSource;

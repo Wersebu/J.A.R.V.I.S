@@ -26,7 +26,9 @@ public class RouteOptimizer {
     private static final int MAX_TWO_OPT_ITERATIONS_PER_STOP = 200;
 
     /**
-     * Finds a visiting order starting at {@code startIndex} over the remaining matrix indices.
+     * Finds a visiting order starting at {@code startIndex} over the remaining matrix indices - an
+     * open path (never returns to {@code startIndex}). Equivalent to {@code optimize(matrix,
+     * startIndex, exactSearchMaxStops, false)}.
      *
      * @param matrix cost matrix ({@code matrix[i][j]} = cost from point i to point j); {@code null}
      *               cells mean unreachable
@@ -36,6 +38,32 @@ public class RouteOptimizer {
      * @return the optimized route
      */
     public OptimizedRoute optimize(Double[][] matrix, int startIndex, int exactSearchMaxStops) {
+        return optimize(matrix, startIndex, exactSearchMaxStops, false);
+    }
+
+    /**
+     * Finds a visiting order starting at {@code startIndex} over the remaining matrix indices,
+     * optionally targeting a closed loop (the trip back to {@code startIndex} counted as part of
+     * the cost being minimized, and included in {@link OptimizedRoute#totalCost()}) - e.g. a Store
+     * Audit day that must return to its fixed start point, not merely end at the last stop.
+     *
+     * <p>When {@code closeLoop} is true but the chosen order's return edge back to {@code
+     * startIndex} is itself unreachable ({@code null} in the matrix), the search still proceeds
+     * (that candidate order is simply not penalized for the missing return leg during comparison)
+     * and the returned {@link OptimizedRoute#totalCost()} falls back to the open-path cost - never
+     * fabricated. Callers that need the actual resolved return-leg distance/duration should read it
+     * directly from the same distance/duration matrix this cost matrix was derived from.</p>
+     *
+     * @param matrix cost matrix ({@code matrix[i][j]} = cost from point i to point j); {@code null}
+     *               cells mean unreachable
+     * @param startIndex index of the fixed starting point
+     * @param exactSearchMaxStops stop count (excluding start) at or below which exact brute-force
+     *                            search is used instead of the nearest-neighbour + 2-opt heuristic
+     * @param closeLoop whether the visiting order should be chosen to minimize the closed-loop cost
+     *                  (including the trip back to {@code startIndex}) rather than the open-path cost
+     * @return the optimized route
+     */
+    public OptimizedRoute optimize(Double[][] matrix, int startIndex, int exactSearchMaxStops, boolean closeLoop) {
         int size = matrix.length;
         List<Integer> reachable = new ArrayList<>();
         List<Integer> unreachable = new ArrayList<>();
@@ -55,25 +83,40 @@ public class RouteOptimizer {
             return new OptimizedRoute(List.of(startIndex), 0d, unreachable);
         }
         List<Integer> order = reachable.size() <= Math.max(0, exactSearchMaxStops)
-                ? bruteForce(matrix, startIndex, reachable)
-                : nearestNeighbourThenTwoOpt(matrix, startIndex, reachable);
-        double totalCost = pathCost(matrix, startIndex, order);
+                ? bruteForce(matrix, startIndex, reachable, closeLoop)
+                : nearestNeighbourThenTwoOpt(matrix, startIndex, reachable, closeLoop);
+        double totalCost = routeCost(matrix, startIndex, order, closeLoop);
         List<Integer> visitOrder = new ArrayList<>(order.size() + 1);
         visitOrder.add(startIndex);
         visitOrder.addAll(order);
         return new OptimizedRoute(visitOrder, totalCost, unreachable);
     }
 
-    private List<Integer> bruteForce(Double[][] matrix, int start, List<Integer> stops) {
+    /**
+     * Open-path cost, plus the return-to-{@code start} leg when {@code closeLoop} is true and that
+     * leg is resolvable - falls back to the plain open-path cost (never penalizes/fabricates)
+     * otherwise, so an order is never rejected purely because its particular last stop happens to
+     * have no direct edge back to the start.
+     */
+    private double routeCost(Double[][] matrix, int start, List<Integer> order, boolean closeLoop) {
+        double cost = pathCost(matrix, start, order);
+        if (!closeLoop || order.isEmpty() || cost == Double.POSITIVE_INFINITY) {
+            return cost;
+        }
+        Double returnEdge = matrix[order.get(order.size() - 1)][start];
+        return returnEdge == null ? cost : cost + returnEdge;
+    }
+
+    private List<Integer> bruteForce(Double[][] matrix, int start, List<Integer> stops, boolean closeLoop) {
         List<Integer> working = new ArrayList<>(stops);
         Best best = new Best();
-        permute(working, 0, matrix, start, best);
+        permute(working, 0, matrix, start, closeLoop, best);
         return best.order == null ? working : best.order;
     }
 
-    private void permute(List<Integer> arrangement, int fixedUpTo, Double[][] matrix, int start, Best best) {
+    private void permute(List<Integer> arrangement, int fixedUpTo, Double[][] matrix, int start, boolean closeLoop, Best best) {
         if (fixedUpTo == arrangement.size()) {
-            double cost = pathCost(matrix, start, arrangement);
+            double cost = routeCost(matrix, start, arrangement, closeLoop);
             if (cost < best.cost) {
                 best.cost = cost;
                 best.order = new ArrayList<>(arrangement);
@@ -82,12 +125,12 @@ public class RouteOptimizer {
         }
         for (int index = fixedUpTo; index < arrangement.size(); index++) {
             Collections.swap(arrangement, fixedUpTo, index);
-            permute(arrangement, fixedUpTo + 1, matrix, start, best);
+            permute(arrangement, fixedUpTo + 1, matrix, start, closeLoop, best);
             Collections.swap(arrangement, fixedUpTo, index);
         }
     }
 
-    private List<Integer> nearestNeighbourThenTwoOpt(Double[][] matrix, int start, List<Integer> stops) {
+    private List<Integer> nearestNeighbourThenTwoOpt(Double[][] matrix, int start, List<Integer> stops, boolean closeLoop) {
         List<Integer> remaining = new ArrayList<>(stops);
         List<Integer> order = new ArrayList<>();
         int current = start;
@@ -106,12 +149,12 @@ public class RouteOptimizer {
             order.add(next);
             current = next;
         }
-        return twoOpt(matrix, start, order);
+        return twoOpt(matrix, start, order, closeLoop);
     }
 
-    private List<Integer> twoOpt(Double[][] matrix, int start, List<Integer> initialOrder) {
+    private List<Integer> twoOpt(Double[][] matrix, int start, List<Integer> initialOrder, boolean closeLoop) {
         List<Integer> best = new ArrayList<>(initialOrder);
-        double bestCost = pathCost(matrix, start, best);
+        double bestCost = routeCost(matrix, start, best, closeLoop);
         int maxIterations = MAX_TWO_OPT_ITERATIONS_PER_STOP * Math.max(1, best.size());
         int iterations = 0;
         boolean improved = true;
@@ -121,7 +164,7 @@ public class RouteOptimizer {
             for (int i = 0; i < best.size() - 1; i++) {
                 for (int j = i + 1; j < best.size(); j++) {
                     List<Integer> candidate = reversedSegment(best, i, j);
-                    double candidateCost = pathCost(matrix, start, candidate);
+                    double candidateCost = routeCost(matrix, start, candidate, closeLoop);
                     iterations++;
                     if (candidateCost < bestCost) {
                         best = candidate;

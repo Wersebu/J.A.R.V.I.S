@@ -16,7 +16,10 @@ import com.jarvis.tools.location.RoutingClient;
 import com.jarvis.tools.location.GeoPoint;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -45,7 +48,9 @@ class StoreAuditWorkflowIntegrationTest {
 
     @Test
     void fullProductionStyleWorkflowReachesScheduledWithAllTwentyThreeRecordsIntact() {
-        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        // Fixed "today" (a Monday) so SUBMIT_SCHEDULE's date validation is fully deterministic.
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus(),
+                Clock.fixed(Instant.parse("2026-06-01T10:00:00Z"), ZoneOffset.UTC));
         StoreDatasetTool storeDatasetTool = new StoreDatasetTool(datasetService);
         LocationTool locationTool = new LocationTool(new AlwaysResolvingGeocodingClient(), new UnusedRoutingClient(), LOCATION_PROPERTIES, datasetService);
 
@@ -112,12 +117,20 @@ class StoreAuditWorkflowIntegrationTest {
         assertThat(geocoded.data().get("datasetStage")).isEqualTo("GEOLOCATED");
         assertThat(geocoded.data().get("datasetCount")).isEqualTo(23);
 
-        // SUBMIT_SCHEDULE: every one of the 23 canonical ids, exactly once, across 2 days.
+        // SET_PREFERENCES: the user's agreed scheduling preferences, required before SUBMIT_SCHEDULE.
+        ToolResult preferences = storeDatasetTool.execute(new ToolRequest("storeDataset", "SET_PREFERENCES", "conversation-1", "request-1",
+                "preferences", "", Map.of("datasetId", datasetId, "year", 2026, "month", 6,
+                        "preferredDaysOfWeek", List.of("TUESDAY", "WEDNESDAY"))));
+        assertThat(preferences.success()).isTrue();
+
+        // SUBMIT_SCHEDULE: every one of the 23 canonical ids, exactly once, across 2 real calendar days.
         List<String> recordIds = currentRecords.stream().map(record -> (String) record.get("id")).toList();
         ToolResult scheduled = storeDatasetTool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
                 "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
-                        Map.of("day", 1, "storeIds", recordIds.subList(0, 12)),
-                        Map.of("day", 2, "storeIds", recordIds.subList(12, 23))
+                        Map.of("day", 1, "date", "2026-06-02", "storeIds", recordIds.subList(0, 12),
+                                "routeDistanceMeters", 42000d, "routeDurationSeconds", 5400d, "auditDurationSeconds", 7200d),
+                        Map.of("day", 2, "date", "2026-06-03", "storeIds", recordIds.subList(12, 23),
+                                "routeDistanceMeters", 38000d, "routeDurationSeconds", 4800d, "auditDurationSeconds", 6600d)
                 ))));
 
         assertThat(scheduled.success()).isTrue();

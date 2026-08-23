@@ -23,9 +23,11 @@ import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.ToolRuntimeProperties;
 import com.jarvis.tools.dataset.CandidateRecord;
 import com.jarvis.tools.dataset.DatasetStage;
+import com.jarvis.tools.dataset.DistributionStrategy;
 import com.jarvis.tools.dataset.GeolocationEntry;
 import com.jarvis.tools.dataset.GeolocationStatus;
 import com.jarvis.tools.dataset.ScheduleDay;
+import com.jarvis.tools.dataset.SchedulingPreferences;
 import com.jarvis.tools.dataset.StoreAuditDataset;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import com.jarvis.tools.dataset.StoreDatasetTool;
@@ -39,11 +41,18 @@ import com.jarvis.tools.schema.ToolSafetyLevel;
 import com.jarvis.tools.workflow.StoreAuditWorkflowCompletionValidator;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.DayOfWeek;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -66,8 +75,10 @@ class NativeToolLoopServiceCompletionGateTest {
     // (finalAnswer=""); it must re-enter and let the model reach SUBMIT_SCHEDULE.
     @Test
     void emptyResponseAfterToolResultsDoesNotBypassTheCompletionGateWhenDatasetIsNotScheduled() {
-        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus(),
+                Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
         StoreAuditDataset geolocated = buildGeolocatedDataset(datasetService);
+        datasetService.setPreferences(geolocated.datasetId(), anyDayPreferences());
         List<String> recordIds = geolocated.stores().stream().map(StoreRecord::id).toList();
 
         Deque<ModelResponse> turns = new ArrayDeque<>();
@@ -76,7 +87,9 @@ class NativeToolLoopServiceCompletionGateTest {
         // The exact reported bug's shape: neither a tool call nor any text, with results already present.
         turns.add(emptyTurn());
         turns.add(toolCallTurn("storedataset__submit_schedule", Map.of(
-                "datasetId", geolocated.datasetId(), "days", List.of(Map.of("day", 1, "storeIds", recordIds)))));
+                "datasetId", geolocated.datasetId(), "days", List.of(Map.of("day", 1, "date", "2026-06-02",
+                        "storeIds", recordIds, "routeDistanceMeters", 1000d, "routeDurationSeconds", 600d,
+                        "auditDurationSeconds", 300d)))));
         turns.add(textTurn("Oto gotowy grafik."));
         ScriptedProvider provider = new ScriptedProvider(turns);
         FakeToolManager toolManager = new FakeToolManager(datasetService);
@@ -106,7 +119,8 @@ class NativeToolLoopServiceCompletionGateTest {
     // report success immediately and let the loop finish with the model's final answer, no re-entry.
     @Test
     void terminalScheduledStateLetsTheLoopFinishWithoutReentry() {
-        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus(),
+                Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
         StoreAuditDataset scheduled = buildScheduledDataset(datasetService);
 
         Deque<ModelResponse> turns = new ArrayDeque<>();
@@ -264,10 +278,19 @@ class NativeToolLoopServiceCompletionGateTest {
         return datasetService.updateGeolocation(dataset.datasetId(), geolocations).dataset();
     }
 
+    private static final Instant FIXED_NOW = Instant.parse("2026-06-01T10:00:00Z");
+
+    private SchedulingPreferences anyDayPreferences() {
+        return new SchedulingPreferences(2026, 6, EnumSet.allOf(DayOfWeek.class), Set.of(),
+                DistributionStrategy.EVEN, null, null, false);
+    }
+
     private StoreAuditDataset buildScheduledDataset(StoreAuditDatasetService datasetService) {
         StoreAuditDataset geolocated = buildGeolocatedDataset(datasetService);
+        datasetService.setPreferences(geolocated.datasetId(), anyDayPreferences());
         List<String> ids = geolocated.stores().stream().map(StoreRecord::id).toList();
-        return datasetService.submitSchedule(geolocated.datasetId(), List.of(new ScheduleDay(1, ids))).dataset();
+        return datasetService.submitSchedule(geolocated.datasetId(),
+                List.of(new ScheduleDay(1, LocalDate.of(2026, 6, 2), ids, 1000d, 600d, 300d))).dataset();
     }
 
     private static ModelResponse toolCallTurn(String name, Map<String, Object> arguments) {
@@ -406,7 +429,11 @@ class NativeToolLoopServiceCompletionGateTest {
                     Map<String, Object> map = (Map<String, Object>) raw;
                     List<String> storeIds = (List<String>) map.get("storeIds");
                     int day = ((Number) map.get("day")).intValue();
-                    return new ScheduleDay(day, storeIds);
+                    LocalDate date = map.get("date") == null ? null : LocalDate.parse(String.valueOf(map.get("date")));
+                    double distance = map.get("routeDistanceMeters") == null ? 0d : ((Number) map.get("routeDistanceMeters")).doubleValue();
+                    double duration = map.get("routeDurationSeconds") == null ? 0d : ((Number) map.get("routeDurationSeconds")).doubleValue();
+                    double auditTime = map.get("auditDurationSeconds") == null ? 0d : ((Number) map.get("auditDurationSeconds")).doubleValue();
+                    return new ScheduleDay(day, date, storeIds, distance, duration, auditTime);
                 }).toList();
                 var outcome = datasetService.submitSchedule(datasetId, days);
                 return new ToolResult(outcome.success(), "storedataset", "SUBMIT_SCHEDULE", request.requestId(), request.conversationId(),

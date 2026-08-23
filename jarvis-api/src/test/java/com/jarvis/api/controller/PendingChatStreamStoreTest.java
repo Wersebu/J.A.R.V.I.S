@@ -1,6 +1,7 @@
 package com.jarvis.api.controller;
 
 import com.jarvis.common.dto.ChatRequest;
+import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.knowledge.KnowledgeMode;
 import org.junit.jupiter.api.Test;
 
@@ -27,9 +28,11 @@ class PendingChatStreamStoreTest {
         ChatRequest request = new ChatRequest("conversation-1", "a very long pasted message", null, KnowledgeMode.AUTO);
 
         String token = store.store(request);
-        Optional<ChatRequest> resolved = store.consume(token);
+        Optional<PendingChatStreamStore.PendingChatRequest> resolved = store.consume(token);
 
-        assertThat(resolved).contains(request);
+        assertThat(resolved).isPresent();
+        assertThat(resolved.orElseThrow().request()).isEqualTo(request);
+        assertThat(resolved.orElseThrow().userId()).isEqualTo(CurrentUserContext.LOCAL_USER_ID);
         assertThat(store.consume(token)).isEmpty();
     }
 

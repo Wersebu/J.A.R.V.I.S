@@ -15,6 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -76,10 +77,13 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     private static final ToolJsonSchema VERIFICATIONS_SCHEMA = ToolJsonSchema.arrayOf(
             VERIFICATION_ENTRY_SCHEMA, "Per-record verification results, referencing existing records only");
     private static final ToolJsonSchema SCHEDULE_DAY_SCHEMA = ToolJsonSchema.object(
-            scheduleDayProperties(), List.of("day"),
+            scheduleDayProperties(), List.of("day", "date", "routeDistanceMeters", "routeDurationSeconds", "auditDurationSeconds"),
             "One day's grouping of records - reference them via storeIndexes (preferred) or storeIds (fallback)");
     private static final ToolJsonSchema DAYS_SCHEMA = ToolJsonSchema.arrayOf(
             SCHEDULE_DAY_SCHEMA, "Day-by-day grouping - every dataset record id exactly once across all days");
+    private static final ToolJsonSchema DAY_NAMES_SCHEMA = ToolJsonSchema.arrayOf(
+            ToolJsonSchema.string("A day of week name, e.g. \"TUESDAY\""),
+            "Day of week names, e.g. [\"TUESDAY\", \"WEDNESDAY\"]");
 
     private static Map<String, ToolJsonSchema> recordProperties() {
         Map<String, ToolJsonSchema> properties = new LinkedHashMap<>();
@@ -122,6 +126,20 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     private static Map<String, ToolJsonSchema> scheduleDayProperties() {
         Map<String, ToolJsonSchema> properties = new LinkedHashMap<>();
         properties.put("day", ToolJsonSchema.integer("Day number within the schedule"));
+        properties.put("date", ToolJsonSchema.string(
+                "Real calendar date this day is scheduled on, ISO format (YYYY-MM-DD) - compute it against a real "
+                        + "calendar, never guess. Must fall within the agreed planning window (see SET_PREFERENCES) "
+                        + "and must not be in the past."));
+        properties.put("routeDistanceMeters", ToolJsonSchema.number(
+                "Full closed-route distance for this day in meters: start point -> every stop -> back to the start "
+                        + "point. Get this from location.OPTIMIZE_ROUTE with returnToStart=true - never estimate it "
+                        + "by hand, and never report only the distance between stops."));
+        properties.put("routeDurationSeconds", ToolJsonSchema.number(
+                "Full closed-route travel duration for this day in seconds (same start -> stops -> start trip as "
+                        + "routeDistanceMeters), travel time only - excludes audit time."));
+        properties.put("auditDurationSeconds", ToolJsonSchema.number(
+                "Total estimated time spent auditing this day's stores, in seconds (sum of each store's expected "
+                        + "audit time per the workflow document's chain-based guidance)."));
         properties.put("storeIndexes", ToolJsonSchema.arrayOf(
                 ToolJsonSchema.integer("1-based position of a record within the canonical dataset"),
                 "PREFERRED: 1-based positions of the records visited this day (record #1 = 1, record #2 = 2, "
@@ -254,6 +272,38 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + " Supply an explicit id here to inspect a specific dataset outside the active "
                                 + "workflow (e.g. an administrative/diagnostic lookup); while a Store Audit "
                                 + "workflow is active, an explicit id must match the active dataset.")),
+                operation("SET_PREFERENCES",
+                        "Records the user's ACTUAL, resolved decision about scheduling preferences (which days of "
+                                + "week, how audit days should be spread across the month) - required before "
+                                + "SUBMIT_SCHEDULE. Call this only after the user has genuinely answered (or the "
+                                + "message already stated unambiguous preferences up front) - never with guessed or "
+                                + "assumed values. year defaults to the current year when omitted/0 - never hardcode "
+                                + "a year. Rejected if the resulting year/month has already passed. Can be called "
+                                + "again later to change the agreed preferences.",
+                        true, ToolSafetyLevel.WRITE,
+                        arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION),
+                        arg("year", "number", false, "Planning year - omit or pass 0 to default to the current year"),
+                        arg("month", "number", true, "Planning month, 1-12"),
+                        arg("preferredDaysOfWeek", false, DAY_NAMES_SCHEMA),
+                        arg("fallbackDaysOfWeek", false, DAY_NAMES_SCHEMA),
+                        arg("strategy", "string", false, "BEGINNING, ENDING, or EVEN (default EVEN)"),
+                        arg("explicitStartDate", "string", false, "Optional explicit ISO start date (YYYY-MM-DD)"),
+                        arg("explicitEndDate", "string", false, "Optional explicit ISO end date (YYYY-MM-DD)"),
+                        arg("saturdayExplicitlyAllowed", "boolean", false,
+                                "true only when the user explicitly agreed to Saturday audits")),
+                operation("REQUEST_USER_INPUT",
+                        "Marks the dataset as legitimately paused so this turn can end with a genuine question to "
+                                + "the user instead of an incomplete result presented as finished. Use kind="
+                                + "AWAITING_PREFERENCES when you are about to ask about scheduling preferences before "
+                                + "they have ever been set (though this is usually unnecessary - the normal pause "
+                                + "point right after VERIFY_DATASET is already recognized automatically), or kind="
+                                + "AWAITING_DECISION for a genuine borderline planning tradeoff the workflow document "
+                                + "says to ask about (e.g. a daily-limit tradeoff). Cleared automatically the moment "
+                                + "real progress resumes (SET_PREFERENCES, GEOCODE_DATASET, SUBMIT_SCHEDULE, ...).",
+                        true, ToolSafetyLevel.WRITE,
+                        arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION),
+                        arg("kind", "string", true, "AWAITING_PREFERENCES or AWAITING_DECISION"),
+                        arg("reason", "string", false, "Short reason for the pause, for traceability")),
                 operation("SUBMIT_SCHEDULE",
                         "Submits a proposed day-by-day grouping of the locked dataset's records for validation. "
                                 + "Reference each record by storeIndexes (preferred, 1-based positions in the "
@@ -284,6 +334,8 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
             case FINALIZE_DATASET -> finalizeDataset(request);
             case VERIFY_DATASET -> verify(request);
             case GET_DATASET -> get(request);
+            case SET_PREFERENCES -> setPreferences(request);
+            case REQUEST_USER_INPUT -> requestUserInput(request);
             case SUBMIT_SCHEDULE -> submitSchedule(request);
         };
     }
@@ -425,6 +477,75 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                 datasetData(dataset.get()), "", "", false, "");
     }
 
+    private ToolResult setPreferences(ToolRequest request) {
+        String datasetId = arg(request, "datasetId");
+        int year = intArg(request, "year");
+        int month = intArg(request, "month");
+        List<String> preferredDays = stringListArg(request, "preferredDaysOfWeek");
+        List<String> fallbackDays = stringListArg(request, "fallbackDaysOfWeek");
+        String strategyRaw = arg(request, "strategy");
+        DistributionStrategy strategy;
+        try {
+            strategy = strategyRaw.isBlank() ? DistributionStrategy.EVEN
+                    : DistributionStrategy.valueOf(strategyRaw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException exception) {
+            String message = "Rejected: strategy must be BEGINNING, ENDING, or EVEN (got \"" + strategyRaw + "\").";
+            return new ToolResult(false, TOOL_NAME, "SET_PREFERENCES", request.requestId(), request.conversationId(),
+                    false, List.of(), message, Map.of(), "STORE_AUDIT_PREFERENCES_INVALID_STRATEGY", message, false, "");
+        }
+        Optional<LocalDate> explicitStart = parseOptionalDate(arg(request, "explicitStartDate"));
+        Optional<LocalDate> explicitEnd = parseOptionalDate(arg(request, "explicitEndDate"));
+        if (explicitStart.isEmpty() && !arg(request, "explicitStartDate").isBlank()
+                || explicitEnd.isEmpty() && !arg(request, "explicitEndDate").isBlank()) {
+            String message = "Rejected: explicitStartDate/explicitEndDate must be ISO dates (YYYY-MM-DD).";
+            return new ToolResult(false, TOOL_NAME, "SET_PREFERENCES", request.requestId(), request.conversationId(),
+                    false, List.of(), message, Map.of(), "STORE_AUDIT_PREFERENCES_INVALID_DATE", message, false, "");
+        }
+        boolean saturdayAllowed = boolArg(request, "saturdayExplicitlyAllowed");
+        SchedulingPreferences preferences = SchedulingPreferences.of(year, month, preferredDays, fallbackDays,
+                strategy, explicitStart.orElse(null), explicitEnd.orElse(null), saturdayAllowed);
+        PreferencesOutcome outcome = datasetService.setPreferences(datasetId, preferences);
+        if (!outcome.success()) {
+            Map<String, Object> data = outcome.dataset() == null ? Map.of() : datasetData(outcome.dataset());
+            return new ToolResult(false, TOOL_NAME, "SET_PREFERENCES", request.requestId(), request.conversationId(),
+                    false, List.of(), outcome.message(), data, outcome.errorCode(), outcome.message(), false, "");
+        }
+        return new ToolResult(true, TOOL_NAME, "SET_PREFERENCES", request.requestId(), request.conversationId(),
+                true, List.of(datasetId), outcome.message(), datasetData(outcome.dataset()), "", "", false, "");
+    }
+
+    private ToolResult requestUserInput(ToolRequest request) {
+        String datasetId = arg(request, "datasetId");
+        String kindRaw = arg(request, "kind");
+        WorkflowPause kind;
+        try {
+            kind = WorkflowPause.valueOf(kindRaw.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException exception) {
+            String message = "Rejected: kind must be AWAITING_PREFERENCES or AWAITING_DECISION (got \"" + kindRaw + "\").";
+            return new ToolResult(false, TOOL_NAME, "REQUEST_USER_INPUT", request.requestId(), request.conversationId(),
+                    false, List.of(), message, Map.of(), "STORE_AUDIT_PAUSE_INVALID", message, false, "");
+        }
+        PauseOutcome outcome = datasetService.requestUserInput(datasetId, kind, arg(request, "reason"));
+        if (!outcome.success()) {
+            Map<String, Object> data = outcome.dataset() == null ? Map.of() : datasetData(outcome.dataset());
+            return new ToolResult(false, TOOL_NAME, "REQUEST_USER_INPUT", request.requestId(), request.conversationId(),
+                    false, List.of(), outcome.message(), data, outcome.errorCode(), outcome.message(), false, "");
+        }
+        return new ToolResult(true, TOOL_NAME, "REQUEST_USER_INPUT", request.requestId(), request.conversationId(),
+                false, List.of(datasetId), outcome.message(), datasetData(outcome.dataset()), "", "", false, "");
+    }
+
+    private Optional<LocalDate> parseOptionalDate(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(LocalDate.parse(raw.trim()));
+        } catch (java.time.format.DateTimeParseException exception) {
+            return Optional.empty();
+        }
+    }
+
     private ToolResult submitSchedule(ToolRequest request) {
         String datasetId = arg(request, "datasetId");
         Optional<StoreAuditDataset> datasetOpt = datasetService.getDataset(datasetId);
@@ -449,7 +570,10 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
         List<ScheduleDay> days = new ArrayList<>();
         for (Object raw : rawDays) {
             if (raw instanceof Map<?, ?> map) {
-                days.add(new ScheduleDay(intField(map, "day"), resolveScheduleDayStoreIds(map, datasetOpt.orElse(null))));
+                LocalDate date = parseOptionalDate(textField(map, "date")).orElse(null);
+                days.add(new ScheduleDay(intField(map, "day"), date, resolveScheduleDayStoreIds(map, datasetOpt.orElse(null)),
+                        doubleField(map, "routeDistanceMeters"), doubleField(map, "routeDurationSeconds"),
+                        doubleField(map, "auditDurationSeconds")));
             }
         }
         ScheduleSubmitOutcome outcome = datasetService.submitSchedule(datasetId, days);
@@ -490,7 +614,7 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
         // true here so a LOCKED dataset's requiredNextAction reads as the next distinct OPERATION
         // (GEOCODE_DATASET), not the document gate; NativeToolLoopService enforces that separate
         // gate itself, with real workflowDocumentLoaded state, when GEOCODE_DATASET is attempted.
-        String requiredNextAction = StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), true);
+        String requiredNextAction = StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), true, dataset.preferences() != null);
         String message = operationName + " cannot run while the dataset is " + dataset.stage() + ". "
                 + (requiredNextAction.isBlank() ? "The dataset is already at its terminal stage."
                         : "Call storeDataset." + requiredNextAction + " (or location." + requiredNextAction + " if it "
@@ -681,16 +805,45 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
             records.add(recordMap(stores.get(index), index + 1));
         }
         data.put("records", records);
+        if (dataset.preferences() != null) {
+            data.put("preferences", preferencesMap(dataset.preferences()));
+        }
+        if (dataset.pendingUserInput() != WorkflowPause.NONE) {
+            data.put("pendingUserInput", dataset.pendingUserInput().name());
+        }
         if (!dataset.schedule().isEmpty()) {
             data.put("schedule", dataset.schedule().stream().map(this::scheduleDayMap).toList());
         }
         return data;
     }
 
+    private Map<String, Object> preferencesMap(SchedulingPreferences preferences) {
+        Map<String, Object> map = new HashMap<>();
+        map.put("year", preferences.year());
+        map.put("month", preferences.month());
+        map.put("preferredDaysOfWeek", preferences.preferredDaysOfWeek().stream().map(Enum::name).toList());
+        map.put("fallbackDaysOfWeek", preferences.fallbackDaysOfWeek().stream().map(Enum::name).toList());
+        map.put("strategy", preferences.strategy().name());
+        map.put("saturdayExplicitlyAllowed", preferences.saturdayExplicitlyAllowed());
+        if (preferences.hasExplicitRange()) {
+            map.put("explicitStartDate", preferences.explicitStartDate().toString());
+            map.put("explicitEndDate", preferences.explicitEndDate().toString());
+        }
+        return map;
+    }
+
     private Map<String, Object> scheduleDayMap(ScheduleDay day) {
         Map<String, Object> map = new HashMap<>();
         map.put("day", day.day());
+        if (day.date() != null) {
+            map.put("date", day.date().toString());
+            map.put("dayOfWeek", day.dayOfWeek().name());
+        }
         map.put("storeIds", day.storeIds());
+        map.put("routeDistanceMeters", day.routeDistanceMeters());
+        map.put("routeDurationSeconds", day.routeDurationSeconds());
+        map.put("auditDurationSeconds", day.auditDurationSeconds());
+        map.put("totalWorkSeconds", day.totalWorkSeconds());
         return map;
     }
 
@@ -729,6 +882,16 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     private int intArg(ToolRequest request, String name) {
         Object value = request.arguments().get(name);
         return value instanceof Number number ? number.intValue() : 0;
+    }
+
+    private boolean boolArg(ToolRequest request, String name) {
+        Object value = request.arguments().get(name);
+        return value instanceof Boolean bool && bool;
+    }
+
+    private double doubleField(Map<?, ?> map, String key) {
+        Object value = map.get(key);
+        return value instanceof Number number ? number.doubleValue() : 0d;
     }
 
     private List<Object> listArg(ToolRequest request, String name) {

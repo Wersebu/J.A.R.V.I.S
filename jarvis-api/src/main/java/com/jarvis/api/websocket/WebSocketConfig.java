@@ -23,6 +23,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
     private final ObjectMapper objectMapper;
     private final WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway;
     private final McpServerManager mcpServerManager;
+    private final JarvisWebSocketAuthInterceptor authInterceptor;
     private final int maxTextMessageSize;
     private final int maxBinaryMessageSize;
 
@@ -37,6 +38,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
             ObjectMapper objectMapper,
             WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway,
             McpServerManager mcpServerManager,
+            JarvisWebSocketAuthInterceptor authInterceptor,
             @Value("${jarvis.websocket.max-text-message-size:4194304}") int maxTextMessageSize,
             @Value("${jarvis.websocket.max-binary-message-size:8388608}") int maxBinaryMessageSize
     ) {
@@ -44,6 +46,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
         this.objectMapper = objectMapper;
         this.windowsMcpBridgeGateway = windowsMcpBridgeGateway;
         this.mcpServerManager = mcpServerManager;
+        this.authInterceptor = authInterceptor;
         this.maxTextMessageSize = maxTextMessageSize;
         this.maxBinaryMessageSize = maxBinaryMessageSize;
     }
@@ -56,6 +59,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
         registry.addHandler(new JarvisWebSocketHandler(chatService, objectMapper, windowsMcpBridgeGateway, mcpServerManager), "/ws/jarvis")
+                .addInterceptors(authInterceptor)
                 .setAllowedOrigins("*");
     }
 

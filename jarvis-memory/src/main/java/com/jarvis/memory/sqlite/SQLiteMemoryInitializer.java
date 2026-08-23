@@ -39,6 +39,7 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                     CREATE TABLE IF NOT EXISTS working_memory (
                         id TEXT PRIMARY KEY,
                         conversation_id TEXT NOT NULL,
+                        user_id TEXT NOT NULL DEFAULT 'local-user',
                         request_id TEXT NOT NULL DEFAULT '',
                         role TEXT NOT NULL,
                         content TEXT NOT NULL,
@@ -48,13 +49,14 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                         status TEXT NOT NULL DEFAULT 'FINAL'
                     )
                     """);
+            addColumnIfMissing(statement, "working_memory", "user_id", "TEXT NOT NULL DEFAULT 'local-user'");
             addColumnIfMissing(statement, "working_memory", "request_id", "TEXT NOT NULL DEFAULT ''");
             addColumnIfMissing(statement, "working_memory", "sequence_number", "INTEGER NOT NULL DEFAULT 0");
             addColumnIfMissing(statement, "working_memory", "message_type", "TEXT NOT NULL DEFAULT 'CHAT'");
             addColumnIfMissing(statement, "working_memory", "status", "TEXT NOT NULL DEFAULT 'FINAL'");
             statement.executeUpdate("""
                     CREATE UNIQUE INDEX IF NOT EXISTS idx_working_memory_request_role_type
-                    ON working_memory(request_id, role, message_type)
+                    ON working_memory(user_id, request_id, role, message_type)
                     WHERE request_id <> ''
                     """);
             statement.executeUpdate("""
@@ -100,6 +102,7 @@ public class SQLiteMemoryInitializer implements InitializingBean {
             addColumnIfMissing(statement, "semantic_memory", "embedding_model", "TEXT");
             addColumnIfMissing(statement, "semantic_memory", "embedding_dimension", "INTEGER");
             addColumnIfMissing(statement, "semantic_memory", "embedding_vector", "TEXT");
+            createAuthTables(statement);
             createDurableConversationTables(statement);
             migrateWorkingMemoryIntoDurableConversationTables(statement);
             createConversationImageTable(statement);
@@ -122,6 +125,8 @@ public class SQLiteMemoryInitializer implements InitializingBean {
         statement.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS conversations (
                     id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL DEFAULT 'local-user',
+                    folder_id TEXT NOT NULL DEFAULT '',
                     title TEXT NOT NULL DEFAULT 'Nowa rozmowa',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -132,11 +137,14 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                     summary_until_sequence INTEGER NOT NULL DEFAULT 0
                 )
                 """);
+        addColumnIfMissing(statement, "conversations", "user_id", "TEXT NOT NULL DEFAULT 'local-user'");
+        addColumnIfMissing(statement, "conversations", "folder_id", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing(statement, "conversations", "title_source", "TEXT NOT NULL DEFAULT 'DEFAULT'");
         statement.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS conversation_messages (
                     id TEXT PRIMARY KEY,
                     conversation_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT 'local-user',
                     request_id TEXT NOT NULL DEFAULT '',
                     sequence_number INTEGER NOT NULL,
                     role TEXT NOT NULL,
@@ -147,9 +155,14 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                     metadata_json TEXT NOT NULL DEFAULT '{}'
                 )
                 """);
+        addColumnIfMissing(statement, "conversation_messages", "user_id", "TEXT NOT NULL DEFAULT 'local-user'");
         statement.executeUpdate("""
                 CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation
-                ON conversation_messages(conversation_id, sequence_number)
+                ON conversation_messages(user_id, conversation_id, sequence_number)
+                """);
+        statement.executeUpdate("""
+                CREATE INDEX IF NOT EXISTS idx_conversations_user_updated
+                ON conversations(user_id, updated_at)
                 """);
         statement.executeUpdate("""
                 CREATE TABLE IF NOT EXISTS conversation_summaries (
@@ -161,6 +174,57 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                     source_message_count INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (conversation_id, covered_until_sequence)
                 )
+                """);
+    }
+
+    private void createAuthTables(Statement statement) throws SQLException {
+        statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id TEXT PRIMARY KEY,
+                    email TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    display_name TEXT NOT NULL DEFAULT '',
+                    role TEXT NOT NULL DEFAULT 'USER',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_login_at TEXT NOT NULL DEFAULT ''
+                )
+                """);
+        statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS user_sessions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    token_hash TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked_at TEXT NOT NULL DEFAULT ''
+                )
+                """);
+        statement.executeUpdate("""
+                CREATE INDEX IF NOT EXISTS idx_user_sessions_token
+                ON user_sessions(token_hash, expires_at)
+                """);
+        statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id TEXT PRIMARY KEY,
+                    global_prompt TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL
+                )
+                """);
+        statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS conversation_folders (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    system_prompt TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """);
+        statement.executeUpdate("""
+                CREATE INDEX IF NOT EXISTS idx_conversation_folders_user
+                ON conversation_folders(user_id, lower(name))
                 """);
     }
 
@@ -179,15 +243,15 @@ public class SQLiteMemoryInitializer implements InitializingBean {
     private void migrateWorkingMemoryIntoDurableConversationTables(Statement statement) throws SQLException {
         statement.executeUpdate("""
                 INSERT OR IGNORE INTO conversations
-                (id, title, created_at, updated_at, archived, last_model, title_source, rolling_summary, summary_until_sequence)
-                SELECT conversation_id, 'Nowa rozmowa', MIN(created_at), MAX(created_at), 0, '', 'DEFAULT', '', 0
+                (id, user_id, folder_id, title, created_at, updated_at, archived, last_model, title_source, rolling_summary, summary_until_sequence)
+                SELECT conversation_id, 'local-user', '', 'Nowa rozmowa', MIN(created_at), MAX(created_at), 0, '', 'DEFAULT', '', 0
                 FROM working_memory
                 GROUP BY conversation_id
                 """);
         statement.executeUpdate("""
                 INSERT OR IGNORE INTO conversation_messages
-                (id, conversation_id, request_id, sequence_number, role, message_type, content, created_at, status, metadata_json)
-                SELECT id, conversation_id, request_id, sequence_number, role, message_type, content, created_at, status, '{}'
+                (id, conversation_id, user_id, request_id, sequence_number, role, message_type, content, created_at, status, metadata_json)
+                SELECT id, conversation_id, 'local-user', request_id, sequence_number, role, message_type, content, created_at, status, '{}'
                 FROM working_memory
                 """);
     }

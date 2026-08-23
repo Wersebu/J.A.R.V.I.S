@@ -100,6 +100,54 @@ class RouteOptimizerTest {
         assertThat(route.unreachableIndices()).containsExactly(1);
     }
 
+    // =====================================================================
+    // Closed-route (returnToStart / closeLoop) tests - a full day trip that must end back at its
+    // fixed starting point, not merely at the last stop.
+    // =====================================================================
+
+    @Test
+    void closedLoopIncludesTheReturnLegInTotalCost() {
+        // Line topology 0-1-2-3: open-path cost 0->1->2->3 is 3, but the closed loop must also
+        // add the return leg 3->0 (cost 3), for a total of 6.
+        Double[][] matrix = lineMatrix(4);
+
+        OptimizedRoute open = optimizer.optimize(matrix, 0, 8, false);
+        OptimizedRoute closed = optimizer.optimize(matrix, 0, 8, true);
+
+        assertThat(open.totalCost()).isEqualTo(3d);
+        assertThat(closed.totalCost()).isEqualTo(6d);
+        assertThat(closed.visitOrder()).containsExactly(0, 1, 2, 3);
+    }
+
+    @Test
+    void aStopWithNoReturnEdgeToStartIsExcludedEntirelyEvenForAClosedLoop() {
+        // The existing reachability filter (unchanged by closeLoop) already requires both
+        // directions to/from the start to exist for a stop to be usable at all - a stop with no
+        // edge back to the start is excluded outright, not merely uncosted, whether or not a
+        // closed loop was requested. The closed-loop total is then computed only over the
+        // remaining, fully-reachable stops.
+        Double[][] matrix = lineMatrix(4);
+        matrix[3][0] = null;
+
+        OptimizedRoute closed = optimizer.optimize(matrix, 0, 8, true);
+
+        assertThat(closed.unreachableIndices()).containsExactly(3);
+        assertThat(closed.visitOrder()).doesNotContain(3);
+        // Best remaining closed loop over {1,2}: 0->1->2->0 = 1+1+2 = 4 (or the symmetric 0->2->1->0).
+        assertThat(closed.totalCost()).isEqualTo(4d);
+    }
+
+    @Test
+    void closedLoopThreeArgOverloadIsEquivalentToOpenPath() {
+        Double[][] matrix = lineMatrix(4);
+
+        OptimizedRoute legacy = optimizer.optimize(matrix, 0, 8);
+        OptimizedRoute explicitOpen = optimizer.optimize(matrix, 0, 8, false);
+
+        assertThat(legacy.totalCost()).isEqualTo(explicitOpen.totalCost());
+        assertThat(legacy.visitOrder()).isEqualTo(explicitOpen.visitOrder());
+    }
+
     private Double[][] lineMatrix(int size) {
         double[][] raw = new double[size][size];
         for (int i = 0; i < size; i++) {

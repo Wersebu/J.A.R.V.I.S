@@ -1761,7 +1761,7 @@ public class NativeToolLoopService {
      */
     private String recoveryGuidance(String activeDatasetId, boolean workflowDocumentLoaded, String fallback) {
         return datasetService.getDataset(activeDatasetId).map(dataset -> {
-            String nextAction = StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded);
+            String nextAction = StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded, dataset.preferences() != null);
             StringBuilder builder = new StringBuilder();
             builder.append("STORE AUDIT RECOVERY\n\n")
                     .append("Current stage: ").append(dataset.stage()).append("\n")
@@ -1811,7 +1811,7 @@ public class NativeToolLoopService {
                 include datasetId, Core targets this exact dataset automatically.
                 """.formatted(request.userMessage(), dataset.datasetId(), dataset.stage(),
                         recordCountLabel(dataset), workflowDocumentLoaded,
-                        StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded))).orElse("");
+                        StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded, dataset.preferences() != null))).orElse("");
     }
 
     private String recordCountLabel(StoreAuditDataset dataset) {
@@ -2087,7 +2087,7 @@ public class NativeToolLoopService {
             return "n/a";
         }
         return datasetService.getDataset(datasetId)
-                .map(dataset -> StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded))
+                .map(dataset -> StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded, dataset.preferences() != null))
                 .orElse("n/a");
     }
 
@@ -2929,7 +2929,7 @@ public class NativeToolLoopService {
             return Optional.empty();
         }
         StoreAuditDataset value = dataset.get();
-        String nextAction = StoreAuditWorkflowCompletionValidator.nextRequiredAction(value.stage(), workflowDocumentLoaded);
+        String nextAction = StoreAuditWorkflowCompletionValidator.nextRequiredAction(value.stage(), workflowDocumentLoaded, value.preferences() != null);
         String message = "You already have the current canonical dataset - it has not changed since your last "
                 + "GET_DATASET call. Current stage: " + value.stage() + " (" + value.stores().size() + " record(s)). "
                 + "Next required action: " + (nextAction.isBlank() ? "none - already complete" : nextAction) + ". "
@@ -3057,7 +3057,7 @@ public class NativeToolLoopService {
             data.put("expectedRecordCount", active.get().expectedRecordCount());
         }
         data.put("nextRequiredAction", active.map(dataset ->
-                StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded)).orElse(""));
+                StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded, dataset.preferences() != null)).orElse(""));
         return new ToolResult(false, action.tool(), action.operation(), request.requestId(), request.conversationId(),
                 false, List.of(activeDatasetId), message, data, "STORE_DATASET_ID_MISMATCH", message, false, "");
     }
@@ -3260,7 +3260,7 @@ public class NativeToolLoopService {
             }
             String note = "Zadanie Store Audit nie zostalo ukonczone (etap: " + dataset.stage() + ", "
                     + dataset.stores().size() + " rekord(ow)). Nastepny wymagany krok: "
-                    + StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded) + ".";
+                    + StoreAuditWorkflowCompletionValidator.nextRequiredAction(dataset.stage(), workflowDocumentLoaded, dataset.preferences() != null) + ".";
             return fallback.isBlank() ? note : fallback + " " + note;
         }).orElse(fallback);
     }

@@ -16,6 +16,10 @@ public enum StoreDatasetOperation {
     VERIFY_DATASET,
     /** Reads the current canonical dataset. */
     GET_DATASET,
+    /** Records the user's resolved scheduling preferences (days, distribution) for this dataset. */
+    SET_PREFERENCES,
+    /** Marks the dataset as legitimately paused awaiting a real decision from the user right now. */
+    REQUEST_USER_INPUT,
     /** Submits a day-by-day schedule for count-invariant validation against the locked dataset. */
     SUBMIT_SCHEDULE
 }

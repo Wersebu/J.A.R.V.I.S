@@ -56,6 +56,15 @@ public interface ConversationRepository {
     void rename(String conversationId, String title);
 
     /**
+     * Moves a conversation to a user-owned folder. Empty folder id moves it back to root.
+     *
+     * @param conversationId stable conversation identifier
+     * @param folderId target folder id or blank
+     */
+    default void moveToFolder(String conversationId, String folderId) {
+    }
+
+    /**
      * Updates the title only when it still has the default source.
      *
      * @param conversationId stable conversation identifier

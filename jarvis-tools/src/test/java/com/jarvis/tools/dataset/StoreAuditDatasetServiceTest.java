@@ -7,12 +7,18 @@ import com.jarvis.common.event.CognitiveEventType;
 import org.junit.jupiter.api.Test;
 
 import java.time.Clock;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -243,7 +249,8 @@ class StoreAuditDatasetServiceTest {
         VerifyOutcome verify = service.verifyDataset(datasetId, List.of(new VerificationEntry("store-001", "VERIFIED", "", "")));
         GeolocationUpdateOutcome geo = service.updateGeolocation(datasetId,
                 List.of(new GeolocationEntry("store-001", GeolocationStatus.RESOLVED, 52.0, 21.0)));
-        ScheduleSubmitOutcome schedule = service.submitSchedule(datasetId, List.of(new ScheduleDay(1, List.of("store-001"))));
+        ScheduleSubmitOutcome schedule = service.submitSchedule(datasetId,
+                List.of(scheduleDay(1, LocalDate.of(2026, 6, 2), List.of("store-001"))));
 
         assertThat(verify.success()).isFalse();
         assertThat(verify.message()).contains("BUILDING");
@@ -397,29 +404,33 @@ class StoreAuditDatasetServiceTest {
     // TEST 9 (count invariant): a valid schedule referencing every store id exactly once is accepted.
     @Test
     void submitScheduleAcceptsAValidCompleteGrouping() {
-        StoreAuditDatasetService service = service();
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
         StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
         List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+        service.setPreferences(dataset.datasetId(), anyDayPreferences(2026, 6));
 
         ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(
-                new ScheduleDay(1, ids.subList(0, 12)),
-                new ScheduleDay(2, ids.subList(12, 23))
+                scheduleDay(1, LocalDate.of(2026, 6, 2), ids.subList(0, 12)),
+                scheduleDay(2, LocalDate.of(2026, 6, 3), ids.subList(12, 23))
         ));
 
         assertThat(outcome.success()).isTrue();
         assertThat(outcome.dataset().stage()).isEqualTo(DatasetStage.SCHEDULED);
         assertThat(outcome.dataset().schedule()).hasSize(2);
+        assertThat(outcome.dataset().schedule().get(0).dayOfWeek()).isEqualTo(DayOfWeek.TUESDAY);
     }
 
     // TEST 5: 23 stores, schedule contains only 22 -> rejected as invalid, nothing applied.
     @Test
     void submitScheduleRejectsAGroupingMissingAStore() {
-        StoreAuditDatasetService service = service();
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
         StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
         List<String> ids = new java.util.ArrayList<>(dataset.stores().stream().map(StoreRecord::id).toList());
         String omitted = ids.remove(22);
+        service.setPreferences(dataset.datasetId(), anyDayPreferences(2026, 6));
 
-        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(new ScheduleDay(1, ids)));
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(),
+                List.of(scheduleDay(1, LocalDate.of(2026, 6, 2), ids)));
 
         assertThat(outcome.success()).isFalse();
         assertThat(outcome.invariantViolation()).isTrue();
@@ -430,12 +441,14 @@ class StoreAuditDatasetServiceTest {
     // TEST 6: 23 stores, schedule references an unknown/hallucinated id -> rejected.
     @Test
     void submitScheduleRejectsAnUnknownHallucinatedStoreId() {
-        StoreAuditDatasetService service = service();
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
         StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(23, "att-1")).dataset();
         List<String> ids = new java.util.ArrayList<>(dataset.stores().stream().map(StoreRecord::id).toList());
         ids.add("store-999");
+        service.setPreferences(dataset.datasetId(), anyDayPreferences(2026, 6));
 
-        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(new ScheduleDay(1, ids)));
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(),
+                List.of(scheduleDay(1, LocalDate.of(2026, 6, 2), ids)));
 
         assertThat(outcome.success()).isFalse();
         assertThat(outcome.unknownStoreIds()).containsExactly("store-999");
@@ -444,13 +457,14 @@ class StoreAuditDatasetServiceTest {
     // TEST 4: the same store id scheduled twice -> rejected as a duplicate.
     @Test
     void submitScheduleRejectsADuplicateStoreIdAcrossDays() {
-        StoreAuditDatasetService service = service();
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
         StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
         List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+        service.setPreferences(dataset.datasetId(), anyDayPreferences(2026, 6));
 
         ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(
-                new ScheduleDay(1, List.of(ids.get(0), ids.get(1))),
-                new ScheduleDay(2, List.of(ids.get(1), ids.get(2)))
+                scheduleDay(1, LocalDate.of(2026, 6, 2), List.of(ids.get(0), ids.get(1))),
+                scheduleDay(2, LocalDate.of(2026, 6, 3), List.of(ids.get(1), ids.get(2)))
         ));
 
         assertThat(outcome.success()).isFalse();
@@ -461,10 +475,256 @@ class StoreAuditDatasetServiceTest {
     void submitScheduleUnknownDatasetIdFails() {
         StoreAuditDatasetService service = service();
 
-        ScheduleSubmitOutcome outcome = service.submitSchedule("does-not-exist", List.of(new ScheduleDay(1, List.of("store-001"))));
+        ScheduleSubmitOutcome outcome = service.submitSchedule("does-not-exist",
+                List.of(scheduleDay(1, LocalDate.of(2026, 6, 2), List.of("store-001"))));
 
         assertThat(outcome.success()).isFalse();
         assertThat(outcome.dataset()).isNull();
+    }
+
+    // =====================================================================
+    // New tests: scheduling preferences and date-aware SUBMIT_SCHEDULE validation.
+    // =====================================================================
+
+    @Test
+    void setPreferencesDefaultsYearToTheCurrentYearWhenOmitted() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
+
+        PreferencesOutcome outcome = service.setPreferences(dataset.datasetId(),
+                new SchedulingPreferences(0, 6, EnumSet.of(DayOfWeek.TUESDAY), Set.of(), DistributionStrategy.EVEN, null, null, false));
+
+        assertThat(outcome.success()).isTrue();
+        assertThat(outcome.dataset().preferences().year()).isEqualTo(2026);
+    }
+
+    @Test
+    void setPreferencesRejectsAMonthThatHasAlreadyPassed() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
+
+        PreferencesOutcome outcome = service.setPreferences(dataset.datasetId(),
+                new SchedulingPreferences(2026, 5, EnumSet.of(DayOfWeek.TUESDAY), Set.of(), DistributionStrategy.EVEN, null, null, false));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.errorCode()).isEqualTo("STORE_AUDIT_PREFERENCES_MONTH_IN_PAST");
+    }
+
+    @Test
+    void setPreferencesRejectsNoDaysOfWeekAtAll() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
+
+        PreferencesOutcome outcome = service.setPreferences(dataset.datasetId(),
+                new SchedulingPreferences(2026, 6, Set.of(), Set.of(), DistributionStrategy.EVEN, null, null, false));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.errorCode()).isEqualTo("STORE_AUDIT_PREFERENCES_NO_DAYS");
+    }
+
+    @Test
+    void submitScheduleRejectsWhenPreferencesWereNeverSet() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = verifyAll(service, service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(1, "att-1")).dataset());
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(),
+                List.of(scheduleDay(1, LocalDate.of(2026, 6, 2), ids)));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.message()).contains("SET_PREFERENCES");
+    }
+
+    @Test
+    void submitScheduleRejectsADateBeforeToday() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(1, "att-1")).dataset();
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+        service.setPreferences(dataset.datasetId(), anyDayPreferences(2026, 6));
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(),
+                List.of(scheduleDay(1, LocalDate.of(2026, 5, 31), ids)));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.message()).contains("past");
+    }
+
+    @Test
+    void submitScheduleRejectsADateOutsideTheAgreedMonth() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(1, "att-1")).dataset();
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+        service.setPreferences(dataset.datasetId(), anyDayPreferences(2026, 6));
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(),
+                List.of(scheduleDay(1, LocalDate.of(2026, 7, 1), ids)));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.message()).contains("planning window");
+    }
+
+    @Test
+    void submitScheduleRejectsADayOfWeekNotInTheAgreedSet() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(1, "att-1")).dataset();
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+        service.setPreferences(dataset.datasetId(), new SchedulingPreferences(2026, 6, EnumSet.of(DayOfWeek.TUESDAY),
+                Set.of(), DistributionStrategy.EVEN, null, null, false));
+
+        // 2026-06-04 is a Thursday - not in the agreed {TUESDAY} set.
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(),
+                List.of(scheduleDay(1, LocalDate.of(2026, 6, 4), ids)));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.message()).contains("THURSDAY");
+    }
+
+    @Test
+    void submitScheduleRejectsAnEmptyDay() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(1, "att-1")).dataset();
+        service.setPreferences(dataset.datasetId(), anyDayPreferences(2026, 6));
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(),
+                List.of(scheduleDay(1, LocalDate.of(2026, 6, 2), List.of())));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.message()).contains("no stores assigned");
+    }
+
+    @Test
+    void submitScheduleRejectsANegativeRouteDistance() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(1, "att-1")).dataset();
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+        service.setPreferences(dataset.datasetId(), anyDayPreferences(2026, 6));
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(),
+                List.of(new ScheduleDay(1, LocalDate.of(2026, 6, 2), ids, -1d, 100d, 100d)));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.message()).contains("negative");
+    }
+
+    @Test
+    void submitScheduleAcceptsAnExplicitDateRangeOverridingTheMonthWindow() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(1, "att-1")).dataset();
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+        service.setPreferences(dataset.datasetId(), new SchedulingPreferences(2026, 6, EnumSet.allOf(DayOfWeek.class),
+                Set.of(), DistributionStrategy.EVEN, LocalDate.of(2026, 6, 2), LocalDate.of(2026, 6, 5), false));
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(),
+                List.of(scheduleDay(1, LocalDate.of(2026, 6, 5), ids)));
+
+        assertThat(outcome.success()).isTrue();
+    }
+
+    @Test
+    void defaultStylePreferencesAllowTuesdayWednesdayAndMondayAsFallbackButNothingElse() {
+        // Damian's default preference shape: Tuesday/Wednesday preferred, Monday as a fallback
+        // day only - never automatically extended to Thursday-Sunday.
+        SchedulingPreferences preferences = new SchedulingPreferences(2026, 6,
+                EnumSet.of(DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY), EnumSet.of(DayOfWeek.MONDAY),
+                DistributionStrategy.EVEN, null, null, false);
+
+        assertThat(preferences.allowedDaysOfWeek()).containsExactlyInAnyOrder(
+                DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY);
+        assertThat(preferences.allowedDaysOfWeek()).doesNotContain(
+                DayOfWeek.THURSDAY, DayOfWeek.FRIDAY, DayOfWeek.SATURDAY, DayOfWeek.SUNDAY);
+    }
+
+    @Test
+    void submitScheduleRejectsASaturdayWithoutExplicitConsent() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(1, "att-1")).dataset();
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+        service.setPreferences(dataset.datasetId(), new SchedulingPreferences(2026, 6,
+                EnumSet.of(DayOfWeek.TUESDAY), Set.of(), DistributionStrategy.EVEN, null, null, false));
+
+        // 2026-06-06 is a Saturday.
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(),
+                List.of(scheduleDay(1, LocalDate.of(2026, 6, 6), ids)));
+
+        assertThat(outcome.success()).isFalse();
+        assertThat(outcome.message()).contains("SATURDAY");
+    }
+
+    @Test
+    void submitScheduleAcceptsASaturdayWhenExplicitlyAllowed() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(1, "att-1")).dataset();
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+        service.setPreferences(dataset.datasetId(), new SchedulingPreferences(2026, 6,
+                EnumSet.of(DayOfWeek.TUESDAY), Set.of(), DistributionStrategy.EVEN, null, null, true));
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(),
+                List.of(scheduleDay(1, LocalDate.of(2026, 6, 6), ids)));
+
+        assertThat(outcome.success()).isTrue();
+    }
+
+    @Test
+    void submitScheduleAcceptsEveryTuesdayAcrossAFourTuesdayMonth() {
+        // February 2027 has exactly 4 Tuesdays (2,9,16,23) - a month spanning exactly 4 weeks for
+        // that day of week.
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(4, "att-1")).dataset();
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+        service.setPreferences(dataset.datasetId(), new SchedulingPreferences(2027, 2,
+                EnumSet.of(DayOfWeek.TUESDAY), Set.of(), DistributionStrategy.EVEN, null, null, false));
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(
+                scheduleDay(1, LocalDate.of(2027, 2, 2), List.of(ids.get(0))),
+                scheduleDay(2, LocalDate.of(2027, 2, 9), List.of(ids.get(1))),
+                scheduleDay(3, LocalDate.of(2027, 2, 16), List.of(ids.get(2))),
+                scheduleDay(4, LocalDate.of(2027, 2, 23), List.of(ids.get(3)))
+        ));
+
+        assertThat(outcome.success()).isTrue();
+        assertThat(outcome.dataset().schedule()).extracting(ScheduleDay::dayOfWeek).containsOnly(DayOfWeek.TUESDAY);
+    }
+
+    @Test
+    void submitScheduleAcceptsEveryTuesdayAcrossAFiveTuesdayMonth() {
+        // March 2027 has 5 Tuesdays (2,9,16,23,30) - a month spanning 5 weeks for that day of week.
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(5, "att-1")).dataset();
+        List<String> ids = dataset.stores().stream().map(StoreRecord::id).toList();
+        service.setPreferences(dataset.datasetId(), new SchedulingPreferences(2027, 3,
+                EnumSet.of(DayOfWeek.TUESDAY), Set.of(), DistributionStrategy.EVEN, null, null, false));
+
+        ScheduleSubmitOutcome outcome = service.submitSchedule(dataset.datasetId(), List.of(
+                scheduleDay(1, LocalDate.of(2027, 3, 2), List.of(ids.get(0))),
+                scheduleDay(2, LocalDate.of(2027, 3, 9), List.of(ids.get(1))),
+                scheduleDay(3, LocalDate.of(2027, 3, 16), List.of(ids.get(2))),
+                scheduleDay(4, LocalDate.of(2027, 3, 23), List.of(ids.get(3))),
+                scheduleDay(5, LocalDate.of(2027, 3, 30), List.of(ids.get(4)))
+        ));
+
+        assertThat(outcome.success()).isTrue();
+        assertThat(outcome.dataset().schedule()).hasSize(5);
+    }
+
+    @Test
+    void scheduleDayTotalWorkSecondsIncludesTravelAndAuditTime() {
+        ScheduleDay day = new ScheduleDay(1, LocalDate.of(2026, 6, 2), List.of("store-001"), 15000d, 1800d, 3600d);
+
+        assertThat(day.totalWorkSeconds()).isEqualTo(5400d);
+        assertThat(day.dayOfWeek()).isEqualTo(DayOfWeek.TUESDAY);
+    }
+
+    @Test
+    void requestUserInputRecordsAndSubsequentRealProgressClearsThePause() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset dataset = verifyAll(service, service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(1, "att-1")).dataset());
+
+        PauseOutcome paused = service.requestUserInput(dataset.datasetId(), WorkflowPause.AWAITING_DECISION, "5 Biedronki blisko siebie");
+        assertThat(paused.success()).isTrue();
+        assertThat(service.getDataset(dataset.datasetId()).orElseThrow().pendingUserInput()).isEqualTo(WorkflowPause.AWAITING_DECISION);
+
+        service.setPreferences(dataset.datasetId(), anyDayPreferences(2026, 6));
+        assertThat(service.getDataset(dataset.datasetId()).orElseThrow().pendingUserInput()).isEqualTo(WorkflowPause.NONE);
     }
 
     // TEST 7 (conversation continuity): a dataset registered against a conversation can be found
@@ -739,6 +999,29 @@ class StoreAuditDatasetServiceTest {
         return new StoreAuditDatasetService(new NoopCognitiveEventBus());
     }
 
+    // A fixed "today" so schedule-date tests (which now require dates that are within the agreed
+    // month and never in the past) are fully deterministic, never dependent on the machine's real
+    // clock - 2026-06-01 (a Monday).
+    private static final Instant FIXED_NOW = Instant.parse("2026-06-01T10:00:00Z");
+
+    private StoreAuditDatasetService serviceAt(Instant now) {
+        return new StoreAuditDatasetService(new NoopCognitiveEventBus(), Clock.fixed(now, ZoneOffset.UTC));
+    }
+
+    /**
+     * Preferences allowing every day of week - used by tests that only care about the record-id
+     * count invariants, not day-of-week alignment, so an arbitrary date within the target month
+     * always satisfies {@link SchedulingPreferences#allowedDaysOfWeek()}.
+     */
+    private SchedulingPreferences anyDayPreferences(int year, int month) {
+        return new SchedulingPreferences(year, month, EnumSet.allOf(DayOfWeek.class), java.util.Set.of(),
+                DistributionStrategy.EVEN, null, null, false);
+    }
+
+    private ScheduleDay scheduleDay(int day, LocalDate date, List<String> storeIds) {
+        return new ScheduleDay(day, date, storeIds, 1000d, 600d, 300d);
+    }
+
     /**
      * Builds candidates referencing the given 1-based attachment indices (round-robin), leaving
      * {@code sourceAttachmentId} blank - exactly how a model using the preferred index-based
@@ -788,29 +1071,35 @@ class StoreAuditDatasetServiceTest {
 
     private static final class MutableClock extends Clock {
 
-        private Instant instant;
+        private final AtomicReference<Instant> instant;
+        private final ZoneId zone;
 
         private MutableClock(Instant instant) {
+            this(new AtomicReference<>(instant), ZoneOffset.UTC);
+        }
+
+        private MutableClock(AtomicReference<Instant> instant, ZoneId zone) {
             this.instant = instant;
+            this.zone = zone;
         }
 
         private void advance(Duration duration) {
-            instant = instant.plus(duration);
+            instant.updateAndGet(current -> current.plus(duration));
         }
 
         @Override
-        public ZoneOffset getZone() {
-            return ZoneOffset.UTC;
+        public ZoneId getZone() {
+            return zone;
         }
 
         @Override
-        public Clock withZone(java.time.ZoneId zone) {
-            return this;
+        public Clock withZone(ZoneId zone) {
+            return new MutableClock(instant, zone);
         }
 
         @Override
         public Instant instant() {
-            return instant;
+            return instant.get();
         }
     }
 

@@ -1,6 +1,7 @@
 package com.jarvis.api.controller;
 
 import com.jarvis.common.dto.ChatRequest;
+import com.jarvis.common.auth.CurrentUserContext;
 import org.springframework.stereotype.Component;
 
 import java.time.Clock;
@@ -30,7 +31,10 @@ class PendingChatStreamStore {
     private final Clock clock;
     private final Duration ttl;
 
-    private record Entry(ChatRequest request, Instant expiresAt) {
+    record PendingChatRequest(ChatRequest request, String userId) {
+    }
+
+    private record Entry(ChatRequest request, String userId, Instant expiresAt) {
     }
 
     PendingChatStreamStore() {
@@ -51,7 +55,7 @@ class PendingChatStreamStore {
     String store(ChatRequest request) {
         sweepExpired();
         String token = UUID.randomUUID().toString();
-        pending.put(token, new Entry(request, clock.instant().plus(ttl)));
+        pending.put(token, new Entry(request, CurrentUserContext.requiredUserId(), clock.instant().plus(ttl)));
         return token;
     }
 
@@ -61,12 +65,12 @@ class PendingChatStreamStore {
      * @param token correlation token
      * @return the held request, or empty when the token is unknown, expired, or already consumed
      */
-    Optional<ChatRequest> consume(String token) {
+    Optional<PendingChatRequest> consume(String token) {
         Entry entry = pending.remove(token);
         if (entry == null || clock.instant().isAfter(entry.expiresAt())) {
             return Optional.empty();
         }
-        return Optional.of(entry.request());
+        return Optional.of(new PendingChatRequest(entry.request(), entry.userId()));
     }
 
     private void sweepExpired() {

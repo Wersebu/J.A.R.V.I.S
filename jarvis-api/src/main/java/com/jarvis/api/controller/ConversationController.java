@@ -129,6 +129,9 @@ public class ConversationController {
         if (request.archived() != null) {
             conversationRepository.setArchived(conversationId, request.archived());
         }
+        if (request.folderId() != null) {
+            conversationRepository.moveToFolder(conversationId, request.folderId());
+        }
         return conversationRepository.find(conversationId)
                 .map(ConversationResponse::from)
                 .map(ResponseEntity::ok)
@@ -177,6 +180,7 @@ public class ConversationController {
      */
     public record ConversationResponse(
             String id,
+            String folderId,
             String title,
             Instant createdAt,
             Instant updatedAt,
@@ -184,8 +188,20 @@ public class ConversationController {
             String lastModel,
             String titleSource
     ) {
+        public ConversationResponse(
+                String id,
+                String title,
+                Instant createdAt,
+                Instant updatedAt,
+                boolean archived,
+                String lastModel,
+                String titleSource
+        ) {
+            this(id, "", title, createdAt, updatedAt, archived, lastModel, titleSource);
+        }
+
         private static ConversationResponse from(ConversationRecord record) {
-            return new ConversationResponse(record.id(), record.title(), record.createdAt(),
+            return new ConversationResponse(record.id(), record.folderId(), record.title(), record.createdAt(),
                     record.updatedAt(), record.archived(), record.lastModel(), record.titleSource());
         }
     }
@@ -196,7 +212,10 @@ public class ConversationController {
      * @param title new title, ignored when null/blank
      * @param archived new archived state, ignored when null
      */
-    public record ConversationPatchRequest(String title, Boolean archived) {
+    public record ConversationPatchRequest(String title, Boolean archived, String folderId) {
+        public ConversationPatchRequest(String title, Boolean archived) {
+            this(title, archived, null);
+        }
     }
 
     /**

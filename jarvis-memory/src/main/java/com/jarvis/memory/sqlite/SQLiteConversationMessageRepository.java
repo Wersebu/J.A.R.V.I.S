@@ -4,6 +4,7 @@ import com.jarvis.common.memory.ConversationMessage;
 import com.jarvis.common.memory.ConversationMessageStatus;
 import com.jarvis.common.memory.ConversationMessageType;
 import com.jarvis.common.memory.MessageRole;
+import com.jarvis.common.auth.CurrentUserContext;
 import org.springframework.stereotype.Repository;
 
 import java.sql.Connection;
@@ -47,18 +48,19 @@ public class SQLiteConversationMessageRepository implements com.jarvis.memory.co
             long sequenceNumber = message.sequenceNumber() > 0L ? message.sequenceNumber() : nextSequence(connection, conversationId);
             try (PreparedStatement insert = connection.prepareStatement("""
                     INSERT OR IGNORE INTO conversation_messages
-                    (id, conversation_id, request_id, sequence_number, role, message_type, content, created_at, status, metadata_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')
+                    (id, conversation_id, user_id, request_id, sequence_number, role, message_type, content, created_at, status, metadata_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')
                     """)) {
                 insert.setString(1, message.id().toString());
                 insert.setString(2, conversationId);
-                insert.setString(3, message.requestId());
-                insert.setLong(4, sequenceNumber);
-                insert.setString(5, message.role().name());
-                insert.setString(6, message.messageType().name());
-                insert.setString(7, message.content());
-                insert.setString(8, message.createdAt().toString());
-                insert.setString(9, message.status().name());
+                insert.setString(3, userId());
+                insert.setString(4, message.requestId());
+                insert.setLong(5, sequenceNumber);
+                insert.setString(6, message.role().name());
+                insert.setString(7, message.messageType().name());
+                insert.setString(8, message.content());
+                insert.setString(9, message.createdAt().toString());
+                insert.setString(10, message.status().name());
                 insert.executeUpdate();
             }
         } catch (SQLException exception) {
@@ -70,9 +72,10 @@ public class SQLiteConversationMessageRepository implements com.jarvis.memory.co
         try (PreparedStatement statement = connection.prepareStatement("""
                 SELECT COALESCE(MAX(sequence_number), 0) + 1
                 FROM conversation_messages
-                WHERE conversation_id = ?
+                WHERE conversation_id = ? AND user_id = ?
                 """)) {
             statement.setString(1, conversationId);
+            statement.setString(2, userId());
             try (ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next() ? resultSet.getLong(1) : 1L;
             }
@@ -86,10 +89,11 @@ public class SQLiteConversationMessageRepository implements com.jarvis.memory.co
              PreparedStatement statement = connection.prepareStatement("""
                      SELECT id, conversation_id, request_id, role, content, created_at, sequence_number, message_type, status
                      FROM conversation_messages
-                     WHERE conversation_id = ?
+                     WHERE conversation_id = ? AND user_id = ?
                      ORDER BY sequence_number ASC, datetime(created_at) ASC
                      """)) {
             statement.setString(1, conversationId);
+            statement.setString(2, userId());
             try (ResultSet resultSet = statement.executeQuery()) {
                 while (resultSet.next()) {
                     messages.add(new ConversationMessage(
@@ -115,8 +119,9 @@ public class SQLiteConversationMessageRepository implements com.jarvis.memory.co
     public int countMessages(String conversationId) {
         try (Connection connection = connectionFactory.openConnection();
              PreparedStatement statement = connection.prepareStatement(
-                     "SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = ?")) {
+                     "SELECT COUNT(*) FROM conversation_messages WHERE conversation_id = ? AND user_id = ?")) {
             statement.setString(1, conversationId);
+            statement.setString(2, userId());
             try (ResultSet resultSet = statement.executeQuery()) {
                 return resultSet.next() ? resultSet.getInt(1) : 0;
             }
@@ -129,8 +134,9 @@ public class SQLiteConversationMessageRepository implements com.jarvis.memory.co
     public int deleteAll(String conversationId) {
         try (Connection connection = connectionFactory.openConnection();
              PreparedStatement statement = connection.prepareStatement(
-                     "DELETE FROM conversation_messages WHERE conversation_id = ?")) {
+                     "DELETE FROM conversation_messages WHERE conversation_id = ? AND user_id = ?")) {
             statement.setString(1, conversationId);
+            statement.setString(2, userId());
             return statement.executeUpdate();
         } catch (SQLException exception) {
             throw new IllegalStateException("Could not delete durable conversation messages", exception);
@@ -151,5 +157,9 @@ public class SQLiteConversationMessageRepository implements com.jarvis.memory.co
         } catch (IllegalArgumentException exception) {
             return ConversationMessageStatus.FINAL;
         }
+    }
+
+    private String userId() {
+        return CurrentUserContext.requiredUserId();
     }
 }

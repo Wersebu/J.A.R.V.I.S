@@ -41,7 +41,10 @@ import com.jarvis.tools.schema.ToolRegistry;
 import com.jarvis.tools.schema.ToolSafetyLevel;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -340,7 +343,8 @@ class NativeToolLoopServiceCanonicalDatasetIdentityTest {
     // SCHEDULED with every one of the 23 records intact.
     @Test
     void fullTwentyThreeRecordWorkflowReachesScheduledDespiteOneFabricatedDatasetIdMidway() {
-        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus(),
+                Clock.fixed(Instant.parse("2026-06-01T10:00:00Z"), ZoneOffset.UTC));
         StoreDatasetTool storeDatasetTool = new StoreDatasetTool(datasetService);
         LocationTool locationTool = new LocationTool(new AlwaysResolvingGeocodingClient(), new UnusedRoutingClient(), LOCATION_PROPERTIES, datasetService);
         datasetService.registerAttachments("request-1", "conversation-1", List.of());
@@ -360,6 +364,8 @@ class NativeToolLoopServiceCanonicalDatasetIdentityTest {
         turns.add(toolCallTurn("knowledge__read_document", Map.of("path", WORKFLOW_DOCUMENT_PATH)));
         turns.add(verifyAllTurn());
         turns.add(toolCallTurn("location__geocode_dataset", Map.of()));
+        turns.add(toolCallTurn("storedataset__set_preferences", Map.of(
+                "year", 2026, "month", 6, "preferredDaysOfWeek", List.of("TUESDAY", "WEDNESDAY"))));
         turns.add(submitScheduleTurn());
         turns.add(textTurn("Oto gotowy grafik na 23 sklepy."));
         ScriptedProvider provider = new ScriptedProvider(turns);
@@ -679,7 +685,8 @@ class NativeToolLoopServiceCanonicalDatasetIdentityTest {
         private List<Map<String, Object>> oneDaySchedule(String datasetId) {
             StoreAuditDataset dataset = datasetService.getDataset(datasetId).orElseThrow();
             List<String> ids = dataset.stores().stream().map(record -> record.id()).toList();
-            return List.of(Map.of("day", 1, "storeIds", ids));
+            return List.of(Map.of("day", 1, "date", "2026-06-02", "storeIds", ids,
+                    "routeDistanceMeters", 42000d, "routeDurationSeconds", 5400d, "auditDurationSeconds", 7200d));
         }
     }
 

@@ -35,6 +35,9 @@ import com.jarvis.tools.schema.ToolRegistry;
 import com.jarvis.tools.schema.ToolSafetyLevel;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
@@ -56,6 +59,8 @@ class NativeToolLoopServiceReentrantWorkflowTest {
 
     private static final String MISPLACED_TOOL_REQUEST =
             "{\"type\":\"TOOL_REQUEST\",\"goal\":\"Geocode the extracted store addresses\",\"reason\":\"Need coordinates.\"}";
+    // A fixed "today" (a Monday) so SUBMIT_SCHEDULE's date validation is fully deterministic.
+    private static final Instant FIXED_NOW = Instant.parse("2026-06-01T10:00:00Z");
 
     // The exact reported class of bug: extraction -> dataset -> the model writes a TOOL_REQUEST
     // envelope as plain text instead of calling a tool -> a premature "done" answer while the
@@ -63,7 +68,8 @@ class NativeToolLoopServiceReentrantWorkflowTest {
     // the loop, and only the genuine final answer (after SUBMIT_SCHEDULE is accepted) must win.
     @Test
     void theLoopRecoversFromATextToolRequestAndAnIncompleteWorkflowBeforeAcceptingTheFinalAnswer() {
-        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus(),
+                Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
         StoreDatasetTool storeDatasetTool = new StoreDatasetTool(datasetService);
         // In production, ToolCallingStage.execute() registers the current message's real
         // attachment ids (and owning conversation) before the tool loop runs at all - this test
@@ -90,6 +96,8 @@ class NativeToolLoopServiceReentrantWorkflowTest {
                 Map.of("recordIndex", 3, "status", "VERIFIED")))));
         // No datasetId - Core auto-targets the active canonical Store Audit dataset.
         turns.add(toolCallTurn("location__geocode_dataset", Map.of()));
+        turns.add(toolCallTurn("storedataset__set_preferences", Map.of(
+                "year", 2026, "month", 6, "preferredDaysOfWeek", List.of("TUESDAY", "WEDNESDAY"))));
         turns.add(textTurn("Oto harmonogram wizyt."));  // premature - dataset not yet scheduled
         turns.add(toolCallTurn("storedataset__submit_schedule", Map.of()));
         turns.add(textTurn("Oto ostateczny harmonogram wizyt."));
@@ -133,7 +141,8 @@ class NativeToolLoopServiceReentrantWorkflowTest {
     // same re-entrant loop and completion gate exactly like the one-shot CREATE_DATASET path does.
     @Test
     void theLoopCompletesAWorkflowBuiltIncrementallyViaStartAppendFinalize() {
-        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus(),
+                Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
         StoreDatasetTool storeDatasetTool = new StoreDatasetTool(datasetService);
         datasetService.registerAttachments("request-1", "conversation-1", List.of());
 
@@ -157,6 +166,8 @@ class NativeToolLoopServiceReentrantWorkflowTest {
                 Map.of("recordIndex", 3, "status", "VERIFIED")))));
         turns.add(toolCallTurn("knowledge__read_document", Map.of("path", "Work/Scheduling/StoreAuditScheduleWorkflow.md")));
         turns.add(toolCallTurn("location__geocode_dataset", Map.of()));
+        turns.add(toolCallTurn("storedataset__set_preferences", Map.of(
+                "year", 2026, "month", 6, "preferredDaysOfWeek", List.of("TUESDAY", "WEDNESDAY"))));
         turns.add(toolCallTurn("storedataset__submit_schedule", Map.of()));
         turns.add(textTurn("Oto harmonogram wizyt zbudowany przyrostowo."));
 
@@ -347,6 +358,12 @@ class NativeToolLoopServiceReentrantWorkflowTest {
                         new ToolArgumentDefinition("datasetId", "string", true, "Dataset id"),
                         new ToolArgumentDefinition("verifications", "array", true, "Verifications")
                 ), true, ToolSafetyLevel.WRITE),
+                new ToolOperationDefinition("SET_PREFERENCES", "Set scheduling preferences.", List.of(
+                        new ToolArgumentDefinition("datasetId", "string", false, "Dataset id"),
+                        new ToolArgumentDefinition("year", "number", false, "Year"),
+                        new ToolArgumentDefinition("month", "number", true, "Month"),
+                        new ToolArgumentDefinition("preferredDaysOfWeek", "array", false, "Preferred days")
+                ), true, ToolSafetyLevel.WRITE),
                 new ToolOperationDefinition("SUBMIT_SCHEDULE", "Submit schedule.", List.of(
                         new ToolArgumentDefinition("datasetId", "string", true, "Dataset id"),
                         new ToolArgumentDefinition("days", "array", true, "Days")
@@ -382,6 +399,12 @@ class NativeToolLoopServiceReentrantWorkflowTest {
                 new ToolOperationDefinition("VERIFY_DATASET", "Verify dataset.", List.of(
                         new ToolArgumentDefinition("datasetId", "string", true, "Dataset id"),
                         new ToolArgumentDefinition("verifications", "array", true, "Verifications")
+                ), true, ToolSafetyLevel.WRITE),
+                new ToolOperationDefinition("SET_PREFERENCES", "Set scheduling preferences.", List.of(
+                        new ToolArgumentDefinition("datasetId", "string", false, "Dataset id"),
+                        new ToolArgumentDefinition("year", "number", false, "Year"),
+                        new ToolArgumentDefinition("month", "number", true, "Month"),
+                        new ToolArgumentDefinition("preferredDaysOfWeek", "array", false, "Preferred days")
                 ), true, ToolSafetyLevel.WRITE),
                 new ToolOperationDefinition("SUBMIT_SCHEDULE", "Submit schedule.", List.of(
                         new ToolArgumentDefinition("datasetId", "string", true, "Dataset id"),
@@ -566,7 +589,8 @@ class NativeToolLoopServiceReentrantWorkflowTest {
             StoreAuditDataset dataset = datasetService.getDataset(datasetId).orElseThrow();
             List<String> ids = dataset.stores().stream().map(record -> record.id()).toList();
             java.util.Map<String, Object> arguments = new java.util.HashMap<>(request.arguments());
-            arguments.put("days", List.of(Map.of("day", 1, "storeIds", ids)));
+            arguments.put("days", List.of(Map.of("day", 1, "date", "2026-06-02", "storeIds", ids,
+                    "routeDistanceMeters", 10000d, "routeDurationSeconds", 1200d, "auditDurationSeconds", 1800d)));
             return new ToolRequest(request.toolName(), request.operation(), request.conversationId(), request.requestId(),
                     request.reason(), request.reasoningSummary(), arguments);
         }

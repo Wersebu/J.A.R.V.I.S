@@ -469,12 +469,15 @@ STORE AUDIT REQUEST
 -> CONFIRM DATASET WAS ACCEPTED
 -> VERIFY DATASET AGAINST SOURCE
 -> VERIFY_DATASET
+-> ASK ABOUT SCHEDULING PREFERENCES (days, distribution) UNLESS ALREADY STATED
+-> SET_PREFERENCES
 -> LOAD Work/Scheduling/StoreAuditScheduleWorkflow.md
 -> GEOCODE_DATASET
--> APPLY WORKFLOW PLANNING RULES
--> CREATE DAY-BY-DAY GROUPING
+-> APPLY WORKFLOW PLANNING RULES (see the canonical document for the full rules)
+-> COMPUTE EACH DAY'S CLOSED ROUTE (location.OPTIMIZE_ROUTE, returnToStart=true)
+-> CREATE DAY-BY-DAY GROUPING WITH REAL DATES
 -> SUBMIT_SCHEDULE
--> PRESENT PRELIMINARY TABLE TO USER
+-> PRESENT FINAL TABLE TO USER
 
 Every arrow represents a required workflow stage.
 
@@ -482,6 +485,15 @@ Do not proceed to geographic planning before the canonical dataset exists.
 
 Do not present a finished schedule before `storeDataset.SUBMIT_SCHEDULE`
 has been successfully accepted by Core.
+
+The "ASK ABOUT SCHEDULING PREFERENCES" step is the one legitimate point in
+this pipeline where you stop and wait for the user's answer instead of
+calling another tool - unlike every other arrow above, it is not a
+technical step you push through silently. Skip it only when the user's own
+message already stated unambiguous preferences. See the canonical document
+(`Work/Scheduling/StoreAuditScheduleWorkflow.md`) for the exact defaults,
+the three distribution strategies, and how to handle a borderline planning
+decision (`storeDataset.REQUEST_USER_INPUT`).
 
 # ============================================================
 
@@ -894,14 +906,30 @@ Do not invent coordinates.
 
 # ============================================================
 
-Once the dataset is geolocated, apply the rules from:
+Before geolocation/planning, resolve scheduling preferences (which days,
+how audits are spread across the month) with the user - see section 14's
+pipeline and the canonical document for the exact defaults and the three
+distribution strategies (beginning of month / end of month / even). Record
+the resolved preferences through:
+
+storeDataset.SET_PREFERENCES
+
+`year` defaults to the current system year when omitted - never hardcode
+or guess a year. Rejected if the resulting month has already passed.
+
+Once the dataset is geolocated, apply the planning rules from:
 
 Work/Scheduling/StoreAuditScheduleWorkflow.md
 
 Use the canonical geolocated records as the source of truth.
 
 Create the practical day-by-day schedule according to the workflow's
-priorities.
+priorities, with a real calendar date assigned to each day (computed
+against a real calendar, never guessed) and a full closed-route distance/
+duration for each day - use `location.OPTIMIZE_ROUTE` with
+`returnToStart=true` starting from the geocoded fixed start point, so the
+result covers the whole day trip (start -> stops -> back to start), not
+merely the distance between stores.
 
 Every canonical store record must be assigned to exactly one proposed
 work day.
@@ -912,6 +940,12 @@ No record may be:
 * scheduled twice,
 * replaced with another address,
 * or invented.
+
+For a borderline planning tradeoff the workflow document says to ask the
+user about (e.g. a daily-limit tradeoff), call
+`storeDataset.REQUEST_USER_INPUT(kind=AWAITING_DECISION, reason=...)`
+before stopping to ask - this records the pause as a legitimate, tracked
+decision point rather than an abandoned task.
 
 When the proposed grouping is complete, submit it through:
 
@@ -924,6 +958,13 @@ internal record id itself - you never need to know or copy that id's
 format. An out-of-range `storeIndex` rejects the whole call outright
 with the valid range - never guess or clamp one.
 
+Each day also requires: `date` (ISO `YYYY-MM-DD`), `routeDistanceMeters`
+and `routeDurationSeconds` (the day's full closed route, from
+`OPTIMIZE_ROUTE`), and `auditDurationSeconds` (estimated total audit time
+for that day's stores). Core derives the day of week from `date` itself -
+never supply it separately, and never invent a date outside the agreed
+planning window or in the past.
+
 The submission must cover every store record exactly once.
 
 If Core rejects the schedule because of:
@@ -931,6 +972,9 @@ If Core rejects the schedule because of:
 * missing records,
 * duplicate records,
 * unknown/invented references,
+* an invalid/out-of-window/past date,
+* an empty day,
+* a negative distance/duration value,
 
 correct the grouping and submit it again.
 
@@ -941,30 +985,27 @@ correct the grouping and submit it again.
 # ============================================================
 
 Only after `storeDataset.SUBMIT_SCHEDULE` has been successfully accepted
-may the schedule be presented as a complete preliminary Store Audit plan.
+may the schedule be presented as a complete, confirmed Store Audit plan -
+never before, and never if geocoding or routing failed for any store.
 
-Present the schedule as a clear table whenever practical.
+Present the schedule as a simple table, one row per store:
 
-Prefer:
+| Data | Dzień tygodnia | Sieć | Adres |
+| ---- | -------------- | ---- | ----- |
 
-| Dzień | Kolejność wizyt | Biedronka | Inne | Audyty | Trasa / dystans | Uwagi |
-| ----- | --------------- | --------- | ---- | ------ | --------------- | ----- |
-| 1     | ...             | ...       | ...  | ...    | ...             | ...   |
+Do not add a visit-order/sequence column. Pull dates, chains, and
+addresses only from the canonical `storeDataset` - never reconstruct or
+guess them.
 
-The user-facing result should make it easy to see:
-
-* proposed number of work days,
-* stores assigned to each day,
-* visit order,
-* number of Biedronka stores,
-* number of short-audit stores,
-* workload,
-* route or distance information when available,
-* exceptional or borderline days.
+Below the table, include a summary: number of working days, total number
+of audits, total kilometers, and estimated total work time (travel + time
+between stops + audit time + return trip, for every day combined). A
+per-day summary (audits, full route distance, travel time, audit time,
+total time) is optional but welcome.
 
 Show the actual schedule before lengthy explanation.
 
-The normal stopping point is the completed preliminary schedule for
+The normal stopping point is the completed, accepted schedule for
 Damian's review.
 
 Do not automatically create calendar events or another final external
@@ -998,8 +1039,9 @@ Geolocation failure:
 -> retry geolocation
 
 Schedule validation failure:
--> inspect missing, duplicate or unknown/invented references
--> correct the grouping
+-> inspect missing, duplicate or unknown/invented references, or an
+   invalid/out-of-window/past date, empty day, or negative distance/duration
+-> correct the grouping and/or dates
 -> retry SUBMIT_SCHEDULE
 
 Ask Damian only when essential information genuinely cannot be recovered
@@ -1042,6 +1084,7 @@ The required lifecycle is:
 SOURCE
 -> DATASET
 -> VERIFY
+-> PREFERENCES
 -> WORKFLOW
 -> GEOLOCATION
 -> PLAN

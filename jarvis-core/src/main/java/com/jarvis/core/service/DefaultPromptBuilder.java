@@ -1,6 +1,7 @@
 package com.jarvis.core.service;
 
 import com.jarvis.api.service.TemporaryWorkspaceService;
+import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.context.KnowledgeContext;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.event.CognitiveEventBus;
@@ -14,6 +15,9 @@ import com.jarvis.common.prompt.PromptDebugResult;
 import com.jarvis.common.prompt.ResponseMode;
 import com.jarvis.common.prompt.SystemPromptService;
 import com.jarvis.core.workspace.TemporaryWorkspaceProperties;
+import com.jarvis.memory.auth.JarvisAuthRepository;
+import com.jarvis.memory.conversation.ConversationRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -37,6 +41,8 @@ public class DefaultPromptBuilder implements PromptBuilder {
     private final CognitiveEventBus cognitiveEventBus;
     private final TemporaryWorkspaceService temporaryWorkspaceService;
     private final TemporaryWorkspaceProperties workspaceProperties;
+    private final JarvisAuthRepository authRepository;
+    private final ConversationRepository conversationRepository;
     private final Clock clock;
 
     /**
@@ -45,17 +51,31 @@ public class DefaultPromptBuilder implements PromptBuilder {
      * @param systemPromptService system prompt service
      * @param cognitiveEventBus cognitive event bus
      */
+    @Autowired
+    public DefaultPromptBuilder(
+            SystemPromptService systemPromptService,
+            CognitiveEventBus cognitiveEventBus,
+            TemporaryWorkspaceService temporaryWorkspaceService,
+            TemporaryWorkspaceProperties workspaceProperties,
+            JarvisAuthRepository authRepository,
+            ConversationRepository conversationRepository
+    ) {
+        this.systemPromptService = systemPromptService;
+        this.cognitiveEventBus = cognitiveEventBus;
+        this.temporaryWorkspaceService = temporaryWorkspaceService;
+        this.workspaceProperties = workspaceProperties;
+        this.authRepository = authRepository;
+        this.conversationRepository = conversationRepository;
+        this.clock = Clock.systemDefaultZone();
+    }
+
     public DefaultPromptBuilder(
             SystemPromptService systemPromptService,
             CognitiveEventBus cognitiveEventBus,
             TemporaryWorkspaceService temporaryWorkspaceService,
             TemporaryWorkspaceProperties workspaceProperties
     ) {
-        this.systemPromptService = systemPromptService;
-        this.cognitiveEventBus = cognitiveEventBus;
-        this.temporaryWorkspaceService = temporaryWorkspaceService;
-        this.workspaceProperties = workspaceProperties;
-        this.clock = Clock.systemDefaultZone();
+        this(systemPromptService, cognitiveEventBus, temporaryWorkspaceService, workspaceProperties, null, null);
     }
 
     /**
@@ -85,13 +105,15 @@ public class DefaultPromptBuilder implements PromptBuilder {
         CognitiveMemoryContext memory = memoryContext == null ? CognitiveMemoryContext.empty() : memoryContext;
         PromptContext sources = promptContext == null ? PromptContext.empty() : promptContext;
         String systemPrompt = systemPrompt();
+        String userGlobalPrompt = userGlobalPrompt();
+        String folderSystemPrompt = folderSystemPrompt(request);
         String groundingPolicy = groundingPolicy(sources);
         String sourceManifest = sourceManifest(sources);
         String conversationPrompt = conversationBlock(sources);
         String knowledge = knowledgeBlock(context);
         String attachments = attachmentBlock(request);
         String userPrompt = userPrompt(request);
-        String finalPrompt = systemPrompt + groundingPolicy + sourceManifest + conversationPrompt + knowledge + attachments + userPrompt;
+        String finalPrompt = systemPrompt + userGlobalPrompt + folderSystemPrompt + groundingPolicy + sourceManifest + conversationPrompt + knowledge + attachments + userPrompt;
         long conversationMessages = countSources(sources, GroundingSourceType.CONVERSATION);
         LOGGER.info("[JARVIS] Prompt size={} conversationContextItems={} knowledgeSources={} charactersInjected={} estimatedTokens={}",
                 finalPrompt.length(),
@@ -116,16 +138,72 @@ public class DefaultPromptBuilder implements PromptBuilder {
     public PromptDebugResult buildDebugPrompt(ChatRequest request, KnowledgeContext knowledgeContext) {
         KnowledgeContext context = knowledgeContext == null ? KnowledgeContext.empty() : knowledgeContext;
         String systemPrompt = systemPrompt();
+        String userGlobalPrompt = userGlobalPrompt();
+        String folderSystemPrompt = folderSystemPrompt(request);
         String knowledge = knowledgeBlock(context);
         String attachments = attachmentBlock(request);
         String userPrompt = userPrompt(request);
-        String finalPrompt = systemPrompt + knowledge + attachments + userPrompt;
+        String finalPrompt = systemPrompt + userGlobalPrompt + folderSystemPrompt + knowledge + attachments + userPrompt;
         LOGGER.info("[JARVIS] Prompt size={} knowledgeSources={} charactersInjected={} estimatedTokens={}",
                 finalPrompt.length(),
                 context.sourceCount(),
                 context.totalCharacters(),
                 context.estimatedTokens());
-        return new PromptDebugResult(systemPrompt, knowledge, userPrompt, finalPrompt);
+        return new PromptDebugResult(systemPrompt, userGlobalPrompt, folderSystemPrompt, knowledge, userPrompt, finalPrompt);
+    }
+
+    private String userGlobalPrompt() {
+        if (authRepository == null || CurrentUserContext.currentUserId().isEmpty()) {
+            return "";
+        }
+        String prompt = limit(authRepository.settings(CurrentUserContext.requiredUserId()).globalPrompt(), 8_000);
+        if (prompt.isBlank()) {
+            return "";
+        }
+        return """
+                === USER GLOBAL PROMPT ===
+
+                The following user-level instructions apply to this authenticated user.
+                They are lower priority than Core system instructions and higher priority than ordinary chat history.
+
+                %s
+
+                === END USER GLOBAL PROMPT ===
+
+                """.formatted(prompt);
+    }
+
+    private String folderSystemPrompt(ChatRequest request) {
+        if (authRepository == null || conversationRepository == null || request == null
+                || request.conversationId() == null || request.conversationId().isBlank()) {
+            return "";
+        }
+        return conversationRepository.find(request.conversationId())
+                .flatMap(record -> record.folderId().isBlank()
+                        ? java.util.Optional.<String>empty()
+                        : authRepository.folder(CurrentUserContext.requiredUserId(), record.folderId())
+                        .map(folder -> limit(folder.systemPrompt(), 8_000)))
+                .filter(prompt -> !prompt.isBlank())
+                .map(prompt -> """
+                        === FOLDER SYSTEM PROMPT ===
+
+                        The following folder-level instructions apply only to conversations in this folder.
+                        They are lower priority than Core and user-global instructions.
+
+                        %s
+
+                        === END FOLDER SYSTEM PROMPT ===
+
+                        """.formatted(prompt))
+                .orElse("");
+    }
+
+    private String limit(String value, int maxCharacters) {
+        String normalized = value == null ? "" : value.strip();
+        if (normalized.length() <= maxCharacters) {
+            return normalized;
+        }
+        return normalized.substring(0, maxCharacters);
     }
 
     private String conversationBlock(PromptContext promptContext) {

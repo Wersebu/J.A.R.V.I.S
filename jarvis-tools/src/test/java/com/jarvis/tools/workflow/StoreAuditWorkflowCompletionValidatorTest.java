@@ -5,17 +5,27 @@ import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.tools.dataset.CandidateRecord;
+import com.jarvis.tools.dataset.DistributionStrategy;
 import com.jarvis.tools.dataset.GeolocationEntry;
 import com.jarvis.tools.dataset.GeolocationStatus;
 import com.jarvis.tools.dataset.ScheduleDay;
+import com.jarvis.tools.dataset.SchedulingPreferences;
 import com.jarvis.tools.dataset.StoreAuditDataset;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
 import com.jarvis.tools.dataset.StoreRecord;
 import com.jarvis.tools.dataset.VerificationEntry;
+import com.jarvis.tools.dataset.WorkflowPause;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.DayOfWeek;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -76,9 +86,13 @@ class StoreAuditWorkflowCompletionValidatorTest {
     // loop - not complete, and the guidance must name the document path.
     @Test
     void lockedStageWithRequiredDocumentNotLoadedIsNotComplete() {
-        StoreAuditDatasetService service = service();
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
         StoreAuditDataset dataset = verifyAll(service, service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3)).dataset());
         assertThat(dataset.stage()).isEqualTo(com.jarvis.tools.dataset.DatasetStage.LOCKED);
+        // Preferences must already be set - otherwise LOCKED-without-preferences is itself a
+        // legitimate pause (see lockedStageWithoutPreferencesIsALegitimatePauseNotAnError below),
+        // and this test wants to reach the document-not-loaded gate beyond that.
+        service.setPreferences(dataset.datasetId(), anyDayPreferences());
         StoreAuditWorkflowCompletionValidator validator = new StoreAuditWorkflowCompletionValidator(service);
         WorkflowCompletionContext context = new WorkflowCompletionContext(
                 "request-1", "conversation-1", true, dataset.datasetId(), false);
@@ -112,17 +126,57 @@ class StoreAuditWorkflowCompletionValidatorTest {
     // TEST 9: dataset stage=SCHEDULED - complete.
     @Test
     void scheduledStageIsComplete() {
-        StoreAuditDatasetService service = service();
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
         StoreAuditDataset locked = verifyAll(service, service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3)).dataset());
         List<GeolocationEntry> geolocations = locked.stores().stream()
                 .map(record -> new GeolocationEntry(record.id(), GeolocationStatus.RESOLVED, 52.0, 21.0)).toList();
         StoreAuditDataset geolocated = service.updateGeolocation(locked.datasetId(), geolocations).dataset();
+        service.setPreferences(geolocated.datasetId(), anyDayPreferences());
         List<String> ids = geolocated.stores().stream().map(StoreRecord::id).toList();
-        StoreAuditDataset scheduled = service.submitSchedule(geolocated.datasetId(), List.of(new ScheduleDay(1, ids))).dataset();
+        StoreAuditDataset scheduled = service.submitSchedule(geolocated.datasetId(),
+                List.of(new ScheduleDay(1, LocalDate.of(2026, 6, 2), ids, 1000d, 600d, 300d))).dataset();
         assertThat(scheduled.stage()).isEqualTo(com.jarvis.tools.dataset.DatasetStage.SCHEDULED);
         StoreAuditWorkflowCompletionValidator validator = new StoreAuditWorkflowCompletionValidator(service);
         WorkflowCompletionContext context = new WorkflowCompletionContext(
                 "request-1", "conversation-1", true, scheduled.datasetId(), true);
+
+        CompletionAssessment assessment = validator.assess(context);
+
+        assertThat(assessment.complete()).isTrue();
+    }
+
+    // NEW: dataset stage=LOCKED, preferences not yet set - this is the canonical, expected point to
+    // ask the user about scheduling preferences, so it must be treated as a legitimate pause, not an
+    // incomplete/blocked task, even though the required workflow document has also not been read yet.
+    @Test
+    void lockedStageWithoutPreferencesIsALegitimatePauseNotAnError() {
+        StoreAuditDatasetService service = service();
+        StoreAuditDataset dataset = verifyAll(service, service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3)).dataset());
+        assertThat(dataset.stage()).isEqualTo(com.jarvis.tools.dataset.DatasetStage.LOCKED);
+        assertThat(dataset.preferences()).isNull();
+        StoreAuditWorkflowCompletionValidator validator = new StoreAuditWorkflowCompletionValidator(service);
+        WorkflowCompletionContext context = new WorkflowCompletionContext(
+                "request-1", "conversation-1", true, dataset.datasetId(), false);
+
+        CompletionAssessment assessment = validator.assess(context);
+
+        assertThat(assessment.complete()).isTrue();
+    }
+
+    // NEW: an explicit REQUEST_USER_INPUT(kind=AWAITING_DECISION) pause lets the turn end with a
+    // genuine question even at a stage that would otherwise be rejected as incomplete.
+    @Test
+    void explicitAwaitingDecisionPauseIsNeverBlocked() {
+        StoreAuditDatasetService service = serviceAt(FIXED_NOW);
+        StoreAuditDataset locked = verifyAll(service, service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3)).dataset());
+        service.setPreferences(locked.datasetId(), anyDayPreferences());
+        List<GeolocationEntry> geolocations = locked.stores().stream()
+                .map(record -> new GeolocationEntry(record.id(), GeolocationStatus.RESOLVED, 52.0, 21.0)).toList();
+        StoreAuditDataset geolocated = service.updateGeolocation(locked.datasetId(), geolocations).dataset();
+        service.requestUserInput(geolocated.datasetId(), WorkflowPause.AWAITING_DECISION, "borderline daily limit tradeoff");
+        StoreAuditWorkflowCompletionValidator validator = new StoreAuditWorkflowCompletionValidator(service);
+        WorkflowCompletionContext context = new WorkflowCompletionContext(
+                "request-1", "conversation-1", true, geolocated.datasetId(), true);
 
         CompletionAssessment assessment = validator.assess(context);
 
@@ -147,8 +201,19 @@ class StoreAuditWorkflowCompletionValidatorTest {
         assertThat(assessment.reason()).isEqualTo("STORE_AUDIT_DATASET_NOT_SCHEDULED");
     }
 
+    private static final Instant FIXED_NOW = Instant.parse("2026-06-01T10:00:00Z");
+
     private StoreAuditDatasetService service() {
         return new StoreAuditDatasetService(new NoopCognitiveEventBus());
+    }
+
+    private StoreAuditDatasetService serviceAt(Instant now) {
+        return new StoreAuditDatasetService(new NoopCognitiveEventBus(), Clock.fixed(now, ZoneOffset.UTC));
+    }
+
+    private SchedulingPreferences anyDayPreferences() {
+        return new SchedulingPreferences(2026, 6, EnumSet.allOf(DayOfWeek.class), Set.of(),
+                DistributionStrategy.EVEN, null, null, false);
     }
 
     private StoreAuditDataset verifyAll(StoreAuditDatasetService service, StoreAuditDataset dataset) {

@@ -2,6 +2,7 @@ package com.jarvis.memory.sqlite;
 
 import com.jarvis.memory.cognitive.MemoryProperties;
 import com.jarvis.memory.conversation.ConversationRecord;
+import com.jarvis.common.auth.CurrentUserContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -116,5 +117,30 @@ class SQLiteConversationRepositoryTest {
         assertThat(record).isPresent();
         assertThat(record.get().createdAt()).isEqualTo(createdAt);
         assertThat(record.get().updatedAt()).isEqualTo(touchedAt);
+    }
+
+    @Test
+    void conversationsAreIsolatedPerAuthenticatedUser() {
+        Instant now = Instant.now().truncatedTo(ChronoUnit.SECONDS);
+
+        CurrentUserContext.runAs("user-a", () -> {
+            repository.createIfAbsent("conversation-a", now);
+            repository.rename("conversation-a", "User A conversation");
+        });
+        CurrentUserContext.runAs("user-b", () -> {
+            repository.createIfAbsent("conversation-b", now.plusSeconds(1));
+            repository.rename("conversation-b", "User B conversation");
+        });
+
+        CurrentUserContext.runAs("user-a", () -> {
+            assertThat(repository.find("conversation-a")).get().extracting(ConversationRecord::title).isEqualTo("User A conversation");
+            assertThat(repository.find("conversation-b")).isEmpty();
+            assertThat(repository.list()).extracting(ConversationRecord::title).containsExactly("User A conversation");
+        });
+        CurrentUserContext.runAs("user-b", () -> {
+            assertThat(repository.find("conversation-b")).get().extracting(ConversationRecord::title).isEqualTo("User B conversation");
+            assertThat(repository.find("conversation-a")).isEmpty();
+            assertThat(repository.list()).extracting(ConversationRecord::title).containsExactly("User B conversation");
+        });
     }
 }

@@ -8,8 +8,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.YearMonth;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -42,6 +46,12 @@ public class StoreAuditDatasetService {
     private static final Duration DATASET_TTL = Duration.ofHours(2);
     private static final Duration ATTACHMENT_REGISTRY_TTL = Duration.ofHours(2);
 
+    // The Store Audit business (Nowa Wola start point, audited chains) is Poland-based, so "today"
+    // for past-date/current-year scheduling validation is always evaluated in Poland's local
+    // calendar date, regardless of the server's own timezone - a plan submitted late at night UTC
+    // must never be rejected/accepted based on the wrong calendar day.
+    private static final ZoneId SCHEDULING_ZONE = ZoneId.of("Europe/Warsaw");
+
     private final Map<String, StoreAuditDataset> datasets = new ConcurrentHashMap<>();
     private final Map<String, AttachmentRegistration> attachmentsByRequest = new ConcurrentHashMap<>();
     private final CognitiveEventBus cognitiveEventBus;
@@ -57,7 +67,15 @@ public class StoreAuditDatasetService {
         this(cognitiveEventBus, Clock.systemUTC());
     }
 
-    StoreAuditDatasetService(CognitiveEventBus cognitiveEventBus, Clock clock) {
+    /**
+     * Creates the dataset service with an explicit {@link Clock} - used by tests needing
+     * deterministic "now" for TTL expiry and scheduling-date validation, and available for any
+     * caller needing the same.
+     *
+     * @param cognitiveEventBus event bus for dataset lifecycle diagnostics
+     * @param clock clock used for TTL expiry and scheduling-date validation
+     */
+    public StoreAuditDatasetService(CognitiveEventBus cognitiveEventBus, Clock clock) {
         this.cognitiveEventBus = cognitiveEventBus;
         this.clock = clock;
     }
@@ -299,7 +317,8 @@ public class StoreAuditDatasetService {
         String conversationId = conversationIdForRequest;
         StoreAuditDataset dataset = new StoreAuditDataset(
                 UUID.randomUUID().toString(), requestId, conversationId, effectiveAttachmentIds, sourceImageCount,
-                Math.max(expectedRecordCount, 0), accepted, accepted.size(), targetStage, List.of(), now, now.plus(DATASET_TTL));
+                Math.max(expectedRecordCount, 0), accepted, accepted.size(), targetStage, List.of(), null,
+                WorkflowPause.NONE, now, now.plus(DATASET_TTL));
         datasets.put(dataset.datasetId(), dataset);
 
         LOGGER.info("[STORE_AUDIT] requestId={} extraction pass1 count={} rejected={} duplicates={} stage={}",
@@ -814,11 +833,108 @@ public class StoreAuditDatasetService {
     }
 
     /**
+     * Records the user's resolved scheduling preferences (which days, how the audit days are
+     * spread across the month) against the dataset, so this decision is a typed, persisted fact
+     * the rest of the workflow references - never left only in the model's own free-text reasoning
+     * between the question and the final schedule. Clears any pending pause ({@link
+     * #requestUserInput}) - calling this is how the model reports the user actually answered.
+     *
+     * <p>{@code preferences.year()} defaults to the current year (evaluated in Poland's local
+     * calendar, see {@link #SCHEDULING_ZONE}) when not a positive value - callers must never guess
+     * or hardcode a year themselves. The resulting year/month must not already be entirely in the
+     * past.</p>
+     *
+     * @param datasetId dataset id
+     * @param preferences resolved preferences - {@code month} must be 1-12 and at least one
+     *         preferred or fallback day of week must be set
+     * @return outcome describing the accepted preferences, or why they were rejected
+     */
+    public PreferencesOutcome setPreferences(String datasetId, SchedulingPreferences preferences) {
+        sweepExpired();
+        StoreAuditDataset dataset = datasets.get(datasetId);
+        if (dataset == null) {
+            return new PreferencesOutcome(false, null, "Unknown or expired dataset id: " + datasetId, "STORE_DATASET_NOT_FOUND");
+        }
+        if (dataset.stage() == DatasetStage.BUILDING) {
+            return new PreferencesOutcome(false, dataset, "Dataset " + datasetId + " is still being built (stage=BUILDING). "
+                    + "Call storeDataset.FINALIZE_DATASET before setting scheduling preferences.", "STORE_DATASET_NOT_BUILDING");
+        }
+        if (preferences == null || preferences.month() < 1 || preferences.month() > 12) {
+            return new PreferencesOutcome(false, dataset,
+                    "Rejected: month must be 1-12 (got " + (preferences == null ? "none" : preferences.month()) + ").",
+                    "STORE_AUDIT_PREFERENCES_INVALID_MONTH");
+        }
+        LocalDate today = LocalDate.now(clock.withZone(SCHEDULING_ZONE));
+        int year = preferences.year() > 0 ? preferences.year() : today.getYear();
+        YearMonth target = YearMonth.of(year, preferences.month());
+        if (target.isBefore(YearMonth.from(today))) {
+            String message = "Rejected: " + target + " has already passed (today is " + today + "). Ask the user "
+                    + "whether to use a different month, or plan within whatever days remain in the current month.";
+            return new PreferencesOutcome(false, dataset, message, "STORE_AUDIT_PREFERENCES_MONTH_IN_PAST");
+        }
+        if (preferences.allowedDaysOfWeek().isEmpty()) {
+            return new PreferencesOutcome(false, dataset,
+                    "Rejected: at least one preferred or fallback day of week must be set.",
+                    "STORE_AUDIT_PREFERENCES_NO_DAYS");
+        }
+        SchedulingPreferences resolved = new SchedulingPreferences(year, preferences.month(), preferences.preferredDaysOfWeek(),
+                preferences.fallbackDaysOfWeek(), preferences.strategy(), preferences.explicitStartDate(),
+                preferences.explicitEndDate(), preferences.saturdayExplicitlyAllowed());
+        StoreAuditDataset updated = dataset.withPreferences(resolved);
+        datasets.put(datasetId, updated);
+        LOGGER.info("[STORE_AUDIT] requestId={} datasetId={} preferences set year={} month={} strategy={} preferredDays={} fallbackDays={} saturday={}",
+                dataset.requestId(), datasetId, year, preferences.month(), resolved.strategy(),
+                resolved.preferredDaysOfWeek(), resolved.fallbackDaysOfWeek(), resolved.saturdayExplicitlyAllowed());
+        String message = "Scheduling preferences set: " + target + ", strategy=" + resolved.strategy()
+                + ", preferred days=" + resolved.preferredDaysOfWeek() + ", fallback days=" + resolved.fallbackDaysOfWeek()
+                + (resolved.saturdayExplicitlyAllowed() ? ", Saturday explicitly allowed" : "") + ".";
+        return new PreferencesOutcome(true, updated, message, "");
+    }
+
+    /**
+     * Marks the dataset as legitimately paused awaiting a real decision from the user right now -
+     * e.g. a borderline daily-limit tradeoff the workflow document says to ask about - so {@link
+     * com.jarvis.tools.workflow.StoreAuditWorkflowCompletionValidator} lets this turn end with a
+     * genuine question instead of forcing more tool calls. Cleared automatically by any subsequent
+     * real mutation (verification, geolocation, preferences, schedule submission) - never survives
+     * genuine forward progress.
+     *
+     * @param datasetId dataset id
+     * @param pause the kind of pause to record - {@link WorkflowPause#NONE} is rejected, use a real
+     *         reason
+     * @param reason short human-readable reason, for traceability
+     * @return outcome describing the recorded pause, or why it could not be recorded
+     */
+    public PauseOutcome requestUserInput(String datasetId, WorkflowPause pause, String reason) {
+        sweepExpired();
+        StoreAuditDataset dataset = datasets.get(datasetId);
+        if (dataset == null) {
+            return new PauseOutcome(false, null, "Unknown or expired dataset id: " + datasetId, "STORE_DATASET_NOT_FOUND");
+        }
+        if (pause == null || pause == WorkflowPause.NONE) {
+            return new PauseOutcome(false, dataset, "Rejected: a real pause reason (AWAITING_PREFERENCES or "
+                    + "AWAITING_DECISION) is required.", "STORE_AUDIT_PAUSE_INVALID");
+        }
+        if (dataset.stage() == DatasetStage.BUILDING) {
+            return new PauseOutcome(false, dataset, "Dataset " + datasetId + " is still being built (stage=BUILDING). "
+                    + "Finish extraction before pausing for a scheduling decision.", "STORE_DATASET_NOT_BUILDING");
+        }
+        StoreAuditDataset updated = dataset.withPendingUserInput(pause);
+        datasets.put(datasetId, updated);
+        LOGGER.info("[STORE_AUDIT] requestId={} datasetId={} paused kind={} reason={}",
+                dataset.requestId(), datasetId, pause, reason);
+        return new PauseOutcome(true, updated, "Recorded pause: " + pause + ". Ask the user the question directly "
+                + "in this turn's final response, then continue once they answer.", "");
+    }
+
+    /**
      * Validates and applies a proposed day-by-day schedule against the locked dataset: every
      * canonical record id must appear in exactly one day - no missing store, no duplicate, no
-     * unknown/hallucinated id. Rejects the whole submission (applying nothing) otherwise, exactly
-     * the count-invariant guarantee this mechanism exists to enforce - a locked 23-record dataset
-     * can never silently turn into a "22 of 23" or "24 of 23" schedule presented as valid.
+     * unknown/hallucinated id - every day must have a real calendar date within the agreed planning
+     * window, no date in the past, no empty day, and no negative distance/duration. Rejects the
+     * whole submission (applying nothing) otherwise, exactly the count-invariant guarantee this
+     * mechanism exists to enforce - a locked 23-record dataset can never silently turn into a "22 of
+     * 23" or "24 of 23" schedule presented as valid.
      *
      * @param datasetId dataset id
      * @param days proposed day-by-day grouping
@@ -836,7 +952,16 @@ public class StoreAuditDatasetService {
                     "Dataset " + datasetId + " is still being built (stage=BUILDING, " + dataset.stores().size()
                             + " record(s) so far). Call storeDataset.FINALIZE_DATASET before submitting a schedule.");
         }
+        if (dataset.preferences() == null) {
+            return new ScheduleSubmitOutcome(false, dataset, false, List.of(), List.of(), List.of(),
+                    "Dataset " + datasetId + " has no scheduling preferences yet. Call storeDataset.SET_PREFERENCES "
+                            + "with the user's agreed days/distribution before submitting a schedule.");
+        }
         List<ScheduleDay> proposedDays = days == null ? List.of() : days;
+        Optional<ScheduleSubmitOutcome> dateViolation = validateScheduleDates(dataset, proposedDays);
+        if (dateViolation.isPresent()) {
+            return dateViolation.get();
+        }
         Set<String> knownIds = new LinkedHashSet<>();
         for (StoreRecord record : dataset.stores()) {
             knownIds.add(record.id());
@@ -906,6 +1031,68 @@ public class StoreAuditDatasetService {
                 ));
         return new ScheduleSubmitOutcome(true, scheduled, false, List.of(), List.of(), List.of(),
                 "Schedule accepted: " + proposedDays.size() + " day(s), " + seenKnown.size() + " store(s), each exactly once.");
+    }
+
+    /**
+     * Validates every day's real calendar date, before the record-id invariants are even checked:
+     * present, within the agreed planning window (the explicit range if the user gave one,
+     * otherwise the preferences' year/month), not in the past, the day itself not empty, and no
+     * negative distance/duration - each a hard, code-level check so the model's own arithmetic can
+     * never silently produce an impossible or out-of-window plan.
+     *
+     * @param dataset the dataset being scheduled - {@link StoreAuditDataset#preferences()} must
+     *         already be non-null (checked by the caller)
+     * @param proposedDays proposed day-by-day grouping
+     * @return a rejection outcome for the first violation found; empty when every day is valid
+     */
+    private Optional<ScheduleSubmitOutcome> validateScheduleDates(StoreAuditDataset dataset, List<ScheduleDay> proposedDays) {
+        SchedulingPreferences preferences = dataset.preferences();
+        LocalDate today = LocalDate.now(clock.withZone(SCHEDULING_ZONE));
+        LocalDate windowStart = preferences.hasExplicitRange() ? preferences.explicitStartDate() : null;
+        LocalDate windowEnd = preferences.hasExplicitRange() ? preferences.explicitEndDate() : null;
+        YearMonth targetMonth = YearMonth.of(preferences.year(), preferences.month());
+        for (ScheduleDay day : proposedDays) {
+            if (day.storeIds().isEmpty()) {
+                String message = "Schedule rejected: day " + day.day() + " has no stores assigned to it. Remove "
+                        + "empty days entirely rather than submitting them.";
+                return Optional.of(new ScheduleSubmitOutcome(false, dataset, false, List.of(), List.of(), List.of(), message));
+            }
+            if (day.date() == null) {
+                String message = "Schedule rejected: day " + day.day() + " has no date. Every scheduled day must "
+                        + "carry a real calendar date - compute it, never omit it.";
+                return Optional.of(new ScheduleSubmitOutcome(false, dataset, false, List.of(), List.of(), List.of(), message));
+            }
+            if (day.date().isBefore(today)) {
+                String message = "Schedule rejected: day " + day.day() + " is dated " + day.date() + ", which is "
+                        + "before today (" + today + "). Store Audit visits can never be scheduled in the past.";
+                return Optional.of(new ScheduleSubmitOutcome(false, dataset, false, List.of(), List.of(), List.of(), message));
+            }
+            boolean withinWindow = windowStart != null
+                    ? !day.date().isBefore(windowStart) && !day.date().isAfter(windowEnd)
+                    : YearMonth.from(day.date()).equals(targetMonth);
+            if (!withinWindow) {
+                String expected = windowStart != null ? windowStart + " .. " + windowEnd : targetMonth.toString();
+                String message = "Schedule rejected: day " + day.day() + " is dated " + day.date() + " ("
+                        + day.date().getDayOfWeek() + "), which falls outside the agreed planning window (" + expected
+                        + "). Call storeDataset.SET_PREFERENCES again if the window genuinely needs to change, "
+                        + "otherwise keep every date inside it.";
+                return Optional.of(new ScheduleSubmitOutcome(false, dataset, false, List.of(), List.of(), List.of(), message));
+            }
+            DayOfWeek dayOfWeek = day.date().getDayOfWeek();
+            if (!preferences.allowedDaysOfWeek().contains(dayOfWeek)) {
+                String message = "Schedule rejected: day " + day.day() + " is dated " + day.date() + ", a " + dayOfWeek
+                        + " - not one of the agreed days (" + preferences.allowedDaysOfWeek() + "). Only use a day "
+                        + "of week outside that set if the user explicitly agreed to it via SET_PREFERENCES.";
+                return Optional.of(new ScheduleSubmitOutcome(false, dataset, false, List.of(), List.of(), List.of(), message));
+            }
+            if (day.routeDistanceMeters() < 0 || day.routeDurationSeconds() < 0 || day.auditDurationSeconds() < 0) {
+                String message = "Schedule rejected: day " + day.day() + " has a negative distance/duration value - "
+                        + "routeDistanceMeters, routeDurationSeconds, and auditDurationSeconds must all be zero or "
+                        + "greater.";
+                return Optional.of(new ScheduleSubmitOutcome(false, dataset, false, List.of(), List.of(), List.of(), message));
+            }
+        }
+        return Optional.empty();
     }
 
     private int indexOf(List<StoreRecord> records, String recordId) {

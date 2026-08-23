@@ -195,6 +195,74 @@ class LocationToolTest {
         assertThat(result.data().get("optimizeBy")).isEqualTo("time");
     }
 
+    // NEW: returnToStart=true computes a full closed route (start -> every stop -> back to start),
+    // never just the open path between stops - e.g. a Store Audit day trip back to its fixed base.
+    @Test
+    void optimizeRouteWithReturnToStartIncludesTheClosedLoopTotals() {
+        FakeRoutingClient routingClient = new FakeRoutingClient();
+        Double[][] durations = {
+                {0d, 300d, 900d},
+                {300d, 0d, 400d},
+                {900d, 400d, 0d}
+        };
+        Double[][] distances = {
+                {0d, 3000d, 9000d},
+                {3000d, 0d, 4000d},
+                {9000d, 4000d, 0d}
+        };
+        routingClient.tableReturns(RouteMatrixResult.resolved(distances, durations));
+        LocationTool tool = new LocationTool(new FakeGeocodingClient(), routingClient, PROPERTIES, null);
+
+        ToolResult result = tool.execute(new ToolRequest("location", "OPTIMIZE_ROUTE", "conversation-1", "request-1", "", "",
+                Map.of(
+                        "start", Map.of("latitude", 52.0, "longitude", 20.9, "label", "Nowa Wola"),
+                        "stops", List.of(
+                                Map.of("latitude", 52.1, "longitude", 21.0, "label", "Sklep A"),
+                                Map.of("latitude", 52.2, "longitude", 21.1, "label", "Sklep B")),
+                        "returnToStart", true)));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.data().get("closedRoute")).isEqualTo(true);
+        // Open path (start->A->B) duration 300+400=700, distance 3000+4000=7000; closed loop adds
+        // the return leg B->start: duration 900, distance 9000.
+        assertThat(result.data().get("totalDurationSeconds")).isEqualTo(1600d);
+        assertThat(result.data().get("totalDistanceMeters")).isEqualTo(16000d);
+        List<?> legs = (List<?>) result.data().get("legs");
+        assertThat(legs).hasSize(3); // start->A, A->B, B->start
+    }
+
+    // NEW: when the return leg back to the start point cannot be resolved, the tool falls back to
+    // an open route rather than fabricating a return-leg distance/duration.
+    @Test
+    void optimizeRouteWithReturnToStartFallsBackToOpenRouteWhenReturnLegUnresolved() {
+        FakeRoutingClient routingClient = new FakeRoutingClient();
+        // Distances are fully resolved (so the stop is reachable for optimization purposes), but
+        // the return-leg DURATION (stop -> start) is unresolved - the fallback must trigger on
+        // either matrix being unresolved, not fabricate a return-leg duration.
+        Double[][] durations = {
+                {0d, 300d},
+                {null, 0d}
+        };
+        Double[][] distances = {
+                {0d, 3000d},
+                {3000d, 0d}
+        };
+        routingClient.tableReturns(RouteMatrixResult.resolved(distances, durations));
+        LocationTool tool = new LocationTool(new FakeGeocodingClient(), routingClient, PROPERTIES, null);
+
+        ToolResult result = tool.execute(new ToolRequest("location", "OPTIMIZE_ROUTE", "conversation-1", "request-1", "", "",
+                Map.of(
+                        "start", Map.of("latitude", 52.0, "longitude", 20.9),
+                        "stops", List.of(Map.of("latitude", 52.1, "longitude", 21.0)),
+                        "optimize", "distance",
+                        "returnToStart", true)));
+
+        assertThat(result.success()).isTrue();
+        assertThat(result.data().get("closedRoute")).isEqualTo(false);
+        assertThat(result.data().get("totalDurationSeconds")).isEqualTo(300d);
+        assertThat((List<?>) result.data().get("warnings")).isNotEmpty();
+    }
+
     @Test
     void optimizeRouteReportsPartialSuccessWhenOneStopFailsToGeocode() {
         FakeGeocodingClient geocodingClient = new FakeGeocodingClient();

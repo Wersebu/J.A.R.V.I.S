@@ -136,11 +136,18 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
                         "Given a starting point and a list of stop addresses/points, proposes a visiting order that "
                                 + "reasonably minimizes total travel distance or time, using real road-network data. "
                                 + "This is the right operation for \"group these addresses\", \"best order to visit "
-                                + "these places\", \"plan a route through these stops\" style requests.",
+                                + "these places\", \"plan a route through these stops\" style requests. Set "
+                                + "returnToStart=true for a full closed-route day trip (start point -> every stop -> "
+                                + "back to the start point, e.g. a Store Audit day starting/ending at a fixed base) - "
+                                + "the response then includes totalDistanceMeters/totalDurationSeconds for the WHOLE "
+                                + "closed route, not merely the distance between stops.",
                         false, ToolSafetyLevel.READ,
                         arg("start", "string", true, "Starting address or {latitude,longitude}"),
                         arg("stops", true, STOPS_SCHEMA),
-                        arg("optimize", "string", false, "\"distance\" or \"time\" (default \"time\")")),
+                        arg("optimize", "string", false, "\"distance\" or \"time\" (default \"time\")"),
+                        arg("returnToStart", "boolean", false,
+                                "true to compute a full closed route (start -> stops -> back to start), e.g. a day "
+                                        + "trip that must end back at its fixed starting point - default false")),
                 operation("GEOCODE_DATASET",
                         "Batch-geocodes records already held in a storeDataset (see the storeDataset tool) and "
                                 + "updates them in place by record id - use this instead of GEOCODE whenever the "
@@ -490,14 +497,18 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
         String criterion = arg(request, "optimize");
         boolean byDistance = "distance".equalsIgnoreCase(criterion);
         Double[][] costMatrix = byDistance ? matrixResult.distancesMeters() : matrixResult.durationsSeconds();
+        boolean returnToStart = boolArg(request, "returnToStart");
 
-        LOGGER.info("[LOCATION] Core optymalizuje kolejnosc {} punktow requestId={}", allPoints.size(), request.requestId());
-        OptimizedRoute optimized = routeOptimizer.optimize(costMatrix, 0, properties.exactOptimizationMaxStops());
+        LOGGER.info("[LOCATION] Core optymalizuje kolejnosc {} punktow requestId={} returnToStart={}",
+                allPoints.size(), request.requestId(), returnToStart);
+        OptimizedRoute optimized = routeOptimizer.optimize(costMatrix, 0, properties.exactOptimizationMaxStops(), returnToStart);
         LOGGER.info("[LOCATION] Route optimization finished requestId={} totalCost={}", request.requestId(), optimized.totalCost());
 
         List<Map<String, Object>> orderedStops = new ArrayList<>();
         List<Map<String, Object>> legs = new ArrayList<>();
         List<Integer> visitOrder = optimized.visitOrder();
+        double totalDistanceMeters = 0d;
+        double totalDurationSeconds = 0d;
         for (int position = 0; position < visitOrder.size(); position++) {
             int pointIndex = visitOrder.get(position);
             GeoPoint point = allPoints.get(pointIndex);
@@ -506,12 +517,38 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
                 int previousIndex = visitOrder.get(position - 1);
                 Double distance = matrixResult.distancesMeters()[previousIndex][pointIndex];
                 Double duration = matrixResult.durationsSeconds()[previousIndex][pointIndex];
+                totalDistanceMeters += distance == null ? 0d : distance;
+                totalDurationSeconds += duration == null ? 0d : duration;
                 legs.add(Map.of(
                         "from", pointMap(allPoints.get(previousIndex)),
                         "to", pointMap(point),
                         "distanceMeters", distance == null ? 0d : distance,
                         "durationSeconds", duration == null ? 0d : duration
                 ));
+            }
+        }
+        // The visiting order search (RouteOptimizer, above) already targeted the closed-loop cost
+        // when returnToStart=true, but its totalCost is denominated in whichever single criterion
+        // (distance or time) was optimized - here both real distance AND duration for the return
+        // leg are read directly from the full matrix, independent of that choice, so the model gets
+        // an honest closed-route total in both units rather than just the optimized one.
+        boolean closedRoute = false;
+        if (returnToStart && !visitOrder.isEmpty()) {
+            int lastIndex = visitOrder.get(visitOrder.size() - 1);
+            Double returnDistance = matrixResult.distancesMeters()[lastIndex][0];
+            Double returnDuration = matrixResult.durationsSeconds()[lastIndex][0];
+            if (returnDistance != null && returnDuration != null) {
+                closedRoute = true;
+                totalDistanceMeters += returnDistance;
+                totalDurationSeconds += returnDuration;
+                legs.add(Map.of(
+                        "from", pointMap(allPoints.get(lastIndex)),
+                        "to", pointMap(allPoints.get(0)),
+                        "distanceMeters", returnDistance,
+                        "durationSeconds", returnDuration
+                ));
+            } else {
+                warnings.add("Return leg to the start point could not be resolved - totals reflect an open route only.");
             }
         }
         List<Map<String, Object>> allUnresolved = new ArrayList<>(unresolvedStops);
@@ -524,13 +561,17 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
         data.put("legs", legs);
         data.put("totalCost", optimized.totalCost());
         data.put("optimizeBy", byDistance ? "distance" : "time");
+        data.put("totalDistanceMeters", totalDistanceMeters);
+        data.put("totalDurationSeconds", totalDurationSeconds);
+        data.put("closedRoute", closedRoute);
         if (!allUnresolved.isEmpty()) {
             data.put("unresolvedStops", allUnresolved);
         }
         if (!warnings.isEmpty()) {
             data.put("warnings", warnings);
         }
-        String message = "Zaproponowana kolejnosc odwiedzin " + resolvedStops.size() + " punktow.";
+        String message = "Zaproponowana kolejnosc odwiedzin " + resolvedStops.size() + " punktow."
+                + (closedRoute ? " Trasa zamknieta (powrot do punktu startowego uwzgledniony)." : "");
         return new ToolResult(true, TOOL_NAME, "OPTIMIZE_ROUTE", request.requestId(), request.conversationId(), false, List.of(),
                 message, data, "", "", false, "");
     }
@@ -589,6 +630,11 @@ public class LocationTool implements JarvisTool, ToolSchemaProvider {
     private String arg(ToolRequest request, String name) {
         Object value = request.arguments().get(name);
         return value == null ? "" : String.valueOf(value).strip();
+    }
+
+    private boolean boolArg(ToolRequest request, String name) {
+        Object value = request.arguments().get(name);
+        return value instanceof Boolean bool && bool;
     }
 
     private List<Object> listArg(ToolRequest request, String name) {

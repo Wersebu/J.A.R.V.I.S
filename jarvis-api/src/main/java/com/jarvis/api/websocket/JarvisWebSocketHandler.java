@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.api.diagnostics.JarvisLogBroadcaster;
 import com.jarvis.api.service.ChatService;
+import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.tools.mcp.McpServerManager;
@@ -126,7 +127,8 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
         // other frames on this same session (MCP bridge responses in particular) throughout.
         chatExecutor.submit(() -> {
             try {
-                chatService.stream(request, event -> sendEvent(session, event));
+                CurrentUserContext.runAs(String.valueOf(session.getAttributes().getOrDefault("jarvis.userId", CurrentUserContext.LOCAL_USER_ID)),
+                        () -> chatService.stream(request, event -> sendEvent(session, event)));
                 send(session, new WebSocketStatus("COMPLETED", "Request completed"));
             } catch (RuntimeException exception) {
                 LOGGER.error("[JARVIS] WebSocket chat failed", exception);

@@ -23,6 +23,7 @@ class WebSocketConfigTest {
                 null,
                 null,
                 null,
+                null,
                 MAX_TEXT_MESSAGE_SIZE,
                 MAX_BINARY_MESSAGE_SIZE
         );

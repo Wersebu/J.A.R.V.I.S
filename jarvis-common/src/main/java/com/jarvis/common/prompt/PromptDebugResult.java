@@ -10,8 +10,13 @@ package com.jarvis.common.prompt;
  */
 public record PromptDebugResult(
         String systemPrompt,
+        String userGlobalPrompt,
+        String folderSystemPrompt,
         String knowledge,
         String userPrompt,
         String finalPrompt
 ) {
+    public PromptDebugResult(String systemPrompt, String knowledge, String userPrompt, String finalPrompt) {
+        this(systemPrompt, "", "", knowledge, userPrompt, finalPrompt);
+    }
 }

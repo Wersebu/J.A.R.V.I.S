@@ -41,7 +41,10 @@ import com.jarvis.tools.schema.ToolRegistry;
 import com.jarvis.tools.schema.ToolSafetyLevel;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -66,6 +69,8 @@ class NativeToolLoopServiceStoreAuditGovernanceTest {
     private static final LocationProperties LOCATION_PROPERTIES = new LocationProperties(
             true, "https://nominatim.example", "https://osrm.example", "Test-Agent/1.0",
             0, 25, 8, Duration.ofSeconds(1), Duration.ofSeconds(1), 5);
+    // A fixed "today" (a Monday) so SUBMIT_SCHEDULE's date validation is fully deterministic.
+    private static final Instant FIXED_NOW = Instant.parse("2026-06-01T10:00:00Z");
 
     // TEST 10/11/12: a LOCKED dataset with the required workflow document NOT yet read blocks
     // GEOCODE_DATASET immediately (never reaching the real LocationTool/geocoding provider);
@@ -208,7 +213,8 @@ class NativeToolLoopServiceStoreAuditGovernanceTest {
     // TEST 16: recovery can carry the workflow all the way to a genuinely finished state.
     @Test
     void recoveryCanReachGenuineCompletion() {
-        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus(),
+                Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
         datasetService.registerAttachments("request-1", "conversation-1", List.of());
         StoreDatasetTool storeDatasetTool = new StoreDatasetTool(datasetService);
         LocationTool locationTool = new LocationTool(new AlwaysResolvingGeocodingClient(), new UnusedRoutingClient(), LOCATION_PROPERTIES, datasetService);
@@ -222,6 +228,8 @@ class NativeToolLoopServiceStoreAuditGovernanceTest {
                 Map.of("recordIndex", 1, "status", "VERIFIED"),
                 Map.of("recordIndex", 2, "status", "VERIFIED"),
                 Map.of("recordIndex", 3, "status", "VERIFIED")))));
+        turns.add(toolCallTurn("storedataset__set_preferences", Map.of(
+                "year", 2026, "month", 6, "preferredDaysOfWeek", List.of("TUESDAY", "WEDNESDAY"))));
         turns.add(toolCallTurn("knowledge__read_document", Map.of("path", WORKFLOW_DOCUMENT_PATH)));
         turns.add(toolCallTurn("location__geocode_dataset", Map.of()));
         turns.add(submitScheduleTurn());
@@ -230,7 +238,7 @@ class NativeToolLoopServiceStoreAuditGovernanceTest {
 
         NativeToolLoopService service = new NativeToolLoopService(
                 List.of(provider), toolManager, query -> ToolIntent.NO_TOOL,
-                new ToolRuntimeProperties(true, 2, 2, 2, 60, "native", 10, 2),
+                new ToolRuntimeProperties(true, 15, 15, 2, 60, "native", 10, 2),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
                 new NativeToolSchemaMapper(registry()), datasetService
         );
@@ -285,7 +293,8 @@ class NativeToolLoopServiceStoreAuditGovernanceTest {
     // SCHEDULED with all 23 records intact.
     @Test
     void fullRealProductionScenarioReachesScheduledWithAllTwentyThreeRecords() {
-        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreAuditDatasetService datasetService = new StoreAuditDatasetService(new NoopCognitiveEventBus(),
+                Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
         datasetService.registerAttachments("request-1", "conversation-1", List.of());
         StoreDatasetTool storeDatasetTool = new StoreDatasetTool(datasetService);
         LocationTool locationTool = new LocationTool(new AlwaysResolvingGeocodingClient(), new UnusedRoutingClient(), LOCATION_PROPERTIES, datasetService);
@@ -304,11 +313,15 @@ class NativeToolLoopServiceStoreAuditGovernanceTest {
             verifications.add(Map.of("recordIndex", index, "status", "VERIFIED"));
         }
         turns.add(toolCallTurn("storedataset__verify_dataset", Map.of("verifications", verifications)));
+        turns.add(toolCallTurn("storedataset__set_preferences", Map.of(
+                "year", 2026, "month", 6, "preferredDaysOfWeek", List.of("TUESDAY", "WEDNESDAY"))));
         turns.add(toolCallTurn("knowledge__read_document", Map.of("path", WORKFLOW_DOCUMENT_PATH)));
         turns.add(toolCallTurn("location__geocode_dataset", Map.of()));
         turns.add(toolCallTurn("storedataset__submit_schedule", Map.of("days", List.of(
-                Map.of("day", 1, "storeIndexes", intRange(1, 12)),
-                Map.of("day", 2, "storeIndexes", intRange(13, 23))))));
+                Map.of("day", 1, "date", "2026-06-02", "storeIndexes", intRange(1, 12),
+                        "routeDistanceMeters", 42000d, "routeDurationSeconds", 5400d, "auditDurationSeconds", 7200d),
+                Map.of("day", 2, "date", "2026-06-03", "storeIndexes", intRange(13, 23),
+                        "routeDistanceMeters", 38000d, "routeDurationSeconds", 4800d, "auditDurationSeconds", 6600d)))));
         turns.add(textTurn("Oto gotowy grafik na 23 sklepy."));
         ScriptedProvider provider = new ScriptedProvider(turns);
 
@@ -374,7 +387,9 @@ class NativeToolLoopServiceStoreAuditGovernanceTest {
 
     private static ModelResponse submitScheduleTurn() {
         return new ModelResponse("", "", List.of(new ModelToolCall("call-schedule-" + System.nanoTime(),
-                "storedataset__submit_schedule", Map.of("days", List.of(Map.of("day", 1, "storeIndexes", List.of(1, 2, 3)))))),
+                "storedataset__submit_schedule", Map.of("days", List.of(Map.of("day", 1, "date", "2026-06-02",
+                        "storeIndexes", List.of(1, 2, 3), "routeDistanceMeters", 15000d,
+                        "routeDurationSeconds", 1800d, "auditDurationSeconds", 3600d))))),
                 "tool_calls", new ModelUsage(0, 0, 0));
     }
 
@@ -424,6 +439,22 @@ class NativeToolLoopServiceStoreAuditGovernanceTest {
                 new ToolOperationDefinition("GET_DATASET", "Get dataset.", List.of(
                         new ToolArgumentDefinition("datasetId", "string", false, "Dataset id")
                 ), false, ToolSafetyLevel.READ),
+                new ToolOperationDefinition("SET_PREFERENCES", "Set scheduling preferences.", List.of(
+                        new ToolArgumentDefinition("datasetId", "string", false, "Dataset id"),
+                        new ToolArgumentDefinition("year", "number", false, "Year"),
+                        new ToolArgumentDefinition("month", "number", true, "Month"),
+                        new ToolArgumentDefinition("preferredDaysOfWeek", "array", false, "Preferred days"),
+                        new ToolArgumentDefinition("fallbackDaysOfWeek", "array", false, "Fallback days"),
+                        new ToolArgumentDefinition("strategy", "string", false, "Strategy"),
+                        new ToolArgumentDefinition("explicitStartDate", "string", false, "Explicit start date"),
+                        new ToolArgumentDefinition("explicitEndDate", "string", false, "Explicit end date"),
+                        new ToolArgumentDefinition("saturdayExplicitlyAllowed", "boolean", false, "Saturday allowed")
+                ), true, ToolSafetyLevel.WRITE),
+                new ToolOperationDefinition("REQUEST_USER_INPUT", "Pause for user input.", List.of(
+                        new ToolArgumentDefinition("datasetId", "string", false, "Dataset id"),
+                        new ToolArgumentDefinition("kind", "string", true, "Kind"),
+                        new ToolArgumentDefinition("reason", "string", false, "Reason")
+                ), true, ToolSafetyLevel.WRITE),
                 new ToolOperationDefinition("SUBMIT_SCHEDULE", "Submit schedule.", List.of(
                         new ToolArgumentDefinition("datasetId", "string", false, "Dataset id"),
                         new ToolArgumentDefinition("days", "array", true, "Days")

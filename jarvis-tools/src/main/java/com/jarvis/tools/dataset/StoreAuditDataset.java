@@ -33,6 +33,10 @@ import java.util.List;
  *         {@code stores.size()} for the lifetime of this dataset
  * @param stage machine-readable workflow stage
  * @param schedule validated day-by-day schedule, once {@link #stage} is {@link DatasetStage#SCHEDULED}
+ * @param preferences the user's resolved scheduling preferences (days, distribution), once set via
+ *         {@link StoreAuditDatasetService#setPreferences} - null until then, never guessed
+ * @param pendingUserInput whether this dataset is legitimately paused awaiting a real decision from
+ *         the user right now, and what kind - see {@link WorkflowPause}
  * @param createdAt creation timestamp
  * @param expiresAt expiry timestamp, after which the dataset is swept
  */
@@ -47,6 +51,8 @@ public record StoreAuditDataset(
         int expectedStoreCount,
         DatasetStage stage,
         List<ScheduleDay> schedule,
+        SchedulingPreferences preferences,
+        WorkflowPause pendingUserInput,
         Instant createdAt,
         Instant expiresAt
 ) {
@@ -59,6 +65,7 @@ public record StoreAuditDataset(
         sourceAttachmentIds = sourceAttachmentIds == null ? List.of() : List.copyOf(sourceAttachmentIds);
         stores = stores == null ? List.of() : List.copyOf(stores);
         schedule = schedule == null ? List.of() : List.copyOf(schedule);
+        pendingUserInput = pendingUserInput == null ? WorkflowPause.NONE : pendingUserInput;
     }
 
     /**
@@ -71,7 +78,8 @@ public record StoreAuditDataset(
      */
     public StoreAuditDataset withStores(List<StoreRecord> newStores, DatasetStage newStage) {
         return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
-                expectedRecordCount, newStores, expectedStoreCount, newStage, schedule, createdAt, expiresAt);
+                expectedRecordCount, newStores, expectedStoreCount, newStage, schedule, preferences,
+                WorkflowPause.NONE, createdAt, expiresAt);
     }
 
     /**
@@ -83,7 +91,8 @@ public record StoreAuditDataset(
      */
     public StoreAuditDataset withSchedule(List<ScheduleDay> newSchedule) {
         return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
-                expectedRecordCount, stores, expectedStoreCount, DatasetStage.SCHEDULED, newSchedule, createdAt, expiresAt);
+                expectedRecordCount, stores, expectedStoreCount, DatasetStage.SCHEDULED, newSchedule, preferences,
+                WorkflowPause.NONE, createdAt, expiresAt);
     }
 
     /**
@@ -97,7 +106,8 @@ public record StoreAuditDataset(
      */
     public StoreAuditDataset withStage(DatasetStage newStage) {
         return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
-                expectedRecordCount, stores, expectedStoreCount, newStage, schedule, createdAt, expiresAt);
+                expectedRecordCount, stores, expectedStoreCount, newStage, schedule, preferences,
+                WorkflowPause.NONE, createdAt, expiresAt);
     }
 
     /**
@@ -111,6 +121,34 @@ public record StoreAuditDataset(
      */
     public StoreAuditDataset withAppendedStores(List<StoreRecord> newStores) {
         return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
-                expectedRecordCount, newStores, newStores.size(), DatasetStage.BUILDING, schedule, createdAt, expiresAt);
+                expectedRecordCount, newStores, newStores.size(), DatasetStage.BUILDING, schedule, preferences,
+                WorkflowPause.NONE, createdAt, expiresAt);
+    }
+
+    /**
+     * Returns a copy with the user's resolved scheduling preferences applied, and any pending
+     * pause cleared - the user answered, so the workflow is no longer waiting.
+     *
+     * @param newPreferences resolved scheduling preferences
+     * @return updated dataset
+     */
+    public StoreAuditDataset withPreferences(SchedulingPreferences newPreferences) {
+        return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
+                expectedRecordCount, stores, expectedStoreCount, stage, schedule, newPreferences,
+                WorkflowPause.NONE, createdAt, expiresAt);
+    }
+
+    /**
+     * Returns a copy marked as legitimately paused awaiting a real decision from the user - see
+     * {@link WorkflowPause}. Every other mutation on this dataset clears the pause back to {@link
+     * WorkflowPause#NONE}, so a stale pause can never survive genuine forward progress.
+     *
+     * @param pause the kind of pause to record
+     * @return updated dataset
+     */
+    public StoreAuditDataset withPendingUserInput(WorkflowPause pause) {
+        return new StoreAuditDataset(datasetId, requestId, conversationId, sourceAttachmentIds, sourceImageCount,
+                expectedRecordCount, stores, expectedStoreCount, stage, schedule, preferences,
+                pause, createdAt, expiresAt);
     }
 }

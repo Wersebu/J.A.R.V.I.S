@@ -3,6 +3,7 @@ package com.jarvis.tools.workflow;
 import com.jarvis.tools.dataset.DatasetStage;
 import com.jarvis.tools.dataset.StoreAuditDataset;
 import com.jarvis.tools.dataset.StoreAuditDatasetService;
+import com.jarvis.tools.dataset.WorkflowPause;
 
 import java.util.Optional;
 
@@ -67,6 +68,23 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
         if (value.stage() == DatasetStage.SCHEDULED) {
             return CompletionAssessment.ok();
         }
+        boolean preferencesSet = value.preferences() != null;
+        // Two legitimate reasons a turn may end mid-workflow without every remaining tool call
+        // having happened yet - neither is an error, both let the model stop and genuinely ask the
+        // user something instead of being forced into more tool calls:
+        //  1. stage=LOCKED with no scheduling preferences set yet - this is the canonical, expected
+        //     point in the pipeline to ask about preferred days/distribution (see the Knowledge
+        //     Workspace workflow document); no extra tool call is required to "announce" this pause,
+        //     it is structurally the next step whenever preferences are still unset here.
+        //  2. an explicit storeDataset.REQUEST_USER_INPUT(kind=AWAITING_DECISION) call recorded a
+        //     genuine borderline planning tradeoff this loop - a rarer, model-signaled pause for
+        //     cases the workflow document says to ask about (e.g. a daily-limit tradeoff).
+        if (value.stage() == DatasetStage.LOCKED && !preferencesSet) {
+            return CompletionAssessment.ok();
+        }
+        if (value.pendingUserInput() == WorkflowPause.AWAITING_DECISION) {
+            return CompletionAssessment.ok();
+        }
         // The workflow document defines the actual planning rules (which days, how many stores per
         // day, ...) - once the dataset is verified and ready for geolocation/planning, this must be
         // read before proceeding, not skipped in favor of the model improvising its own grouping.
@@ -81,7 +99,7 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
         }
         String guidance = "The Store Audit dataset (datasetId=" + value.datasetId() + ") was used in this task but "
                 + "is not finished yet: stage=" + value.stage() + ", " + value.stores().size() + " record(s). "
-                + nextStepGuidance(value.stage())
+                + nextStepGuidance(value.stage(), preferencesSet)
                 + " Do not tell the user the schedule is ready until storeDataset.SUBMIT_SCHEDULE has been "
                 + "accepted covering every record. If you genuinely cannot proceed (e.g. an address is "
                 + "ambiguous and needs the user's confirmation), say exactly that instead of presenting an "
@@ -89,13 +107,16 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
         return new CompletionAssessment(false, "STORE_AUDIT_DATASET_NOT_SCHEDULED", guidance);
     }
 
-    private String nextStepGuidance(DatasetStage stage) {
+    private String nextStepGuidance(DatasetStage stage, boolean preferencesSet) {
         return switch (stage) {
             case BUILDING -> "Call storeDataset.APPEND_RECORDS with the remaining records, then "
                     + "storeDataset.FINALIZE_DATASET once every record has been submitted.";
             case EXTRACTED -> "Call storeDataset.VERIFY_DATASET, covering every record exactly once, to lock "
                     + "verification (stage=LOCKED).";
-            case LOCKED -> "Call location.GEOCODE_DATASET for the verified records, then storeDataset.SUBMIT_SCHEDULE.";
+            case LOCKED -> preferencesSet
+                    ? "Call location.GEOCODE_DATASET for the verified records, then storeDataset.SUBMIT_SCHEDULE."
+                    : "Ask the user about scheduling preferences (days, distribution across the month), then call "
+                            + "storeDataset.SET_PREFERENCES with their answer.";
             case GEOLOCATED -> "Call storeDataset.SUBMIT_SCHEDULE with a day-by-day grouping covering every "
                     + "record exactly once.";
             case SCHEDULED -> "";
@@ -113,15 +134,19 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
      * @param stage current dataset stage
      * @param requiredDocumentLoaded whether the required workflow document has been read this loop -
      *         irrelevant except at {@link DatasetStage#LOCKED}
+     * @param preferencesSet whether {@link StoreAuditDataset#preferences()} has been set yet -
+     *         irrelevant except at {@link DatasetStage#LOCKED}
      * @return the next required operation name (e.g. {@code "VERIFY_DATASET"}), {@code
-     *         "READ_REQUIRED_WORKFLOW_DOCUMENT"} at {@code LOCKED} until the document is read, or
-     *         blank at {@link DatasetStage#SCHEDULED} (nothing further required)
+     *         "SET_PREFERENCES"} or {@code "READ_REQUIRED_WORKFLOW_DOCUMENT"} at {@code LOCKED}
+     *         depending on what is still missing, or blank at {@link DatasetStage#SCHEDULED}
+     *         (nothing further required)
      */
-    public static String nextRequiredAction(DatasetStage stage, boolean requiredDocumentLoaded) {
+    public static String nextRequiredAction(DatasetStage stage, boolean requiredDocumentLoaded, boolean preferencesSet) {
         return switch (stage) {
             case BUILDING -> "APPEND_RECORDS";
             case EXTRACTED -> "VERIFY_DATASET";
-            case LOCKED -> requiredDocumentLoaded ? "GEOCODE_DATASET" : "READ_REQUIRED_WORKFLOW_DOCUMENT";
+            case LOCKED -> !preferencesSet ? "SET_PREFERENCES"
+                    : requiredDocumentLoaded ? "GEOCODE_DATASET" : "READ_REQUIRED_WORKFLOW_DOCUMENT";
             case GEOLOCATED -> "SUBMIT_SCHEDULE";
             case SCHEDULED -> "";
         };

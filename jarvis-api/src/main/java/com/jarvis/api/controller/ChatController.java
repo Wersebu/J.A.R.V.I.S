@@ -1,6 +1,7 @@
 package com.jarvis.api.controller;
 
 import com.jarvis.api.service.ChatService;
+import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.dto.ChatResponse;
 import com.jarvis.common.event.CognitiveEvent;
@@ -84,15 +85,15 @@ public class ChatController {
     @GetMapping(path = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@RequestParam String token) {
         SseStreamSession session = new SseStreamSession(new SseEmitter(SSE_TIMEOUT_MS));
-        Optional<ChatRequest> request = pendingChatStreamStore.consume(token);
-        if (request.isEmpty()) {
+        Optional<PendingChatStreamStore.PendingChatRequest> pending = pendingChatStreamStore.consume(token);
+        if (pending.isEmpty()) {
             session.completeWithError(new ResponseStatusException(HttpStatus.NOT_FOUND, "Unknown or expired stream token"));
             return session.emitter();
         }
 
         CompletableFuture.runAsync(() -> {
             try {
-                chatService.stream(request.get(), session::send);
+                CurrentUserContext.runAs(pending.get().userId(), () -> chatService.stream(pending.get().request(), session::send));
                 session.complete();
             } catch (SseDeliveryException exception) {
                 LOGGER.warn("[JARVIS] SSE client disconnected: {}", exception.getMessage());

@@ -8,6 +8,9 @@ import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -126,7 +129,7 @@ class StoreDatasetToolTest {
     // VERIFY_DATASET/SUBMIT_SCHEDULE exactly like a one-shot CREATE_DATASET would.
     @Test
     void startAppendFinalizeThroughTheToolProducesADatasetUsableBySubmitSchedule() {
-        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreAuditDatasetService service = fixedClockService();
         StoreDatasetTool tool = new StoreDatasetTool(service);
 
         ToolResult started = tool.execute(new ToolRequest("storeDataset", "START_DATASET", "conversation-1", "request-1",
@@ -188,10 +191,11 @@ class StoreDatasetToolTest {
         List<GeolocationEntry> geolocations = ids.stream()
                 .map(id -> new GeolocationEntry(id, GeolocationStatus.RESOLVED, 52.0, 21.0)).toList();
         assertThat(service.updateGeolocation(datasetId, geolocations).success()).isTrue();
+        setAnyDayPreferences(tool, datasetId);
 
         ToolResult schedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
                 "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
-                        Map.of("day", 1, "storeIds", List.of("store-001", "store-002", "store-003", "store-004"))
+                        scheduleDayMap(1, "2026-06-02", List.of("store-001", "store-002", "store-003", "store-004"))
                 ))));
         assertThat(schedule.success()).isTrue();
         assertThat(schedule.data().get("stage")).isEqualTo("SCHEDULED");
@@ -259,7 +263,7 @@ class StoreDatasetToolTest {
 
     @Test
     void submitScheduleAcceptsAValidGroupingAndRejectsAScheduleMissingAStore() {
-        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreAuditDatasetService service = fixedClockService();
         StoreDatasetTool tool = new StoreDatasetTool(service);
 
         ToolResult created = tool.execute(new ToolRequest("storeDataset", "CREATE_DATASET", "conversation-1", "request-1",
@@ -283,17 +287,18 @@ class StoreDatasetToolTest {
         List<GeolocationEntry> geolocations = ids.stream()
                 .map(id -> new GeolocationEntry(id, GeolocationStatus.RESOLVED, 52.0, 21.0)).toList();
         assertThat(service.updateGeolocation(datasetId, geolocations).success()).isTrue();
+        setAnyDayPreferences(tool, datasetId);
 
         ToolResult validSchedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
                 "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
-                        Map.of("day", 1, "storeIds", List.of("store-001", "store-002", "store-003"))
+                        scheduleDayMap(1, "2026-06-02", List.of("store-001", "store-002", "store-003"))
                 ))));
         assertThat(validSchedule.success()).isTrue();
         assertThat(validSchedule.data().get("stage")).isEqualTo("SCHEDULED");
 
         ToolResult incompleteSchedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
                 "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
-                        Map.of("day", 1, "storeIds", List.of("store-001", "store-002"))
+                        scheduleDayMap(1, "2026-06-02", List.of("store-001", "store-002"))
                 ))));
         assertThat(incompleteSchedule.success()).isFalse();
         assertThat(incompleteSchedule.errorCode()).isEqualTo("STORE_DATASET_INVARIANT_VIOLATION");
@@ -397,16 +402,17 @@ class StoreDatasetToolTest {
     // instead of the exact "store-001".."store-005" strings.
     @Test
     void submitScheduleResolvesStoreIndexesToTheCanonicalRecordIds() {
-        StoreAuditDatasetService service = new StoreAuditDatasetService(new NoopCognitiveEventBus());
+        StoreAuditDatasetService service = fixedClockService();
         StoreDatasetTool tool = new StoreDatasetTool(service);
         String datasetId = createDatasetWithRecordCount(tool, 5);
         verifyAllByIndex(tool, datasetId, 5);
         geolocateAll(service, datasetId);
+        setAnyDayPreferences(tool, datasetId);
 
         ToolResult schedule = tool.execute(new ToolRequest("storeDataset", "SUBMIT_SCHEDULE", "conversation-1", "request-1",
                 "schedule", "", Map.of("datasetId", datasetId, "days", List.of(
-                        Map.of("day", 1, "storeIndexes", List.of(1, 2, 3)),
-                        Map.of("day", 2, "storeIndexes", List.of(4, 5))))));
+                        scheduleDayMapByIndex(1, "2026-06-02", List.of(1, 2, 3)),
+                        scheduleDayMapByIndex(2, "2026-06-03", List.of(4, 5))))));
 
         assertThat(schedule.success()).isTrue();
         assertThat(schedule.data().get("stage")).isEqualTo("SCHEDULED");
@@ -532,6 +538,31 @@ class StoreDatasetToolTest {
         List<GeolocationEntry> entries = dataset.stores().stream()
                 .map(record -> new GeolocationEntry(record.id(), GeolocationStatus.RESOLVED, 52.0, 21.0)).toList();
         assertThat(service.updateGeolocation(datasetId, entries).success()).isTrue();
+    }
+
+    // Fixed "today" (a Monday) so SUBMIT_SCHEDULE date validation tests are fully deterministic,
+    // never dependent on the machine's real clock.
+    private static final Instant FIXED_NOW = Instant.parse("2026-06-01T10:00:00Z");
+
+    private StoreAuditDatasetService fixedClockService() {
+        return new StoreAuditDatasetService(new NoopCognitiveEventBus(), Clock.fixed(FIXED_NOW, ZoneOffset.UTC));
+    }
+
+    private void setAnyDayPreferences(StoreDatasetTool tool, String datasetId) {
+        ToolResult result = tool.execute(new ToolRequest("storeDataset", "SET_PREFERENCES", "conversation-1", "request-1",
+                "preferences", "", Map.of("datasetId", datasetId, "year", 2026, "month", 6,
+                        "preferredDaysOfWeek", List.of("MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"))));
+        assertThat(result.success()).isTrue();
+    }
+
+    private Map<String, Object> scheduleDayMap(int day, String date, List<String> storeIds) {
+        return Map.of("day", day, "date", date, "storeIds", storeIds,
+                "routeDistanceMeters", 1000d, "routeDurationSeconds", 600d, "auditDurationSeconds", 300d);
+    }
+
+    private Map<String, Object> scheduleDayMapByIndex(int day, String date, List<Integer> storeIndexes) {
+        return Map.of("day", day, "date", date, "storeIndexes", storeIndexes,
+                "routeDistanceMeters", 1000d, "routeDurationSeconds", 600d, "auditDurationSeconds", 300d);
     }
 
     private static final class NoopCognitiveEventBus implements CognitiveEventBus {
