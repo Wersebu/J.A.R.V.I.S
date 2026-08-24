@@ -263,9 +263,52 @@ class StoreAuditDatasetServiceTest {
 
     @Test
     void startDatasetAppliesTheSameDuplicateSourceCheckAsCreateDataset() {
+        // A model that hits the duplicate-source check has been observed to not reliably follow the
+        // "call GET_DATASET/VERIFY_DATASET instead" guidance and just retry START_DATASET/
+        // CREATE_DATASET with the same attachments - so when it resubmits candidates, they are
+        // silently routed through the same path APPEND_RECORDS uses against the existing dataset
+        // instead of hard-rejecting the call outright. Resubmitting byte-identical records is still
+        // rejected (there is nothing new to append), but as EMPTY_APPEND against the SAME dataset,
+        // with the existing dataset id still surfaced so the model can act on it.
         StoreAuditDatasetService service = service();
         service.registerAttachments("request-1", "conversation-1", List.of("att-1"));
         StoreAuditDataset first = service.startDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
+
+        service.registerAttachments("request-2", "conversation-1", List.of("att-1"));
+        CreateOutcome second = service.startDataset("request-2", 1, 0, List.of("att-1"), candidates(3, "att-1"));
+
+        assertThat(second.success()).isFalse();
+        assertThat(second.errorCode()).isEqualTo("EMPTY_APPEND");
+        assertThat(second.message()).contains(first.datasetId());
+        assertThat(second.dataset().datasetId()).isEqualTo(first.datasetId());
+    }
+
+    @Test
+    void startDatasetRedirectsDuplicateSourceCandidatesIntoAppendWhenStillBuilding() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-1", List.of("att-1"));
+        StoreAuditDataset first = service.startDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
+
+        // Genuinely new records this time (indexes 4-6, never submitted before) - a model that
+        // mistakenly retries START_DATASET/CREATE_DATASET instead of APPEND_RECORDS for a later batch
+        // must still have that real, freshly-extracted data land in the dataset, not get dropped.
+        service.registerAttachments("request-2", "conversation-1", List.of("att-1"));
+        List<CandidateRecord> newBatch = candidates(6, "att-1").subList(3, 6);
+        CreateOutcome second = service.startDataset("request-2", 1, 0, List.of("att-1"), newBatch);
+
+        assertThat(second.success()).isTrue();
+        assertThat(second.acceptedCount()).isEqualTo(3);
+        assertThat(second.dataset().datasetId()).isEqualTo(first.datasetId());
+        assertThat(second.dataset().stores()).hasSize(6);
+        assertThat(second.message()).contains(first.datasetId());
+    }
+
+    @Test
+    void startDatasetStillHardRejectsDuplicateSourceOnceThePreviousDatasetIsPastBuilding() {
+        StoreAuditDatasetService service = service();
+        service.registerAttachments("request-1", "conversation-1", List.of("att-1"));
+        StoreAuditDataset first = service.createDataset("request-1", 1, 0, List.of("att-1"), candidates(3, "att-1")).dataset();
+        assertThat(first.stage()).isNotEqualTo(DatasetStage.BUILDING);
 
         service.registerAttachments("request-2", "conversation-1", List.of("att-1"));
         CreateOutcome second = service.startDataset("request-2", 1, 0, List.of("att-1"), candidates(3, "att-1"));

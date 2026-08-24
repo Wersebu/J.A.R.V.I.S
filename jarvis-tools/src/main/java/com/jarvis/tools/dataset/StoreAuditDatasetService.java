@@ -222,6 +222,25 @@ public class StoreAuditDatasetService {
                     .findFirst();
             if (duplicate.isPresent()) {
                 StoreAuditDataset existingDataset = duplicate.get();
+                // A model that hits this rejection has been observed to not reliably follow the "call
+                // GET_DATASET/VERIFY_DATASET instead" instruction below and just keep retrying
+                // START_DATASET/CREATE_DATASET (both share this same duplicate check) with the same
+                // attachments, going nowhere. When it genuinely submitted new candidate records this
+                // call and the existing dataset can still accept them (stage=BUILDING), silently
+                // absorb them via the same path APPEND_RECORDS uses instead of forcing the model to
+                // self-correct - real extracted data must never be dropped just because it arrived
+                // through the wrong entry point.
+                if (!source.isEmpty() && existingDataset.stage() == DatasetStage.BUILDING) {
+                    LOGGER.info("[STORE_AUDIT] requestId={} redirecting duplicate CREATE_DATASET/START_DATASET call "
+                            + "for existing datasetId={} into APPEND_RECORDS ({} candidate(s))",
+                            requestId, existingDataset.datasetId(), source.size());
+                    AppendOutcome appended = appendRecords(existingDataset.datasetId(), source);
+                    String prefix = "A dataset already existed for these exact source attachments (datasetId="
+                            + existingDataset.datasetId() + ") - the submitted record(s) were appended to it "
+                            + "instead of creating a duplicate. ";
+                    return new CreateOutcome(appended.success(), appended.dataset(), appended.acceptedCount(),
+                            appended.duplicateCount(), appended.rejected(), prefix + appended.message(), appended.errorCode());
+                }
                 String message = "A dataset already exists for these exact source attachments (datasetId="
                         + existingDataset.datasetId() + ", stage=" + existingDataset.stage() + ", "
                         + existingDataset.stores().size() + " record(s)). Do not create a duplicate dataset for "
