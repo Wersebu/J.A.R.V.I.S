@@ -112,6 +112,11 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
     ) {
         LOGGER.info("[JARVIS][MEMORY][sourceRequestId={}] event={} status={} conversationId={} nodeId={} metadata={}",
                 requestId, event, status, conversationId, nodeId, metadata == null ? Map.of() : metadata);
+        if (REQUEST_SCOPE.get() != null) {
+            // Already delivered through the active request's own sink via publish(...);
+            // broadcasting here too would duplicate it and leak it to every other session.
+            return;
+        }
         CognitiveEvent cognitiveEvent = new CognitiveEvent(
                 requestId,
                 conversationId,
