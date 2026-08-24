@@ -260,7 +260,13 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "advances to stage=LOCKED.",
                         true, ToolSafetyLevel.WRITE,
                         arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION),
-                        arg("verifications", true, VERIFICATIONS_SCHEMA)),
+                        arg("verifyAll", "boolean", false,
+                                "Set true to verify every current record as VERIFIED in this single call, without "
+                                        + "listing each one individually - use this for the common case where every "
+                                        + "extracted record is accepted as-is with no corrections needed. When true, "
+                                        + "'verifications' is ignored. Only build an explicit 'verifications' array "
+                                        + "when some records genuinely need status=CORRECTED."),
+                        arg("verifications", false, VERIFICATIONS_SCHEMA)),
                 operation("GET_DATASET",
                         "Returns the current canonical dataset (all records with their ids, addresses, "
                                 + "verification/geolocation status, and any previously accepted schedule). Use "
@@ -428,8 +434,9 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     private ToolResult verify(ToolRequest request) {
         String datasetId = arg(request, "datasetId");
         Optional<StoreAuditDataset> datasetOpt = datasetService.getDataset(datasetId);
+        boolean verifyAll = boolArg(request, "verifyAll");
         List<Object> rawVerifications = listArg(request, "verifications");
-        if (datasetOpt.isPresent()) {
+        if (!verifyAll && datasetOpt.isPresent()) {
             Optional<ToolResult> indexError = validateRecordIndexRange(request, "VERIFY_DATASET", datasetOpt.get(),
                     rawVerifications, "recordIndex");
             if (indexError.isPresent()) {
@@ -442,11 +449,21 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
             }
         }
         List<VerificationEntry> verifications = new ArrayList<>();
-        for (Object raw : rawVerifications) {
-            if (raw instanceof Map<?, ?> map) {
-                verifications.add(new VerificationEntry(
-                        resolveRecordReference(map, "recordIndex", "recordId", datasetOpt.orElse(null)),
-                        textField(map, "status"), textField(map, "correctedFullAddress"), textField(map, "correctedPostalCode")));
+        if (verifyAll && datasetOpt.isPresent()) {
+            // Shortcut for the common no-corrections case: a model struggling to enumerate every
+            // record by hand (observed in practice on 20+ record datasets with a smaller local
+            // model) can accept the whole dataset as-is in one call instead of constructing a full
+            // per-record verifications array.
+            for (StoreRecord record : datasetOpt.get().stores()) {
+                verifications.add(new VerificationEntry(record.id(), "VERIFIED", "", ""));
+            }
+        } else {
+            for (Object raw : rawVerifications) {
+                if (raw instanceof Map<?, ?> map) {
+                    verifications.add(new VerificationEntry(
+                            resolveRecordReference(map, "recordIndex", "recordId", datasetOpt.orElse(null)),
+                            textField(map, "status"), textField(map, "correctedFullAddress"), textField(map, "correctedPostalCode")));
+                }
             }
         }
         VerifyOutcome outcome = datasetService.verifyDataset(datasetId, verifications);

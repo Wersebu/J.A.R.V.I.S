@@ -419,8 +419,27 @@ public class NativeToolLoopService {
                             continue;
                         }
                     }
+                    String operationKey = action.tool().toLowerCase(Locale.ROOT) + "::" + action.operation().toUpperCase(Locale.ROOT);
                     String fingerprint = actionFingerprint(action);
                     if (!callFingerprints.add(fingerprint)) {
+                        // An exact-duplicate call still counts toward the same no-progress budget as
+                        // argument-varying repeats below - otherwise a model stuck retrying one exact
+                        // failing call (fingerprint never changes, so callFingerprints always rejects
+                        // it here first) never reaches the increment further down and can grind on
+                        // duplicate-blocked retries all the way to MAX_TURNS_REACHED / the full loop
+                        // timeout instead of being redirected within a few attempts.
+                        int duplicateRepeatCount = operationRepeatCounts.merge(operationKey, 1, Integer::sum);
+                        if (duplicateRepeatCount > properties.maxConsecutiveOperationRepeats()) {
+                            ToolResult noProgress = noProgressResult(request, action, duplicateRepeatCount);
+                            results.add(noProgress);
+                            steps.add(new ToolRuntimeStep(step, "NO_PROGRESS_BLOCKED", action.tool(), action.operation(), "BLOCKED", noProgress));
+                            recordGoalEvidence(request, agentState, action, noProgress);
+                            messages.add(toolResultMessage(request, step, call, compactToolResult(noProgress)));
+                            publish(request, CognitiveEventType.TOOL_RESULT_SENT_TO_MODEL, "NO_PROGRESS_BLOCKED",
+                                    "Repeated tool operation blocked, no progress detected", null, step, Map.of(
+                                            "tool", action.tool(), "operation", action.operation(), "repeatCount", duplicateRepeatCount));
+                            continue;
+                        }
                         ToolResult duplicate = duplicateResult(request, action);
                         results.add(duplicate);
                         steps.add(new ToolRuntimeStep(step, "DUPLICATE_TOOL_CALL", action.tool(), action.operation(), "BLOCKED", duplicate));
@@ -435,7 +454,6 @@ public class NativeToolLoopService {
                     // above, but a model can keep rewording the same query ("X" then "X Google
                     // Maps" then "X wspolrzedne") without ever repeating an exact fingerprint. Cap
                     // consecutive calls to the same tool+operation regardless of arguments.
-                    String operationKey = action.tool().toLowerCase(Locale.ROOT) + "::" + action.operation().toUpperCase(Locale.ROOT);
                     int repeatCount = operationRepeatCounts.merge(operationKey, 1, Integer::sum);
                     if (repeatCount > properties.maxConsecutiveOperationRepeats()) {
                         ToolResult noProgress = noProgressResult(request, action, repeatCount);
@@ -1996,9 +2014,6 @@ public class NativeToolLoopService {
         if (errors.contains("EMPTY_MODEL_RESPONSE_WITHOUT_TOOL_CALL")) {
             return ToolLoopTerminationReason.EMPTY_MODEL_RESPONSE;
         }
-        if (!steps.isEmpty() && "NO_PROGRESS_BLOCKED".equals(steps.get(steps.size() - 1).action())) {
-            return ToolLoopTerminationReason.MAX_OPERATION_REPEATS_REACHED;
-        }
         int executed = 0;
         int successful = 0;
         int failed = 0;
@@ -2020,8 +2035,14 @@ public class NativeToolLoopService {
         // failure (rather than the turn budget itself) is honestly the real story. A single failed
         // MCP call followed by successful ones must never be reported this way - it is still just
         // MAX_TURNS_REACHED, with the failure visible via lastErrorCode/lastErrorMessage instead.
+        // Checked before the no-progress tail-step check below: a model stuck retrying that one
+        // failing MCP call (blocked as duplicate, then as no-progress once it repeats enough) is
+        // still fundamentally an MCP failure story, not a generic "no progress" one.
         if (executed > 0 && successful == 0 && failed > 0 && lastFailedTool.toLowerCase(Locale.ROOT).startsWith("mcp_")) {
             return ToolLoopTerminationReason.MCP_FAILURE;
+        }
+        if (!steps.isEmpty() && "NO_PROGRESS_BLOCKED".equals(steps.get(steps.size() - 1).action())) {
+            return ToolLoopTerminationReason.MAX_OPERATION_REPEATS_REACHED;
         }
         return ToolLoopTerminationReason.MAX_TURNS_REACHED;
     }
