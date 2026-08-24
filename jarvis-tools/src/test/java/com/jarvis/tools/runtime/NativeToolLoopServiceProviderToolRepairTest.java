@@ -52,6 +52,9 @@ class NativeToolLoopServiceProviderToolRepairTest {
     private static final String REAL_TOOL_MALFORMED_ERROR =
             "Ollama native tool chat failed with status 500: {\"error\":\"error parsing tool call: "
                     + "unexpected end of JSON input; raw='{\\\"path\\\":\\\"Workspace'\"}";
+    private static final String XML_TAG_MISMATCH_ERROR =
+            "Ollama native tool chat failed with status 500: {\"error\":\"XML syntax error on line 2: "
+                    + "element <function> closed by </parameter>\"}";
     private static final String CONNECTION_FAILURE_ERROR = "Failed to communicate with Ollama native tool endpoint: Connection refused";
 
     @Test
@@ -79,6 +82,31 @@ class NativeToolLoopServiceProviderToolRepairTest {
         // never disable tools on the first/second attempt (only handleProviderFailure's own final,
         // budget-exhausted fallback is allowed to call with an empty tool list).
         assertThat(provider.toolCountPerCall()).containsExactly(1, 1, 1);
+    }
+
+    @Test
+    void xmlTagMismatchToolCallErrorIsAlsoRepaired() {
+        // Real production case: Ollama templates native tool calls as XML-like tags internally for
+        // some models, and rejects a malformed one with an XML parser error instead of a JSON one -
+        // must be recognized as the same repairable failure class, not just a generic provider death.
+        Deque<Object> turns = new ArrayDeque<>();
+        turns.add(XML_TAG_MISMATCH_ERROR);
+        turns.add(toolCallTurn("mcp_roblox_search_game_tree__call", Map.of("query", "Workspace")));
+        turns.add(textTurn("Workspace, ReplicatedStorage, ServerScriptService"));
+        ScriptedFailureProvider provider = new ScriptedFailureProvider(turns);
+        FakeToolManager toolManager = new FakeToolManager();
+        NativeToolLoopService service = newService(provider, toolManager, robloxRegistry());
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest(
+                "request-1", "conversation-1", "list the folders in my Roblox project",
+                "Explore the Roblox Studio project tree.", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW),
+                KnowledgeMode.FAST
+        ));
+
+        assertThat(result.finalAnswer()).isEqualTo("Workspace, ReplicatedStorage, ServerScriptService");
+        assertThat(provider.callCount()).isEqualTo(3);
+        assertThat(toolManager.executedTools()).containsExactly("mcp_roblox_search_game_tree");
     }
 
     @Test

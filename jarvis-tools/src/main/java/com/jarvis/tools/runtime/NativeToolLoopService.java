@@ -3153,12 +3153,17 @@ public class NativeToolLoopService {
      */
     private static final java.util.regex.Pattern RECOVERABLE_PROVIDER_TOOL_CALL_FAILURE = java.util.regex.Pattern.compile(
             "(?i)error parsing tool call|unexpected end of json|malformed[^.]*(tool.?call|arguments|json)"
-                    + "|invalid[^.]*tool.?call[^.]*json|json[^.]*pars(e|ing)[^.]*error");
+                    + "|invalid[^.]*tool.?call[^.]*json|json[^.]*pars(e|ing)[^.]*error"
+                    // Some providers (observed on Ollama with certain models) template native tool
+                    // calls as XML-like tags internally and reject a malformed/mismatched one with an
+                    // XML parser error instead of a JSON one - same underlying problem (the model
+                    // produced a syntactically broken tool call), so it gets the same repair retry.
+                    + "|xml syntax error|element[^.]*closed by");
 
     private static final String PROVIDER_TOOL_REPAIR_GUIDANCE = """
-            The previous native tool call could not be parsed because its arguments JSON was malformed or incomplete.
-            Retry the required tool call using valid JSON.
-            Use the exact runtime schema.
+            The previous native tool call could not be parsed because it was syntactically malformed or incomplete
+            (invalid JSON arguments, or a broken/mismatched tool-call tag).
+            Retry the required tool call using the exact runtime schema and valid syntax.
             Omit optional fields when they have no value instead of sending empty placeholder strings.
             Continue working toward the original goal.
             """;
