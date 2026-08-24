@@ -3,6 +3,7 @@ package com.jarvis.memory.conversation;
 import com.jarvis.common.ai.AIJobType;
 import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.Brain;
+import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.common.memory.ConversationMessage;
@@ -54,7 +55,12 @@ public class DefaultConversationTitleService implements ConversationTitleService
         if (conversationId == null || conversationId.isBlank() || brain == null) {
             return;
         }
-        executor.submit(() -> maybeGenerateTitle(conversationId, brain));
+        // The executor's own thread never has CurrentUserContext set, so the userId bound to the
+        // calling thread (from the request that just finished) must be captured here and carried
+        // over explicitly - otherwise repository lookups on that thread silently fall back to
+        // CurrentUserContext.LOCAL_USER_ID and find nothing for a real authenticated user.
+        String userId = CurrentUserContext.requiredUserId();
+        executor.submit(() -> CurrentUserContext.runAs(userId, () -> maybeGenerateTitle(conversationId, brain)));
     }
 
     void maybeGenerateTitle(String conversationId, Brain brain) {

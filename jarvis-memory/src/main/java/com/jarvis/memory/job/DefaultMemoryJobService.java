@@ -1,5 +1,6 @@
 package com.jarvis.memory.job;
 
+import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.memory.agent.MemoryAgentService;
@@ -76,7 +77,8 @@ public class DefaultMemoryJobService implements MemoryJobService {
                 context.memoryContext().memories()
         );
         try {
-            executor.execute(() -> run(job));
+            String userId = CurrentUserContext.requiredUserId();
+            executor.execute(() -> CurrentUserContext.runAs(userId, () -> run(job)));
             publish(job, CognitiveEventType.MEMORY_JOB_QUEUED, "QUEUED", "Memory job queued", Map.of(
                     "queueSize", executor.getQueue().size(),
                     "memoryJobId", job.memoryJobId().toString()
