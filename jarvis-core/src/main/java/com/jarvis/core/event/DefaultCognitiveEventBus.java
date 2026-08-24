@@ -1,5 +1,6 @@
 package com.jarvis.core.event;
 
+import com.jarvis.api.websocket.CognitiveEventBroadcaster;
 import com.jarvis.common.ai.BrainType;
 import com.jarvis.common.diagnostics.ExecutionTracer;
 import com.jarvis.common.event.CognitiveEvent;
@@ -111,6 +112,19 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
     ) {
         LOGGER.info("[JARVIS][MEMORY][sourceRequestId={}] event={} status={} conversationId={} nodeId={} metadata={}",
                 requestId, event, status, conversationId, nodeId, metadata == null ? Map.of() : metadata);
+        CognitiveEvent cognitiveEvent = new CognitiveEvent(
+                requestId,
+                conversationId,
+                Instant.now(),
+                event,
+                status,
+                message,
+                null,
+                null,
+                nodeId,
+                metadata
+        );
+        CognitiveEventBroadcaster.publish(cognitiveEvent);
     }
 
     private record RequestScope(

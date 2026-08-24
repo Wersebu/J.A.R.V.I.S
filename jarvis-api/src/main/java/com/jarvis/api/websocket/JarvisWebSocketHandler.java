@@ -29,6 +29,7 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(JarvisWebSocketHandler.class);
     private static final String LOG_SUBSCRIPTION_ATTRIBUTE = "jarvisLogSubscription";
+    private static final String COGNITIVE_EVENT_SUBSCRIPTION_ATTRIBUTE = "jarvisCognitiveEventSubscription";
 
     private final ChatService chatService;
     private final ObjectMapper objectMapper;
@@ -84,6 +85,8 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
         AutoCloseable logSubscription = JarvisLogBroadcaster.subscribe(event -> send(session, event));
         session.getAttributes().put(LOG_SUBSCRIPTION_ATTRIBUTE, logSubscription);
+        AutoCloseable cognitiveEventSubscription = CognitiveEventBroadcaster.subscribe(event -> send(session, event));
+        session.getAttributes().put(COGNITIVE_EVENT_SUBSCRIPTION_ATTRIBUTE, cognitiveEventSubscription);
         send(session, new WebSocketStatus("CONNECTED", "Jarvis WebSocket online"));
     }
 
@@ -149,7 +152,8 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             mcpServerManager.handleWindowsBridgeDisconnected();
             send(session, new WebSocketStatus("MCP_STATUS_CHANGED", "Windows MCP bridge disconnected"));
         }
-        closeLogSubscription(session);
+        closeSubscription(session, LOG_SUBSCRIPTION_ATTRIBUTE);
+        closeSubscription(session, COGNITIVE_EVENT_SUBSCRIPTION_ATTRIBUTE);
     }
 
     /**
@@ -164,7 +168,8 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             mcpServerManager.handleWindowsBridgeDisconnected();
             send(session, new WebSocketStatus("MCP_STATUS_CHANGED", "Windows MCP bridge disconnected"));
         }
-        closeLogSubscription(session);
+        closeSubscription(session, LOG_SUBSCRIPTION_ATTRIBUTE);
+        closeSubscription(session, COGNITIVE_EVENT_SUBSCRIPTION_ATTRIBUTE);
     }
 
     private boolean handleBridgeMessage(WebSocketSession session, JsonNode root, String messageType) {
@@ -210,13 +215,13 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
         }
     }
 
-    private void closeLogSubscription(WebSocketSession session) {
-        Object subscription = session.getAttributes().remove(LOG_SUBSCRIPTION_ATTRIBUTE);
+    private void closeSubscription(WebSocketSession session, String attributeName) {
+        Object subscription = session.getAttributes().remove(attributeName);
         if (subscription instanceof AutoCloseable closeable) {
             try {
                 closeable.close();
             } catch (Exception exception) {
-                LOGGER.debug("[JARVIS] Could not close log subscription: {}", exception.getMessage());
+                LOGGER.debug("[JARVIS] Could not close subscription {}: {}", attributeName, exception.getMessage());
             }
         }
     }
