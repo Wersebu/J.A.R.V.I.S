@@ -411,11 +411,14 @@ public class DefaultCodingService implements CodingService {
     }
 
     private Path resolveInsideWorkspace(WorkspaceState state, String path) {
-        Path resolved = state.root.resolve(path == null ? "" : path).normalize();
+        Path resolved = state.root.resolve(safeRelativePath(path)).normalize();
         Path real;
         try {
             real = resolved.toRealPath();
         } catch (IOException exception) {
+            if (!resolved.toAbsolutePath().normalize().startsWith(state.root)) {
+                throw new IllegalArgumentException("Path escapes the registered coding workspace.");
+            }
             throw new IllegalArgumentException("Path does not exist inside workspace: " + path);
         }
         if (!real.startsWith(state.root)) {
@@ -425,7 +428,7 @@ public class DefaultCodingService implements CodingService {
     }
 
     private Path resolveCreatableInsideWorkspace(WorkspaceState state, String path) {
-        Path resolved = state.root.resolve(path).normalize();
+        Path resolved = state.root.resolve(safeRelativePath(path)).normalize();
         Path parent = resolved.getParent();
         if (parent == null) {
             throw new IllegalArgumentException("Invalid path: " + path);
@@ -439,6 +442,15 @@ public class DefaultCodingService implements CodingService {
             throw new IllegalArgumentException("Invalid path: " + path, exception);
         }
         return resolved;
+    }
+
+    private Path safeRelativePath(String rawPath) {
+        String normalized = rawPath == null ? "" : rawPath.replace('\\', '/');
+        Path path = Path.of(normalized).normalize();
+        if (path.isAbsolute()) {
+            throw new IllegalArgumentException("Absolute paths are not allowed inside a coding workspace operation.");
+        }
+        return path;
     }
 
     private FileContent readResolvedFile(WorkspaceState state, Path file, Integer startLine, Integer endLine) {
