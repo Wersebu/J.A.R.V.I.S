@@ -90,13 +90,22 @@ public class NativeToolSchemaMapper {
                 : readOnly ? List.of(ToolOperationRole.DISCOVERY, ToolOperationRole.SELECTION, ToolOperationRole.READ,
                 ToolOperationRole.SEARCH, ToolOperationRole.INSPECT, ToolOperationRole.VERIFY, ToolOperationRole.UNKNOWN)
                 : List.of();
+        Map<String, String> rejectedTools = new LinkedHashMap<>();
         for (ToolDefinition definition : toolRegistry.definitions()) {
+            boolean storeAuditScope = resolvedIntent == ToolIntent.STORE_AUDIT;
+            if (storeAuditScope && !isStoreAuditToolFamily(definition.name())) {
+                for (ToolOperationDefinition operation : definition.operations()) {
+                    String functionName = definition.name().toLowerCase(Locale.ROOT) + "__" + operation.name().toLowerCase(Locale.ROOT);
+                    rejectedTools.put(functionName, "STORE_AUDIT workflow scope: unrelated tool family");
+                }
+                continue;
+            }
             for (ToolOperationDefinition operation : definition.operations()) {
                 values.add(toNative(definition, operation));
             }
         }
         return new ToolScopeResolution(intent, resolvedIntent, affinity.provider(), affinity.source(),
-                selectedRoles, values.stream().map(NativeToolDefinition::name).toList(), Map.of(), values);
+                selectedRoles, values.stream().map(NativeToolDefinition::name).toList(), rejectedTools, values);
     }
 
     /**
@@ -589,6 +598,26 @@ public class NativeToolSchemaMapper {
             return "number";
         }
         return value == null ? "null" : value.getClass().getSimpleName();
+    }
+
+    // Only these tool families are ever relevant to a Store Audit scheduling workflow (create/
+    // verify/geolocate/schedule a canonical store dataset, read the required workflow document, and
+    // optionally notify the user of progress) - never Roblox/marketplace/web or any other MCP
+    // provider. Deliberately narrow and explicit rather than role-based: this is the one place scope
+    // is actually enforced (see #resolveScope's class javadoc for why every other ToolIntent still
+    // gets the complete runtime catalog), so it must never accidentally exclude a tool a real Store
+    // Audit turn needs.
+    private static final Set<String> STORE_AUDIT_TOOL_FAMILIES = Set.of("storedataset", "knowledge", "location", "system");
+
+    /**
+     * Reports whether {@code toolName} belongs to one of the tool families a Store Audit workflow
+     * can legitimately need (see {@link #STORE_AUDIT_TOOL_FAMILIES}).
+     *
+     * @param toolName raw tool definition name (any case)
+     * @return true when this tool family is in scope for a Store Audit workflow
+     */
+    private boolean isStoreAuditToolFamily(String toolName) {
+        return STORE_AUDIT_TOOL_FAMILIES.contains(toolName == null ? "" : toolName.toLowerCase(Locale.ROOT));
     }
 
     private NativeToolDefinition toNative(ToolDefinition definition, ToolOperationDefinition operation) {

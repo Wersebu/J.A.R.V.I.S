@@ -123,7 +123,8 @@ public class ToolCallingStage implements PipelineStage {
                 toolBasePrompt(context),
                 context.brain(),
                 context.effectiveKnowledgeMode(),
-                context.images()
+                context.images(),
+                conversationContextSummary(context)
         ));
         String answer;
         if (!result.handled()) {
@@ -255,7 +256,8 @@ public class ToolCallingStage implements PipelineStage {
     private boolean isStuckTermination(ToolLoopTerminationReason reason) {
         return switch (reason) {
             case MAX_TURNS_REACHED, TIMEOUT, MAX_FAILURES_REACHED, MAX_OPERATION_REPEATS_REACHED,
-                    EMPTY_MODEL_RESPONSE, PROVIDER_FAILURE, MCP_FAILURE, INCOMPLETE_GOAL -> true;
+                    EMPTY_MODEL_RESPONSE, PROVIDER_FAILURE, MCP_FAILURE, INCOMPLETE_GOAL,
+                    NO_NATIVE_TOOL_CALL_PROGRESS -> true;
             default -> false;
         };
     }
@@ -278,6 +280,7 @@ public class ToolCallingStage implements PipelineStage {
             case PROVIDER_FAILURE -> "Nie udalo sie ukonczyc zadania: dostawca modelu zglosil blad podczas generowania wywolania narzedzia.";
             case MCP_FAILURE -> "Nie udalo sie ukonczyc zadania: wszystkie wywolane narzedzia MCP zakonczyly sie bledem.";
             case INCOMPLETE_GOAL -> "Nie udalo sie w pelni ukonczyc zadania: cel nie zostal potwierdzony jako spelniony.";
+            case NO_NATIVE_TOOL_CALL_PROGRESS -> "Nie udalo sie ukonczyc zadania: model przez dwie kolejne tury nie wykonal zadnego wywolania narzedzia i nie przyniosl nowego dowodu.";
             default -> "Nie udalo sie ukonczyc zadania.";
         };
     }
@@ -1284,6 +1287,30 @@ public class ToolCallingStage implements PipelineStage {
             appendMainModelToolRequest(goal, reason, builder);
         }
         return builder.toString();
+    }
+
+    /**
+     * Builds a plain-text, role/content-only summary of this conversation's recent turns (never the
+     * main model's own large system prompt, and never any assistant "thinking" - {@link
+     * ConversationMessage#content} is always the already-persisted final visible message) for the
+     * native tool loop to carry forward. Fixes a real multi-turn data-loss gap: {@link
+     * NativeToolLoopService} builds its own system prompt from scratch and previously never saw any
+     * conversation history at all, only the current turn's message - so data given in an earlier
+     * turn (e.g. a pasted list of store addresses) was invisible by the time a later turn's tool call
+     * needed it, and the model had no way to supply it except inventing something.
+     *
+     * @param context pipeline context
+     * @return plain-text conversation summary, blank when there is no prior history
+     */
+    private String conversationContextSummary(PipelineContext context) {
+        if (context.conversation().isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder();
+        for (ConversationMessage message : context.conversation()) {
+            builder.append(message.role().name()).append(": ").append(message.content()).append("\n\n");
+        }
+        return builder.toString().strip();
     }
 
     private void appendMainModelToolRequest(PipelineContext context, StringBuilder builder) {

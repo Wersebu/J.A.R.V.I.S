@@ -31,6 +31,13 @@ public enum ToolLoopTerminationReason {
     INCOMPLETE_GOAL,
     /** The tool-less final-synthesis turn itself asked for more tools instead of answering. */
     FINAL_SYNTHESIS_REQUESTED_MORE_TOOLS,
+    /**
+     * The model returned two consecutive turns with zero native tool calls, no new evidence, and no
+     * workflow state change (whether via plain text, a live-evidence recovery nudge, or any other
+     * re-entry guidance) - stopped as a hard backstop rather than bouncing the same corrective
+     * message at the model until the turn/timeout budget is exhausted.
+     */
+    NO_NATIVE_TOOL_CALL_PROGRESS,
     /** No other reason could be determined from the available state. */
     UNKNOWN
 }

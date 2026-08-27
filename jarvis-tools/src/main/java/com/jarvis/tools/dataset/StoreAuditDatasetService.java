@@ -278,7 +278,7 @@ public class StoreAuditDatasetService {
                 rejected.add(new RejectedCandidate(index, "Missing fullAddress"));
                 continue;
             }
-            String sourceAttachmentId = resolveSourceAttachmentId(candidate, realAttachmentIds);
+            String sourceAttachmentId = resolveSourceAttachmentId(candidate, realAttachmentIds, effectiveAttachmentIds);
             if (!allowedAttachmentSet.isEmpty()) {
                 if (sourceAttachmentId.isBlank() || !allowedAttachmentSet.contains(sourceAttachmentId)) {
                     rejected.add(new RejectedCandidate(index,
@@ -471,13 +471,27 @@ public class StoreAuditDatasetService {
      * (the model is never trusted to also supply the correct real id itself in that case - the
      * index is Core-owned, not merely a hint), otherwise falls back to whatever {@link
      * CandidateRecord#sourceAttachmentId()} string the caller provided directly (explicit typed-list
-     * input, or a caller that already resolved the real id itself).
+     * input, or a caller that already resolved the real id itself) - UNLESS {@code
+     * allowedAttachmentIds} is itself empty, in which case that fallback value is never trusted
+     * either (see the {@code allowedAttachmentIds.isEmpty()} branch below).
      *
      * @param candidate candidate record
-     * @param realAttachmentIds Core's real, ordered current-message attachment ids
-     * @return resolved real attachment id, blank when neither an index nor an id was supplied
+     * @param realAttachmentIds Core's real, ordered current-message attachment ids - used only for
+     *         index-based resolution, which must never fall back to a merely-declared list (an index
+     *         references a real attachment position, not a model claim)
+     * @param allowedAttachmentIds the caller's own effective allowed-id set for this call (Core's
+     *         real attachments when registered, otherwise the model-declared list - exactly what the
+     *         caller itself validates {@code sourceAttachmentId} against right after this call
+     *         returns) - when this is genuinely empty, no attachment of any kind is known for this
+     *         call, so a non-blank {@code candidate.sourceAttachmentId()} could only be fabricated
+     * @return resolved real attachment id, blank when neither an index nor an id was supplied, or
+     *         when no attachment is known for this call at all
      */
-    private String resolveSourceAttachmentId(CandidateRecord candidate, List<String> realAttachmentIds) {
+    private String resolveSourceAttachmentId(
+            CandidateRecord candidate,
+            List<String> realAttachmentIds,
+            List<String> allowedAttachmentIds
+    ) {
         Integer position = candidate.sourceAttachmentIndex();
         if (position != null) {
             // Range already validated by validateAttachmentIndices before this is ever called -
@@ -485,6 +499,17 @@ public class StoreAuditDatasetService {
             if (position >= 1 && position <= realAttachmentIds.size()) {
                 return realAttachmentIds.get(position - 1);
             }
+            return "";
+        }
+        if (allowedAttachmentIds.isEmpty()) {
+            // Text-only mode: no attachment (real or even merely declared) is known for this call at
+            // all, so any non-blank value the model supplied here can only be fabricated - there is
+            // nothing real or declared it could correctly be echoing back. Never store it. This
+            // record's provenance is the user-typed text itself, represented as a blank
+            // sourceAttachmentId exactly like every other text-only-mode record (the caller's own
+            // allowedAttachmentSet.isEmpty() branch immediately after this call accepts that blank
+            // value), never a model-invented id that would read back as if it pointed at a real
+            // attachment that was never actually provided or declared.
             return "";
         }
         return safe(candidate.sourceAttachmentId());
@@ -540,7 +565,7 @@ public class StoreAuditDatasetService {
                 rejected.add(new RejectedCandidate(index, "Missing fullAddress"));
                 continue;
             }
-            String sourceAttachmentId = resolveSourceAttachmentId(candidate, declared);
+            String sourceAttachmentId = resolveSourceAttachmentId(candidate, declared, declared);
             if (!declared.isEmpty()) {
                 if (sourceAttachmentId.isBlank() || !declaredSet.contains(sourceAttachmentId)) {
                     rejected.add(new RejectedCandidate(index,

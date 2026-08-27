@@ -63,6 +63,27 @@ class StoreAuditDatasetServiceTest {
         assertThat(outcome.rejected().get(0).reason()).contains("provenance");
     }
 
+    // Regression: text-only mode (no real Core-registered attachments AND no declared
+    // sourceAttachmentIds at all - the exact reported production shape, registeredAttachments=0)
+    // must never trust a model-supplied sourceAttachmentId. There is nothing real or declared it
+    // could correctly be echoing back, so any non-blank value can only be fabricated (the model was
+    // observed considering a literal sourceAttachmentId=1 with zero registered attachments) and must
+    // be normalized to blank - exactly the provenance a genuinely user-typed list gets.
+    @Test
+    void textOnlyModeNeverTrustsAModelSuppliedSourceAttachmentId() {
+        StoreAuditDatasetService service = service();
+        List<CandidateRecord> candidates = List.of(
+                new CandidateRecord("Biedronka", "Miasto Testowe", "Ulica Testowa", "1",
+                        "00-001", "Ulica Testowa 1, Miasto Testowe", "1", 1)
+        );
+
+        CreateOutcome outcome = service.createDataset("request-1", 0, 0, List.of(), candidates);
+
+        assertThat(outcome.success()).isTrue();
+        assertThat(outcome.dataset().stores()).hasSize(1);
+        assertThat(outcome.dataset().stores().get(0).sourceAttachmentId()).isBlank();
+    }
+
     // TEST G: model attempts to introduce a StoreRecord without source provenance -> rejected.
     @Test
     void createDatasetRejectsDeclaredAttachmentIdsNotKnownToCoreAsRealAttachments() {

@@ -21,6 +21,19 @@ import org.springframework.boot.context.properties.bind.ConstructorBinding;
  *        keyword classifier alone. A full Store Audit pass (start/append/finalize/verify/read
  *        workflow doc/geocode/retry/route/optimize/submit/retry/final answer) can easily need more
  *        turns than a plain web-search floor
+ * @param maxConsecutiveNoToolProgressTurns hard backstop across every "model returned text with zero
+ *        native tool calls, re-enter the loop" path (a text-shaped TOOL_REQUEST re-entry, the live
+ *        evidence gate, the workflow/goal completion gate, ...) - once this many CONSECUTIVE turns in
+ *        a row produced neither a tool call nor any other real progress, the loop stops immediately
+ *        with {@link com.jarvis.tools.runtime.ToolLoopTerminationReason#NO_NATIVE_TOOL_CALL_PROGRESS}
+ *        instead of bouncing the same corrective system message at the model until the turn/timeout
+ *        budget runs out. Reset the instant any turn actually calls a tool (successful or not - a
+ *        real attempt is real engagement, unlike repeating plain text)
+ * @param maxLiveEvidenceRecoveryAttempts bounded retry budget specifically for the "final answer
+ *        requires live evidence, but the loop has collected none yet" recovery nudge - mirrors the
+ *        existing malformed-continuation/completion-gate retry budgets so this one specific recovery
+ *        reason can never loop unboundedly on its own even before the general {@code
+ *        maxConsecutiveNoToolProgressTurns} backstop above would catch it
  */
 @ConfigurationProperties(prefix = "jarvis.tools")
 public record ToolRuntimeProperties(
@@ -31,7 +44,9 @@ public record ToolRuntimeProperties(
         int timeoutSeconds,
         String runtime,
         int maxConsecutiveOperationRepeats,
-        int statefulWorkflowMinToolBudget
+        int statefulWorkflowMinToolBudget,
+        int maxConsecutiveNoToolProgressTurns,
+        int maxLiveEvidenceRecoveryAttempts
 ) {
 
     /**
@@ -47,6 +62,26 @@ public record ToolRuntimeProperties(
         runtime = runtime == null || runtime.isBlank() ? "native" : runtime.trim().toLowerCase(java.util.Locale.ROOT);
         maxConsecutiveOperationRepeats = maxConsecutiveOperationRepeats > 0 ? maxConsecutiveOperationRepeats : 5;
         statefulWorkflowMinToolBudget = statefulWorkflowMinToolBudget > 0 ? statefulWorkflowMinToolBudget : 20;
+        maxConsecutiveNoToolProgressTurns = maxConsecutiveNoToolProgressTurns > 0 ? maxConsecutiveNoToolProgressTurns : 2;
+        maxLiveEvidenceRecoveryAttempts = maxLiveEvidenceRecoveryAttempts > 0 ? maxLiveEvidenceRecoveryAttempts : 3;
+    }
+
+    /**
+     * Backward-compatible constructor used by older tests/call sites built before {@code
+     * maxConsecutiveNoToolProgressTurns}/{@code maxLiveEvidenceRecoveryAttempts} existed.
+     */
+    public ToolRuntimeProperties(
+            Boolean enabled,
+            int maxCallsFast,
+            int maxCallsResearch,
+            int maxConsecutiveFailures,
+            int timeoutSeconds,
+            String runtime,
+            int maxConsecutiveOperationRepeats,
+            int statefulWorkflowMinToolBudget
+    ) {
+        this(enabled, maxCallsFast, maxCallsResearch, maxConsecutiveFailures, timeoutSeconds, runtime,
+                maxConsecutiveOperationRepeats, statefulWorkflowMinToolBudget, 2, 3);
     }
 
     /**

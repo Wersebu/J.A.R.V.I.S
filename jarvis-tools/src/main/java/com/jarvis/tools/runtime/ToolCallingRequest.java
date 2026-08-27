@@ -23,6 +23,15 @@ import java.util.Map;
  *         - never copied. Empty when the current message has no images, or when the active model
  *         does not support vision (that gate already ran upstream in {@code ModelExecutionStage}
  *         before a {@code TOOL_REQUEST} could even reach the tool loop).
+ * @param conversationContext plain-text recent conversation turns (role/content pairs only - never
+ *         the main model's own system prompt or private thinking), so data given in an EARLIER turn
+ *         of a multi-turn workflow (e.g. a pasted list of store addresses) is still visible when a
+ *         LATER turn's goal only refers to it in passing (e.g. "the provided list"). {@link
+ *         NativeToolLoopService} never re-sends the huge main-model system prompt itself - only this
+ *         bounded conversation slice, already computed upstream for the main model's own prompt and
+ *         simply not previously threaded through to the native tool loop at all. Blank when the
+ *         caller has no conversation history to offer (fresh conversation, or an older call site
+ *         built before this field existed)
  */
 public record ToolCallingRequest(
         String requestId,
@@ -34,7 +43,8 @@ public record ToolCallingRequest(
         String basePrompt,
         Brain brain,
         KnowledgeMode knowledgeMode,
-        List<ImageAttachment> images
+        List<ImageAttachment> images,
+        String conversationContext
 ) {
 
     /**
@@ -43,6 +53,37 @@ public record ToolCallingRequest(
     public ToolCallingRequest {
         context = context == null ? Map.of() : Map.copyOf(context);
         images = images == null ? List.of() : List.copyOf(images);
+        conversationContext = conversationContext == null ? "" : conversationContext;
+    }
+
+    /**
+     * Backward-compatible constructor for call sites built before {@code conversationContext}
+     * existed.
+     *
+     * @param requestId request identifier
+     * @param conversationId conversation identifier
+     * @param userMessage latest user message
+     * @param goal external-capability goal selected by the main model
+     * @param reason main model decision reason summary
+     * @param context structured context from the main model's tool request
+     * @param basePrompt existing prompt context
+     * @param brain selected brain
+     * @param knowledgeMode effective knowledge mode
+     * @param images current-message images
+     */
+    public ToolCallingRequest(
+            String requestId,
+            String conversationId,
+            String userMessage,
+            String goal,
+            String reason,
+            Map<String, Object> context,
+            String basePrompt,
+            Brain brain,
+            KnowledgeMode knowledgeMode,
+            List<ImageAttachment> images
+    ) {
+        this(requestId, conversationId, userMessage, goal, reason, context, basePrompt, brain, knowledgeMode, images, "");
     }
 
     /**
@@ -63,7 +104,7 @@ public record ToolCallingRequest(
             Brain brain,
             KnowledgeMode knowledgeMode
     ) {
-        this(requestId, conversationId, userMessage, "", "", Map.of(), basePrompt, brain, knowledgeMode, List.of());
+        this(requestId, conversationId, userMessage, "", "", Map.of(), basePrompt, brain, knowledgeMode, List.of(), "");
     }
 
     /**
@@ -88,7 +129,7 @@ public record ToolCallingRequest(
             Brain brain,
             KnowledgeMode knowledgeMode
     ) {
-        this(requestId, conversationId, userMessage, goal, reason, Map.of(), basePrompt, brain, knowledgeMode, List.of());
+        this(requestId, conversationId, userMessage, goal, reason, Map.of(), basePrompt, brain, knowledgeMode, List.of(), "");
     }
 
     /**
@@ -115,6 +156,6 @@ public record ToolCallingRequest(
             KnowledgeMode knowledgeMode,
             List<ImageAttachment> images
     ) {
-        this(requestId, conversationId, userMessage, goal, reason, Map.of(), basePrompt, brain, knowledgeMode, images);
+        this(requestId, conversationId, userMessage, goal, reason, Map.of(), basePrompt, brain, knowledgeMode, images, "");
     }
 }

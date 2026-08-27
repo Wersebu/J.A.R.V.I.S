@@ -53,11 +53,41 @@ public class InformationFreshnessEvaluator {
 
     private boolean containsAny(String value, Set<String> terms) {
         for (String term : terms) {
-            if (value.contains(term)) {
+            if (containsWord(value, term)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /**
+     * Reports whether {@code term} occurs in {@code value} at a real word boundary on both sides -
+     * plain {@link String#contains} matches inside an unrelated longer word (e.g. the English term
+     * "now" inside the Polish place name "Nowej", as in "Nowa Wola" - the exact false positive that
+     * misclassified a plain schedule-creation request as requiring live web evidence and drove the
+     * tool loop into an unbounded "live evidence required" retry cycle). {@code term} may itself
+     * contain spaces (e.g. "po ile") - a space is not a letter/digit, so the boundary check still
+     * holds at each end.
+     *
+     * @param value normalized haystack text
+     * @param term normalized term to look for
+     * @return true when {@code term} appears as a whole-word (or whole-phrase) match
+     */
+    private boolean containsWord(String value, String term) {
+        int fromIndex = 0;
+        while (true) {
+            int index = value.indexOf(term, fromIndex);
+            if (index < 0) {
+                return false;
+            }
+            boolean leftBoundary = index == 0 || !Character.isLetterOrDigit(value.charAt(index - 1));
+            int endIndex = index + term.length();
+            boolean rightBoundary = endIndex == value.length() || !Character.isLetterOrDigit(value.charAt(endIndex));
+            if (leftBoundary && rightBoundary) {
+                return true;
+            }
+            fromIndex = index + 1;
+        }
     }
 
     private String normalize(String value) {
