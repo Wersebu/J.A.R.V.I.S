@@ -170,10 +170,18 @@ public class ToolCallingStage implements PipelineStage {
     }
 
     private Map<String, Object> toolContext(PipelineContext context, MainModelAction recoveredAction) {
+        Map<String, Object> merged = new java.util.LinkedHashMap<>();
         if (recoveredAction != null && !recoveredAction.context().isEmpty()) {
-            return recoveredAction.context();
+            merged.putAll(recoveredAction.context());
+        } else {
+            merged.putAll(metadataMap(context.metadata().get("toolContext")));
         }
-        return metadataMap(context.metadata().get("toolContext"));
+        if (!context.request().activeCodingWorkspaceId().isBlank()) {
+            merged.put("activeCodingWorkspaceId", context.request().activeCodingWorkspaceId());
+            merged.put("activeCodingWorkspaceName", context.request().activeCodingWorkspaceName());
+            merged.put("activeCodingWorkspaceHost", context.request().activeCodingWorkspaceHost());
+        }
+        return Map.copyOf(merged);
     }
 
     /**

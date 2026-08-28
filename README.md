@@ -629,6 +629,16 @@ The dataset is conversation-scoped, not just request-scoped (`StoreAuditDataset#
 
 **Tool name lookup is case-insensitive**: native function names sent to the model are always lowercased (`NativeToolSchemaMapper` builds e.g. `storedataset__create_dataset` from the tool's own `getName()`), and the model echoes that lowercased name back verbatim on every call. `StoreDatasetTool#getName()` returns `"storeDataset"` (mixed case) for readability in logs/docs, which meant every real `storeDataset.CREATE_DATASET` call the model made was rejected with `Tool not registered: storedataset` - the registry (`DefaultToolManager`) was keyed by the tool's exact-case name, so the lowercase name the model actually sent never matched. In production this made the raw-geocode guard above actively harmful: the model would try `storeDataset.CREATE_DATASET` (as instructed), get an opaque "not registered" error, retry it a couple of times, give up, fall back to raw `location.GEOCODE`, and then run straight into the guard - burning most of the tool-call budget on calls that could never have succeeded. `DefaultToolManager` now normalizes both registration and lookup keys to lowercase, so any tool's `getName()` casing is safe regardless of how it is echoed back by the model.
 
+### Coding Workspace Tools
+
+The Coding Agent is exposed to the ordinary chat/model pipeline as the native `coding` tool family. Windows UI assigns an active Coding Workspace to the current conversation and sends its `workspaceId`, display name, and host metadata with every chat stream request. Core injects that workspace into tool execution; the model receives the active workspace metadata but does not choose or change the workspace itself.
+
+The model-facing functions are `coding__workspace_inspect`, `coding__file_list`, `coding__file_search`, `coding__file_read`, `coding__file_write`, `coding__file_patch`, `coding__directory_create`, `coding__file_move`, `coding__file_delete`, `coding__git_status`, `coding__git_diff`, `coding__build_detect`, `coding__command_start`, `coding__command_poll`, `coding__command_cancel`, `coding__build_run`, and `coding__test_run`. They all delegate to `CodingService`; there is no separate filesystem/process implementation in the chat runtime.
+
+For `host=WINDOWS`, `CodingService` delegates through the existing Windows Bridge using `CODING_EXECUTOR_REQUEST` with `server=coding`, so Core never interprets `D:\...` paths with Ubuntu `java.nio.file` and never falls back to local filesystem/process execution. For `host=SERVER`, the existing server-local implementation remains available. Knowledge tools remain scoped to the persisted Knowledge Workspace and must not be used as a fallback for project files in an active Coding Workspace.
+
+Safe diagnostic logs are emitted without token or file-content dumps: `[NATIVE_TOOL_SCHEMA]` records the count and names of tools passed to the provider plus the active workspace id, `[NATIVE_TOOL_CALL]` records the selected native function, and `[CODING_TOOL]` records the delegated coding operation and workspace id.
+
 ### Web Search
 
 J.A.R.V.I.S. can search current web information through a local self-hosted SearXNG instance. The model does not call SearXNG directly - the flow is:

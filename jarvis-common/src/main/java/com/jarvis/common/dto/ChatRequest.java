@@ -13,13 +13,19 @@ import java.util.List;
  * @param clientRequestTimestamp timestamp captured by the client when Send was pressed
  * @param knowledgeMode requested knowledge strategy
  * @param attachments temporary attachment references to include as data context
+ * @param activeCodingWorkspaceId user-selected Coding Workspace bound to this chat turn
+ * @param activeCodingWorkspaceName display name of the selected Coding Workspace
+ * @param activeCodingWorkspaceHost host of the selected Coding Workspace
  */
 public record ChatRequest(
         String conversationId,
         String message,
         Instant clientRequestTimestamp,
         KnowledgeMode knowledgeMode,
-        List<AttachmentReference> attachments
+        List<AttachmentReference> attachments,
+        String activeCodingWorkspaceId,
+        String activeCodingWorkspaceName,
+        String activeCodingWorkspaceHost
 ) {
 
     /**
@@ -28,6 +34,9 @@ public record ChatRequest(
     public ChatRequest {
         knowledgeMode = knowledgeMode == null ? KnowledgeMode.AUTO : knowledgeMode;
         attachments = attachments == null ? List.of() : List.copyOf(attachments);
+        activeCodingWorkspaceId = activeCodingWorkspaceId == null ? "" : activeCodingWorkspaceId;
+        activeCodingWorkspaceName = activeCodingWorkspaceName == null ? "" : activeCodingWorkspaceName;
+        activeCodingWorkspaceHost = activeCodingWorkspaceHost == null ? "" : activeCodingWorkspaceHost;
     }
 
     /**
@@ -38,7 +47,7 @@ public record ChatRequest(
      * @param clientRequestTimestamp timestamp captured by the client when Send was pressed
      */
     public ChatRequest(String conversationId, String message, Instant clientRequestTimestamp) {
-        this(conversationId, message, clientRequestTimestamp, KnowledgeMode.AUTO, List.of());
+        this(conversationId, message, clientRequestTimestamp, KnowledgeMode.AUTO, List.of(), "", "", "");
     }
 
     /**
@@ -60,6 +69,19 @@ public record ChatRequest(
      * @param knowledgeMode requested knowledge strategy
      */
     public ChatRequest(String conversationId, String message, Instant clientRequestTimestamp, KnowledgeMode knowledgeMode) {
-        this(conversationId, message, clientRequestTimestamp, knowledgeMode, List.of());
+        this(conversationId, message, clientRequestTimestamp, knowledgeMode, List.of(), "", "", "");
+    }
+
+    /**
+     * Creates a chat request with explicit knowledge mode and attachments.
+     */
+    public ChatRequest(
+            String conversationId,
+            String message,
+            Instant clientRequestTimestamp,
+            KnowledgeMode knowledgeMode,
+            List<AttachmentReference> attachments
+    ) {
+        this(conversationId, message, clientRequestTimestamp, knowledgeMode, attachments, "", "", "");
     }
 }

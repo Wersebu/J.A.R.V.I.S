@@ -85,7 +85,10 @@ public class PipelineContextFactory {
                         request.message(),
                         request.clientRequestTimestamp(),
                         request.knowledgeMode(),
-                        request.attachments()
+                        request.attachments(),
+                        request.activeCodingWorkspaceId(),
+                        request.activeCodingWorkspaceName(),
+                        request.activeCodingWorkspaceHost()
                 ),
                 modelEventSink,
                 eventSink

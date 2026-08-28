@@ -270,7 +270,7 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
                         request.requestId(),
                         action.reason(),
                         "Native LLM tool loop step " + step,
-                        action.arguments()
+                        executionArguments(request, action)
                 );
 
                 publish(request, CognitiveEventType.TOOL_EXECUTION_STARTED, "EXECUTING", "Tool execution started",
@@ -1297,6 +1297,17 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
             values.put("contentPreview", abbreviate(preview));
         }
         return values;
+    }
+
+    private Map<String, Object> executionArguments(ToolCallingRequest request, ToolAction action) {
+        if (!"coding".equalsIgnoreCase(action.tool())) {
+            return action.arguments();
+        }
+        Map<String, Object> arguments = new HashMap<>(action.arguments());
+        arguments.put("_activeCodingWorkspaceId", String.valueOf(request.context().getOrDefault("activeCodingWorkspaceId", "")));
+        arguments.put("_activeCodingWorkspaceName", String.valueOf(request.context().getOrDefault("activeCodingWorkspaceName", "")));
+        arguments.put("_activeCodingWorkspaceHost", String.valueOf(request.context().getOrDefault("activeCodingWorkspaceHost", "")));
+        return Map.copyOf(arguments);
     }
 
     private void saveDebug(ToolCallingRequest request, ToolIntent intent, List<ToolRuntimeStep> steps, String status, List<String> errors) {

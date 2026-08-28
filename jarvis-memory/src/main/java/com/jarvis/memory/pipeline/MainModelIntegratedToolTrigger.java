@@ -47,18 +47,22 @@ public class MainModelIntegratedToolTrigger implements ToolTriggerStrategy {
                 + "External capabilities are available for:\n"
                 + "- reading and modifying persistent knowledge,\n"
                 + "- accessing external systems,\n"
+                + "- reading/searching/modifying files in the user-selected Coding Workspace,\n"
                 + "- searching the live public web through local SearXNG,\n"
                 + "- executing approved actions.\n\n"
                 + "Return exactly one JSON object and no user-facing prose outside JSON.\n"
                 + "Allowed types: FINAL_ANSWER, TOOL_REQUEST, CLARIFICATION.\n\n"
                 + "Core advisory signal: " + detectedIntent + "\n"
                 + "Required information freshness: " + freshness + "\n"
+                + codingWorkspacePolicy(context)
                 + advisoryRule(detectedIntent)
                 + "\n"
                 + "Rules:\n"
                 + "- If the request can be answered reliably from current conversation, supplied knowledge and your own reasoning, return FINAL_ANSWER.\n"
                 + "- If fulfilling the request requires performing an action, modifying persistent state, reading data not already supplied, checking an external system, checking current prices/rates/market data, or using an external capability, return TOOL_REQUEST.\n"
                 + "- Current prices, used-market prices, exchange rates, commodity prices, gold prices, news, releases, and online facts are not available from memory alone. Return TOOL_REQUEST for them.\n"
+                + "- If an active Coding Workspace is listed above and the user asks about project files, source code, file contents, project structure, build, tests, commands, or Git, return TOOL_REQUEST so Core can use coding_* tools.\n"
+                + "- KnowledgeTool searches the persisted Knowledge Workspace only. It is not a filesystem or Coding Workspace file search fallback.\n"
                 + "- If Required information freshness is MUST_BE_LIVE, your training knowledge may be stale. Absence from your memory is NOT evidence that an entity does not exist.\n"
                 + "- For MUST_BE_LIVE, do not return FINAL_ANSWER about the current world unless current evidence is already supplied in the prompt.\n"
                 + "- Do not answer that permissions/tools are unavailable when the policy says an external capability is needed. Return TOOL_REQUEST and let Core execute the tool.\n"
@@ -111,6 +115,16 @@ public class MainModelIntegratedToolTrigger implements ToolTriggerStrategy {
                 + "(e.g. \"sprawdz w zapisanej wiedzy...\") - this section only concerns the images attached to "
                 + "THIS message, not the separate Knowledge Workspace.\n"
                 + "=== END CURRENT MESSAGE ATTACHMENTS ===\n";
+    }
+
+    private String codingWorkspacePolicy(PipelineContext context) {
+        if (context.request().activeCodingWorkspaceId().isBlank()) {
+            return "Active Coding Workspace: none selected.\n";
+        }
+        return "Active Coding Workspace: id=" + context.request().activeCodingWorkspaceId()
+                + ", name=" + context.request().activeCodingWorkspaceName()
+                + ", host=" + context.request().activeCodingWorkspaceHost()
+                + ". The user selected this workspace; do not ask the model to choose or change it.\n";
     }
 
     private String advisoryRule(ToolIntent detectedIntent) {

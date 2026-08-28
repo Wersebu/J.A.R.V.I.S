@@ -405,6 +405,36 @@ public class DefaultCodingService implements CodingService {
     }
 
     @Override
+    public CommandResult commandPoll(String workspaceId, String processId) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        if (blank(processId)) {
+            throw new IllegalArgumentException("Process id is required.");
+        }
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            return commandResult(windowsRequest("command_poll", Map.of(
+                    "rootPath", state.windowsPath,
+                    "processId", processId
+            ), WINDOWS_FAST_TIMEOUT), "");
+        }
+        throw new IllegalStateException("Asynchronous command polling is only available through the Windows Coding Executor.");
+    }
+
+    @Override
+    public CommandResult commandCancel(String workspaceId, String processId) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        if (blank(processId)) {
+            throw new IllegalArgumentException("Process id is required.");
+        }
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            return commandResult(windowsRequest("command_cancel", Map.of(
+                    "rootPath", state.windowsPath,
+                    "processId", processId
+            ), WINDOWS_FAST_TIMEOUT), "");
+        }
+        throw new IllegalStateException("Asynchronous command cancellation is only available through the Windows Coding Executor.");
+    }
+
+    @Override
     public GitSnapshot gitSnapshot(String workspaceId) {
         WorkspaceState state = requireWorkspace(workspaceId);
         if (state.host == CodingService.WorkspaceHost.WINDOWS) {

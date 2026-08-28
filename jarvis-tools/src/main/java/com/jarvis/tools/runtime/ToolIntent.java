@@ -11,6 +11,7 @@ public enum ToolIntent {
     READ_DOCUMENT,
     SEARCH_KNOWLEDGE,
     SEARCH_WEB,
+    CODING_WORKSPACE,
     CONNECTED_SYSTEM_INSPECTION,
     LOCATION,
     /**

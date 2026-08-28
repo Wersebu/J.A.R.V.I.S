@@ -153,6 +153,9 @@ public class NativeToolLoopService {
         if (definitions.isEmpty()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
         }
+        LOGGER.info("[NATIVE_TOOL_SCHEMA] requestId={} toolCount={} toolNames={} activeCodingWorkspaceId={}",
+                request.requestId(), definitions.size(), definitions.stream().map(NativeToolDefinition::name).toList(),
+                activeCodingWorkspaceId(request));
         MarketplaceListingCollector marketplaceCollector = null;
 
         Instant started = Instant.now();
@@ -1131,7 +1134,7 @@ public class NativeToolLoopService {
                 request.requestId(),
                 action.reason(),
                 "Native model tool call step " + step,
-                action.arguments()
+                executionArguments(request, action)
         );
         logToolExecutionTrace(request, action);
         publish(request, CognitiveEventType.TOOL_EXECUTION_STARTED, "EXECUTING",
@@ -1692,6 +1695,11 @@ public class NativeToolLoopService {
                 Web tools are only for public internet, documentation, news, rates, prices, and public source lookup.
                 Do not use web tools to inspect the current state of a connected application/runtime.
                 If the user asks about a named connected application/runtime, prefer that provider's MCP tools.
+                Coding Workspace tools are for the user-selected software project. Use coding__file_read to read
+                project files, coding__file_search to search inside the project, coding__file_list for project
+                structure, coding__git_status/coding__git_diff for Git, and coding__build_detect/build/test/command
+                tools for project execution. KnowledgeTool searches the persisted Knowledge Workspace only; never
+                use KnowledgeTool as a fallback for project files in an active Coding Workspace.
                 Discovery tools only identify available runtimes/ids. Discovery alone does not complete a task that
                 requires READ, SEARCH, or INSPECT evidence such as folder paths or project structure.
                 Prefer 3-5 valid market observations for price questions. If fewer are found, say how many.
@@ -1732,6 +1740,7 @@ public class NativeToolLoopService {
                 Tool goal: %s
                 Tool reason: %s
                 Tool context: %s
+                Active Coding Workspace: %s
                 Verified facts so far: none at loop start; use tool results as they arrive.
                 Acquired evidence so far: none at loop start.
                 Failed attempts so far: none at loop start.
@@ -1743,6 +1752,7 @@ public class NativeToolLoopService {
                 request.goal(),
                 request.reason(),
                 request.context(),
+                activeCodingWorkspaceLabel(request),
                 completionCriteria(request),
                 requiredEvidence(request, resolveIntent(request), "")
         );
@@ -3477,6 +3487,31 @@ public class NativeToolLoopService {
 
     private Map<String, Object> actionMetadata(ToolAction action) {
         return Map.of("tool", action.tool(), "operation", action.operation(), "arguments", action.arguments());
+    }
+
+    private Map<String, Object> executionArguments(ToolCallingRequest request, ToolAction action) {
+        if (!"coding".equalsIgnoreCase(action.tool())) {
+            return action.arguments();
+        }
+        Map<String, Object> arguments = new LinkedHashMap<>(action.arguments());
+        arguments.put("_activeCodingWorkspaceId", activeCodingWorkspaceId(request));
+        arguments.put("_activeCodingWorkspaceName", Objects.toString(request.context().getOrDefault("activeCodingWorkspaceName", ""), ""));
+        arguments.put("_activeCodingWorkspaceHost", Objects.toString(request.context().getOrDefault("activeCodingWorkspaceHost", ""), ""));
+        return Map.copyOf(arguments);
+    }
+
+    private String activeCodingWorkspaceId(ToolCallingRequest request) {
+        return Objects.toString(request.context().getOrDefault("activeCodingWorkspaceId", ""), "");
+    }
+
+    private String activeCodingWorkspaceLabel(ToolCallingRequest request) {
+        String workspaceId = activeCodingWorkspaceId(request);
+        if (workspaceId.isBlank()) {
+            return "none selected";
+        }
+        return "id=" + workspaceId
+                + ", name=" + Objects.toString(request.context().getOrDefault("activeCodingWorkspaceName", ""), "")
+                + ", host=" + Objects.toString(request.context().getOrDefault("activeCodingWorkspaceHost", ""), "");
     }
 
     private Map<String, Object> resultMetadata(ToolResult result) {

@@ -41,6 +41,10 @@ public class DefaultToolIntentDetector implements ToolIntentDetector {
                 "biezac", "otwart", "runtime", "studio", "connected", "attached", "active project", "current project")) {
             return ToolIntent.CONNECTED_SYSTEM_INSPECTION;
         }
+        if (containsAny(value, "windows_only", "workspace", "plik projektu", "pliki projektu", "kod projektu",
+                "source", "git", "diff", "build", "test", "mvn", "gradle", "npm", "uruchom komende", "command")) {
+            return ToolIntent.CODING_WORKSPACE;
+        }
         if (containsAny(value, "internet", "w internecie", "web", "online", "cena", "ceny", "kurs", "notowan",
                 "rynek", "wtorn", "uzywan", "po ile", "ile chodzi", "chodzi uzywan", "kosztuje", "koszt", "wycena",
                 "news", "wiadomosci", "zloto", "zlot", "xau", "walut", "sprawdz w sieci", "wyszukaj w sieci",

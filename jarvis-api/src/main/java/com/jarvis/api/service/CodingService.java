@@ -166,6 +166,10 @@ public interface CodingService {
 
     CommandResult runCommand(String workspaceId, CommandRequest request);
 
+    CommandResult commandPoll(String workspaceId, String processId);
+
+    CommandResult commandCancel(String workspaceId, String processId);
+
     GitSnapshot gitSnapshot(String workspaceId);
 
     Map<String, Object> buildDetect(String workspaceId);
