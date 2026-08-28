@@ -1,5 +1,6 @@
 package com.jarvis.ollama.moderation;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.api.dto.moderation.ModerationRequest;
@@ -11,6 +12,8 @@ import com.jarvis.ollama.OllamaChatMessage;
 import com.jarvis.ollama.OllamaChatRequest;
 import com.jarvis.ollama.OllamaProperties;
 import com.jarvis.ollama.OllamaTagsResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -30,6 +33,7 @@ import java.util.Map;
 @Service
 public class OllamaModerationModelClient implements ModerationModelClient {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(OllamaModerationModelClient.class);
     private static final int MAX_RESPONSE_BYTES = 16_000;
 
     private final HttpClient httpClient;
@@ -79,8 +83,16 @@ public class OllamaModerationModelClient implements ModerationModelClient {
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
                 throw new ModerationModelException("Moderation model HTTP status " + response.statusCode());
             }
-            JsonNode root = objectMapper.readTree(response.body());
-            String content = root.path("message").path("content").asText("");
+            JsonNode root;
+            try {
+                root = objectMapper.readTree(response.body());
+            } catch (JsonProcessingException exception) {
+                LOGGER.info("[TOPKIMC_MODERATION] parseStage=ollama_envelope_json reason={} responseLength={}",
+                        exception.getClass().getSimpleName(), response.body().length);
+                throw new ModerationModelException("Moderation model envelope JSON is malformed", exception);
+            }
+            JsonNode contentNode = root.path("message").path("content");
+            String content = extractContent(contentNode);
             return new ModerationModelResponse(content, latencyMs, model);
         } catch (IOException exception) {
             throw new ModerationModelException("Moderation model is unreachable", exception);
@@ -88,6 +100,21 @@ public class OllamaModerationModelClient implements ModerationModelClient {
             Thread.currentThread().interrupt();
             throw new ModerationModelException("Moderation model call was interrupted", exception);
         }
+    }
+
+    private String extractContent(JsonNode contentNode) throws IOException {
+        if (contentNode == null || contentNode.isMissingNode() || contentNode.isNull()) {
+            return "";
+        }
+        if (contentNode.isTextual()) {
+            return contentNode.asText();
+        }
+        if (contentNode.isObject() || contentNode.isArray()) {
+            LOGGER.info("[TOPKIMC_MODERATION] parseStage=ollama_message_content contentShape={} responseContentLength={}",
+                    contentNode.getNodeType(), contentNode.toString().length());
+            return objectMapper.writeValueAsString(contentNode);
+        }
+        return contentNode.asText("");
     }
 
     @Override
@@ -138,6 +165,7 @@ public class OllamaModerationModelClient implements ModerationModelClient {
                 "risk", Map.of("type", "string", "enum", List.of("LOW", "MEDIUM", "HIGH")),
                 "categories", Map.of(
                         "type", "array",
+                        "description", "Array of category enum strings only, for example [\"SCAM\"]. Do not return objects.",
                         "maxItems", 10,
                         "items", Map.of("type", "string", "enum", List.of(
                                 "PHISHING", "MALWARE", "ACCOUNT_THEFT_LINKS", "STOLEN_ACCOUNT_SALES",

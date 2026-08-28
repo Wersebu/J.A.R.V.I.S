@@ -37,6 +37,40 @@ class DefaultTopkiMcModerationServiceTest {
     }
 
     @Test
+    void markdownFencedJsonPassesThrough() {
+        FakeModelClient client = new FakeModelClient("```json\n" + cleanJson() + "\n```");
+        DefaultTopkiMcModerationService service = service(client, properties(true));
+
+        ModerationResult result = service.moderate(validRequest("Bezpieczny opis"), "req-fence", "key-1");
+
+        assertThat(result.decision()).isEqualTo(ModerationDecision.CLEAN);
+        assertThat(client.calls.get()).isEqualTo(1);
+    }
+
+    @Test
+    void violationResponsePassesThroughWithoutDowngrade() {
+        FakeModelClient client = new FakeModelClient(flaggedJson("SCAM", "SCAM"));
+        DefaultTopkiMcModerationService service = service(client, properties(true));
+
+        ModerationResult result = service.moderate(validRequest("Sprzedam rangi za blik poza sklepem."), "req-violation", "key-1");
+
+        assertThat(result.decision()).isEqualTo(ModerationDecision.FLAGGED);
+        assertThat(result.risk()).isEqualTo(ModerationRisk.HIGH);
+        assertThat(result.categories()).contains(ModerationCategory.SCAM);
+    }
+
+    @Test
+    void ambiguousResponseIsFlagged() {
+        FakeModelClient client = new FakeModelClient(flaggedJson("MISLEADING_INFO", "AMBIGUOUS_REVIEW"));
+        DefaultTopkiMcModerationService service = service(client, properties(true));
+
+        ModerationResult result = service.moderate(validRequest("Najlepsze nagrody, szczegoly pozniej."), "req-ambiguous", "key-1");
+
+        assertThat(result.decision()).isEqualTo(ModerationDecision.FLAGGED);
+        assertThat(result.adminReviewRequired()).isTrue();
+    }
+
+    @Test
     void promptInjectionSignalRaisesCleanToFlagged() {
         FakeModelClient client = new FakeModelClient(cleanJson());
         DefaultTopkiMcModerationService service = service(client, properties(true));
@@ -83,6 +117,45 @@ class DefaultTopkiMcModerationServiceTest {
         ModerationResult result = service.moderate(validRequest("Opis"), "req-enum", "key-1");
 
         assertThat(result.decision()).isEqualTo(ModerationDecision.ERROR);
+        assertThat(client.calls.get()).isEqualTo(2);
+    }
+
+    @Test
+    void arrayRootFailsClosedWithRetryAndNoCleanDecision() {
+        FakeModelClient client = new FakeModelClient("[" + cleanJson() + "]", "[" + cleanJson() + "]");
+        DefaultTopkiMcModerationService service = service(client, properties(true));
+
+        ModerationResult result = service.moderate(validRequest("Opis"), "req-array-root", "key-1");
+
+        assertThat(result.decision()).isEqualTo(ModerationDecision.ERROR);
+        assertThat(result.risk()).isEqualTo(ModerationRisk.HIGH);
+        assertThat(client.calls.get()).isEqualTo(2);
+    }
+
+    @Test
+    void objectCategoryShapeFailsClosedWithRetry() {
+        FakeModelClient client = new FakeModelClient(
+                cleanJson().replace("\"categories\":[]", "\"categories\":[{\"category\":\"SCAM\"}]"),
+                cleanJson().replace("\"categories\":[]", "\"categories\":[{\"category\":\"SCAM\"}]")
+        );
+        DefaultTopkiMcModerationService service = service(client, properties(true));
+
+        ModerationResult result = service.moderate(validRequest("Opis"), "req-category-object", "key-1");
+
+        assertThat(result.decision()).isEqualTo(ModerationDecision.ERROR);
+        assertThat(result.adminReviewRequired()).isTrue();
+        assertThat(client.calls.get()).isEqualTo(2);
+    }
+
+    @Test
+    void timeoutFailureRetriesAndCanRecover() {
+        FakeModelClient client = new FakeModelClient(cleanJson());
+        client.throwOnce = true;
+        DefaultTopkiMcModerationService service = service(client, properties(true));
+
+        ModerationResult result = service.moderate(validRequest("Opis"), "req-timeout-retry", "key-1");
+
+        assertThat(result.decision()).isEqualTo(ModerationDecision.CLEAN);
         assertThat(client.calls.get()).isEqualTo(2);
     }
 
@@ -177,12 +250,19 @@ class DefaultTopkiMcModerationServiceTest {
                 """;
     }
 
+    private static String flaggedJson(String category, String reasonCode) {
+        return """
+                {"decision":"FLAGGED","risk":"HIGH","categories":["%s"],"reasonCode":"%s","summary":"Wymagana kontrola administratora.","adminReviewRequired":true,"modelVersion":"model","policyVersion":"v1"}
+                """.formatted(category, reasonCode);
+    }
+
     private static final class FakeModelClient implements ModerationModelClient {
         private final List<String> outputs;
         private final AtomicInteger calls = new AtomicInteger();
         private final AtomicReference<String> prompt = new AtomicReference<>();
         private boolean reachable = true;
         private boolean available = true;
+        private boolean throwOnce = false;
 
         private FakeModelClient(String... outputs) {
             this.outputs = List.of(outputs);
@@ -191,7 +271,11 @@ class DefaultTopkiMcModerationServiceTest {
         @Override
         public ModerationModelResponse moderate(ModerationRequest request, String systemPrompt, String model, Duration timeout) {
             prompt.set(systemPrompt);
-            int index = Math.min(calls.getAndIncrement(), outputs.size() - 1);
+            int call = calls.getAndIncrement();
+            if (throwOnce && call == 0) {
+                throw new com.jarvis.api.service.moderation.ModerationModelException("Moderation timeout");
+            }
+            int index = Math.min(call, outputs.size() - 1);
             return new ModerationModelResponse(outputs.get(index), 12, model);
         }
 

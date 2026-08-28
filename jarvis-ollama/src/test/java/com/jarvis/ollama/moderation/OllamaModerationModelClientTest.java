@@ -60,13 +60,32 @@ class OllamaModerationModelClientTest {
         assertThat(availability.modelAvailable()).isTrue();
     }
 
+    @Test
+    void extractsObjectContentFromOllamaEnvelopeWithExtraFields() throws Exception {
+        AtomicReference<String> captured = new AtomicReference<>();
+        startServer(captured, """
+                {"model":"moderation-model:1","created_at":"2026-08-28T00:00:00Z","message":{"role":"assistant","content":{"decision":"CLEAN","risk":"LOW","categories":[],"reasonCode":"NO_VIOLATIONS","summary":"OK","adminReviewRequired":false,"modelVersion":"moderation-model:1","policyVersion":"v1"},"thinking":""},"done":true,"done_reason":"stop","total_duration":1}
+                """);
+        OllamaModerationModelClient client = client();
+
+        String content = client.moderate(request(), "system prompt", "moderation-model:1", Duration.ofSeconds(2)).content();
+
+        assertThat(content).startsWith("{");
+        assertThat(content).contains("\"decision\":\"CLEAN\"");
+        assertThat(content).contains("\"categories\":[]");
+    }
+
     private void startServer(AtomicReference<String> captured) throws IOException {
+        startServer(captured, """
+                {"message":{"role":"assistant","content":"{\\"decision\\":\\"CLEAN\\",\\"risk\\":\\"LOW\\",\\"categories\\":[],\\"reasonCode\\":\\"NO_VIOLATIONS\\",\\"summary\\":\\"OK\\",\\"adminReviewRequired\\":false,\\"modelVersion\\":\\"moderation-model:1\\",\\"policyVersion\\":\\"v1\\"}"},"done":true}
+                """);
+    }
+
+    private void startServer(AtomicReference<String> captured, String chatResponse) throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/api/chat", exchange -> {
             captured.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
-            byte[] body = """
-                    {"message":{"role":"assistant","content":"{\\"decision\\":\\"CLEAN\\",\\"risk\\":\\"LOW\\",\\"categories\\":[],\\"reasonCode\\":\\"NO_VIOLATIONS\\",\\"summary\\":\\"OK\\",\\"adminReviewRequired\\":false,\\"modelVersion\\":\\"moderation-model:1\\",\\"policyVersion\\":\\"v1\\"}"},"done":true}
-                    """.getBytes(StandardCharsets.UTF_8);
+            byte[] body = chatResponse.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, body.length);
             exchange.getResponseBody().write(body);
             exchange.close();
