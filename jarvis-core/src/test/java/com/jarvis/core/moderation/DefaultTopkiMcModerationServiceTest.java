@@ -96,6 +96,19 @@ class DefaultTopkiMcModerationServiceTest {
     }
 
     @Test
+    void emptyContentFromThinkFalseFailsClosed() {
+        FakeModelClient client = new FakeModelClient("", "");
+        DefaultTopkiMcModerationService service = service(client, properties(true));
+
+        ModerationResult result = service.moderate(validRequest("Opis"), "req-empty-content", "key-1");
+
+        assertThat(client.calls.get()).isEqualTo(2);
+        assertThat(result.decision()).isEqualTo(ModerationDecision.ERROR);
+        assertThat(result.risk()).isEqualTo(ModerationRisk.HIGH);
+        assertThat(result.adminReviewRequired()).isTrue();
+    }
+
+    @Test
     void extraTextAroundJsonFailsClosed() {
         FakeModelClient client = new FakeModelClient("Here is the result: " + cleanJson(), "still invalid " + cleanJson());
         DefaultTopkiMcModerationService service = service(client, properties(true));

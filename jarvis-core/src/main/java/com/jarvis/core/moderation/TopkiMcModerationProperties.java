@@ -12,7 +12,7 @@ public class TopkiMcModerationProperties {
 
     private boolean enabled = false;
     private String model = "";
-    private Duration timeout = Duration.ofSeconds(8);
+    private Duration timeout = Duration.ofSeconds(180);
     private String policyVersion = "v1";
     private int maxBodyBytes = 64_000;
     private int maxTextChars = 20_000;
@@ -45,7 +45,7 @@ public class TopkiMcModerationProperties {
     }
 
     public void setTimeout(Duration timeout) {
-        this.timeout = timeout == null ? Duration.ofSeconds(8) : timeout;
+        this.timeout = timeout == null ? Duration.ofSeconds(180) : timeout;
     }
 
     public String getPolicyVersion() {

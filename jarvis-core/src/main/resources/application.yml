@@ -120,7 +120,7 @@ jarvis:
     enabled: ${JARVIS_MODERATION_ENABLED:false}
     model: ${JARVIS_MODERATION_MODEL:}
     api-key: ${TOPKIMC_MODERATION_API_KEY:}
-    timeout: ${JARVIS_MODERATION_TIMEOUT_SECONDS:8}s
+    timeout: ${JARVIS_MODERATION_TIMEOUT_SECONDS:180}s
     policy-version: ${JARVIS_MODERATION_POLICY_VERSION:v1}
     max-body-bytes: 64000
     max-text-chars: 20000

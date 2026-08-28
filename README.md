@@ -2,7 +2,7 @@
 
 Jarvis (J.A.R.V.I.S. Core) is a long-term AI operating system backend foundation: a headless Spring Boot service that orchestrates local Ollama models behind a provider-independent AI contract, with brain routing, native tool calling, a Knowledge Workspace, web/marketplace/location tools, cognitive memory, and real-time streaming to a separate desktop client.
 
-Current version: **`2.23.0-SNAPSHOT`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
+Current version: **`2.24.0-SNAPSHOT`**. Runs on Java 21 with Maven, targets Ubuntu Server 24.04 LTS or Windows, and talks to a local Ollama instance for inference.
 
 MCP Windows bridge lifecycle is automatic: when the Windows client registers its bridge, Core asynchronously initializes enabled Windows-hosted MCP servers, discovers their tools, and refreshes MCP status without requiring manual reconnect calls. A reconnect never leaves an orphaned MCP process behind, a silently-dead process is detected and transparently relaunched instead of reused, and a genuinely empty `tools/list` result is retried a bounded number of times instead of being cached as final forever (see [Discovery Lifecycle & Reliability](docs/MCP.md#discovery-lifecycle--reliability)).
 
@@ -65,7 +65,7 @@ Configuration is fail-closed and disabled by default:
 ```bash
 JARVIS_MODERATION_ENABLED=false
 JARVIS_MODERATION_MODEL=
-JARVIS_MODERATION_TIMEOUT_SECONDS=8
+JARVIS_MODERATION_TIMEOUT_SECONDS=180
 JARVIS_MODERATION_POLICY_VERSION=v1
 JARVIS_MODERATION_MAX_PARALLEL=2
 JARVIS_MODERATION_MAX_QUEUE=8
@@ -89,7 +89,7 @@ Content-Type: application/json
 
 No default key exists. Missing configuration, a missing key, or a wrong key returns a neutral unauthorized response and does not reveal whether the endpoint is configured. The key is compared using fixed-size SHA-256 digests and is never logged.
 
-The moderation model is independent from the model selected in the Windows UI. JARVIS checks that `JARVIS_MODERATION_MODEL` is installed in Ollama via `/api/tags`; it never pulls a model automatically and never switches the global chat model. Moderation uses deterministic options (`temperature=0`, bounded output) and Ollama structured JSON schema when available, followed by Java-side schema validation. The parser accepts valid Ollama `/api/chat` variants used by `gpt-oss` models: extra envelope fields are ignored, `message.content` may be a JSON string or JSON object, and a JSON string may be wrapped in markdown fences. The moderation contract itself stays strict: wrong enum values, object-shaped categories, array roots, unknown response fields, malformed JSON, and invalid DTO invariants still fail closed.
+The moderation model is independent from the model selected in the Windows UI. JARVIS checks that `JARVIS_MODERATION_MODEL` is installed in Ollama via `/api/tags`; it never pulls a model automatically and never switches the global chat model. Moderation uses deterministic options (`temperature=0`, bounded output) and Ollama structured JSON schema when available, followed by Java-side schema validation. For `gpt-oss` moderation calls, Core sends `think:"low"` and never `think:false`; production testing showed `think:false` can return an empty `message.content` even when health checks pass. `message.thinking` is ignored and never persisted or logged. The parser accepts valid Ollama `/api/chat` variants used by `gpt-oss` models: extra envelope fields are ignored, `message.content` may be a JSON string or JSON object, and a JSON string may be wrapped in markdown fences. The moderation contract itself stays strict: empty content, wrong enum values, object-shaped categories, array roots, unknown response fields, malformed JSON, and invalid DTO invariants still fail closed.
 
 Failure handling is fail-closed. For a valid, authenticated request, disabled moderation, missing/unavailable model, timeout, malformed model JSON, unknown enum, overload, or internal failure returns:
 

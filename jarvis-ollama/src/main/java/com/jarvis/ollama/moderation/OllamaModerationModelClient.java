@@ -35,6 +35,8 @@ public class OllamaModerationModelClient implements ModerationModelClient {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(OllamaModerationModelClient.class);
     private static final int MAX_RESPONSE_BYTES = 16_000;
+    private static final String MODERATION_THINK = "low";
+    private static final int MODERATION_NUM_PREDICT = 1_200;
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -52,7 +54,7 @@ public class OllamaModerationModelClient implements ModerationModelClient {
             String endpoint = normalizeBaseUrl(ollamaProperties.baseUrl()) + "/api/chat";
             Map<String, Object> options = Map.of(
                     "temperature", 0,
-                    "num_predict", 700
+                    "num_predict", MODERATION_NUM_PREDICT
             );
             OllamaChatRequest requestBody = new OllamaChatRequest(
                     model,
@@ -62,7 +64,7 @@ public class OllamaModerationModelClient implements ModerationModelClient {
                     ),
                     List.of(),
                     false,
-                    Boolean.FALSE,
+                    MODERATION_THINK,
                     ollamaProperties.keepAlive(),
                     options,
                     responseSchema()

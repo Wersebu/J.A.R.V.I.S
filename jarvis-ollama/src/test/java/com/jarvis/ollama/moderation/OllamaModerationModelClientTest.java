@@ -44,7 +44,10 @@ class OllamaModerationModelClientTest {
         JsonNode sent = objectMapper.readTree(captured.get());
         assertThat(sent.path("model").asText()).isEqualTo("moderation-model:1");
         assertThat(sent.path("stream").asBoolean()).isFalse();
+        assertThat(sent.path("think").asText()).isEqualTo("low");
+        assertThat(sent.path("think").isBoolean()).isFalse();
         assertThat(sent.path("tools")).isEmpty();
+        assertThat(sent.path("options").path("num_predict").asInt()).isGreaterThanOrEqualTo(1_200);
         assertThat(sent.path("format").path("additionalProperties").asBoolean()).isFalse();
         assertThat(sent.path("messages").get(0).path("role").asText()).isEqualTo("system");
         assertThat(sent.path("messages").get(1).path("content").asText()).contains("TOPKIMC_SERVER_PROFILE_MODERATION_PAYLOAD");
