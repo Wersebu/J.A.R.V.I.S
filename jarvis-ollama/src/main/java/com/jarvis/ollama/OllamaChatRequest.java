@@ -28,6 +28,19 @@ public record OllamaChatRequest(
         boolean stream,
         @JsonInclude(JsonInclude.Include.NON_NULL) Object think,
         @JsonProperty("keep_alive") String keepAlive,
-        Map<String, Object> options
+        Map<String, Object> options,
+        @JsonInclude(JsonInclude.Include.NON_NULL) Object format
 ) {
+
+    public OllamaChatRequest(
+            String model,
+            List<OllamaChatMessage> messages,
+            List<Map<String, Object>> tools,
+            boolean stream,
+            Object think,
+            String keepAlive,
+            Map<String, Object> options
+    ) {
+        this(model, messages, tools, stream, think, keepAlive, options, null);
+    }
 }

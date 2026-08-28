@@ -6,7 +6,7 @@ server:
   port: 8080
 
 jarvis:
-  version: "2.20.1"
+  version: "2.22.0"
   websocket:
     max-text-message-size: 4194304
     max-binary-message-size: 8388608
@@ -116,6 +116,21 @@ jarvis:
     # page still comes back without "vision" locally (a capability auto-detection gap for that
     # architecture/build). Empty by default.
     vision-capability-overrides: []
+  moderation:
+    enabled: ${JARVIS_MODERATION_ENABLED:false}
+    model: ${JARVIS_MODERATION_MODEL:}
+    api-key: ${TOPKIMC_MODERATION_API_KEY:}
+    timeout: ${JARVIS_MODERATION_TIMEOUT_SECONDS:8}s
+    policy-version: ${JARVIS_MODERATION_POLICY_VERSION:v1}
+    max-body-bytes: 64000
+    max-text-chars: 20000
+    max-title-chars: 160
+    max-urls: 50
+    max-youtube-video-ids: 20
+    max-parallel: ${JARVIS_MODERATION_MAX_PARALLEL:2}
+    max-queue: ${JARVIS_MODERATION_MAX_QUEUE:8}
+    queue-timeout: ${JARVIS_MODERATION_QUEUE_TIMEOUT_SECONDS:2}s
+    requests-per-minute: ${JARVIS_MODERATION_REQUESTS_PER_MINUTE:60}
   qwen-thinking-budget:
     # Applies only to this exact model name (case/whitespace-insensitive) - never a family prefix.
     target-model: qwen3.5:9b
