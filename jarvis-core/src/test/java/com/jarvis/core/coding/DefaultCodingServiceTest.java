@@ -111,6 +111,7 @@ class DefaultCodingServiceTest {
         return service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
                 "project",
                 root.toString(),
+                CodingService.WorkspaceHost.SERVER,
                 "AUTO",
                 autonomy,
                 "",

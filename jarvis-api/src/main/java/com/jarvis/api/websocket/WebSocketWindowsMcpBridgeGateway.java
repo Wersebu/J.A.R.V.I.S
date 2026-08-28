@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jarvis.api.service.WindowsCodingBridgeGateway;
 import com.jarvis.tools.mcp.McpAccessLevel;
 import com.jarvis.tools.mcp.McpCallResult;
 import com.jarvis.tools.mcp.McpContentItem;
@@ -34,7 +35,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * Core-side gateway that forwards MCP operations to the connected Windows client.
  */
 @Service
-public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway {
+public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway, WindowsCodingBridgeGateway {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(WebSocketWindowsMcpBridgeGateway.class);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
@@ -56,6 +57,7 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
 
     private final ObjectMapper objectMapper;
     private final AtomicReference<WebSocketSession> bridgeSession = new AtomicReference<>();
+    private final java.util.Set<WebSocketSession> bridgeSessions = ConcurrentHashMap.newKeySet();
     private final Map<String, CompletableFuture<JsonNode>> pending = new ConcurrentHashMap<>();
 
     /**
@@ -169,12 +171,41 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
         return isBridgeConnected() ? "CONNECTED" : "BRIDGE_UNAVAILABLE";
     }
 
+    @Override
+    public String codingStatus() {
+        long openSessions = openBridgeSessions();
+        if (openSessions == 0) {
+            return "WINDOWS_BRIDGE_UNAVAILABLE";
+        }
+        if (openSessions > 1) {
+            return "MULTIPLE_WINDOWS_BRIDGE_SESSIONS";
+        }
+        return "CONNECTED";
+    }
+
+    @Override
+    public Map<String, Object> codingRequest(String operation, Map<String, Object> payload, Duration timeout) {
+        long openSessions = openBridgeSessions();
+        if (openSessions == 0) {
+            throw new McpException("Windows Coding Executor is unavailable: no Windows Bridge session is connected.");
+        }
+        if (openSessions > 1) {
+            throw new McpException("Windows Coding Executor is unavailable: multiple Windows Bridge sessions are connected.");
+        }
+        JsonNode response = request("CODING_EXECUTOR_REQUEST", "coding", Map.of(
+                "operation", operation,
+                "arguments", payload == null ? Map.of() : payload
+        ), timeout);
+        return objectMapper.convertValue(response, MAP_TYPE);
+    }
+
     /**
      * Registers a Windows WebSocket session as the active bridge.
      *
      * @param session WebSocket session
      */
     public void register(WebSocketSession session) {
+        bridgeSessions.add(session);
         WebSocketSession previous = bridgeSession.getAndSet(session);
         if (previous != null && previous != session) {
             completeAllExceptionally("Windows MCP bridge session was replaced.");
@@ -209,12 +240,18 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
      * @param session closed session
      */
     public boolean detach(WebSocketSession session) {
+        bridgeSessions.remove(session);
         if (bridgeSession.compareAndSet(session, null)) {
             completeAllExceptionally("Windows MCP bridge disconnected.");
             LOGGER.info("[MCP_BRIDGE] Windows bridge disconnected session={}", session.getId());
             return true;
         }
         return false;
+    }
+
+    private long openBridgeSessions() {
+        bridgeSessions.removeIf(session -> session == null || !session.isOpen());
+        return bridgeSessions.size();
     }
 
     private JsonNode request(String type, String serverId, Map<String, Object> payload, Duration timeout) {

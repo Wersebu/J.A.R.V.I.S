@@ -15,6 +15,11 @@ public interface CodingService {
         AUTONOMOUS_IN_WORKSPACE
     }
 
+    enum WorkspaceHost {
+        WINDOWS,
+        SERVER
+    }
+
     enum PlanStepStatus {
         PENDING,
         IN_PROGRESS,
@@ -43,6 +48,7 @@ public interface CodingService {
     record RegisterWorkspaceRequest(
             String name,
             String windowsPath,
+            WorkspaceHost host,
             String projectType,
             AutonomyLevel autonomyLevel,
             String buildCommand,
@@ -54,6 +60,7 @@ public interface CodingService {
             String id,
             String name,
             String windowsPath,
+            WorkspaceHost host,
             String projectType,
             List<String> detectedBuildSystems,
             boolean gitRepository,
@@ -79,6 +86,15 @@ public interface CodingService {
     record PatchRequest(String path, String expected, String replacement) {
     }
 
+    record DirectoryCreateRequest(String path) {
+    }
+
+    record FileMoveRequest(String sourcePath, String targetPath) {
+    }
+
+    record FileDeleteRequest(String path, boolean approved) {
+    }
+
     record FileSearchRequest(String query, boolean regex, int maxResults) {
     }
 
@@ -86,6 +102,9 @@ public interface CodingService {
     }
 
     record CommandRequest(String command, long timeoutSeconds, int maxOutputCharacters) {
+    }
+
+    record BuildRunRequest(String command, long timeoutSeconds, int maxOutputCharacters) {
     }
 
     record CommandResult(String processId, String command, int exitCode, boolean timedOut, String stdout, String stderr) {
@@ -139,9 +158,21 @@ public interface CodingService {
 
     FileContent patchFile(String workspaceId, PatchRequest request);
 
+    WorkspaceFileEntry createDirectory(String workspaceId, DirectoryCreateRequest request);
+
+    WorkspaceFileEntry moveFile(String workspaceId, FileMoveRequest request);
+
+    void deleteFile(String workspaceId, FileDeleteRequest request);
+
     CommandResult runCommand(String workspaceId, CommandRequest request);
 
     GitSnapshot gitSnapshot(String workspaceId);
+
+    Map<String, Object> buildDetect(String workspaceId);
+
+    CommandResult buildRun(String workspaceId, BuildRunRequest request);
+
+    CommandResult testRun(String workspaceId, BuildRunRequest request);
 
     CodingTask startTask(StartTaskRequest request);
 

@@ -135,6 +135,49 @@ class WebSocketWindowsMcpBridgeGatewayTest {
         assertThat(tools.getFirst().inputSchema()).containsKey("properties");
     }
 
+    @Test
+    void codingRequestUsesTheSameCorrelationIdRequestResponsePath() throws Exception {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        WebSocketSession session = fakeOpenSession();
+        gateway.register(session);
+
+        doAnswer(invocation -> {
+            TextMessage message = invocation.getArgument(0);
+            var request = objectMapper.readTree(message.getPayload());
+            assertThat(request.path("type").asText()).isEqualTo("CODING_EXECUTOR_REQUEST");
+            assertThat(request.path("serverId").asText()).isEqualTo("coding");
+            assertThat(request.path("payload").path("operation").asText()).isEqualTo("workspace_validate");
+            String requestId = request.path("requestId").asText();
+            gateway.handleResponse(objectMapper.readTree("{\"requestId\":\"" + requestId + "\",\"success\":true,"
+                    + "\"payload\":{\"canonicalPath\":\"D:\\\\workspace\",\"name\":\"workspace\"}}"));
+            return null;
+        }).when(session).sendMessage(any(TextMessage.class));
+
+        Map<String, Object> response = gateway.codingRequest("workspace_validate", Map.of("rootPath", "D:\\workspace"), Duration.ofMillis(50));
+
+        assertThat(response).containsEntry("canonicalPath", "D:\\workspace");
+    }
+
+    @Test
+    void codingRequestFailsClearlyWhenNoBridgeIsConnected() {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+
+        assertThatThrownBy(() -> gateway.codingRequest("workspace_validate", Map.of("rootPath", "D:\\workspace"), Duration.ofMillis(10)))
+                .isInstanceOf(McpException.class)
+                .hasMessageContaining("no Windows Bridge session is connected");
+    }
+
+    @Test
+    void codingRequestFailsClearlyWhenMoreThanOneWindowsSessionIsConnected() {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        gateway.register(fakeOpenSession("session-1"));
+        gateway.register(fakeOpenSession("session-2"));
+
+        assertThatThrownBy(() -> gateway.codingRequest("workspace_validate", Map.of("rootPath", "D:\\workspace"), Duration.ofMillis(10)))
+                .isInstanceOf(McpException.class)
+                .hasMessageContaining("multiple Windows Bridge sessions");
+    }
+
     private void respondImmediately(WebSocketWindowsMcpBridgeGateway gateway, WebSocketSession session, String payloadTemplate) throws Exception {
         doAnswer(invocation -> {
             TextMessage message = invocation.getArgument(0);
@@ -179,9 +222,13 @@ class WebSocketWindowsMcpBridgeGatewayTest {
     }
 
     private WebSocketSession fakeOpenSession() {
+        return fakeOpenSession("session-1");
+    }
+
+    private WebSocketSession fakeOpenSession(String id) {
         WebSocketSession session = mock(WebSocketSession.class);
         when(session.isOpen()).thenReturn(true);
-        when(session.getId()).thenReturn("session-1");
+        when(session.getId()).thenReturn(id);
         return session;
     }
 }

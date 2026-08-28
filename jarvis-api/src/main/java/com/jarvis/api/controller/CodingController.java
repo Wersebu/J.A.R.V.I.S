@@ -5,7 +5,11 @@ import com.jarvis.api.service.CodingService.CodingTask;
 import com.jarvis.api.service.CodingService.CodingWorkspace;
 import com.jarvis.api.service.CodingService.CommandRequest;
 import com.jarvis.api.service.CodingService.CommandResult;
+import com.jarvis.api.service.CodingService.BuildRunRequest;
+import com.jarvis.api.service.CodingService.DirectoryCreateRequest;
+import com.jarvis.api.service.CodingService.FileDeleteRequest;
 import com.jarvis.api.service.CodingService.FileContent;
+import com.jarvis.api.service.CodingService.FileMoveRequest;
 import com.jarvis.api.service.CodingService.FileSearchRequest;
 import com.jarvis.api.service.CodingService.FileWriteRequest;
 import com.jarvis.api.service.CodingService.GitSnapshot;
@@ -26,6 +30,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * REST API for controlled local coding workspaces.
@@ -94,6 +99,21 @@ public class CodingController {
         return wrap(() -> codingService.patchFile(workspaceId, request));
     }
 
+    @PostMapping(path = "/api/v1/coding/workspaces/{workspaceId}/directories", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public WorkspaceFileEntry createDirectory(@PathVariable String workspaceId, @RequestBody DirectoryCreateRequest request) {
+        return wrap(() -> codingService.createDirectory(workspaceId, request));
+    }
+
+    @PostMapping(path = "/api/v1/coding/workspaces/{workspaceId}/files/move", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public WorkspaceFileEntry moveFile(@PathVariable String workspaceId, @RequestBody FileMoveRequest request) {
+        return wrap(() -> codingService.moveFile(workspaceId, request));
+    }
+
+    @PostMapping(path = "/api/v1/coding/workspaces/{workspaceId}/files/delete", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public void deleteFile(@PathVariable String workspaceId, @RequestBody FileDeleteRequest request) {
+        wrapVoid(() -> codingService.deleteFile(workspaceId, request));
+    }
+
     @PostMapping(path = "/api/v1/coding/workspaces/{workspaceId}/commands", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     public CommandResult runCommand(@PathVariable String workspaceId, @RequestBody CommandRequest request) {
         return wrap(() -> codingService.runCommand(workspaceId, request));
@@ -102,6 +122,21 @@ public class CodingController {
     @GetMapping(path = "/api/v1/coding/workspaces/{workspaceId}/git", produces = MediaType.APPLICATION_JSON_VALUE)
     public GitSnapshot gitSnapshot(@PathVariable String workspaceId) {
         return wrap(() -> codingService.gitSnapshot(workspaceId));
+    }
+
+    @GetMapping(path = "/api/v1/coding/workspaces/{workspaceId}/build", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Map<String, Object> buildDetect(@PathVariable String workspaceId) {
+        return wrap(() -> codingService.buildDetect(workspaceId));
+    }
+
+    @PostMapping(path = "/api/v1/coding/workspaces/{workspaceId}/build/run", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public CommandResult buildRun(@PathVariable String workspaceId, @RequestBody BuildRunRequest request) {
+        return wrap(() -> codingService.buildRun(workspaceId, request));
+    }
+
+    @PostMapping(path = "/api/v1/coding/workspaces/{workspaceId}/tests/run", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public CommandResult testRun(@PathVariable String workspaceId, @RequestBody BuildRunRequest request) {
+        return wrap(() -> codingService.testRun(workspaceId, request));
     }
 
     @PostMapping(path = "/api/v1/coding/tasks", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)

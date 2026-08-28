@@ -187,21 +187,32 @@ See `jarvis-core/src/main/resources/application.yml` for every key and its defau
 
 ### Coding Agent MVP
 
-Jarvis includes a controlled Coding Agent foundation exposed under `POST/GET /api/v1/coding/*` and surfaced in the Windows client's `Kod` tab. The current implementation is a real tool-backed MVP: it registers explicit local workspaces, confines file operations to canonical paths inside those workspaces, blocks traversal outside the registered root, detects build systems, reads and patches files with conflict detection, runs bounded commands, and returns Git status/diff without creating commits.
+Jarvis includes a controlled Coding Agent foundation exposed under `POST/GET /api/v1/coding/*` and surfaced in the Windows client's `Kod` tab. Workspaces have an explicit execution host:
+
+- `WINDOWS`: the default for workspaces added from the Windows UI. Core stores the Windows path as an opaque string and delegates filesystem, Git and process operations through the existing Windows WebSocket bridge using `CODING_EXECUTOR_REQUEST`. Core must not resolve `D:\...` with `Path.of(...)`, `Files.*`, or local `ProcessBuilder` on Ubuntu for these workspaces.
+- `SERVER`: an explicit Core-local workspace for server-side paths. These continue to use canonical local filesystem validation and local bounded command execution.
+
+The Windows Coding Executor validates canonical paths on Windows before every operation, rejects traversal outside the workspace, follows real paths to catch symlink/junction escapes, blocks destructive commands, applies command timeouts/output limits, and returns structured results over the same bridge response/correlation mechanism used by Windows-hosted MCP servers. Roblox MCP remains a separate `serverId=roblox` flow; Coding uses `serverId=coding` and is not hardcoded to Roblox.
 
 Key endpoints:
 
 | Path | Purpose |
 |---|---|
 | `GET /api/v1/coding/workspaces` | List registered coding workspaces |
-| `POST /api/v1/coding/workspaces` | Register an explicit local project directory |
+| `POST /api/v1/coding/workspaces` | Register a workspace; Windows UI sends `host=WINDOWS` by default |
 | `GET /api/v1/coding/workspaces/{id}/files` | List files below a workspace path |
 | `GET /api/v1/coding/workspaces/{id}/files/read` | Read a whole file or line range |
 | `POST /api/v1/coding/workspaces/{id}/files/search` | Search workspace text with literal or regex matching |
 | `POST /api/v1/coding/workspaces/{id}/files/write` | Create or replace a file when autonomy allows writes |
 | `POST /api/v1/coding/workspaces/{id}/files/patch` | Replace an expected text fragment; conflicts if it no longer exists |
+| `POST /api/v1/coding/workspaces/{id}/directories` | Create a directory inside the workspace |
+| `POST /api/v1/coding/workspaces/{id}/files/move` | Move a file inside the workspace |
+| `POST /api/v1/coding/workspaces/{id}/files/delete` | Delete after explicit approval |
 | `POST /api/v1/coding/workspaces/{id}/commands` | Run a bounded command in the workspace |
 | `GET /api/v1/coding/workspaces/{id}/git` | Return branch, HEAD, status and diff |
+| `GET /api/v1/coding/workspaces/{id}/build` | Detect build systems and default build command |
+| `POST /api/v1/coding/workspaces/{id}/build/run` | Run the detected or requested build command |
+| `POST /api/v1/coding/workspaces/{id}/tests/run` | Run the detected or requested test command |
 | `POST /api/v1/coding/tasks` | Create a persisted task record with an initial plan |
 
 Autonomy levels:
@@ -210,19 +221,19 @@ Autonomy levels:
 - `ASK_BEFORE_WRITE`: UI/user initiated writes are accepted as explicit approval; destructive commands remain blocked.
 - `AUTONOMOUS_IN_WORKSPACE`: read, write, patch and bounded command execution are allowed inside the workspace; destructive Git and deletion-style commands are still blocked.
 
-Build detection prefers project wrappers where present: `mvnw.cmd`/`mvnw`, `gradlew.bat`/`gradlew`, then Maven, Gradle, npm, pnpm, yarn, Cargo and pytest conventions. Commands are run with timeout and output size limits. Git commit, push, merge, rebase, checkout, reset and clean are intentionally blocked by this API and must be handled through a future explicit approval flow.
+Build detection prefers project wrappers where present: `mvnw.cmd`/`mvnw`, `gradlew.bat`/`gradlew`, then Maven, Gradle, npm, pnpm, yarn, Cargo and pytest conventions. Commands are run with timeout and output size limits on the workspace host. Git commit, push, merge, rebase, checkout, reset and clean are intentionally blocked by this API and must be handled through a future explicit approval flow.
 
 Manual Windows verification scenario:
 
 1. Start Core and the Windows client.
 2. Open the left drawer and select `Kod`.
-3. Enter a workspace name and an existing local project path, then choose `ASK_BEFORE_WRITE` or `AUTONOMOUS_IN_WORKSPACE`.
+3. Enter a workspace name and an existing Windows project path such as `D:\JARVIS CODING`, then choose `ASK_BEFORE_WRITE` or `AUTONOMOUS_IN_WORKSPACE`.
 4. Click `Dodaj`; verify detected build systems, branch, status and default build command are shown.
 5. Click `Git diff`; verify real status/diff is displayed.
 6. Click `Test`; verify the configured build/test command runs in that project and stdout/stderr/exit code are shown.
 7. Refresh the client; registered workspaces are visible for the lifetime of the Core process.
 
-Known MVP limits: the full model-driven edit-build-fix loop is not yet wired into the chat pipeline, workspace persistence is in-memory, command streaming is returned after process completion rather than via a dedicated process event stream, and rollback/commit approval flows are not yet implemented. The API and UI avoid claiming unverified success: command results include real exit codes and captured output.
+Known MVP limits: the full model-driven edit-build-fix loop is not yet wired into the chat pipeline, workspace persistence is in-memory, and rollback/commit approval flows are not yet implemented. The bridge protocol already supports `command_start`, `command_poll`, and `command_cancel`; the current REST command endpoint returns the completed bounded command result. The API and UI avoid claiming unverified success: command results include real exit codes and captured output.
 
 ## Core Features
 

@@ -240,6 +240,14 @@ Core will not run `cmd.exe` on Ubuntu. The Windows bridge registers through `/ws
 
 When the Windows client sends `MCP_BRIDGE_REGISTER`, Core starts MCP activation asynchronously for every enabled server configured as `execution-host: WINDOWS` and `transport: WINDOWS_BRIDGE`. The WebSocket handler is not blocked. Each matching server is initialized through the Windows bridge, `tools/list` is called immediately, and discovered tools become available through the normal `ToolManager` and `/api/v1/tools` path. Core then emits `MCP_STATUS_CHANGED` so the Windows UI can refresh the MCP panel without a restart.
 
+### Coding Executor Over The Same Bridge
+
+Coding Agent uses the same `/ws/jarvis` Windows bridge rather than a second transport. For a `host=WINDOWS` coding workspace, Core sends `CODING_EXECUTOR_REQUEST` with `serverId=coding`, a generated `requestId`, and `payload.operation`/`payload.arguments`. The Windows UI answers with the existing `MCP_BRIDGE_RESPONSE` shape, so correlation, timeout handling, stale-response protection and session disconnect behavior are shared with Roblox MCP.
+
+Core treats Windows workspace paths as opaque strings. It does not call `Path.of("D:\\...")`, `Files.*`, Git, or `ProcessBuilder` locally on Ubuntu for `host=WINDOWS`. The Windows Coding Executor performs canonical path validation on Windows before every operation, rejects `..` traversal and real-path escapes through symlinks/junctions, blocks destructive commands, enforces timeouts/log limits, and supports `workspace_validate`, `workspace_inspect`, file operations, Git status/diff, `command_start`, `command_poll`, `command_cancel`, `build_detect`, `build_run`, and `test_run`.
+
+Coding executor availability is explicit: no bridge, disconnected bridge, timeout, cancellation, or multiple connected Windows sessions are returned as errors. Core never falls back to Ubuntu-local execution for `host=WINDOWS`.
+
 Large MCP discovery responses, especially `tools/list` responses with long descriptions and JSON schemas, travel over the shared `/ws/jarvis` WebSocket as text. Core configures the embedded WebSocket container through:
 
 ```yaml

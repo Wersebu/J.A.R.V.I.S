@@ -1,6 +1,10 @@
 package com.jarvis.core.coding;
 
 import com.jarvis.api.service.CodingService;
+import com.jarvis.api.service.WindowsCodingBridgeGateway;
+import com.jarvis.tools.mcp.McpException;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
@@ -34,9 +38,25 @@ public class DefaultCodingService implements CodingService {
     private static final int DEFAULT_MAX_SEARCH_RESULTS = 100;
     private static final int DEFAULT_MAX_OUTPUT = 64_000;
     private static final long MAX_READ_BYTES = 1_000_000L;
+    private static final java.time.Duration WINDOWS_FAST_TIMEOUT = java.time.Duration.ofSeconds(10);
+    private static final java.time.Duration WINDOWS_COMMAND_TIMEOUT = java.time.Duration.ofMinutes(16);
 
     private final Map<String, WorkspaceState> workspaces = new ConcurrentHashMap<>();
     private final Map<String, CodingTask> tasks = new ConcurrentHashMap<>();
+    private final WindowsCodingBridgeGateway windowsBridgeGateway;
+
+    public DefaultCodingService() {
+        this.windowsBridgeGateway = null;
+    }
+
+    @Autowired
+    public DefaultCodingService(ObjectProvider<WindowsCodingBridgeGateway> windowsBridgeGateway) {
+        this.windowsBridgeGateway = windowsBridgeGateway.getIfAvailable();
+    }
+
+    DefaultCodingService(WindowsCodingBridgeGateway windowsBridgeGateway) {
+        this.windowsBridgeGateway = windowsBridgeGateway;
+    }
 
     @Override
     public List<CodingWorkspace> listWorkspaces() {
@@ -51,19 +71,39 @@ public class DefaultCodingService implements CodingService {
         if (request == null || blank(request.windowsPath())) {
             throw new IllegalArgumentException("Workspace path is required.");
         }
-        Path root = canonicalExistingDirectory(Path.of(request.windowsPath()));
+        CodingService.WorkspaceHost host = request.host() == null ? CodingService.WorkspaceHost.WINDOWS : request.host();
         String id = UUID.randomUUID().toString();
         AutonomyLevel autonomy = request.autonomyLevel() == null ? AutonomyLevel.ASK_BEFORE_WRITE : request.autonomyLevel();
-        CodingWorkspace workspace = inspectWorkspace(
-                id,
-                root,
-                blank(request.name()) ? root.getFileName().toString() : request.name(),
-                blank(request.projectType()) ? "AUTO" : request.projectType(),
-                autonomy,
-                request.buildCommand(),
-                request.testCommand()
-        );
-        workspaces.put(id, new WorkspaceState(id, root, workspace));
+        CodingWorkspace workspace;
+        WorkspaceState state;
+        if (host == CodingService.WorkspaceHost.WINDOWS) {
+            Map<String, Object> validated = windowsRequest("workspace_validate", Map.of("rootPath", request.windowsPath()), WINDOWS_FAST_TIMEOUT);
+            String canonicalPath = string(validated, "canonicalPath", request.windowsPath());
+            String name = blank(request.name()) ? string(validated, "name", canonicalPath) : request.name();
+            workspace = inspectWindowsWorkspace(
+                    id,
+                    canonicalPath,
+                    name,
+                    blank(request.projectType()) ? "AUTO" : request.projectType(),
+                    autonomy,
+                    request.buildCommand(),
+                    request.testCommand()
+            );
+            state = new WorkspaceState(id, null, canonicalPath, host, workspace);
+        } else {
+            Path root = canonicalExistingDirectory(Path.of(request.windowsPath()));
+            workspace = inspectWorkspace(
+                    id,
+                    root,
+                    blank(request.name()) ? root.getFileName().toString() : request.name(),
+                    blank(request.projectType()) ? "AUTO" : request.projectType(),
+                    autonomy,
+                    request.buildCommand(),
+                    request.testCommand()
+            );
+            state = new WorkspaceState(id, root, root.toString(), host, workspace);
+        }
+        workspaces.put(id, state);
         return workspace;
     }
 
@@ -78,15 +118,11 @@ public class DefaultCodingService implements CodingService {
     public CodingWorkspace refreshWorkspace(String workspaceId) {
         WorkspaceState state = requireWorkspace(workspaceId);
         CodingWorkspace current = state.workspace;
-        state.workspace = inspectWorkspace(
-                current.id(),
-                state.root,
-                current.name(),
-                current.projectType(),
-                current.autonomyLevel(),
-                current.buildCommand(),
-                current.testCommand()
-        );
+        state.workspace = state.host == CodingService.WorkspaceHost.WINDOWS
+                ? inspectWindowsWorkspace(current.id(), state.windowsPath, current.name(), current.projectType(),
+                current.autonomyLevel(), current.buildCommand(), current.testCommand())
+                : inspectWorkspace(current.id(), state.root, current.name(), current.projectType(),
+                current.autonomyLevel(), current.buildCommand(), current.testCommand());
         return state.workspace;
     }
 
@@ -100,6 +136,19 @@ public class DefaultCodingService implements CodingService {
     @Override
     public List<WorkspaceFileEntry> listFiles(String workspaceId, String path) {
         WorkspaceState state = requireWorkspace(workspaceId);
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            Map<String, Object> response = windowsRequest("file_list", Map.of(
+                    "rootPath", state.windowsPath,
+                    "path", path == null ? "" : path
+            ), WINDOWS_FAST_TIMEOUT);
+            return maps(response.get("files")).stream()
+                    .map(file -> new WorkspaceFileEntry(
+                            string(file, "path", ""),
+                            bool(file, "directory"),
+                            longValue(file, "size", 0)
+                    ))
+                    .toList();
+        }
         Path directory = resolveInsideWorkspace(state, path);
         if (!Files.isDirectory(directory)) {
             throw new IllegalArgumentException("Path is not a directory: " + path);
@@ -118,6 +167,15 @@ public class DefaultCodingService implements CodingService {
     @Override
     public FileContent readFile(String workspaceId, String path, Integer startLine, Integer endLine) {
         WorkspaceState state = requireWorkspace(workspaceId);
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            Map<String, Object> response = windowsRequest("file_read", Map.of(
+                    "rootPath", state.windowsPath,
+                    "path", path == null ? "" : path,
+                    "startLine", startLine == null ? 0 : startLine,
+                    "endLine", endLine == null ? 0 : endLine
+            ), WINDOWS_FAST_TIMEOUT);
+            return fileContent(response);
+        }
         Path file = resolveInsideWorkspace(state, path);
         return readResolvedFile(state, file, startLine, endLine);
     }
@@ -130,6 +188,21 @@ public class DefaultCodingService implements CodingService {
             throw new IllegalArgumentException("Search query is required.");
         }
         int maxResults = request.maxResults() <= 0 ? DEFAULT_MAX_SEARCH_RESULTS : Math.min(request.maxResults(), 500);
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            Map<String, Object> response = windowsRequest("file_search", Map.of(
+                    "rootPath", state.windowsPath,
+                    "query", query,
+                    "regex", request.regex(),
+                    "maxResults", maxResults
+            ), WINDOWS_FAST_TIMEOUT);
+            return maps(response.get("matches")).stream()
+                    .map(match -> new SearchMatch(
+                            string(match, "path", ""),
+                            (int) longValue(match, "line", 0),
+                            string(match, "preview", "")
+                    ))
+                    .toList();
+        }
         Pattern pattern = request.regex() ? Pattern.compile(query) : Pattern.compile(Pattern.quote(query), Pattern.CASE_INSENSITIVE);
         List<SearchMatch> matches = new ArrayList<>();
         try (Stream<Path> stream = Files.walk(state.root)) {
@@ -158,6 +231,13 @@ public class DefaultCodingService implements CodingService {
         if (request == null || request.path() == null) {
             throw new IllegalArgumentException("File path is required.");
         }
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            return fileContent(windowsRequest("file_write", Map.of(
+                    "rootPath", state.windowsPath,
+                    "path", request.path(),
+                    "content", request.content() == null ? "" : request.content()
+            ), WINDOWS_FAST_TIMEOUT));
+        }
         Path file = resolveCreatableInsideWorkspace(state, request.path());
         try {
             Files.createDirectories(file.getParent());
@@ -175,6 +255,14 @@ public class DefaultCodingService implements CodingService {
         if (request == null || request.path() == null || request.expected() == null || request.replacement() == null) {
             throw new IllegalArgumentException("Patch path, expected and replacement are required.");
         }
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            return fileContent(windowsRequest("file_patch", Map.of(
+                    "rootPath", state.windowsPath,
+                    "path", request.path(),
+                    "expected", request.expected(),
+                    "replacement", request.replacement()
+            ), WINDOWS_FAST_TIMEOUT));
+        }
         Path file = resolveInsideWorkspace(state, request.path());
         try {
             String content = Files.readString(file, StandardCharsets.UTF_8);
@@ -191,6 +279,89 @@ public class DefaultCodingService implements CodingService {
     }
 
     @Override
+    public WorkspaceFileEntry createDirectory(String workspaceId, DirectoryCreateRequest request) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        requireWriteAllowed(state);
+        if (request == null || request.path() == null) {
+            throw new IllegalArgumentException("Directory path is required.");
+        }
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            Map<String, Object> response = windowsRequest("directory_create", Map.of(
+                    "rootPath", state.windowsPath,
+                    "path", request.path()
+            ), WINDOWS_FAST_TIMEOUT);
+            return new WorkspaceFileEntry(string(response, "path", request.path()), true, 0);
+        }
+        Path directory = resolveCreatableInsideWorkspace(state, request.path());
+        try {
+            Files.createDirectories(directory);
+            return new WorkspaceFileEntry(relative(state, directory), true, 0);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Directory create failed: " + exception.getMessage(), exception);
+        }
+    }
+
+    @Override
+    public WorkspaceFileEntry moveFile(String workspaceId, FileMoveRequest request) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        requireWriteAllowed(state);
+        if (request == null || request.sourcePath() == null || request.targetPath() == null) {
+            throw new IllegalArgumentException("Source and target paths are required.");
+        }
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            Map<String, Object> response = windowsRequest("file_move", Map.of(
+                    "rootPath", state.windowsPath,
+                    "sourcePath", request.sourcePath(),
+                    "targetPath", request.targetPath()
+            ), WINDOWS_FAST_TIMEOUT);
+            return new WorkspaceFileEntry(string(response, "targetPath", request.targetPath()), false, 0);
+        }
+        Path source = resolveInsideWorkspace(state, request.sourcePath());
+        Path target = resolveCreatableInsideWorkspace(state, request.targetPath());
+        try {
+            Files.createDirectories(target.getParent());
+            Files.move(source, target);
+            return new WorkspaceFileEntry(relative(state, target), Files.isDirectory(target), size(target));
+        } catch (IOException exception) {
+            throw new IllegalStateException("File move failed: " + exception.getMessage(), exception);
+        }
+    }
+
+    @Override
+    public void deleteFile(String workspaceId, FileDeleteRequest request) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        requireWriteAllowed(state);
+        if (request == null || request.path() == null) {
+            throw new IllegalArgumentException("File path is required.");
+        }
+        if (!request.approved()) {
+            throw new IllegalStateException("File delete requires explicit approval.");
+        }
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            windowsRequest("file_delete", Map.of(
+                    "rootPath", state.windowsPath,
+                    "path", request.path(),
+                    "approved", true
+            ), WINDOWS_FAST_TIMEOUT);
+            return;
+        }
+        Path target = resolveInsideWorkspace(state, request.path());
+        try {
+            if (Files.isDirectory(target)) {
+                try (Stream<Path> paths = Files.walk(target)) {
+                    for (Path path : paths.sorted(Comparator.reverseOrder()).toList()) {
+                        Files.deleteIfExists(path);
+                    }
+                }
+            } else {
+                Files.deleteIfExists(target);
+            }
+        } catch (IOException exception) {
+            throw new IllegalStateException("File delete failed: " + exception.getMessage(), exception);
+        }
+    }
+
+    @Override
     public CommandResult runCommand(String workspaceId, CommandRequest request) {
         WorkspaceState state = requireWorkspace(workspaceId);
         if (request == null || blank(request.command())) {
@@ -199,6 +370,15 @@ public class DefaultCodingService implements CodingService {
         requireCommandAllowed(state, request.command());
         long timeoutSeconds = request.timeoutSeconds() <= 0 ? 60 : Math.min(request.timeoutSeconds(), 900);
         int maxOutput = request.maxOutputCharacters() <= 0 ? DEFAULT_MAX_OUTPUT : Math.min(request.maxOutputCharacters(), 250_000);
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            Map<String, Object> response = windowsRequest("command_start", Map.of(
+                    "rootPath", state.windowsPath,
+                    "command", request.command(),
+                    "timeoutSeconds", timeoutSeconds,
+                    "maxOutputCharacters", maxOutput
+            ), WINDOWS_COMMAND_TIMEOUT);
+            return commandResult(response, request.command());
+        }
         String processId = UUID.randomUUID().toString();
         ProcessBuilder builder = shellCommand(request.command());
         builder.directory(state.root.toFile());
@@ -227,12 +407,56 @@ public class DefaultCodingService implements CodingService {
     @Override
     public GitSnapshot gitSnapshot(String workspaceId) {
         WorkspaceState state = requireWorkspace(workspaceId);
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            Map<String, Object> status = windowsRequest("git_status", Map.of("rootPath", state.windowsPath), WINDOWS_FAST_TIMEOUT);
+            Map<String, Object> diff = windowsRequest("git_diff", Map.of("rootPath", state.windowsPath), WINDOWS_FAST_TIMEOUT);
+            return new GitSnapshot(
+                    string(status, "branch", ""),
+                    string(status, "headCommit", ""),
+                    string(status, "status", ""),
+                    string(diff, "diff", "")
+            );
+        }
         return new GitSnapshot(
                 gitLine(state.root, "rev-parse", "--abbrev-ref", "HEAD"),
                 gitLine(state.root, "rev-parse", "HEAD"),
                 gitText(state.root, "status", "--short"),
                 gitText(state.root, "diff", "--", ".")
         );
+    }
+
+    @Override
+    public Map<String, Object> buildDetect(String workspaceId) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            return windowsRequest("build_detect", Map.of("rootPath", state.windowsPath), WINDOWS_FAST_TIMEOUT);
+        }
+        List<String> systems = detectBuildSystems(state.root);
+        return Map.of("detectedBuildSystems", systems, "buildCommand", defaultBuildCommand(state.root, systems));
+    }
+
+    @Override
+    public CommandResult buildRun(String workspaceId, BuildRunRequest request) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        String command = request == null ? "" : request.command();
+        if (blank(command)) {
+            command = state.workspace.buildCommand();
+        }
+        return runCommand(workspaceId, new CommandRequest(command,
+                request == null ? 0 : request.timeoutSeconds(),
+                request == null ? 0 : request.maxOutputCharacters()));
+    }
+
+    @Override
+    public CommandResult testRun(String workspaceId, BuildRunRequest request) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        String command = request == null ? "" : request.command();
+        if (blank(command)) {
+            command = state.workspace.testCommand();
+        }
+        return runCommand(workspaceId, new CommandRequest(command,
+                request == null ? 0 : request.timeoutSeconds(),
+                request == null ? 0 : request.maxOutputCharacters()));
     }
 
     @Override
@@ -302,12 +526,44 @@ public class DefaultCodingService implements CodingService {
                 id,
                 name,
                 root.toString(),
+                CodingService.WorkspaceHost.SERVER,
                 "AUTO".equals(projectType) ? String.join(",", buildSystems) : projectType,
                 buildSystems,
                 gitRepository,
                 gitRepository ? gitLine(root, "rev-parse", "--abbrev-ref", "HEAD") : "",
                 gitRepository ? gitLine(root, "rev-parse", "HEAD") : "",
                 gitRepository ? gitText(root, "status", "--short") : "",
+                autonomy,
+                detectedBuild,
+                detectedTest,
+                Instant.now()
+        );
+    }
+
+    private CodingWorkspace inspectWindowsWorkspace(
+            String id,
+            String windowsPath,
+            String name,
+            String projectType,
+            AutonomyLevel autonomy,
+            String buildCommand,
+            String testCommand
+    ) {
+        Map<String, Object> response = windowsRequest("workspace_inspect", Map.of("rootPath", windowsPath), WINDOWS_FAST_TIMEOUT);
+        List<String> buildSystems = strings(response.get("detectedBuildSystems"));
+        String detectedBuild = blank(buildCommand) ? string(response, "buildCommand", "") : buildCommand;
+        String detectedTest = blank(testCommand) ? string(response, "testCommand", "") : testCommand;
+        return new CodingWorkspace(
+                id,
+                blank(name) ? string(response, "name", windowsPath) : name,
+                string(response, "canonicalPath", windowsPath),
+                CodingService.WorkspaceHost.WINDOWS,
+                "AUTO".equals(projectType) ? String.join(",", buildSystems) : projectType,
+                buildSystems,
+                bool(response, "gitRepository"),
+                string(response, "gitBranch", ""),
+                string(response, "gitHeadCommit", ""),
+                string(response, "gitStatus", ""),
                 autonomy,
                 detectedBuild,
                 detectedTest,
@@ -478,6 +734,7 @@ public class DefaultCodingService implements CodingService {
                 workspace.id(),
                 workspace.name(),
                 workspace.windowsPath(),
+                workspace.host(),
                 workspace.projectType(),
                 workspace.detectedBuildSystems(),
                 workspace.gitRepository(),
@@ -592,14 +849,104 @@ public class DefaultCodingService implements CodingService {
         return value == null || value.isBlank();
     }
 
+    private Map<String, Object> windowsRequest(String operation, Map<String, Object> payload, java.time.Duration timeout) {
+        if (windowsBridgeGateway == null) {
+            throw new IllegalStateException("Windows Coding Executor is unavailable: Windows Bridge is not configured.");
+        }
+        try {
+            return windowsBridgeGateway.codingRequest(operation, payload, timeout);
+        } catch (McpException exception) {
+            throw new IllegalStateException(exception.getMessage(), exception);
+        }
+    }
+
+    private FileContent fileContent(Map<String, Object> response) {
+        return new FileContent(
+                string(response, "path", ""),
+                (int) longValue(response, "startLine", 1),
+                (int) longValue(response, "endLine", 1),
+                string(response, "content", ""),
+                string(response, "sha256", "")
+        );
+    }
+
+    private CommandResult commandResult(Map<String, Object> response, String fallbackCommand) {
+        return new CommandResult(
+                string(response, "processId", ""),
+                string(response, "command", fallbackCommand),
+                (int) longValue(response, "exitCode", -1),
+                bool(response, "timedOut"),
+                string(response, "stdout", ""),
+                string(response, "stderr", "")
+        );
+    }
+
+    private List<Map<String, Object>> maps(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> map) {
+                Map<String, Object> converted = new LinkedHashMap<>();
+                map.forEach((key, element) -> converted.put(String.valueOf(key), element));
+                result.add(converted);
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private List<String> strings(Object value) {
+        if (!(value instanceof List<?> list)) {
+            return List.of("Unknown");
+        }
+        List<String> result = list.stream()
+                .map(String::valueOf)
+                .filter(item -> !item.isBlank())
+                .toList();
+        return result.isEmpty() ? List.of("Unknown") : result;
+    }
+
+    private String string(Map<String, Object> map, String key, String fallback) {
+        Object value = map.get(key);
+        return value == null ? fallback : String.valueOf(value);
+    }
+
+    private boolean bool(Map<String, Object> map, String key) {
+        Object value = map.get(key);
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        return value != null && Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    private long longValue(Map<String, Object> map, String key, long fallback) {
+        Object value = map.get(key);
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value == null) {
+            return fallback;
+        }
+        try {
+            return Long.parseLong(String.valueOf(value));
+        } catch (NumberFormatException exception) {
+            return fallback;
+        }
+    }
+
     private static final class WorkspaceState {
         private final String id;
         private final Path root;
+        private final String windowsPath;
+        private final CodingService.WorkspaceHost host;
         private CodingWorkspace workspace;
 
-        private WorkspaceState(String id, Path root, CodingWorkspace workspace) {
+        private WorkspaceState(String id, Path root, String windowsPath, CodingService.WorkspaceHost host, CodingWorkspace workspace) {
             this.id = id;
             this.root = root;
+            this.windowsPath = windowsPath;
+            this.host = host;
             this.workspace = workspace;
         }
     }
