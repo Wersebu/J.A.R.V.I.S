@@ -3,6 +3,7 @@ package com.jarvis.core.coding;
 import com.jarvis.brain.BrainRouter;
 import com.jarvis.api.service.CodingService;
 import com.jarvis.api.service.WindowsCodingBridgeGateway;
+import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.ai.Brain;
 import com.jarvis.common.ai.BrainType;
 import com.jarvis.common.ai.ReasoningLevel;
@@ -19,6 +20,8 @@ import com.jarvis.tools.runtime.ToolLoopTerminationInfo;
 import com.jarvis.tools.runtime.ToolRuntimeStep;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.InitializingBean;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
@@ -50,7 +53,8 @@ import java.util.stream.Stream;
  * Controlled coding workspace implementation for the first vertical Coding Agent flow.
  */
 @Service
-public class DefaultCodingService implements CodingService {
+@DependsOn("SQLiteMemoryInitializer")
+public class DefaultCodingService implements CodingService, InitializingBean {
 
     private static final int DEFAULT_MAX_SEARCH_RESULTS = 100;
     private static final int DEFAULT_MAX_OUTPUT = 64_000;
@@ -59,6 +63,7 @@ public class DefaultCodingService implements CodingService {
     private static final java.time.Duration WINDOWS_COMMAND_TIMEOUT = java.time.Duration.ofMinutes(16);
 
     private final Map<String, WorkspaceState> workspaces = new ConcurrentHashMap<>();
+    private final CodingWorkspaceRepository workspaceRepository;
     private final CodingTaskRepository taskRepository;
     private final WindowsCodingBridgeGateway windowsBridgeGateway;
     private final Supplier<ToolCallingRuntime> toolCallingRuntime;
@@ -67,12 +72,13 @@ public class DefaultCodingService implements CodingService {
     private final Executor taskExecutor;
 
     public DefaultCodingService() {
-        this(null, new InMemoryCodingTaskRepository(), null, null, null, Executors.newVirtualThreadPerTaskExecutor());
+        this(null, new InMemoryCodingWorkspaceRepository(), new InMemoryCodingTaskRepository(), null, null, null, Executors.newVirtualThreadPerTaskExecutor());
     }
 
     @Autowired
     public DefaultCodingService(
             ObjectProvider<WindowsCodingBridgeGateway> windowsBridgeGateway,
+            ObjectProvider<CodingWorkspaceRepository> workspaceRepository,
             ObjectProvider<CodingTaskRepository> taskRepository,
             ObjectProvider<ToolCallingRuntime> toolCallingRuntime,
             ObjectProvider<BrainRouter> brainRouter,
@@ -80,6 +86,7 @@ public class DefaultCodingService implements CodingService {
     ) {
         this(
                 windowsBridgeGateway.getIfAvailable(),
+                workspaceRepository.getIfAvailable(InMemoryCodingWorkspaceRepository::new),
                 taskRepository.getIfAvailable(InMemoryCodingTaskRepository::new),
                 toolCallingRuntime::getIfAvailable,
                 brainRouter.getIfAvailable(),
@@ -89,7 +96,7 @@ public class DefaultCodingService implements CodingService {
     }
 
     DefaultCodingService(WindowsCodingBridgeGateway windowsBridgeGateway) {
-        this(windowsBridgeGateway, new InMemoryCodingTaskRepository(), null, null, null, Executors.newVirtualThreadPerTaskExecutor());
+        this(windowsBridgeGateway, new InMemoryCodingWorkspaceRepository(), new InMemoryCodingTaskRepository(), null, null, null, Executors.newVirtualThreadPerTaskExecutor());
     }
 
     DefaultCodingService(
@@ -100,7 +107,21 @@ public class DefaultCodingService implements CodingService {
             CognitiveEventBus cognitiveEventBus,
             Executor taskExecutor
     ) {
+        this(windowsBridgeGateway, new InMemoryCodingWorkspaceRepository(), taskRepository, toolCallingRuntime,
+                brainRouter, cognitiveEventBus, taskExecutor);
+    }
+
+    DefaultCodingService(
+            WindowsCodingBridgeGateway windowsBridgeGateway,
+            CodingWorkspaceRepository workspaceRepository,
+            CodingTaskRepository taskRepository,
+            Supplier<ToolCallingRuntime> toolCallingRuntime,
+            BrainRouter brainRouter,
+            CognitiveEventBus cognitiveEventBus,
+            Executor taskExecutor
+    ) {
         this.windowsBridgeGateway = windowsBridgeGateway;
+        this.workspaceRepository = workspaceRepository == null ? new InMemoryCodingWorkspaceRepository() : workspaceRepository;
         this.taskRepository = taskRepository == null ? new InMemoryCodingTaskRepository() : taskRepository;
         this.toolCallingRuntime = toolCallingRuntime == null ? () -> null : toolCallingRuntime;
         this.brainRouter = brainRouter;
@@ -109,8 +130,25 @@ public class DefaultCodingService implements CodingService {
     }
 
     @Override
+    public void afterPropertiesSet() {
+        for (CodingWorkspace workspace : workspaceRepository.findAll()) {
+            workspaces.put(workspace.id(), workspaceState(workspace));
+        }
+        for (CodingTask task : taskRepository.findAll()) {
+            if (!terminal(task.status())) {
+                updateTaskRecord(task, CodingTaskStatus.INTERRUPTED, fail(task.plan(), "final"),
+                        "Task was interrupted by backend restart before completion.", task.iteration(), task.changedFiles(),
+                        task.buildResult(), task.testResult(), "Task was interrupted by backend restart before completion.",
+                        Instant.now(), task.initialGitSnapshot(), task.finalGitSnapshot(), task.finalAnswer());
+            }
+        }
+    }
+
+    @Override
     public List<CodingWorkspace> listWorkspaces() {
+        String userId = CurrentUserContext.requiredUserId();
         return workspaces.values().stream()
+                .filter(state -> userId.equals(state.workspace.ownerUserId()))
                 .sorted(Comparator.comparing(state -> state.workspace.lastUsedAt(), Comparator.reverseOrder()))
                 .map(state -> state.workspace)
                 .toList();
@@ -121,6 +159,7 @@ public class DefaultCodingService implements CodingService {
         if (request == null || blank(request.windowsPath())) {
             throw new IllegalArgumentException("Workspace path is required.");
         }
+        String ownerUserId = CurrentUserContext.requiredUserId();
         CodingService.WorkspaceHost host = request.host() == null ? CodingService.WorkspaceHost.WINDOWS : request.host();
         String id = UUID.randomUUID().toString();
         AutonomyLevel autonomy = request.autonomyLevel() == null ? AutonomyLevel.EDIT_AND_TEST : request.autonomyLevel();
@@ -139,6 +178,7 @@ public class DefaultCodingService implements CodingService {
                     request.buildCommand(),
                     request.testCommand()
             );
+            workspace = withWorkspaceOwner(workspace, ownerUserId);
             state = new WorkspaceState(id, null, canonicalPath, host, workspace);
         } else {
             Path root = canonicalExistingDirectory(Path.of(request.windowsPath()));
@@ -151,9 +191,11 @@ public class DefaultCodingService implements CodingService {
                     request.buildCommand(),
                     request.testCommand()
             );
+            workspace = withWorkspaceOwner(workspace, ownerUserId);
             state = new WorkspaceState(id, root, root.toString(), host, workspace);
         }
         workspaces.put(id, state);
+        workspaceRepository.save(workspace);
         return workspace;
     }
 
@@ -173,14 +215,18 @@ public class DefaultCodingService implements CodingService {
                 current.autonomyLevel(), current.buildCommand(), current.testCommand())
                 : inspectWorkspace(current.id(), state.root, current.name(), current.projectType(),
                 current.autonomyLevel(), current.buildCommand(), current.testCommand());
+        state.workspace = withWorkspaceOwnerAndTimestamps(state.workspace, current.ownerUserId(), current.createdAt(), Instant.now());
+        workspaceRepository.save(state.workspace);
         return state.workspace;
     }
 
     @Override
     public void removeWorkspace(String workspaceId) {
+        requireWorkspace(workspaceId);
         if (workspaces.remove(workspaceId) == null) {
             throw new IllegalArgumentException("Unknown coding workspace: " + workspaceId);
         }
+        workspaceRepository.delete(workspaceId);
     }
 
     @Override
@@ -544,43 +590,79 @@ public class DefaultCodingService implements CodingService {
 
     @Override
     public CodingTask startTask(StartTaskRequest request) {
+        return startTask(request, new CodingRequestContext(CurrentUserContext.requiredUserId(), "", request == null ? "" : request.conversationId()));
+    }
+
+    @Override
+    public CodingTask startTask(StartTaskRequest request, CodingRequestContext context) {
         if (request == null || blank(request.workspaceId())) {
             throw new IllegalArgumentException("Workspace id is required.");
         }
-        WorkspaceState state = requireWorkspace(request.workspaceId());
+        CodingRequestContext requestContext = context == null ? new CodingRequestContext(CurrentUserContext.requiredUserId(), "", request.conversationId()) : context;
+        String ownerUserId = normalizeOwner(requestContext.userId());
+        WorkspaceState state = requireWorkspaceForOwner(request.workspaceId(), ownerUserId);
         String id = UUID.randomUUID().toString();
+        Instant now = Instant.now();
         CodingTask task = new CodingTask(
                 id,
                 state.workspace.id(),
-                request.conversationId(),
+                blank(requestContext.conversationId()) ? request.conversationId() : requestContext.conversationId(),
                 request.model(),
                 request.prompt(),
                 CodingTaskStatus.CREATED,
                 initialPlan(),
                 "Coding task created.",
                 0,
-                Instant.now(),
+                now,
                 null,
                 Map.of(),
                 "",
                 "",
-                ""
+                "",
+                ownerUserId,
+                now,
+                "",
+                "coding-agent-v1",
+                new GitSnapshot("", "", "", ""),
+                new GitSnapshot("", "", "", "")
         );
         taskRepository.save(task);
         publishTaskEvent(task, "CREATED", "Coding task accepted for asynchronous execution", Map.of());
-        taskExecutor.execute(() -> runTaskLoop(id, state.id));
+        taskExecutor.execute(() -> CurrentUserContext.runAs(ownerUserId, () -> runTaskLoop(id, state.id)));
         return task;
     }
 
     @Override
+    public CodingTask cancelTask(String taskId, CodingRequestContext context) {
+        CodingTask current = task(taskId);
+        if (terminal(current.status())) {
+            return current;
+        }
+        GitSnapshot finalGit = gitSnapshot(current.workspaceId());
+        Map<String, String> changedFiles = new LinkedHashMap<>(current.changedFiles());
+        changedFiles.put("cancelRequestedAt", Instant.now().toString());
+        changedFiles.put("finalGitStatus", trim(finalGit.status(), 8_000));
+        changedFiles.put("finalGitDiffSha256", sha256(finalGit.diff().getBytes(StandardCharsets.UTF_8)));
+        return updateTaskRecord(current, CodingTaskStatus.CANCELLED, fail(current.plan(), "final"),
+                "Coding task cancellation requested.", current.iteration(), changedFiles, current.buildResult(),
+                current.testResult(), "Coding task cancelled by owner.", Instant.now(), current.initialGitSnapshot(),
+                finalGit, "Coding task cancelled by owner.");
+    }
+
+    @Override
     public CodingTask task(String taskId) {
-        return taskRepository.findById(taskId)
+        CodingTask task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown coding task: " + taskId));
+        requireTaskOwner(task);
+        return task;
     }
 
     @Override
     public List<CodingTask> tasks() {
-        return taskRepository.findAll();
+        String userId = CurrentUserContext.requiredUserId();
+        return taskRepository.findAll().stream()
+                .filter(task -> userId.equals(task.ownerUserId()))
+                .toList();
     }
 
     private List<PlanStep> initialPlan() {
@@ -596,12 +678,21 @@ public class DefaultCodingService implements CodingService {
 
     private void runTaskLoop(String taskId, String workspaceId) {
         CodingTask task = task(taskId);
+        if (task.status() == CodingTaskStatus.CANCELLED) {
+            return;
+        }
         WorkspaceState state = requireWorkspace(workspaceId);
         try {
             ToolCallingRuntime runtime = toolCallingRuntime.get();
             CodingTask finished = runtime == null ? runLegacyTaskLoop(task, state) : runNativeModelTaskLoop(task, state, runtime);
+            if (taskRepository.findById(taskId).map(existing -> existing.status() == CodingTaskStatus.CANCELLED).orElse(false)) {
+                return;
+            }
             taskRepository.save(finished);
         } catch (RuntimeException exception) {
+            if (taskRepository.findById(taskId).map(existing -> existing.status() == CodingTaskStatus.CANCELLED).orElse(false)) {
+                return;
+            }
             String failureReason = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
             updateTask(task(taskId), CodingTaskStatus.FAILED, fail(task(taskId).plan(), "final"), failureReason, 0,
                     Map.of(), new StringBuilder(), new StringBuilder(), failureReason, Instant.now());
@@ -616,6 +707,9 @@ public class DefaultCodingService implements CodingService {
         int iteration = 0;
         try {
             iteration++;
+            if (cancelled(task.id())) {
+                return task(task.id());
+            }
             task = updateTask(task, CodingTaskStatus.INSPECTING, complete(task.plan(), "inspect"),
                     "Inspecting workspace before model loop.", iteration, changedFiles, buildResult, testResult, failureReason, null);
             CodingWorkspace workspace = refreshWorkspace(state.workspace.id());
@@ -629,6 +723,9 @@ public class DefaultCodingService implements CodingService {
             changedFiles.put("initialGitDiffSha256", sha256(initialGit.diff().getBytes(StandardCharsets.UTF_8)));
             task = updateTask(task, CodingTaskStatus.PLANNING, complete(complete(task.plan(), "snapshot"), "plan"),
                     "Starting model-owned Coding Agent loop.", iteration, changedFiles, buildResult, testResult, failureReason, null);
+            if (cancelled(task.id())) {
+                return task(task.id());
+            }
 
             ToolCallingResult result = runtime.execute(new ToolCallingRequest(
                     "coding-task-" + task.id(),
@@ -641,7 +738,7 @@ public class DefaultCodingService implements CodingService {
                             "activeCodingWorkspaceName", workspace.name(),
                             "activeCodingWorkspaceHost", workspace.host().name(),
                             "codingTaskId", task.id(),
-                            "userId", ""
+                            "userId", task.ownerUserId()
                     ),
                     codingAgentSystemPrompt(workspace, build, instructionFiles),
                     selectCodingBrain(task, workspace),
@@ -651,6 +748,9 @@ public class DefaultCodingService implements CodingService {
             ));
 
             ToolLoopTerminationInfo termination = result.terminationInfo();
+            if (cancelled(task.id())) {
+                return task(task.id());
+            }
             appendRuntimeResults(buildResult, testResult, result);
             GitSnapshot finalGit = gitSnapshot(workspace.id());
             changedFiles.put("finalGitStatus", trim(finalGit.status(), 8_000));
@@ -667,8 +767,9 @@ public class DefaultCodingService implements CodingService {
                     ? CodingTaskStatus.WAITING_FOR_APPROVAL
                     : CodingTaskStatus.FAILED;
             failureReason = status == CodingTaskStatus.COMPLETED ? "" : runtimeFailureReason(termination, result);
-            return updateTask(task, status, completedPlan, finalAction(result, termination), termination.usedModelTurns(),
-                    changedFiles, buildResult, testResult, failureReason, Instant.now());
+            return updateTaskRecord(task, status, completedPlan, finalAction(result, termination), termination.usedModelTurns(),
+                    changedFiles, buildResult.toString(), testResult.toString(), failureReason, Instant.now(), initialGit, finalGit,
+                    finalAction(result, termination));
         } catch (RuntimeException exception) {
             failureReason = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
             return updateTask(task, CodingTaskStatus.FAILED, fail(task.plan(), "final"), failureReason, iteration,
@@ -687,6 +788,9 @@ public class DefaultCodingService implements CodingService {
         GitSnapshot finalGit = new GitSnapshot("", "", "", "");
         try {
             iteration++;
+            if (cancelled(task.id())) {
+                return task(task.id());
+            }
             task = updateTask(task, CodingTaskStatus.INSPECTING, complete(plan, "inspect"), "Inspecting workspace.", iteration,
                     changedFiles, buildResult, testResult, failureReason, null);
             CodingWorkspace workspace = refreshWorkspace(state.workspace.id());
@@ -721,7 +825,13 @@ public class DefaultCodingService implements CodingService {
 
             task = updateTask(task, CodingTaskStatus.TESTING, complete(task.plan(), "verify"),
                     "Running verification command: " + command, iteration, changedFiles, buildResult, testResult, failureReason, null);
+            if (cancelled(task.id())) {
+                return task(task.id());
+            }
             CommandResult verification = runCommand(workspace.id(), new CommandRequest(command, 0, DEFAULT_MAX_OUTPUT));
+            if (cancelled(task.id())) {
+                return task(task.id());
+            }
             appendCommandResult(testResult, verification);
 
             task = updateTask(task, CodingTaskStatus.ANALYZING_RESULT, complete(task.plan(), "analyze"),
@@ -775,7 +885,59 @@ public class DefaultCodingService implements CodingService {
                 Map.copyOf(changedFiles),
                 buildResult.toString(),
                 testResult.toString(),
-                failureReason == null ? "" : failureReason
+                failureReason == null ? "" : failureReason,
+                task.ownerUserId(),
+                Instant.now(),
+                task.finalAnswer(),
+                task.systemPromptVersion(),
+                task.initialGitSnapshot(),
+                task.finalGitSnapshot()
+        );
+        taskRepository.save(updated);
+        publishTaskEvent(updated, status.name(), currentAction, Map.of(
+                "iteration", iteration,
+                "finished", finishedAt != null
+        ));
+        return updated;
+    }
+
+    private CodingTask updateTaskRecord(
+            CodingTask task,
+            CodingTaskStatus status,
+            List<PlanStep> plan,
+            String currentAction,
+            int iteration,
+            Map<String, String> changedFiles,
+            String buildResult,
+            String testResult,
+            String failureReason,
+            Instant finishedAt,
+            GitSnapshot initialGit,
+            GitSnapshot finalGit,
+            String finalAnswer
+    ) {
+        CodingTask updated = new CodingTask(
+                task.id(),
+                task.workspaceId(),
+                task.conversationId(),
+                task.model(),
+                task.prompt(),
+                status,
+                plan,
+                currentAction,
+                iteration,
+                task.startedAt(),
+                finishedAt,
+                Map.copyOf(changedFiles == null ? Map.of() : changedFiles),
+                buildResult == null ? "" : buildResult,
+                testResult == null ? "" : testResult,
+                failureReason == null ? "" : failureReason,
+                task.ownerUserId(),
+                Instant.now(),
+                finalAnswer == null ? task.finalAnswer() : finalAnswer,
+                task.systemPromptVersion(),
+                initialGit == null ? task.initialGitSnapshot() : initialGit,
+                finalGit == null ? task.finalGitSnapshot() : finalGit
         );
         taskRepository.save(updated);
         publishTaskEvent(updated, status.name(), currentAction, Map.of(
@@ -1099,7 +1261,30 @@ public class DefaultCodingService implements CodingService {
         if (state == null) {
             throw new IllegalArgumentException("Unknown coding workspace: " + workspaceId);
         }
+        if (!CurrentUserContext.requiredUserId().equals(state.workspace.ownerUserId())) {
+            throw new IllegalArgumentException("Unknown coding workspace: " + workspaceId);
+        }
         return state;
+    }
+
+    private WorkspaceState requireWorkspaceForOwner(String workspaceId, String ownerUserId) {
+        WorkspaceState state = workspaces.get(workspaceId);
+        if (state == null || !normalizeOwner(ownerUserId).equals(state.workspace.ownerUserId())) {
+            throw new IllegalArgumentException("Unknown coding workspace: " + workspaceId);
+        }
+        return state;
+    }
+
+    private void requireTaskOwner(CodingTask task) {
+        if (!CurrentUserContext.requiredUserId().equals(task.ownerUserId())) {
+            throw new IllegalArgumentException("Unknown coding task: " + task.id());
+        }
+    }
+
+    private boolean cancelled(String taskId) {
+        return taskRepository.findById(taskId)
+                .map(task -> task.status() == CodingTaskStatus.CANCELLED)
+                .orElse(false);
     }
 
     private void requireWriteAllowed(WorkspaceState state) {
@@ -1209,13 +1394,62 @@ public class DefaultCodingService implements CodingService {
                 workspace.autonomyLevel(),
                 workspace.buildCommand(),
                 workspace.testCommand(),
+                Instant.now(),
+                workspace.ownerUserId(),
+                workspace.createdAt(),
                 Instant.now()
         );
         workspaces.computeIfPresent(workspace.id(), (id, state) -> {
             state.workspace = touched;
             return state;
         });
+        workspaceRepository.save(touched);
         return touched;
+    }
+
+    private CodingWorkspace withWorkspaceOwner(CodingWorkspace workspace, String ownerUserId) {
+        Instant now = Instant.now();
+        return withWorkspaceOwnerAndTimestamps(workspace, ownerUserId, now, now);
+    }
+
+    private CodingWorkspace withWorkspaceOwnerAndTimestamps(CodingWorkspace workspace, String ownerUserId, Instant createdAt, Instant updatedAt) {
+        return new CodingWorkspace(
+                workspace.id(),
+                workspace.name(),
+                workspace.windowsPath(),
+                workspace.host(),
+                workspace.projectType(),
+                workspace.detectedBuildSystems(),
+                workspace.gitRepository(),
+                workspace.gitBranch(),
+                workspace.gitHeadCommit(),
+                workspace.gitStatus(),
+                workspace.autonomyLevel(),
+                workspace.buildCommand(),
+                workspace.testCommand(),
+                workspace.lastUsedAt(),
+                normalizeOwner(ownerUserId),
+                createdAt == null ? Instant.now() : createdAt,
+                updatedAt == null ? Instant.now() : updatedAt
+        );
+    }
+
+    private WorkspaceState workspaceState(CodingWorkspace workspace) {
+        CodingService.WorkspaceHost host = workspace.host() == null ? CodingService.WorkspaceHost.SERVER : workspace.host();
+        Path root = host == CodingService.WorkspaceHost.SERVER ? Path.of(workspace.windowsPath()).toAbsolutePath().normalize() : null;
+        return new WorkspaceState(workspace.id(), root, workspace.windowsPath(), host, workspace);
+    }
+
+    private String normalizeOwner(String userId) {
+        return blank(userId) ? CurrentUserContext.LOCAL_USER_ID : userId;
+    }
+
+    private boolean terminal(CodingTaskStatus status) {
+        return status == CodingTaskStatus.COMPLETED
+                || status == CodingTaskStatus.FAILED
+                || status == CodingTaskStatus.INTERRUPTED
+                || status == CodingTaskStatus.CANCELLED
+                || status == CodingTaskStatus.BLOCKED;
     }
 
     private Path canonicalExistingDirectory(Path path) {

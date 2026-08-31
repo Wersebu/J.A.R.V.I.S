@@ -104,6 +104,7 @@ public class SQLiteMemoryInitializer implements InitializingBean {
             addColumnIfMissing(statement, "semantic_memory", "embedding_vector", "TEXT");
             createAuthTables(statement);
             createDurableConversationTables(statement);
+            createCodingAgentTables(statement);
             migrateWorkingMemoryIntoDurableConversationTables(statement);
             createConversationImageTable(statement);
             LOGGER.info("[JARVIS] Cognitive Memory SQLite initialized.");
@@ -225,6 +226,77 @@ public class SQLiteMemoryInitializer implements InitializingBean {
         statement.executeUpdate("""
                 CREATE INDEX IF NOT EXISTS idx_conversation_folders_user
                 ON conversation_folders(user_id, lower(name))
+                """);
+    }
+
+    private void createCodingAgentTables(Statement statement) throws SQLException {
+        statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS coding_workspaces (
+                    id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL DEFAULT 'local-user',
+                    name TEXT NOT NULL DEFAULT '',
+                    windows_path TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    project_type TEXT NOT NULL DEFAULT '',
+                    detected_build_systems_json TEXT NOT NULL DEFAULT '[]',
+                    git_repository INTEGER NOT NULL DEFAULT 0,
+                    git_branch TEXT NOT NULL DEFAULT '',
+                    git_head_commit TEXT NOT NULL DEFAULT '',
+                    git_status TEXT NOT NULL DEFAULT '',
+                    autonomy_level TEXT NOT NULL DEFAULT 'EDIT_AND_TEST',
+                    build_command TEXT NOT NULL DEFAULT '',
+                    test_command TEXT NOT NULL DEFAULT '',
+                    last_used_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """);
+        addColumnIfMissing(statement, "coding_workspaces", "owner_user_id", "TEXT NOT NULL DEFAULT 'local-user'");
+        addColumnIfMissing(statement, "coding_workspaces", "created_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'");
+        addColumnIfMissing(statement, "coding_workspaces", "updated_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'");
+        statement.executeUpdate("""
+                CREATE INDEX IF NOT EXISTS idx_coding_workspaces_owner_used
+                ON coding_workspaces(owner_user_id, last_used_at)
+                """);
+
+        statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS coding_tasks (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    owner_user_id TEXT NOT NULL DEFAULT 'local-user',
+                    conversation_id TEXT NOT NULL DEFAULT '',
+                    model TEXT NOT NULL DEFAULT '',
+                    prompt TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    plan_json TEXT NOT NULL DEFAULT '[]',
+                    current_action TEXT NOT NULL DEFAULT '',
+                    iteration INTEGER NOT NULL DEFAULT 0,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT NOT NULL DEFAULT '',
+                    changed_files_json TEXT NOT NULL DEFAULT '{}',
+                    build_result TEXT NOT NULL DEFAULT '',
+                    test_result TEXT NOT NULL DEFAULT '',
+                    failure_reason TEXT NOT NULL DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    final_answer TEXT NOT NULL DEFAULT '',
+                    system_prompt_version TEXT NOT NULL DEFAULT '',
+                    initial_git_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                    final_git_snapshot_json TEXT NOT NULL DEFAULT '{}'
+                )
+                """);
+        addColumnIfMissing(statement, "coding_tasks", "owner_user_id", "TEXT NOT NULL DEFAULT 'local-user'");
+        addColumnIfMissing(statement, "coding_tasks", "updated_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'");
+        addColumnIfMissing(statement, "coding_tasks", "final_answer", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(statement, "coding_tasks", "system_prompt_version", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(statement, "coding_tasks", "initial_git_snapshot_json", "TEXT NOT NULL DEFAULT '{}'");
+        addColumnIfMissing(statement, "coding_tasks", "final_git_snapshot_json", "TEXT NOT NULL DEFAULT '{}'");
+        statement.executeUpdate("""
+                CREATE INDEX IF NOT EXISTS idx_coding_tasks_owner_started
+                ON coding_tasks(owner_user_id, started_at)
+                """);
+        statement.executeUpdate("""
+                CREATE INDEX IF NOT EXISTS idx_coding_tasks_workspace
+                ON coding_tasks(owner_user_id, workspace_id, started_at)
                 """);
     }
 

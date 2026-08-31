@@ -1,6 +1,7 @@
 package com.jarvis.api.controller;
 
 import com.jarvis.api.service.CodingService;
+import com.jarvis.api.service.CodingService.CodingRequestContext;
 import com.jarvis.api.service.CodingService.CodingTask;
 import com.jarvis.api.service.CodingService.CodingWorkspace;
 import com.jarvis.api.service.CodingService.CommandRequest;
@@ -18,6 +19,8 @@ import com.jarvis.api.service.CodingService.RegisterWorkspaceRequest;
 import com.jarvis.api.service.CodingService.SearchMatch;
 import com.jarvis.api.service.CodingService.StartTaskRequest;
 import com.jarvis.api.service.CodingService.WorkspaceFileEntry;
+import com.jarvis.common.auth.CurrentUserContext;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -141,8 +144,9 @@ public class CodingController {
     }
 
     @PostMapping(path = "/api/v1/coding/tasks", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<CodingTask> startTask(@RequestBody StartTaskRequest request) {
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(wrap(() -> codingService.startTask(request)));
+    public ResponseEntity<CodingTask> startTask(@RequestBody StartTaskRequest request, HttpServletRequest httpRequest) {
+        String conversationId = request == null ? "" : request.conversationId();
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(wrap(() -> codingService.startTask(request, requestContext(conversationId, httpRequest))));
     }
 
     @GetMapping(path = "/api/v1/coding/tasks", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -153,6 +157,16 @@ public class CodingController {
     @GetMapping(path = "/api/v1/coding/tasks/{taskId}", produces = MediaType.APPLICATION_JSON_VALUE)
     public CodingTask task(@PathVariable String taskId) {
         return wrap(() -> codingService.task(taskId));
+    }
+
+    @PostMapping(path = "/api/v1/coding/tasks/{taskId}/cancel", produces = MediaType.APPLICATION_JSON_VALUE)
+    public CodingTask cancelTask(@PathVariable String taskId, HttpServletRequest httpRequest) {
+        return wrap(() -> codingService.cancelTask(taskId, requestContext("", httpRequest)));
+    }
+
+    private CodingRequestContext requestContext(String conversationId, HttpServletRequest request) {
+        String sessionId = request.getSession(false) == null ? "" : request.getSession(false).getId();
+        return new CodingRequestContext(CurrentUserContext.requiredUserId(), sessionId, conversationId);
     }
 
     private <T> T wrap(ControllerCall<T> call) {

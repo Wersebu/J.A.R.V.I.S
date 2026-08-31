@@ -48,8 +48,26 @@ public interface CodingService {
         FIXING,
         COMPLETED,
         FAILED,
+        INTERRUPTED,
+        WAITING_FOR_HOST,
         CANCELLED,
         BLOCKED
+    }
+
+    record CodingRequestContext(String userId, String sessionId, String conversationId) {
+        public CodingRequestContext {
+            userId = blank(userId) ? "local-user" : userId;
+            sessionId = sessionId == null ? "" : sessionId;
+            conversationId = conversationId == null ? "" : conversationId;
+        }
+
+        public static CodingRequestContext local() {
+            return new CodingRequestContext("local-user", "", "");
+        }
+
+        private static boolean blank(String value) {
+            return value == null || value.isBlank();
+        }
     }
 
     record RegisterWorkspaceRequest(
@@ -77,8 +95,39 @@ public interface CodingService {
             AutonomyLevel autonomyLevel,
             String buildCommand,
             String testCommand,
-            Instant lastUsedAt
+            Instant lastUsedAt,
+            String ownerUserId,
+            Instant createdAt,
+            Instant updatedAt
     ) {
+        public CodingWorkspace {
+            detectedBuildSystems = detectedBuildSystems == null ? List.of() : List.copyOf(detectedBuildSystems);
+            lastUsedAt = lastUsedAt == null ? Instant.now() : lastUsedAt;
+            ownerUserId = normalizeUserId(ownerUserId);
+            createdAt = createdAt == null ? lastUsedAt : createdAt;
+            updatedAt = updatedAt == null ? lastUsedAt : updatedAt;
+        }
+
+        public CodingWorkspace(
+                String id,
+                String name,
+                String windowsPath,
+                WorkspaceHost host,
+                String projectType,
+                List<String> detectedBuildSystems,
+                boolean gitRepository,
+                String gitBranch,
+                String gitHeadCommit,
+                String gitStatus,
+                AutonomyLevel autonomyLevel,
+                String buildCommand,
+                String testCommand,
+                Instant lastUsedAt
+        ) {
+            this(id, name, windowsPath, host, projectType, detectedBuildSystems, gitRepository, gitBranch,
+                    gitHeadCommit, gitStatus, autonomyLevel, buildCommand, testCommand, lastUsedAt,
+                    "local-user", lastUsedAt, lastUsedAt);
+        }
     }
 
     record WorkspaceFileEntry(String path, boolean directory, long size) {
@@ -138,8 +187,47 @@ public interface CodingService {
             Map<String, String> changedFiles,
             String buildResult,
             String testResult,
-            String failureReason
+            String failureReason,
+            String ownerUserId,
+            Instant updatedAt,
+            String finalAnswer,
+            String systemPromptVersion,
+            GitSnapshot initialGitSnapshot,
+            GitSnapshot finalGitSnapshot
     ) {
+        public CodingTask {
+            plan = plan == null ? List.of() : List.copyOf(plan);
+            startedAt = startedAt == null ? Instant.now() : startedAt;
+            changedFiles = changedFiles == null ? Map.of() : Map.copyOf(changedFiles);
+            ownerUserId = normalizeUserId(ownerUserId);
+            updatedAt = updatedAt == null ? startedAt : updatedAt;
+            finalAnswer = finalAnswer == null ? "" : finalAnswer;
+            systemPromptVersion = systemPromptVersion == null ? "" : systemPromptVersion;
+            initialGitSnapshot = initialGitSnapshot == null ? new GitSnapshot("", "", "", "") : initialGitSnapshot;
+            finalGitSnapshot = finalGitSnapshot == null ? new GitSnapshot("", "", "", "") : finalGitSnapshot;
+        }
+
+        public CodingTask(
+                String id,
+                String workspaceId,
+                String conversationId,
+                String model,
+                String prompt,
+                CodingTaskStatus status,
+                List<PlanStep> plan,
+                String currentAction,
+                int iteration,
+                Instant startedAt,
+                Instant finishedAt,
+                Map<String, String> changedFiles,
+                String buildResult,
+                String testResult,
+                String failureReason
+        ) {
+            this(id, workspaceId, conversationId, model, prompt, status, plan, currentAction, iteration, startedAt,
+                    finishedAt, changedFiles, buildResult, testResult, failureReason, "local-user", startedAt,
+                    "", "", new GitSnapshot("", "", "", ""), new GitSnapshot("", "", "", ""));
+        }
     }
 
     record StartTaskRequest(String workspaceId, String conversationId, String model, String prompt) {
@@ -187,7 +275,19 @@ public interface CodingService {
 
     CodingTask startTask(StartTaskRequest request);
 
+    default CodingTask startTask(StartTaskRequest request, CodingRequestContext context) {
+        return startTask(request);
+    }
+
+    default CodingTask cancelTask(String taskId, CodingRequestContext context) {
+        throw new UnsupportedOperationException("Coding task cancellation is not implemented.");
+    }
+
     CodingTask task(String taskId);
 
     List<CodingTask> tasks();
+
+    private static String normalizeUserId(String userId) {
+        return userId == null || userId.isBlank() ? "local-user" : userId;
+    }
 }

@@ -11,6 +11,7 @@ import com.jarvis.common.ai.ModelResponse;
 import com.jarvis.common.ai.ModelToolCall;
 import com.jarvis.common.ai.ModelUsage;
 import com.jarvis.common.ai.NativeToolDefinition;
+import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.dto.ChatResponse;
 import com.jarvis.common.event.ChatEventSink;
 import com.jarvis.common.event.CognitiveEventBus;
@@ -25,9 +26,14 @@ import com.jarvis.tools.runtime.NativeToolLoopService;
 import com.jarvis.tools.runtime.NativeToolSchemaMapper;
 import com.jarvis.tools.runtime.ToolCallingRuntime;
 import com.jarvis.tools.runtime.ToolIntent;
+import com.jarvis.tools.runtime.ToolLoopTerminationInfo;
+import com.jarvis.tools.runtime.ToolLoopTerminationReason;
 import com.jarvis.tools.runtime.ToolRuntimeDebugService;
 import com.jarvis.tools.schema.ToolDefinition;
 import com.jarvis.tools.schema.ToolRegistry;
+import com.jarvis.memory.cognitive.MemoryProperties;
+import com.jarvis.memory.sqlite.SQLiteConnectionFactory;
+import com.jarvis.memory.sqlite.SQLiteMemoryInitializer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -230,6 +236,130 @@ class DefaultCodingServiceTest {
         assertThat(task.status()).isEqualTo(CodingService.CodingTaskStatus.CREATED);
         assertThat(service.task(task.id()).status()).isEqualTo(CodingService.CodingTaskStatus.CREATED);
         assertThat(queued).hasSize(1);
+    }
+
+    @Test
+    void codingWorkspaceAndTaskAccessIsScopedToAuthenticatedOwner() throws Exception {
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("owned-project"));
+        Queue<Runnable> queued = new ArrayDeque<>();
+        DefaultCodingService service = new DefaultCodingService(null, new InMemoryCodingTaskRepository(), null, null, null, queued::add);
+
+        AtomicReference<CodingService.CodingWorkspace> workspace = new AtomicReference<>();
+        AtomicReference<CodingService.CodingTask> task = new AtomicReference<>();
+        CurrentUserContext.runAs("user-a", () -> {
+            workspace.set(register(service, workspaceRoot, CodingService.AutonomyLevel.EDIT_AND_TEST));
+            task.set(service.startTask(new CodingService.StartTaskRequest(workspace.get().id(), "conv-a", "fake", "run tests")));
+        });
+
+        CurrentUserContext.runAs("user-b", () -> {
+            assertThat(service.listWorkspaces()).isEmpty();
+            assertThat(service.tasks()).isEmpty();
+            assertThatThrownBy(() -> service.workspace(workspace.get().id()))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Unknown coding workspace");
+            assertThatThrownBy(() -> service.task(task.get().id()))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Unknown coding task");
+            assertThatThrownBy(() -> service.startTask(new CodingService.StartTaskRequest(workspace.get().id(), "conv-b", "fake", "run tests")))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("Unknown coding workspace");
+        });
+
+        CurrentUserContext.runAs("user-a", () -> {
+            assertThat(service.listWorkspaces()).extracting(CodingService.CodingWorkspace::id).containsExactly(workspace.get().id());
+            assertThat(service.tasks()).extracting(CodingService.CodingTask::id).containsExactly(task.get().id());
+            assertThat(service.task(task.get().id()).ownerUserId()).isEqualTo("user-a");
+        });
+    }
+
+    @Test
+    void nativeCodingAgentLoopReceivesAuthenticatedUserIdInImmutableRequestContext() throws Exception {
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("auth-context-project"));
+        AtomicReference<String> runtimeUserId = new AtomicReference<>();
+        ToolCallingRuntime runtime = request -> {
+            runtimeUserId.set(String.valueOf(request.context().get("userId")));
+            return new com.jarvis.tools.runtime.ToolCallingResult(
+                    true,
+                    "done",
+                    List.of(),
+                    List.of(),
+                    new ToolLoopTerminationInfo(ToolLoopTerminationReason.COMPLETED, true, true, 1, 1, 0, 0, 0, 0,
+                            "", "", "", "", "done", "", List.of(), false, true)
+            );
+        };
+        DefaultCodingService service = synchronousService(runtime);
+
+        AtomicReference<CodingService.CodingTask> task = new AtomicReference<>();
+        CurrentUserContext.runAs("user-a", () -> {
+            var workspace = register(service, workspaceRoot, CodingService.AutonomyLevel.EDIT_AND_TEST);
+            task.set(service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-a", "fake", "run")));
+        });
+
+        assertThat(runtimeUserId).hasValue("user-a");
+        CurrentUserContext.runAs("user-a", () -> assertThat(service.task(task.get().id()).status())
+                .isEqualTo(CodingService.CodingTaskStatus.COMPLETED));
+    }
+
+    @Test
+    void cancelledTaskCannotBeCompletedByQueuedBackgroundLoop() throws Exception {
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("cancel-project"));
+        Queue<Runnable> queued = new ArrayDeque<>();
+        ToolCallingRuntime runtime = request -> new com.jarvis.tools.runtime.ToolCallingResult(
+                true,
+                "should not win",
+                List.of(),
+                List.of(),
+                new ToolLoopTerminationInfo(ToolLoopTerminationReason.COMPLETED, true, true, 1, 1, 0, 0, 0, 0,
+                        "", "", "", "", "should not win", "", List.of(), false, true)
+        );
+        DefaultCodingService service = new DefaultCodingService(null, new InMemoryCodingTaskRepository(), () -> runtime, null, null, queued::add);
+        var workspace = register(service, workspaceRoot, CodingService.AutonomyLevel.EDIT_AND_TEST);
+        var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run"));
+
+        var cancelled = service.cancelTask(task.id(), CodingService.CodingRequestContext.local());
+        queued.remove().run();
+
+        assertThat(cancelled.status()).isEqualTo(CodingService.CodingTaskStatus.CANCELLED);
+        assertThat(service.task(task.id()).status()).isEqualTo(CodingService.CodingTaskStatus.CANCELLED);
+    }
+
+    @Test
+    void sqliteCodingRepositoriesPersistWorkspacesTasksAndRecoverActiveTasksAsInterrupted() throws Exception {
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("persistent-project"));
+        Path database = tempDir.resolve("coding.db");
+        SQLiteConnectionFactory connectionFactory = new SQLiteConnectionFactory(new MemoryProperties(database.toString(), 20, null, null, null, null));
+        SQLiteMemoryInitializer initializer = new SQLiteMemoryInitializer(connectionFactory);
+        initializer.afterPropertiesSet();
+        initializer.afterPropertiesSet();
+        ObjectMapper objectMapper = new ObjectMapper();
+        SQLiteCodingWorkspaceRepository workspaceRepository = new SQLiteCodingWorkspaceRepository(connectionFactory, objectMapper);
+        SQLiteCodingTaskRepository taskRepository = new SQLiteCodingTaskRepository(connectionFactory, objectMapper);
+        Queue<Runnable> queued = new ArrayDeque<>();
+
+        DefaultCodingService first = new DefaultCodingService(null, workspaceRepository, taskRepository, null, null, null, queued::add);
+        first.afterPropertiesSet();
+        AtomicReference<CodingService.CodingWorkspace> workspace = new AtomicReference<>();
+        AtomicReference<CodingService.CodingTask> activeTask = new AtomicReference<>();
+        AtomicReference<CodingService.CodingTask> cancelledTask = new AtomicReference<>();
+        CurrentUserContext.runAs("user-a", () -> {
+            workspace.set(register(first, workspaceRoot, CodingService.AutonomyLevel.EDIT_AND_TEST));
+            activeTask.set(first.startTask(new CodingService.StartTaskRequest(workspace.get().id(), "conv-a", "fake", "run")));
+            var task = first.startTask(new CodingService.StartTaskRequest(workspace.get().id(), "conv-a", "fake", "cancel me"));
+            cancelledTask.set(first.cancelTask(task.id(), new CodingService.CodingRequestContext("user-a", "", "conv-a")));
+        });
+
+        DefaultCodingService second = new DefaultCodingService(null, workspaceRepository, taskRepository, null, null, null, Runnable::run);
+        second.afterPropertiesSet();
+
+        CurrentUserContext.runAs("user-a", () -> {
+            assertThat(second.listWorkspaces()).extracting(CodingService.CodingWorkspace::id).contains(workspace.get().id());
+            assertThat(second.task(activeTask.get().id()).status()).isEqualTo(CodingService.CodingTaskStatus.INTERRUPTED);
+            assertThat(second.task(cancelledTask.get().id()).status()).isEqualTo(CodingService.CodingTaskStatus.CANCELLED);
+        });
+        CurrentUserContext.runAs("user-b", () -> {
+            assertThat(second.listWorkspaces()).isEmpty();
+            assertThat(second.tasks()).isEmpty();
+        });
     }
 
     @Test
