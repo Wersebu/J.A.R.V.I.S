@@ -308,7 +308,15 @@ Manual Windows verification scenario:
 6. Click `Test`; verify the configured build/test command runs in that project and stdout/stderr/exit code are shown.
 7. Refresh the client; registered workspaces are visible for the lifetime of the Core process.
 
-Known MVP limits: the full model-driven edit-build-fix loop is not yet wired into the chat pipeline, workspace persistence is in-memory, and rollback/commit approval flows are not yet implemented. The bridge protocol already supports `command_start`, `command_poll`, and `command_cancel`; the current REST command endpoint returns the completed bounded command result. The API and UI avoid claiming unverified success: command results include real exit codes and captured output.
+Task execution now uses a bounded Core-side state loop when `POST /api/v1/coding/tasks` is called:
+
+```text
+CREATED -> INSPECTING -> ANALYZING -> PLANNING -> TESTING -> ANALYZING_RESULT -> COMPLETED/FAILED/WAITING_FOR_APPROVAL
+```
+
+The task loop refreshes the workspace, reads available project instructions (`AGENTS.md`, `README.md`, `README.txt`), captures an initial Git snapshot, runs the detected or configured verification command, records real exit code/stdout/stderr/timeout data, captures a final Git snapshot, and stores the final status/report in the in-memory task record. `READ_ONLY` workspaces stop at `WAITING_FOR_APPROVAL` before command execution; `EDIT_AND_TEST` is the practical default for newly registered workspaces, while the older `ASK_BEFORE_WRITE` and `AUTONOMOUS_IN_WORKSPACE` values remain accepted for Windows client compatibility.
+
+Known MVP limits: the task loop is still in-memory and synchronous, the model-driven code-edit/fix decision loop is not yet connected to a durable task repository, and rollback/commit approval flows are not yet implemented. The bridge protocol already supports `command_start`, `command_poll`, and `command_cancel`; the current REST command endpoint returns the completed bounded command result. The API and UI avoid claiming unverified success: command results include real exit codes and captured output.
 
 ## Core Features
 

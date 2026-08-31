@@ -11,6 +11,8 @@ public interface CodingService {
 
     enum AutonomyLevel {
         READ_ONLY,
+        EDIT_AND_TEST,
+        FULL_WITH_APPROVALS,
         ASK_BEFORE_WRITE,
         AUTONOMOUS_IN_WORKSPACE
     }
@@ -30,9 +32,14 @@ public interface CodingService {
     }
 
     enum CodingTaskStatus {
+        CREATED,
         IDLE,
+        INSPECTING,
         ANALYZING,
         PLANNING,
+        EXECUTING_TOOL,
+        WAITING_FOR_TOOL,
+        ANALYZING_RESULT,
         WAITING_FOR_APPROVAL,
         EDITING,
         RUNNING_COMMAND,

@@ -73,7 +73,7 @@ public class DefaultCodingService implements CodingService {
         }
         CodingService.WorkspaceHost host = request.host() == null ? CodingService.WorkspaceHost.WINDOWS : request.host();
         String id = UUID.randomUUID().toString();
-        AutonomyLevel autonomy = request.autonomyLevel() == null ? AutonomyLevel.ASK_BEFORE_WRITE : request.autonomyLevel();
+        AutonomyLevel autonomy = request.autonomyLevel() == null ? AutonomyLevel.EDIT_AND_TEST : request.autonomyLevel();
         CodingWorkspace workspace;
         WorkspaceState state;
         if (host == CodingService.WorkspaceHost.WINDOWS) {
@@ -447,6 +447,9 @@ public class DefaultCodingService implements CodingService {
                     string(diff, "diff", "")
             );
         }
+        if (!Files.isDirectory(state.root.resolve(".git"))) {
+            return new GitSnapshot("", "", "", "");
+        }
         return new GitSnapshot(
                 gitLine(state.root, "rev-parse", "--abbrev-ref", "HEAD"),
                 gitLine(state.root, "rev-parse", "HEAD"),
@@ -496,29 +499,25 @@ public class DefaultCodingService implements CodingService {
         }
         WorkspaceState state = requireWorkspace(request.workspaceId());
         String id = UUID.randomUUID().toString();
-        List<PlanStep> plan = List.of(
-                new PlanStep("analyze", "Analyze registered workspace", PlanStepStatus.COMPLETED),
-                new PlanStep("plan", "Prepare implementation plan", PlanStepStatus.COMPLETED),
-                new PlanStep("verify", "Run explicit build or test command from the Coding tab", PlanStepStatus.PENDING)
-        );
-        GitSnapshot git = gitSnapshot(state.workspace.id());
         CodingTask task = new CodingTask(
                 id,
                 state.workspace.id(),
                 request.conversationId(),
                 request.model(),
                 request.prompt(),
-                CodingTaskStatus.PLANNING,
-                plan,
-                "Workspace registered and ready for tool-backed coding operations.",
-                1,
+                CodingTaskStatus.CREATED,
+                initialPlan(),
+                "Coding task created.",
+                0,
                 Instant.now(),
                 null,
-                Map.of("gitStatus", git.status()),
+                Map.of(),
                 "",
                 "",
                 ""
         );
+        tasks.put(id, task);
+        task = runTaskLoop(task, state);
         tasks.put(id, task);
         return task;
     }
@@ -537,6 +536,176 @@ public class DefaultCodingService implements CodingService {
         return tasks.values().stream()
                 .sorted(Comparator.comparing(CodingTask::startedAt, Comparator.reverseOrder()))
                 .toList();
+    }
+
+    private List<PlanStep> initialPlan() {
+        return List.of(
+                new PlanStep("inspect", "Inspect workspace, project instructions and build system", PlanStepStatus.PENDING),
+                new PlanStep("snapshot", "Capture initial Git status and diff", PlanStepStatus.PENDING),
+                new PlanStep("plan", "Prepare a bounded coding plan from the task and workspace evidence", PlanStepStatus.PENDING),
+                new PlanStep("verify", "Run the detected or configured test/build command", PlanStepStatus.PENDING),
+                new PlanStep("analyze", "Analyze command output and decide whether another iteration is needed", PlanStepStatus.PENDING),
+                new PlanStep("final", "Capture final Git status/diff and report the outcome", PlanStepStatus.PENDING)
+        );
+    }
+
+    private CodingTask runTaskLoop(CodingTask task, WorkspaceState state) {
+        Map<String, String> changedFiles = new LinkedHashMap<>();
+        StringBuilder buildResult = new StringBuilder();
+        StringBuilder testResult = new StringBuilder();
+        String failureReason = "";
+        int iteration = 0;
+        List<PlanStep> plan = task.plan();
+        GitSnapshot initialGit = new GitSnapshot("", "", "", "");
+        GitSnapshot finalGit = new GitSnapshot("", "", "", "");
+        try {
+            iteration++;
+            task = updateTask(task, CodingTaskStatus.INSPECTING, complete(plan, "inspect"), "Inspecting workspace.", iteration,
+                    changedFiles, buildResult, testResult, failureReason, null);
+            CodingWorkspace workspace = refreshWorkspace(state.workspace.id());
+            Map<String, Object> build = buildDetect(workspace.id());
+            List<String> instructionFiles = discoverInstructionFiles(workspace.id());
+            changedFiles.put("workspace", workspace.windowsPath());
+            changedFiles.put("buildSystems", String.join(",", workspace.detectedBuildSystems()));
+            changedFiles.put("instructions", String.join(",", instructionFiles));
+
+            task = updateTask(task, CodingTaskStatus.ANALYZING, complete(task.plan(), "snapshot"),
+                    "Capturing initial Git snapshot.", iteration, changedFiles, buildResult, testResult, failureReason, null);
+            initialGit = gitSnapshot(workspace.id());
+            changedFiles.put("initialGitStatus", trim(initialGit.status(), 8_000));
+            changedFiles.put("initialGitDiffSha256", sha256(initialGit.diff().getBytes(StandardCharsets.UTF_8)));
+
+            task = updateTask(task, CodingTaskStatus.PLANNING, complete(task.plan(), "plan"),
+                    "Prepared bounded plan from workspace inspection.", iteration, changedFiles, buildResult, testResult, failureReason, null);
+            String command = testCommand(workspace, build);
+            if (blank(command)) {
+                failureReason = "No build or test command could be detected for this workspace.";
+                finalGit = gitSnapshot(workspace.id());
+                changedFiles.put("finalGitStatus", trim(finalGit.status(), 8_000));
+                changedFiles.put("finalGitDiffSha256", sha256(finalGit.diff().getBytes(StandardCharsets.UTF_8)));
+                return updateTask(task, CodingTaskStatus.FAILED, fail(task.plan(), "verify"), failureReason, iteration,
+                        changedFiles, buildResult, testResult, failureReason, Instant.now());
+            }
+            if (workspace.autonomyLevel() == AutonomyLevel.READ_ONLY) {
+                failureReason = "Verification command requires EDIT_AND_TEST or FULL_WITH_APPROVALS autonomy.";
+                return updateTask(task, CodingTaskStatus.WAITING_FOR_APPROVAL, fail(task.plan(), "verify"), failureReason,
+                        iteration, changedFiles, buildResult, testResult, failureReason, null);
+            }
+
+            task = updateTask(task, CodingTaskStatus.TESTING, complete(task.plan(), "verify"),
+                    "Running verification command: " + command, iteration, changedFiles, buildResult, testResult, failureReason, null);
+            CommandResult verification = runCommand(workspace.id(), new CommandRequest(command, 0, DEFAULT_MAX_OUTPUT));
+            appendCommandResult(testResult, verification);
+
+            task = updateTask(task, CodingTaskStatus.ANALYZING_RESULT, complete(task.plan(), "analyze"),
+                    "Analyzing verification result.", iteration, changedFiles, buildResult, testResult, failureReason, null);
+            finalGit = gitSnapshot(workspace.id());
+            changedFiles.put("finalGitStatus", trim(finalGit.status(), 8_000));
+            changedFiles.put("finalGitDiffSha256", sha256(finalGit.diff().getBytes(StandardCharsets.UTF_8)));
+            changedFiles.put("gitDiffChanged", String.valueOf(!initialGit.diff().equals(finalGit.diff())));
+
+            if (verification.exitCode() == 0 && !verification.timedOut()) {
+                return updateTask(task, CodingTaskStatus.COMPLETED, complete(task.plan(), "final"),
+                        "Verification succeeded. Final Git snapshot captured.", iteration, changedFiles,
+                        buildResult, testResult, "", Instant.now());
+            }
+            failureReason = verification.timedOut()
+                    ? "Verification command timed out."
+                    : "Verification command failed with exit code " + verification.exitCode() + ".";
+            return updateTask(task, CodingTaskStatus.FAILED, fail(task.plan(), "final"), failureReason, iteration,
+                    changedFiles, buildResult, testResult, failureReason, Instant.now());
+        } catch (RuntimeException exception) {
+            failureReason = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            return updateTask(task, CodingTaskStatus.FAILED, fail(task.plan(), "final"), failureReason, iteration,
+                    changedFiles, buildResult, testResult, failureReason, Instant.now());
+        }
+    }
+
+    private CodingTask updateTask(
+            CodingTask task,
+            CodingTaskStatus status,
+            List<PlanStep> plan,
+            String currentAction,
+            int iteration,
+            Map<String, String> changedFiles,
+            StringBuilder buildResult,
+            StringBuilder testResult,
+            String failureReason,
+            Instant finishedAt
+    ) {
+        CodingTask updated = new CodingTask(
+                task.id(),
+                task.workspaceId(),
+                task.conversationId(),
+                task.model(),
+                task.prompt(),
+                status,
+                plan,
+                currentAction,
+                iteration,
+                task.startedAt(),
+                finishedAt,
+                Map.copyOf(changedFiles),
+                buildResult.toString(),
+                testResult.toString(),
+                failureReason == null ? "" : failureReason
+        );
+        tasks.put(updated.id(), updated);
+        return updated;
+    }
+
+    private List<PlanStep> complete(List<PlanStep> plan, String id) {
+        return updatePlanStep(plan, id, PlanStepStatus.COMPLETED);
+    }
+
+    private List<PlanStep> fail(List<PlanStep> plan, String id) {
+        return updatePlanStep(plan, id, PlanStepStatus.FAILED);
+    }
+
+    private List<PlanStep> updatePlanStep(List<PlanStep> plan, String id, PlanStepStatus status) {
+        return plan.stream()
+                .map(step -> step.id().equals(id) ? new PlanStep(step.id(), step.title(), status) : step)
+                .toList();
+    }
+
+    private List<String> discoverInstructionFiles(String workspaceId) {
+        List<String> candidates = List.of("AGENTS.md", "README.md", "README.txt");
+        List<String> found = new ArrayList<>();
+        for (String candidate : candidates) {
+            try {
+                FileContent content = readFile(workspaceId, candidate, 1, 80);
+                if (!content.content().isBlank()) {
+                    found.add(candidate);
+                }
+            } catch (RuntimeException ignored) {
+                // Missing instruction files are normal; the task record keeps the found list.
+            }
+        }
+        return found;
+    }
+
+    private String testCommand(CodingWorkspace workspace, Map<String, Object> buildDetect) {
+        if (!blank(workspace.testCommand())) {
+            return workspace.testCommand();
+        }
+        Object detected = buildDetect.get("testCommand");
+        if (detected != null && !String.valueOf(detected).isBlank()) {
+            return String.valueOf(detected);
+        }
+        if (!blank(workspace.buildCommand())) {
+            return workspace.buildCommand();
+        }
+        Object build = buildDetect.get("buildCommand");
+        return build == null ? "" : String.valueOf(build);
+    }
+
+    private void appendCommandResult(StringBuilder target, CommandResult result) {
+        target.append("command=").append(result.command()).append(System.lineSeparator());
+        target.append("processId=").append(result.processId()).append(System.lineSeparator());
+        target.append("exitCode=").append(result.exitCode()).append(System.lineSeparator());
+        target.append("timedOut=").append(result.timedOut()).append(System.lineSeparator());
+        target.append("stdout:").append(System.lineSeparator()).append(trim(result.stdout(), DEFAULT_MAX_OUTPUT)).append(System.lineSeparator());
+        target.append("stderr:").append(System.lineSeparator()).append(trim(result.stderr(), DEFAULT_MAX_OUTPUT)).append(System.lineSeparator());
     }
 
     private CodingWorkspace inspectWorkspace(

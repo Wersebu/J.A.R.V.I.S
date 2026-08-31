@@ -107,6 +107,77 @@ class DefaultCodingServiceTest {
         assertThat(git.diff()).contains("-old").contains("+new");
     }
 
+    @Test
+    void startTaskRunsStatefulVerificationLoopAndCapturesReport() throws Exception {
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));
+        Files.writeString(workspaceRoot.resolve("README.md"), "demo project\n", StandardCharsets.UTF_8);
+
+        DefaultCodingService service = new DefaultCodingService();
+        var workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
+                "project",
+                workspaceRoot.toString(),
+                CodingService.WorkspaceHost.SERVER,
+                "AUTO",
+                CodingService.AutonomyLevel.EDIT_AND_TEST,
+                command("echo build-ok"),
+                command("echo test-ok")
+        ));
+
+        var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run tests"));
+
+        assertThat(task.status()).isEqualTo(CodingService.CodingTaskStatus.COMPLETED);
+        assertThat(task.iteration()).isEqualTo(1);
+        assertThat(task.plan()).extracting(CodingService.PlanStep::status)
+                .contains(CodingService.PlanStepStatus.COMPLETED);
+        assertThat(task.changedFiles()).containsEntry("instructions", "README.md");
+        assertThat(task.testResult()).contains("exitCode=0").contains("test-ok");
+        assertThat(task.failureReason()).isBlank();
+    }
+
+    @Test
+    void startTaskReturnsFailureWhenVerificationCommandFails() throws Exception {
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));
+
+        DefaultCodingService service = new DefaultCodingService();
+        var workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
+                "project",
+                workspaceRoot.toString(),
+                CodingService.WorkspaceHost.SERVER,
+                "AUTO",
+                CodingService.AutonomyLevel.EDIT_AND_TEST,
+                command("echo build-ok"),
+                failingCommand()
+        ));
+
+        var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run tests"));
+
+        assertThat(task.status()).isEqualTo(CodingService.CodingTaskStatus.FAILED);
+        assertThat(task.testResult()).contains("exitCode=");
+        assertThat(task.failureReason()).contains("Verification command failed");
+    }
+
+    @Test
+    void startTaskStopsForApprovalBeforeCommandsInReadOnlyMode() throws Exception {
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));
+
+        DefaultCodingService service = new DefaultCodingService();
+        var workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
+                "project",
+                workspaceRoot.toString(),
+                CodingService.WorkspaceHost.SERVER,
+                "AUTO",
+                CodingService.AutonomyLevel.READ_ONLY,
+                command("echo build-ok"),
+                command("echo test-ok")
+        ));
+
+        var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run tests"));
+
+        assertThat(task.status()).isEqualTo(CodingService.CodingTaskStatus.WAITING_FOR_APPROVAL);
+        assertThat(task.testResult()).isBlank();
+        assertThat(task.failureReason()).contains("requires EDIT_AND_TEST");
+    }
+
     private CodingService.CodingWorkspace register(DefaultCodingService service, Path root, CodingService.AutonomyLevel autonomy) {
         return service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
                 "project",
@@ -122,5 +193,17 @@ class DefaultCodingServiceTest {
     private void run(Path directory, String... command) throws Exception {
         Process process = new ProcessBuilder(command).directory(directory.toFile()).start();
         assertThat(process.waitFor()).isZero();
+    }
+
+    private String command(String script) {
+        return System.getProperty("os.name").toLowerCase().contains("win")
+                ? script
+                : script.replace("echo ", "printf ");
+    }
+
+    private String failingCommand() {
+        return System.getProperty("os.name").toLowerCase().contains("win")
+                ? "cmd.exe /c exit 7"
+                : "false";
     }
 }
