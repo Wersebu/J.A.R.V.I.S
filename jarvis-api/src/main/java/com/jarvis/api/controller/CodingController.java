@@ -20,6 +20,7 @@ import com.jarvis.api.service.CodingService.StartTaskRequest;
 import com.jarvis.api.service.CodingService.WorkspaceFileEntry;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -140,8 +141,8 @@ public class CodingController {
     }
 
     @PostMapping(path = "/api/v1/coding/tasks", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-    public CodingTask startTask(@RequestBody StartTaskRequest request) {
-        return wrap(() -> codingService.startTask(request));
+    public ResponseEntity<CodingTask> startTask(@RequestBody StartTaskRequest request) {
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(wrap(() -> codingService.startTask(request)));
     }
 
     @GetMapping(path = "/api/v1/coding/tasks", produces = MediaType.APPLICATION_JSON_VALUE)

@@ -1,8 +1,22 @@
 package com.jarvis.core.coding;
 
+import com.jarvis.brain.BrainRouter;
 import com.jarvis.api.service.CodingService;
 import com.jarvis.api.service.WindowsCodingBridgeGateway;
+import com.jarvis.common.ai.Brain;
+import com.jarvis.common.ai.BrainType;
+import com.jarvis.common.ai.ReasoningLevel;
+import com.jarvis.common.dto.ChatRequest;
+import com.jarvis.common.event.CognitiveEventBus;
+import com.jarvis.common.event.CognitiveEventType;
+import com.jarvis.common.knowledge.KnowledgeMode;
 import com.jarvis.tools.mcp.McpException;
+import com.jarvis.tools.ToolResult;
+import com.jarvis.tools.runtime.ToolCallingRequest;
+import com.jarvis.tools.runtime.ToolCallingResult;
+import com.jarvis.tools.runtime.ToolCallingRuntime;
+import com.jarvis.tools.runtime.ToolLoopTerminationInfo;
+import com.jarvis.tools.runtime.ToolRuntimeStep;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -25,7 +39,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -42,20 +59,53 @@ public class DefaultCodingService implements CodingService {
     private static final java.time.Duration WINDOWS_COMMAND_TIMEOUT = java.time.Duration.ofMinutes(16);
 
     private final Map<String, WorkspaceState> workspaces = new ConcurrentHashMap<>();
-    private final Map<String, CodingTask> tasks = new ConcurrentHashMap<>();
+    private final CodingTaskRepository taskRepository;
     private final WindowsCodingBridgeGateway windowsBridgeGateway;
+    private final Supplier<ToolCallingRuntime> toolCallingRuntime;
+    private final BrainRouter brainRouter;
+    private final CognitiveEventBus cognitiveEventBus;
+    private final Executor taskExecutor;
 
     public DefaultCodingService() {
-        this.windowsBridgeGateway = null;
+        this(null, new InMemoryCodingTaskRepository(), null, null, null, Executors.newVirtualThreadPerTaskExecutor());
     }
 
     @Autowired
-    public DefaultCodingService(ObjectProvider<WindowsCodingBridgeGateway> windowsBridgeGateway) {
-        this.windowsBridgeGateway = windowsBridgeGateway.getIfAvailable();
+    public DefaultCodingService(
+            ObjectProvider<WindowsCodingBridgeGateway> windowsBridgeGateway,
+            ObjectProvider<CodingTaskRepository> taskRepository,
+            ObjectProvider<ToolCallingRuntime> toolCallingRuntime,
+            ObjectProvider<BrainRouter> brainRouter,
+            ObjectProvider<CognitiveEventBus> cognitiveEventBus
+    ) {
+        this(
+                windowsBridgeGateway.getIfAvailable(),
+                taskRepository.getIfAvailable(InMemoryCodingTaskRepository::new),
+                toolCallingRuntime::getIfAvailable,
+                brainRouter.getIfAvailable(),
+                cognitiveEventBus.getIfAvailable(),
+                Executors.newVirtualThreadPerTaskExecutor()
+        );
     }
 
     DefaultCodingService(WindowsCodingBridgeGateway windowsBridgeGateway) {
+        this(windowsBridgeGateway, new InMemoryCodingTaskRepository(), null, null, null, Executors.newVirtualThreadPerTaskExecutor());
+    }
+
+    DefaultCodingService(
+            WindowsCodingBridgeGateway windowsBridgeGateway,
+            CodingTaskRepository taskRepository,
+            Supplier<ToolCallingRuntime> toolCallingRuntime,
+            BrainRouter brainRouter,
+            CognitiveEventBus cognitiveEventBus,
+            Executor taskExecutor
+    ) {
         this.windowsBridgeGateway = windowsBridgeGateway;
+        this.taskRepository = taskRepository == null ? new InMemoryCodingTaskRepository() : taskRepository;
+        this.toolCallingRuntime = toolCallingRuntime == null ? () -> null : toolCallingRuntime;
+        this.brainRouter = brainRouter;
+        this.cognitiveEventBus = cognitiveEventBus;
+        this.taskExecutor = taskExecutor == null ? Executors.newVirtualThreadPerTaskExecutor() : taskExecutor;
     }
 
     @Override
@@ -516,26 +566,21 @@ public class DefaultCodingService implements CodingService {
                 "",
                 ""
         );
-        tasks.put(id, task);
-        task = runTaskLoop(task, state);
-        tasks.put(id, task);
+        taskRepository.save(task);
+        publishTaskEvent(task, "CREATED", "Coding task accepted for asynchronous execution", Map.of());
+        taskExecutor.execute(() -> runTaskLoop(id, state.id));
         return task;
     }
 
     @Override
     public CodingTask task(String taskId) {
-        CodingTask task = tasks.get(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("Unknown coding task: " + taskId);
-        }
-        return task;
+        return taskRepository.findById(taskId)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown coding task: " + taskId));
     }
 
     @Override
     public List<CodingTask> tasks() {
-        return tasks.values().stream()
-                .sorted(Comparator.comparing(CodingTask::startedAt, Comparator.reverseOrder()))
-                .toList();
+        return taskRepository.findAll();
     }
 
     private List<PlanStep> initialPlan() {
@@ -549,7 +594,89 @@ public class DefaultCodingService implements CodingService {
         );
     }
 
-    private CodingTask runTaskLoop(CodingTask task, WorkspaceState state) {
+    private void runTaskLoop(String taskId, String workspaceId) {
+        CodingTask task = task(taskId);
+        WorkspaceState state = requireWorkspace(workspaceId);
+        try {
+            ToolCallingRuntime runtime = toolCallingRuntime.get();
+            CodingTask finished = runtime == null ? runLegacyTaskLoop(task, state) : runNativeModelTaskLoop(task, state, runtime);
+            taskRepository.save(finished);
+        } catch (RuntimeException exception) {
+            String failureReason = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            updateTask(task(taskId), CodingTaskStatus.FAILED, fail(task(taskId).plan(), "final"), failureReason, 0,
+                    Map.of(), new StringBuilder(), new StringBuilder(), failureReason, Instant.now());
+        }
+    }
+
+    private CodingTask runNativeModelTaskLoop(CodingTask task, WorkspaceState state, ToolCallingRuntime runtime) {
+        Map<String, String> changedFiles = new LinkedHashMap<>();
+        StringBuilder buildResult = new StringBuilder();
+        StringBuilder testResult = new StringBuilder();
+        String failureReason = "";
+        int iteration = 0;
+        try {
+            iteration++;
+            task = updateTask(task, CodingTaskStatus.INSPECTING, complete(task.plan(), "inspect"),
+                    "Inspecting workspace before model loop.", iteration, changedFiles, buildResult, testResult, failureReason, null);
+            CodingWorkspace workspace = refreshWorkspace(state.workspace.id());
+            Map<String, Object> build = buildDetect(workspace.id());
+            List<String> instructionFiles = discoverInstructionFiles(workspace.id());
+            GitSnapshot initialGit = gitSnapshot(workspace.id());
+            changedFiles.put("workspace", workspace.windowsPath());
+            changedFiles.put("buildSystems", String.join(",", workspace.detectedBuildSystems()));
+            changedFiles.put("instructions", String.join(",", instructionFiles));
+            changedFiles.put("initialGitStatus", trim(initialGit.status(), 8_000));
+            changedFiles.put("initialGitDiffSha256", sha256(initialGit.diff().getBytes(StandardCharsets.UTF_8)));
+            task = updateTask(task, CodingTaskStatus.PLANNING, complete(complete(task.plan(), "snapshot"), "plan"),
+                    "Starting model-owned Coding Agent loop.", iteration, changedFiles, buildResult, testResult, failureReason, null);
+
+            ToolCallingResult result = runtime.execute(new ToolCallingRequest(
+                    "coding-task-" + task.id(),
+                    blank(task.conversationId()) ? "coding-task-" + task.id() : task.conversationId(),
+                    task.prompt(),
+                    codingGoal(task, workspace, build, instructionFiles),
+                    "Run a real model-owned Coding Agent loop against the active workspace. Inspect, edit only when needed, test, feed failures back to the model, and finish with git diff evidence.",
+                    Map.of(
+                            "activeCodingWorkspaceId", workspace.id(),
+                            "activeCodingWorkspaceName", workspace.name(),
+                            "activeCodingWorkspaceHost", workspace.host().name(),
+                            "codingTaskId", task.id(),
+                            "userId", ""
+                    ),
+                    codingAgentSystemPrompt(workspace, build, instructionFiles),
+                    selectCodingBrain(task, workspace),
+                    KnowledgeMode.FAST,
+                    List.of(),
+                    ""
+            ));
+
+            ToolLoopTerminationInfo termination = result.terminationInfo();
+            appendRuntimeResults(buildResult, testResult, result);
+            GitSnapshot finalGit = gitSnapshot(workspace.id());
+            changedFiles.put("finalGitStatus", trim(finalGit.status(), 8_000));
+            changedFiles.put("finalGitDiffSha256", sha256(finalGit.diff().getBytes(StandardCharsets.UTF_8)));
+            changedFiles.put("gitDiffChanged", String.valueOf(!initialGit.diff().equals(finalGit.diff())));
+            changedFiles.put("modelTurns", String.valueOf(termination.usedModelTurns()));
+            changedFiles.put("toolCalls", String.valueOf(termination.executedToolCalls()));
+            changedFiles.put("toolCallOrder", toolCallOrder(result.steps()));
+
+            List<PlanStep> completedPlan = complete(complete(complete(task.plan(), "verify"), "analyze"), "final");
+            CodingTaskStatus status = termination.completed()
+                    ? CodingTaskStatus.COMPLETED
+                    : termination.terminationReason() == com.jarvis.tools.runtime.ToolLoopTerminationReason.WAITING_FOR_APPROVAL
+                    ? CodingTaskStatus.WAITING_FOR_APPROVAL
+                    : CodingTaskStatus.FAILED;
+            failureReason = status == CodingTaskStatus.COMPLETED ? "" : runtimeFailureReason(termination, result);
+            return updateTask(task, status, completedPlan, finalAction(result, termination), termination.usedModelTurns(),
+                    changedFiles, buildResult, testResult, failureReason, Instant.now());
+        } catch (RuntimeException exception) {
+            failureReason = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
+            return updateTask(task, CodingTaskStatus.FAILED, fail(task.plan(), "final"), failureReason, iteration,
+                    changedFiles, buildResult, testResult, failureReason, Instant.now());
+        }
+    }
+
+    private CodingTask runLegacyTaskLoop(CodingTask task, WorkspaceState state) {
         Map<String, String> changedFiles = new LinkedHashMap<>();
         StringBuilder buildResult = new StringBuilder();
         StringBuilder testResult = new StringBuilder();
@@ -650,8 +777,147 @@ public class DefaultCodingService implements CodingService {
                 testResult.toString(),
                 failureReason == null ? "" : failureReason
         );
-        tasks.put(updated.id(), updated);
+        taskRepository.save(updated);
+        publishTaskEvent(updated, status.name(), currentAction, Map.of(
+                "iteration", iteration,
+                "finished", finishedAt != null
+        ));
         return updated;
+    }
+
+    private String codingGoal(CodingTask task, CodingWorkspace workspace, Map<String, Object> build, List<String> instructionFiles) {
+        return """
+                Complete this Coding Agent task inside the active workspace.
+
+                User request:
+                %s
+
+                Workspace:
+                - id: %s
+                - name: %s
+                - host: %s
+                - path: %s
+                - autonomy: %s
+                - detected build systems: %s
+                - build command: %s
+                - test command: %s
+                - instruction files already discovered: %s
+
+                Build detection:
+                %s
+                """.formatted(
+                task.prompt(),
+                workspace.id(),
+                workspace.name(),
+                workspace.host(),
+                workspace.windowsPath(),
+                workspace.autonomyLevel(),
+                workspace.detectedBuildSystems(),
+                workspace.buildCommand(),
+                workspace.testCommand(),
+                instructionFiles,
+                build
+        );
+    }
+
+    private String codingAgentSystemPrompt(CodingWorkspace workspace, Map<String, Object> build, List<String> instructionFiles) {
+        return """
+                You are J.A.R.V.I.S Coding Agent running through native tool calls.
+                Use only the coding tools for project files in the active Coding Workspace. Do not use Knowledge tools to read source files.
+                The runtime injects the workspace id; never provide or invent a workspaceId argument.
+                Work in a tight loop: inspect the workspace, read the relevant files, run the configured tests/build, use failing output as evidence, patch the smallest necessary change, rerun verification, inspect git diff, and then answer.
+                Do not mark the task complete after the first failed test. A failing test is feedback for the next model turn.
+                Do not commit, push, reset, clean, checkout, merge, or rebase.
+                Obey workspace autonomy. READ_ONLY means analysis only and no command/write calls.
+
+                Active workspace: %s (%s, %s)
+                Build detection: %s
+                Instruction files: %s
+                """.formatted(workspace.name(), workspace.host(), workspace.windowsPath(), build, instructionFiles);
+    }
+
+    private Brain selectCodingBrain(CodingTask task, CodingWorkspace workspace) {
+        if (brainRouter != null) {
+            return brainRouter.select(new ChatRequest(
+                    task.conversationId(),
+                    task.prompt(),
+                    task.startedAt(),
+                    KnowledgeMode.FAST,
+                    List.of(),
+                    workspace.id(),
+                    workspace.name(),
+                    workspace.host().name()
+            ));
+        }
+        String model = blank(task.model()) ? "coding" : task.model();
+        return new Brain(BrainType.CODING, model, model, "Coding Agent", "Coding task fallback brain", 0L, ReasoningLevel.MEDIUM);
+    }
+
+    private void appendRuntimeResults(StringBuilder buildResult, StringBuilder testResult, ToolCallingResult result) {
+        for (ToolResult toolResult : result.results()) {
+            if (!"coding".equalsIgnoreCase(toolResult.tool())) {
+                continue;
+            }
+            String operation = toolResult.operation().toUpperCase(Locale.ROOT);
+            if (operation.equals("TEST_RUN")) {
+                appendToolResult(testResult, toolResult);
+            } else if (operation.equals("BUILD_RUN") || operation.equals("COMMAND_START")) {
+                appendToolResult(buildResult, toolResult);
+            }
+        }
+    }
+
+    private void appendToolResult(StringBuilder target, ToolResult result) {
+        target.append("tool=").append(result.tool()).append(" operation=").append(result.operation()).append(System.lineSeparator());
+        target.append("success=").append(result.success()).append(System.lineSeparator());
+        target.append("message=").append(result.message()).append(System.lineSeparator());
+        target.append("data=").append(trim(String.valueOf(result.data()), DEFAULT_MAX_OUTPUT)).append(System.lineSeparator());
+        if (!result.errorCode().isBlank()) {
+            target.append("error=").append(result.errorCode()).append(": ").append(result.errorMessage()).append(System.lineSeparator());
+        }
+    }
+
+    private String toolCallOrder(List<ToolRuntimeStep> steps) {
+        return steps.stream()
+                .filter(step -> !blank(step.tool()))
+                .map(step -> step.tool() + "." + step.operation() + ":" + step.status())
+                .toList()
+                .toString();
+    }
+
+    private String finalAction(ToolCallingResult result, ToolLoopTerminationInfo termination) {
+        if (!termination.lastModelContent().isBlank()) {
+            return trim(termination.lastModelContent(), 2_000);
+        }
+        if (!result.finalAnswer().isBlank()) {
+            return trim(result.finalAnswer(), 2_000);
+        }
+        return "Native Coding Agent loop finished: " + termination.terminationReason();
+    }
+
+    private String runtimeFailureReason(ToolLoopTerminationInfo termination, ToolCallingResult result) {
+        if (!termination.lastErrorMessage().isBlank()) {
+            return termination.lastErrorMessage();
+        }
+        if (!termination.nextRequiredAction().isBlank()) {
+            return termination.nextRequiredAction();
+        }
+        if (!result.finalAnswer().isBlank()) {
+            return trim(result.finalAnswer(), 2_000);
+        }
+        return "Native Coding Agent loop stopped with reason: " + termination.terminationReason();
+    }
+
+    private void publishTaskEvent(CodingTask task, String status, String message, Map<String, Object> metadata) {
+        if (cognitiveEventBus == null) {
+            return;
+        }
+        Map<String, Object> values = new LinkedHashMap<>(metadata);
+        values.put("taskId", task.id());
+        values.put("workspaceId", task.workspaceId());
+        values.put("conversationId", task.conversationId() == null ? "" : task.conversationId());
+        values.put("status", status);
+        cognitiveEventBus.publish(CognitiveEventType.EXECUTION_TRACE, status, message, "coding-task:" + task.id(), values);
     }
 
     private List<PlanStep> complete(List<PlanStep> plan, String id) {

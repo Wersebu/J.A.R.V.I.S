@@ -1,12 +1,48 @@
 package com.jarvis.core.coding;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.api.service.CodingService;
+import com.jarvis.common.ai.AIJobType;
+import com.jarvis.common.ai.AIProvider;
+import com.jarvis.common.ai.Brain;
+import com.jarvis.common.ai.BrainType;
+import com.jarvis.common.ai.ModelMessage;
+import com.jarvis.common.ai.ModelResponse;
+import com.jarvis.common.ai.ModelToolCall;
+import com.jarvis.common.ai.ModelUsage;
+import com.jarvis.common.ai.NativeToolDefinition;
+import com.jarvis.common.dto.ChatResponse;
+import com.jarvis.common.event.ChatEventSink;
+import com.jarvis.common.event.CognitiveEventBus;
+import com.jarvis.common.event.CognitiveEventType;
+import com.jarvis.tools.JarvisTool;
+import com.jarvis.tools.ToolManager;
+import com.jarvis.tools.ToolRequest;
+import com.jarvis.tools.ToolResult;
+import com.jarvis.tools.ToolRuntimeProperties;
+import com.jarvis.tools.dataset.StoreAuditDatasetService;
+import com.jarvis.tools.runtime.NativeToolLoopService;
+import com.jarvis.tools.runtime.NativeToolSchemaMapper;
+import com.jarvis.tools.runtime.ToolCallingRuntime;
+import com.jarvis.tools.runtime.ToolIntent;
+import com.jarvis.tools.runtime.ToolRuntimeDebugService;
+import com.jarvis.tools.schema.ToolDefinition;
+import com.jarvis.tools.schema.ToolRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Queue;
+import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -22,7 +58,7 @@ class DefaultCodingServiceTest {
         Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));
         Files.writeString(workspaceRoot.resolve("inside.txt"), "inside", StandardCharsets.UTF_8);
 
-        DefaultCodingService service = new DefaultCodingService();
+        DefaultCodingService service = synchronousService(null);
         var workspace = register(service, workspaceRoot, CodingService.AutonomyLevel.AUTONOMOUS_IN_WORKSPACE);
 
         assertThat(service.readFile(workspace.id(), "inside.txt", null, null).content()).isEqualTo("inside");
@@ -40,7 +76,7 @@ class DefaultCodingServiceTest {
         Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));
         Files.writeString(workspaceRoot.resolve("App.java"), "class App { int value = 1; }", StandardCharsets.UTF_8);
 
-        DefaultCodingService service = new DefaultCodingService();
+        DefaultCodingService service = synchronousService(null);
         var workspace = register(service, workspaceRoot, CodingService.AutonomyLevel.AUTONOMOUS_IN_WORKSPACE);
 
         var patched = service.patchFile(workspace.id(), new CodingService.PatchRequest("App.java", "value = 1", "value = 2"));
@@ -57,7 +93,7 @@ class DefaultCodingServiceTest {
         Files.writeString(workspaceRoot.resolve("pom.xml"), "<project />", StandardCharsets.UTF_8);
         Files.writeString(workspaceRoot.resolve("needle.txt"), "first\nneedle here\nlast\n", StandardCharsets.UTF_8);
 
-        DefaultCodingService service = new DefaultCodingService();
+        DefaultCodingService service = synchronousService(null);
         var workspace = register(service, workspaceRoot, CodingService.AutonomyLevel.AUTONOMOUS_IN_WORKSPACE);
 
         assertThat(workspace.detectedBuildSystems()).contains("Maven");
@@ -74,7 +110,7 @@ class DefaultCodingServiceTest {
     @Test
     void blocksCommandsInReadOnlyAndDestructiveGitOperations() throws Exception {
         Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));
-        DefaultCodingService service = new DefaultCodingService();
+        DefaultCodingService service = synchronousService(null);
         var readOnly = register(service, workspaceRoot, CodingService.AutonomyLevel.READ_ONLY);
 
         assertThatThrownBy(() -> service.runCommand(readOnly.id(), new CodingService.CommandRequest("echo safe", 5, 100)))
@@ -98,7 +134,7 @@ class DefaultCodingServiceTest {
         run(workspaceRoot, "git", "commit", "-m", "initial");
         Files.writeString(workspaceRoot.resolve("README.md"), "new\n", StandardCharsets.UTF_8);
 
-        DefaultCodingService service = new DefaultCodingService();
+        DefaultCodingService service = synchronousService(null);
         var workspace = register(service, workspaceRoot, CodingService.AutonomyLevel.ASK_BEFORE_WRITE);
         var git = service.gitSnapshot(workspace.id());
 
@@ -112,7 +148,7 @@ class DefaultCodingServiceTest {
         Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));
         Files.writeString(workspaceRoot.resolve("README.md"), "demo project\n", StandardCharsets.UTF_8);
 
-        DefaultCodingService service = new DefaultCodingService();
+        DefaultCodingService service = synchronousService(null);
         var workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
                 "project",
                 workspaceRoot.toString(),
@@ -123,7 +159,8 @@ class DefaultCodingServiceTest {
                 command("echo test-ok")
         ));
 
-        var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run tests"));
+        service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run tests"));
+        var task = service.tasks().getFirst();
 
         assertThat(task.status()).isEqualTo(CodingService.CodingTaskStatus.COMPLETED);
         assertThat(task.iteration()).isEqualTo(1);
@@ -138,7 +175,7 @@ class DefaultCodingServiceTest {
     void startTaskReturnsFailureWhenVerificationCommandFails() throws Exception {
         Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));
 
-        DefaultCodingService service = new DefaultCodingService();
+        DefaultCodingService service = synchronousService(null);
         var workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
                 "project",
                 workspaceRoot.toString(),
@@ -149,7 +186,8 @@ class DefaultCodingServiceTest {
                 failingCommand()
         ));
 
-        var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run tests"));
+        service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run tests"));
+        var task = service.tasks().getFirst();
 
         assertThat(task.status()).isEqualTo(CodingService.CodingTaskStatus.FAILED);
         assertThat(task.testResult()).contains("exitCode=");
@@ -160,7 +198,7 @@ class DefaultCodingServiceTest {
     void startTaskStopsForApprovalBeforeCommandsInReadOnlyMode() throws Exception {
         Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));
 
-        DefaultCodingService service = new DefaultCodingService();
+        DefaultCodingService service = synchronousService(null);
         var workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
                 "project",
                 workspaceRoot.toString(),
@@ -171,11 +209,81 @@ class DefaultCodingServiceTest {
                 command("echo test-ok")
         ));
 
-        var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run tests"));
+        service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run tests"));
+        var task = service.tasks().getFirst();
 
         assertThat(task.status()).isEqualTo(CodingService.CodingTaskStatus.WAITING_FOR_APPROVAL);
         assertThat(task.testResult()).isBlank();
         assertThat(task.failureReason()).contains("requires EDIT_AND_TEST");
+    }
+
+    @Test
+    void startTaskReturnsCreatedBeforeBackgroundLoopRuns() throws Exception {
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));
+        Queue<Runnable> queued = new ArrayDeque<>();
+        Executor capturingExecutor = queued::add;
+        DefaultCodingService service = new DefaultCodingService(null, new InMemoryCodingTaskRepository(), null, null, null, capturingExecutor);
+        var workspace = register(service, workspaceRoot, CodingService.AutonomyLevel.EDIT_AND_TEST);
+
+        var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run tests"));
+
+        assertThat(task.status()).isEqualTo(CodingService.CodingTaskStatus.CREATED);
+        assertThat(service.task(task.id()).status()).isEqualTo(CodingService.CodingTaskStatus.CREATED);
+        assertThat(queued).hasSize(1);
+    }
+
+    @Test
+    void nativeCodingAgentLoopUsesFailedTestOutputThenPatchesRetestsDiffsAndCompletes() throws Exception {
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("repo"));
+        run(workspaceRoot, "git", "init");
+        run(workspaceRoot, "git", "config", "user.email", "test@example.com");
+        run(workspaceRoot, "git", "config", "user.name", "Test User");
+        Files.writeString(workspaceRoot.resolve("marker.txt"), "broken\n", StandardCharsets.UTF_8);
+        run(workspaceRoot, "git", "add", "marker.txt");
+        run(workspaceRoot, "git", "commit", "-m", "initial");
+
+        AtomicReference<ToolCallingRuntime> runtime = new AtomicReference<>();
+        DefaultCodingService service = new DefaultCodingService(null, new InMemoryCodingTaskRepository(),
+                runtime::get, null, new NoopCognitiveEventBus(), Runnable::run);
+        CodingTool codingTool = new CodingTool(service);
+        FakeProvider fakeProvider = new FakeProvider();
+        NativeToolLoopService nativeLoop = new NativeToolLoopService(
+                List.of(fakeProvider),
+                new SingleToolManager(codingTool),
+                query -> ToolIntent.CODING_WORKSPACE,
+                new ToolRuntimeProperties(true, 12, 12, 1, 60, "native"),
+                new NoopCognitiveEventBus(),
+                new ToolRuntimeDebugService(),
+                new ObjectMapper(),
+                new NativeToolSchemaMapper(new SingleToolRegistry(codingTool.definition())),
+                new StoreAuditDatasetService(new NoopCognitiveEventBus())
+        );
+        runtime.set(nativeLoop::execute);
+
+        var workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
+                "repo",
+                workspaceRoot.toString(),
+                CodingService.WorkspaceHost.SERVER,
+                "AUTO",
+                CodingService.AutonomyLevel.EDIT_AND_TEST,
+                "",
+                contentTestCommand()
+        ));
+
+        var accepted = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "stub", "Fix marker test"));
+        var task = service.task(accepted.id());
+
+        assertThat(task.status()).isEqualTo(CodingService.CodingTaskStatus.COMPLETED);
+        assertThat(task.iteration()).isGreaterThanOrEqualTo(6);
+        assertThat(fakeProvider.calls()).isGreaterThanOrEqualTo(6);
+        assertThat(fakeProvider.observedFailedTest()).isTrue();
+        assertThat(fakeProvider.observedSuccessfulRetest()).isTrue();
+        assertThat(Files.readString(workspaceRoot.resolve("marker.txt"), StandardCharsets.UTF_8)).contains("fixed");
+        assertThat(task.testResult()).contains("operation=TEST_RUN").contains("exitCode=1").contains("exitCode=0");
+        assertThat(task.changedFiles())
+                .containsEntry("gitDiffChanged", "true")
+                .hasEntrySatisfying("toolCallOrder", order -> assertThat(order).contains("coding.TEST_RUN").contains("coding.FILE_PATCH").contains("coding.GIT_DIFF"));
+        assertThat(task.failureReason()).isBlank();
     }
 
     private CodingService.CodingWorkspace register(DefaultCodingService service, Path root, CodingService.AutonomyLevel autonomy) {
@@ -188,6 +296,10 @@ class DefaultCodingServiceTest {
                 "",
                 ""
         ));
+    }
+
+    private DefaultCodingService synchronousService(ToolCallingRuntime runtime) {
+        return new DefaultCodingService(null, new InMemoryCodingTaskRepository(), () -> runtime, null, null, Runnable::run);
     }
 
     private void run(Path directory, String... command) throws Exception {
@@ -205,5 +317,149 @@ class DefaultCodingServiceTest {
         return System.getProperty("os.name").toLowerCase().contains("win")
                 ? "cmd.exe /c exit 7"
                 : "false";
+    }
+
+    private static String contentTestCommand() {
+        return System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win")
+                ? "findstr fixed marker.txt"
+                : "grep -q fixed marker.txt";
+    }
+
+    private static final class FakeProvider implements AIProvider {
+
+        private final AtomicInteger calls = new AtomicInteger();
+        private boolean observedFailedTest;
+        private boolean observedSuccessfulRetest;
+
+        @Override
+        public String provider() {
+            return "stub";
+        }
+
+        @Override
+        public ChatResponse chat(Brain brain, String prompt) {
+            return new ChatResponse("");
+        }
+
+        @Override
+        public void stream(String conversationId, Brain brain, String prompt, ChatEventSink eventSink) {
+        }
+
+        @Override
+        public ModelResponse toolChat(Brain brain, List<ModelMessage> messages, List<NativeToolDefinition> tools, AIJobType jobType) {
+            int turn = calls.incrementAndGet();
+            if (hasExitCode(messages, 1)) {
+                observedFailedTest = true;
+            }
+            if (hasExitCode(messages, 0)) {
+                observedSuccessfulRetest = true;
+            }
+            return switch (turn) {
+                case 1 -> tool("call-1", "coding__workspace_inspect", Map.of());
+                case 2 -> tool("call-2", "coding__file_read", Map.of("path", "marker.txt"));
+                case 3 -> tool("call-3", "coding__test_run", Map.of());
+                case 4 -> {
+                    assertThat(observedFailedTest).isTrue();
+                    yield tool("call-4", "coding__file_patch", Map.of(
+                            "path", "marker.txt",
+                            "expected", "broken",
+                            "replacement", "fixed"
+                    ));
+                }
+                case 5 -> tool("call-5", "coding__test_run", Map.of("command", contentTestCommand()));
+                case 6 -> {
+                    assertThat(observedSuccessfulRetest).isTrue();
+                    yield tool("call-6", "coding__git_diff", Map.of());
+                }
+                default -> new ModelResponse("Task complete after patch, successful retest, and git diff inspection.", "",
+                        List.of(), "stop", new ModelUsage(0, 0, 0));
+            };
+        }
+
+        int calls() {
+            return calls.get();
+        }
+
+        boolean observedFailedTest() {
+            return observedFailedTest;
+        }
+
+        boolean observedSuccessfulRetest() {
+            return observedSuccessfulRetest;
+        }
+
+        private ModelResponse tool(String id, String name, Map<String, Object> arguments) {
+            return new ModelResponse("", "", List.of(new ModelToolCall(id, name, arguments)), "tool_calls", new ModelUsage(0, 0, 0));
+        }
+
+        private boolean hasExitCode(List<ModelMessage> messages, int exitCode) {
+            String expectedJson = "\"exitCode\":" + exitCode;
+            String expectedToString = "exitCode=" + exitCode;
+            return messages.stream()
+                    .map(ModelMessage::content)
+                    .anyMatch(content -> content.contains(expectedJson) || content.contains(expectedToString));
+        }
+    }
+
+    private static final class SingleToolManager implements ToolManager {
+
+        private final JarvisTool tool;
+
+        private SingleToolManager(JarvisTool tool) {
+            this.tool = tool;
+        }
+
+        @Override
+        public List<JarvisTool> listTools() {
+            return List.of(tool);
+        }
+
+        @Override
+        public Optional<JarvisTool> findTool(String name) {
+            return tool.getName().equalsIgnoreCase(name) ? Optional.of(tool) : Optional.empty();
+        }
+
+        @Override
+        public ToolResult execute(ToolRequest request) {
+            return tool.execute(request);
+        }
+    }
+
+    private static final class SingleToolRegistry implements ToolRegistry {
+
+        private final ToolDefinition definition;
+
+        private SingleToolRegistry(ToolDefinition definition) {
+            this.definition = definition;
+        }
+
+        @Override
+        public List<ToolDefinition> definitions() {
+            return List.of(definition);
+        }
+
+        @Override
+        public String promptSection() {
+            return "Tool: coding workspace";
+        }
+    }
+
+    private static final class NoopCognitiveEventBus implements CognitiveEventBus {
+
+        @Override
+        public void startRequest(String requestId, String conversationId, java.util.function.Consumer<com.jarvis.common.event.CognitiveEvent> sink) {
+        }
+
+        @Override
+        public void finishRequest() {
+        }
+
+        @Override
+        public void updateBrain(BrainType brain, String model) {
+        }
+
+        @Override
+        public void publish(CognitiveEventType event, String status, String message, String nodeId, Map<String, Object> metadata) {
+        }
     }
 }
