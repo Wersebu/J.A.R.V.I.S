@@ -8,14 +8,14 @@ class ContextBudgetServiceTest {
 
     @Test
     void exposesConfiguredOllamaContextWindow() {
-        ContextBudgetService service = new ContextBudgetService(new AiContextProperties(16_384, 2_048));
+        ContextBudgetService service = new ContextBudgetService(new AiContextProperties(16_384, 2_048, 0));
 
         assertThat(service.ollamaOptions()).containsEntry("num_ctx", 16_384);
     }
 
     @Test
     void compactsPromptWhenInputWouldConsumeReservedOutputBudget() {
-        ContextBudgetService service = new ContextBudgetService(new AiContextProperties(1_024, 256));
+        ContextBudgetService service = new ContextBudgetService(new AiContextProperties(1_024, 256, 0));
         String prompt = "x".repeat(5_000);
 
         String compacted = service.fitPrompt("gpt-oss:20b", prompt);

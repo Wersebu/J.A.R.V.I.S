@@ -100,6 +100,29 @@ class OllamaProviderNativeToolChatStreamingTest {
         org.junit.jupiter.api.Assertions.assertThrows(OllamaException.class, call);
     }
 
+    // Regression: a model with no repeat_penalty (or a mismatched thinking parser) can settle into
+    // repeating the exact same short "thinking" chunk forever. With the hard tool-loop timeout
+    // removed, nothing else would ever interrupt that generation - reported in production as a
+    // "Thinking" panel filling up with dozens of identical "<|channel|>thought" lines and the model
+    // still not done after 80+ seconds.
+    @Test
+    void repeatedIdenticalThinkingChunksAbortAsADegenerateLoopInsteadOfRunningForever() throws IOException {
+        StringBuilder ndjson = new StringBuilder();
+        for (int i = 0; i < 15; i++) {
+            ndjson.append("{\"message\":{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"<|channel|>thought\"},\"done\":false}\n");
+        }
+        startServer(ndjson.toString());
+
+        OllamaProvider provider = newProvider(new RecordingCognitiveEventBus());
+        Brain brain = new Brain(BrainType.FAST, "ollama", "gemma4:12b", "stub", "", 0L, ReasoningLevel.LOW);
+
+        org.junit.jupiter.api.function.Executable call = () -> provider.toolChat(brain,
+                List.of(ModelMessage.user("kontynuuj")), List.<NativeToolDefinition>of(), AIJobType.MAIN_MODEL);
+
+        OllamaException error = org.junit.jupiter.api.Assertions.assertThrows(OllamaException.class, call);
+        assertThat(error.getMessage()).contains("<|channel|>thought").contains("degenerate");
+    }
+
     private void startServer(String ndjsonBody) throws IOException {
         byte[] response = ndjsonBody.getBytes(StandardCharsets.UTF_8);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -122,7 +145,7 @@ class OllamaProviderNativeToolChatStreamingTest {
                 eventBus,
                 new OllamaRequestCoordinator(true, eventBus),
                 new ModelWarmupRegistry(new ModelStartupProperties()),
-                new ContextBudgetService(new AiContextProperties(0, 0)),
+                new ContextBudgetService(new AiContextProperties(0, 0, 0)),
                 new QwenThinkingBudgetProperties(),
                 new StubActiveModelService()
         );

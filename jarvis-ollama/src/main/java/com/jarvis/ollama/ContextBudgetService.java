@@ -30,7 +30,10 @@ public class ContextBudgetService {
      * @return JSON-friendly options
      */
     public java.util.Map<String, Object> ollamaOptions() {
-        return java.util.Map.of("num_ctx", properties.contextWindow());
+        return java.util.Map.of(
+                "num_ctx", properties.contextWindow(),
+                "repeat_penalty", properties.repeatPenalty()
+        );
     }
 
     /**

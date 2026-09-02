@@ -418,6 +418,13 @@ public class OllamaProvider implements AIProvider {
      * @throws IOException on a transport failure, a malformed chunk, or a stream that ended
      *         without ever sending {@code done:true} (Ollama disconnected mid-response)
      */
+    // A local model with no repeat_penalty (or a mismatched thinking parser - see the "gemma4"
+    // PARSER/RENDERER Modelfile investigation) can settle into repeating the exact same short
+    // "thinking" chunk forever. With the hard tool-loop timeout gone, nothing else would ever
+    // interrupt that - this many identical, consecutive, non-trivial chunks is never legitimate
+    // reasoning and is cut off as a degenerate stream rather than left to run indefinitely.
+    private static final int MAX_CONSECUTIVE_IDENTICAL_THINKING_CHUNKS = 12;
+
     private ModelResponse readNativeToolChatStream(InputStream inputStream, Brain brain, AIJobType jobType, long startedNano) throws IOException {
         StringBuilder thinkingBuilder = new StringBuilder();
         StringBuilder contentBuilder = new StringBuilder();
@@ -428,6 +435,8 @@ public class OllamaProvider implements AIProvider {
         boolean thinkingStarted = false;
         boolean thinkingFinished = false;
         int thinkingChunks = 0;
+        String lastThinkingChunk = null;
+        int consecutiveIdenticalThinkingChunks = 0;
         boolean done = false;
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
             String line;
@@ -455,6 +464,20 @@ public class OllamaProvider implements AIProvider {
                         thinkingChunks++;
                         publishCognitive(jobType, CognitiveEventType.THINKING_TOKEN, "THINKING", thinking, "model:" + brain.model(), Map.of(
                                 "text", thinking, "index", thinkingChunks));
+                        if (thinking.equals(lastThinkingChunk)) {
+                            consecutiveIdenticalThinkingChunks++;
+                        } else {
+                            lastThinkingChunk = thinking;
+                            consecutiveIdenticalThinkingChunks = 1;
+                        }
+                        if (consecutiveIdenticalThinkingChunks >= MAX_CONSECUTIVE_IDENTICAL_THINKING_CHUNKS) {
+                            LOGGER.warn("[JARVIS][requestId={}][OLLAMA] DEGENERATE_THINKING_LOOP_DETECTED model={} "
+                                            + "repeatedChunk={} repeatCount={} - aborting stream",
+                                    diagnosticsRequestId(), brain.model(), thinking, consecutiveIdenticalThinkingChunks);
+                            throw new OllamaException("Ollama model '" + brain.model() + "' repeated the identical "
+                                    + "thinking chunk \"" + thinking + "\" " + consecutiveIdenticalThinkingChunks
+                                    + " times in a row - aborting a degenerate generation loop instead of waiting indefinitely");
+                        }
                     }
                     String content = message.content();
                     if (content != null && !content.isEmpty()) {

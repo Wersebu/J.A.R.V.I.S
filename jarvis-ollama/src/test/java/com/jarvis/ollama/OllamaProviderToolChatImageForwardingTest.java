@@ -73,7 +73,7 @@ class OllamaProviderToolChatImageForwardingTest {
                 new NoopCognitiveEventBus(),
                 new OllamaRequestCoordinator(true, new NoopCognitiveEventBus()),
                 new ModelWarmupRegistry(new ModelStartupProperties()),
-                new ContextBudgetService(new AiContextProperties(0, 0)),
+                new ContextBudgetService(new AiContextProperties(0, 0, 0)),
                 new QwenThinkingBudgetProperties(),
                 new StubActiveModelService()
         );

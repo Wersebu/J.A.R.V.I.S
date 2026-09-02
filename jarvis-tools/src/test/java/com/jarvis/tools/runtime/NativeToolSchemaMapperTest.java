@@ -356,6 +356,24 @@ class NativeToolSchemaMapperTest {
                 .hasMessageContaining("placeholder");
     }
 
+    // Regression: coding__file_write's "content" argument for a legitimate pom.xml (or any
+    // XML/HTML file) was rejected as "looks like a placeholder" purely because real XML starts
+    // with "<" just like the single-token placeholder "<studio_id>" does - forcing the model to
+    // abandon the tool and write the file via command_start + a Python one-liner instead. Only a
+    // value that is ENTIRELY a single bracket-wrapped token is a placeholder; real content has
+    // attributes, nested tags, punctuation, or newlines after the first "<".
+    @Test
+    void xmlFileContentStartingWithAngleBracketIsNotRejectedAsPlaceholder() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(searchGameTreeFullSchemaRegistry());
+
+        ToolAction action = mapper.toAction("mcp_roblox_search_game_tree__call", Map.of(
+                "studio_id", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project><modelVersion>4.0.0</modelVersion></project>",
+                "datamodel_type", "Edit"
+        ), "test");
+
+        assertThat(action.arguments().get("studio_id")).asString().startsWith("<?xml");
+    }
+
     @Test
     void normalConcreteRequiredStringIsAccepted() {
         NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(searchGameTreeFullSchemaRegistry());

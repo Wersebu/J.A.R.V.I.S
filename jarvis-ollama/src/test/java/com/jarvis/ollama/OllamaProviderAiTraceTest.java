@@ -90,7 +90,7 @@ class OllamaProviderAiTraceTest {
                 new NoopCognitiveEventBus(),
                 new OllamaRequestCoordinator(true, new NoopCognitiveEventBus()),
                 new ModelWarmupRegistry(new ModelStartupProperties()),
-                new ContextBudgetService(new AiContextProperties(0, 0)),
+                new ContextBudgetService(new AiContextProperties(0, 0, 0)),
                 new QwenThinkingBudgetProperties(),
                 new StubActiveModelService()
         );
@@ -142,7 +142,7 @@ class OllamaProviderAiTraceTest {
                 HttpClient.newHttpClient(), objectMapper,
                 new OllamaProperties(baseUrl(), "gemma4:26b", "-1m", true, Set.of()),
                 new NoopCognitiveEventBus(), new OllamaRequestCoordinator(true, new NoopCognitiveEventBus()),
-                new ModelWarmupRegistry(new ModelStartupProperties()), new ContextBudgetService(new AiContextProperties(0, 0)),
+                new ModelWarmupRegistry(new ModelStartupProperties()), new ContextBudgetService(new AiContextProperties(0, 0, 0)),
                 new QwenThinkingBudgetProperties(), new StubActiveModelService()
         );
         Brain brain = new Brain(BrainType.FAST, "ollama", "gemma4:26b", "stub", "", 0L, ReasoningLevel.LOW);

@@ -151,7 +151,7 @@ class OllamaStartupModelWarmupTest {
 
     private OllamaStartupModelWarmup warmup(ActiveModelService activeModelService, ModelStartupProperties properties, ModelWarmupRegistry registry) {
         OllamaProperties ollamaProperties = new OllamaProperties(baseUrl(), "unused-default:1b", "-1m", true, Set.of());
-        ContextBudgetService contextBudgetService = new ContextBudgetService(new AiContextProperties(16_384, 2_048));
+        ContextBudgetService contextBudgetService = new ContextBudgetService(new AiContextProperties(16_384, 2_048, 0));
         return new OllamaStartupModelWarmup(
                 HttpClient.newHttpClient(), new ObjectMapper(), ollamaProperties, properties, registry,
                 contextBudgetService, activeModelService);

@@ -397,6 +397,16 @@ public class NativeToolSchemaMapper {
                 .toString();
     }
 
+    // A single angle-bracket-wrapped token like "<studio_id>" or "<path_here>" - letters, digits,
+    // underscore, dash and spaces only, nothing else, for the whole string. Deliberately narrow:
+    // real XML/HTML file content (e.g. a pom.xml's "<?xml version=\"1.0\"?>...<project>...")
+    // starts with "<" too but is never just that - it has attributes, nested tags, punctuation, or
+    // newlines. Regression: coding__file_write's "content" argument for a legitimate pom.xml was
+    // rejected as "looks like a placeholder" purely because XML starts with "<", forcing the model
+    // into writing files via command_start + a Python one-liner instead of the real tool.
+    private static final java.util.regex.Pattern ANGLE_BRACKET_PLACEHOLDER =
+            java.util.regex.Pattern.compile("^<[a-z0-9_\\- ]+>$");
+
     /**
      * Detects a literal placeholder value the model invented instead of a real one (e.g. {@code
      * "<studio_id>"}, {@code "example_id"}, {@code "xxx_id_here"}) - distinct from an empty string,
@@ -416,7 +426,7 @@ public class NativeToolSchemaMapper {
         return normalized.contains("placeholder")
                 || normalized.startsWith("example_")
                 || normalized.startsWith("default_")
-                || normalized.startsWith("<")
+                || ANGLE_BRACKET_PLACEHOLDER.matcher(normalized).matches()
                 || normalized.endsWith("_id_here");
     }
 

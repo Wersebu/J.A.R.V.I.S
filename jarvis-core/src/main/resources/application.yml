@@ -24,6 +24,11 @@ jarvis:
     identity-file: file:config/jarvis.md
     context-window: 100000
     reserved-output-tokens: 2048
+    # Ollama sampler repeat_penalty sent with every request. Without this, Ollama/llama.cpp
+    # defaults to 1.0 (no penalty), letting a local model settle into repeating the exact same
+    # short token sequence forever - especially at high temperature. 1.1 is Ollama's own
+    # traditional default and is enough to break that failure mode.
+    repeat-penalty: 1.1
   diagnostics:
     enabled: true
     request-history-size: 100
