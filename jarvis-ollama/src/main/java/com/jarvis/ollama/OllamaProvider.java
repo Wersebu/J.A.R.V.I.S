@@ -201,9 +201,12 @@ public class OllamaProvider implements AIProvider {
                 // real HTTP body below, including the post-context-budgeting prompt text.
                 AiTraceLogger.logOutboundAiRequest(requestId, brain.model(), endpoint, jobType.name(),
                         brain.reasoningLevel().name(), AiTraceTurnContext.current(), requestJson);
+                // No per-request timeout - a slow local model genuinely still generating must
+                // never be cut off mid-response purely because a clock ran out (matches the
+                // NativeToolLoopService wall-clock timeout, which is disabled by default for the
+                // same reason).
                 HttpRequest httpRequest = HttpRequest.newBuilder()
                         .uri(URI.create(endpoint))
-                        .timeout(Duration.ofMinutes(5))
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                         .build();
@@ -330,9 +333,13 @@ public class OllamaProvider implements AIProvider {
                 AiTraceLogger.logOutboundAiRequest(requestId, brain.model(), endpoint, jobType.name(),
                         brain.reasoningLevel().name(), AiTraceTurnContext.current(), requestJson);
                 long started = System.nanoTime();
+                // No per-request timeout - see the identical comment on the streaming chat request
+                // above. A native tool-call turn with a large tool schema and a slow local model
+                // can legitimately take well over 5 minutes to generate; that used to abort the
+                // turn with HttpTimeoutException regardless of how much real progress the model was
+                // making, defeating the NativeToolLoopService wall-clock timeout being disabled.
                 HttpRequest httpRequest = HttpRequest.newBuilder()
                         .uri(URI.create(endpoint))
-                        .timeout(Duration.ofMinutes(5))
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                         .build();
@@ -798,9 +805,9 @@ public class OllamaProvider implements AIProvider {
 
     private HttpResponse<InputStream> sendStreamingRequest(String endpoint, String requestJson, Brain brain)
             throws IOException, InterruptedException {
+        // No per-request timeout - see the identical comment on the main chat request above.
         HttpRequest httpRequest = HttpRequest.newBuilder()
                 .uri(URI.create(endpoint))
-                .timeout(Duration.ofMinutes(5))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
