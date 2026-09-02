@@ -16,7 +16,6 @@ import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for a real production bug: {@code handleTextMessage} used to run {@code
@@ -65,10 +64,7 @@ class JarvisWebSocketHandlerAsyncChatTest {
     }
 
     private WebSocketSession fakeOpenSession() {
-        WebSocketSession session = mock(WebSocketSession.class);
-        when(session.isOpen()).thenReturn(true);
-        when(session.getId()).thenReturn("session-1");
-        return session;
+        return new TestWebSocketSession("session-1");
     }
 
     private static final class BlockingChatService implements ChatService {
