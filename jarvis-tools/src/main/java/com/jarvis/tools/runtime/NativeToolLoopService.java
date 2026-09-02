@@ -728,9 +728,23 @@ public class NativeToolLoopService {
                 // content path below already has its own, differently-shaped bounded mechanisms
                 // (MAX_EMPTY_RESPONSE_RETRIES, the workflow-completion-gate's own attempt counter)
                 // that must keep running exactly as before.
-                consecutiveNoToolProgress++;
-                LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} consecutiveNoToolProgress={}",
-                        request.requestId(), step, consecutiveNoToolProgress);
+                //
+                // Only content BELOW MIN_SUBSTANTIVE_CONTENT_LENGTH counts as "no progress" here -
+                // short filler like "Pracuje nad tym." repeated twice is genuinely stuck and must
+                // still trip this guard quickly (see
+                // twoConsecutiveNoToolCallFinalContentTurnsStopTheLoopInsteadOfBurningTheFullBudget),
+                // but a real multi-paragraph answer is real engagement even when some downstream
+                // gate asks for one more revision - punishing that produced the exact reported bug:
+                // a model correctly writing two full, different final answers back to back got
+                // killed by this counter after the second one, even though it was doing precisely
+                // what the goal-completion retry asked for.
+                if (content.length() < MIN_SUBSTANTIVE_CONTENT_LENGTH) {
+                    consecutiveNoToolProgress++;
+                } else {
+                    consecutiveNoToolProgress = 0;
+                }
+                LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} consecutiveNoToolProgress={} contentLength={}",
+                        request.requestId(), step, consecutiveNoToolProgress, content.length());
                 if (consecutiveNoToolProgress >= properties.maxConsecutiveNoToolProgressTurns()) {
                     LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} step={} NO_NATIVE_TOOL_CALL_PROGRESS consecutiveNoToolProgress={} threshold={}",
                             request.requestId(), step, consecutiveNoToolProgress, properties.maxConsecutiveNoToolProgressTurns());
@@ -2650,6 +2664,14 @@ public class NativeToolLoopService {
         return summary.length() <= 500 ? summary : summary.substring(0, 500);
     }
 
+    // Deliberately judges only structural facts about the turn - is there an answer, is there
+    // tool evidence - never the wording of the answer itself. A previous version also scanned the
+    // answer text for hedging words ("brakuje", "missing", "incomplete", ...) and rejected it as
+    // incomplete whenever one of them appeared ANYWHERE in the text - which flagged a genuine,
+    // complete multi-paragraph analysis as "incomplete" just because one sentence happened to
+    // mention the app itself was missing a feature. That is exactly the class of bug reported:
+    // Jarvis should trust what the model explicitly decides (call another tool, or stop and
+    // answer) the way Codex/Claude Code do, not second-guess its prose with a keyword scan.
     private CompletionVerification verifyGoalCompletion(GoalContract contract, String proposedFinalAnswer) {
         String answer = Objects.toString(proposedFinalAnswer, "").strip();
         List<String> missing = new ArrayList<>();
@@ -2659,39 +2681,17 @@ public class NativeToolLoopService {
         if (answer.isBlank()) {
             missing.add("final_answer");
         }
-        if (admitsInsufficiency(answer)) {
-            missing.add("model_admitted_incomplete_answer");
-        }
         if (missing.isEmpty()) {
             List<String> satisfied = contract.completionCriteria().stream()
                     .map(CompletionCriterion::id)
                     .filter(id -> !id.isBlank())
                     .toList();
             return new CompletionVerification(CompletionDecision.COMPLETE, satisfied, List.of(), "",
-                    "Proposed answer is non-empty, no insufficiency was detected, and tool evidence exists.");
+                    "Proposed answer is non-empty and tool evidence exists.");
         }
         return new CompletionVerification(CompletionDecision.CONTINUE, List.of(), missing,
                 missing.contains("tool_evidence") ? "collect evidence with a relevant tool" : "close the missing criteria",
                 "Goal contract is not satisfied yet: " + missing);
-    }
-
-    private boolean admitsInsufficiency(String content) {
-        String normalized = normalize(content);
-        return normalized.contains("to nie jest")
-                || normalized.contains("brakuje")
-                || normalized.contains("nie mam jeszcze")
-                || normalized.contains("potrzebuje kolejnego")
-                || normalized.contains("potrzebuje jeszcze")
-                || normalized.contains("musze jeszcze")
-                || normalized.contains("niewystarczaj")
-                || normalized.contains("za malo")
-                || normalized.contains("may be")
-                || normalized.contains("might be")
-                || normalized.contains("not enough")
-                || normalized.contains("insufficient")
-                || normalized.contains("incomplete")
-                || normalized.contains("missing")
-                || normalized.contains("still need");
     }
 
     private String goalContractStatusBlock(GoalContract contract) {
@@ -3289,6 +3289,22 @@ public class NativeToolLoopService {
      * #detectStructuredEnvelopeType}.
      */
     private static final int MAX_MALFORMED_CONTINUATION_ATTEMPTS = 2;
+
+    /**
+     * Below this length, a no-tool-call text turn is treated as filler ("Pracuje nad tym.",
+     * "Nadal pracuje nad tym.") and counts toward {@code consecutiveNoToolProgress}; at or above
+     * it, the model is genuinely engaging - writing or revising a real answer - and the turn
+     * resets that counter instead, exactly like a real tool call does. This replaces judging the
+     * model by scanning its prose for specific words (the previous {@code admitsInsufficiency}
+     * keyword list wrongly flagged a substantive multi-paragraph analysis as "incomplete" just
+     * because one sentence happened to contain "brakuje"/"missing", killing the loop after a
+     * second full-length answer that was doing exactly what was asked). A structural signal - did
+     * the model write something substantial, yes or no - is far more robust than pattern-matching
+     * its wording, and it lets the loop behave like an autonomous coding-agent runtime (Codex,
+     * Claude Code): trust the model's own final answer and let the overall turn budget be the
+     * real backstop, not a two-strike trip-wire on ordinary prose.
+     */
+    private static final int MIN_SUBSTANTIVE_CONTENT_LENGTH = 200;
 
     /**
      * Above this many consecutive turns where {@link #completionValidator} reports the workflow is
