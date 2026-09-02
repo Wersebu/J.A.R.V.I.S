@@ -205,6 +205,7 @@ public interface CodingService {
             Instant updatedAt,
             String finalAnswer,
             String systemPromptVersion,
+            String openCodeSessionId,
             GitSnapshot initialGitSnapshot,
             GitSnapshot finalGitSnapshot
     ) {
@@ -216,6 +217,7 @@ public interface CodingService {
             updatedAt = updatedAt == null ? startedAt : updatedAt;
             finalAnswer = finalAnswer == null ? "" : finalAnswer;
             systemPromptVersion = systemPromptVersion == null ? "" : systemPromptVersion;
+            openCodeSessionId = openCodeSessionId == null ? "" : openCodeSessionId;
             initialGitSnapshot = initialGitSnapshot == null ? new GitSnapshot("", "", "", "") : initialGitSnapshot;
             finalGitSnapshot = finalGitSnapshot == null ? new GitSnapshot("", "", "", "") : finalGitSnapshot;
         }
@@ -239,7 +241,7 @@ public interface CodingService {
         ) {
             this(id, workspaceId, conversationId, model, prompt, status, plan, currentAction, iteration, startedAt,
                     finishedAt, changedFiles, buildResult, testResult, failureReason, missingOwner(), startedAt,
-                    "", "", new GitSnapshot("", "", "", ""), new GitSnapshot("", "", "", ""));
+                    "", "", "", new GitSnapshot("", "", "", ""), new GitSnapshot("", "", "", ""));
         }
     }
 

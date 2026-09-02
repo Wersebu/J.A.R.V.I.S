@@ -12,12 +12,23 @@ import java.util.Set;
 @Service
 public class InformationFreshnessEvaluator {
 
+    // "aktualn"/"obecn"/"teraz"/"current"/"now" were removed from here (production bug): these are
+    // plain deictic/adjectival markers for "current"/"now" with no inherent tie to live external
+    // data - "sprawdz teraz pliki aplikacji" (check the app files now) or a model TOOL_REQUEST
+    // reason like "review the current application files" matched them on their own, forcing
+    // freshness=MUST_BE_LIVE for a purely local coding-workspace request. Since hasLiveEvidence()
+    // only recognizes web/mcp_* tool results, that gate could never be satisfied by the coding
+    // tools the task actually needed, and the resulting "live evidence required" nudges left the
+    // model producing text instead of tool calls - tripping the consecutiveNoToolProgress backstop
+    // and killing the loop after two turns. Every remaining term below already implies a genuine
+    // price/rate/market/news signal on its own (see wordBoundaryStillCatchesTheGenuineStandaloneLiveTerm
+    // in InformationFreshnessEvaluatorTest, which keeps "teraz" working when "cena" is also present).
     private static final Set<String> LIVE_TERMS = Set.of(
-            "aktualn", "obecn", "teraz", "dzisiaj", "najnowsz", "ostatni",
+            "dzisiaj", "najnowsz", "ostatni",
             "cena", "ceny", "koszt", "kosztuje", "po ile", "ile chodzi",
             "kurs", "notowan", "rynek", "wtorn", "uzywan", "dostepnosc",
             "premiera", "wyszla", "wydana", "wiadomosci",
-            "current", "latest", "today", "now", "price", "prices", "rate",
+            "latest", "today", "price", "prices", "rate",
             "market", "used", "secondary", "released", "availability", "news"
     );
 

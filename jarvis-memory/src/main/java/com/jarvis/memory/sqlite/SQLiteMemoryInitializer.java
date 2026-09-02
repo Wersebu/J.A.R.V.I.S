@@ -280,6 +280,7 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                     updated_at TEXT NOT NULL,
                     final_answer TEXT NOT NULL DEFAULT '',
                     system_prompt_version TEXT NOT NULL DEFAULT '',
+                    opencode_session_id TEXT NOT NULL DEFAULT '',
                     initial_git_snapshot_json TEXT NOT NULL DEFAULT '{}',
                     final_git_snapshot_json TEXT NOT NULL DEFAULT '{}'
                 )
@@ -288,6 +289,7 @@ public class SQLiteMemoryInitializer implements InitializingBean {
         addColumnIfMissing(statement, "coding_tasks", "updated_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00Z'");
         addColumnIfMissing(statement, "coding_tasks", "final_answer", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing(statement, "coding_tasks", "system_prompt_version", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(statement, "coding_tasks", "opencode_session_id", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing(statement, "coding_tasks", "initial_git_snapshot_json", "TEXT NOT NULL DEFAULT '{}'");
         addColumnIfMissing(statement, "coding_tasks", "final_git_snapshot_json", "TEXT NOT NULL DEFAULT '{}'");
         statement.executeUpdate("""

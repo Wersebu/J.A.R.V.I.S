@@ -666,12 +666,17 @@ public class DefaultCodingService implements CodingService, InitializingBean {
         CodingRequestContext requestContext = context == null ? new CodingRequestContext(CurrentUserContext.requireAuthenticatedUserId(), "", request.conversationId()) : context;
         String ownerUserId = normalizeOwner(requestContext.userId());
         WorkspaceState state = requireWorkspaceForOwner(request.workspaceId(), ownerUserId);
+        if (executionRegistry.hasActiveWorkspace(ownerUserId, state.id)) {
+            throw new IllegalStateException("A coding task is already running for this workspace. Send the message as a follow-up after the current step finishes.");
+        }
         String id = UUID.randomUUID().toString();
         Instant now = Instant.now();
+        String conversationId = blank(requestContext.conversationId()) ? request.conversationId() : requestContext.conversationId();
+        String openCodeSessionId = reusableOpenCodeSessionId(ownerUserId, state.id, conversationId);
         CodingTask task = new CodingTask(
                 id,
                 state.workspace.id(),
-                blank(requestContext.conversationId()) ? request.conversationId() : requestContext.conversationId(),
+                conversationId,
                 request.model(),
                 request.prompt(),
                 CodingTaskStatus.QUEUED,
@@ -688,6 +693,7 @@ public class DefaultCodingService implements CodingService, InitializingBean {
                 now,
                 "",
                 "coding-agent-v1",
+                openCodeSessionId,
                 new GitSnapshot("", "", "", ""),
                 new GitSnapshot("", "", "", "")
         );
@@ -903,6 +909,30 @@ public class DefaultCodingService implements CodingService, InitializingBean {
         );
     }
 
+    private String reusableOpenCodeSessionId(String ownerUserId, String workspaceId, String conversationId) {
+        return taskRepository.findAll().stream()
+                .filter(task -> ownerUserId.equals(task.ownerUserId()))
+                .filter(task -> workspaceId.equals(task.workspaceId()))
+                .filter(task -> !blank(conversationId) && conversationId.equals(task.conversationId()))
+                .filter(task -> !blank(task.openCodeSessionId()))
+                .sorted(Comparator.comparing(CodingTask::startedAt, Comparator.nullsLast(Comparator.reverseOrder())))
+                .map(CodingTask::openCodeSessionId)
+                .findFirst()
+                .orElseGet(() -> "jarvis-" + UUID.randomUUID());
+    }
+
+    private boolean previousOpenCodeSessionExists(CodingTask task) {
+        if (blank(task.openCodeSessionId()) || blank(task.conversationId())) {
+            return false;
+        }
+        return taskRepository.findAll().stream()
+                .filter(previous -> !previous.id().equals(task.id()))
+                .filter(previous -> task.ownerUserId().equals(previous.ownerUserId()))
+                .filter(previous -> task.workspaceId().equals(previous.workspaceId()))
+                .filter(previous -> task.conversationId().equals(previous.conversationId()))
+                .anyMatch(previous -> task.openCodeSessionId().equals(previous.openCodeSessionId()));
+    }
+
     private CodingTask runOpenCodeTaskLoop(CodingTask task, WorkspaceState state) {
         Map<String, String> changedFiles = new LinkedHashMap<>();
         StringBuilder buildResult = new StringBuilder();
@@ -929,6 +959,9 @@ public class DefaultCodingService implements CodingService, InitializingBean {
             initialGit = gitSnapshot(workspace.id());
             changedFiles.put("workspace", workspace.windowsPath());
             changedFiles.put("openCodeVersion", string(diagnostics, "openCodeVersion", ""));
+            changedFiles.put("openCodeSessionId", task.openCodeSessionId());
+            boolean continueSession = previousOpenCodeSessionExists(task);
+            changedFiles.put("openCodeContinue", String.valueOf(continueSession));
             changedFiles.put("initialGitStatus", trim(initialGit.status(), 8_000));
             changedFiles.put("initialGitDiffSha256", sha256(initialGit.diff().getBytes(StandardCharsets.UTF_8)));
             task = updateTask(task, CodingTaskStatus.STARTING, complete(complete(task.plan(), "snapshot"), "plan"),
@@ -941,6 +974,8 @@ public class DefaultCodingService implements CodingService, InitializingBean {
                     "baseUrl", configuredOpenCodeBaseUrl(),
                     "model", configuredOpenCodeModel(),
                     "prompt", openCodePrompt(task, workspace),
+                    "sessionId", task.openCodeSessionId(),
+                    "continueSession", continueSession,
                     "timeoutSeconds", openCodeTimeoutSeconds(),
                     "maxOutputCharacters", DEFAULT_MAX_OUTPUT
             ), WINDOWS_FAST_TIMEOUT);
@@ -1220,6 +1255,7 @@ public class DefaultCodingService implements CodingService, InitializingBean {
                 Instant.now(),
                 task.finalAnswer(),
                 task.systemPromptVersion(),
+                task.openCodeSessionId(),
                 task.initialGitSnapshot(),
                 task.finalGitSnapshot()
         );
@@ -1266,6 +1302,7 @@ public class DefaultCodingService implements CodingService, InitializingBean {
                 Instant.now(),
                 finalAnswer == null ? task.finalAnswer() : finalAnswer,
                 task.systemPromptVersion(),
+                task.openCodeSessionId(),
                 initialGit == null ? task.initialGitSnapshot() : initialGit,
                 finalGit == null ? task.finalGitSnapshot() : finalGit
         );
@@ -2138,6 +2175,13 @@ public class DefaultCodingService implements CodingService, InitializingBean {
             TaskExecution execution = new TaskExecution(taskId, ownerUserId, workspaceId);
             executions.put(taskId, execution);
             return execution;
+        }
+
+        private boolean hasActiveWorkspace(String ownerUserId, String workspaceId) {
+            return executions.values().stream()
+                    .anyMatch(execution -> ownerUserId.equals(execution.ownerUserId)
+                            && workspaceId.equals(execution.workspaceId)
+                            && !execution.cancelled());
         }
 
         private TaskExecution cancel(String taskId) {

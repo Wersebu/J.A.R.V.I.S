@@ -40,9 +40,9 @@ class SQLiteCodingTaskRepository implements CodingTaskRepository {
                      INSERT INTO coding_tasks
                      (id, workspace_id, owner_user_id, conversation_id, model, prompt, status, plan_json,
                       current_action, iteration, started_at, finished_at, changed_files_json, build_result,
-                      test_result, failure_reason, updated_at, final_answer, system_prompt_version,
+                      test_result, failure_reason, updated_at, final_answer, system_prompt_version, opencode_session_id,
                       initial_git_snapshot_json, final_git_snapshot_json)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON CONFLICT(id) DO UPDATE SET
                      workspace_id = excluded.workspace_id,
                      owner_user_id = excluded.owner_user_id,
@@ -61,6 +61,7 @@ class SQLiteCodingTaskRepository implements CodingTaskRepository {
                      updated_at = excluded.updated_at,
                      final_answer = excluded.final_answer,
                      system_prompt_version = excluded.system_prompt_version,
+                     opencode_session_id = excluded.opencode_session_id,
                      initial_git_snapshot_json = excluded.initial_git_snapshot_json,
                      final_git_snapshot_json = excluded.final_git_snapshot_json
                      """)) {
@@ -120,8 +121,9 @@ class SQLiteCodingTaskRepository implements CodingTaskRepository {
         statement.setString(17, instant(task.updatedAt()));
         statement.setString(18, nullToEmpty(task.finalAnswer()));
         statement.setString(19, nullToEmpty(task.systemPromptVersion()));
-        statement.setString(20, json(task.initialGitSnapshot()));
-        statement.setString(21, json(task.finalGitSnapshot()));
+        statement.setString(20, nullToEmpty(task.openCodeSessionId()));
+        statement.setString(21, json(task.initialGitSnapshot()));
+        statement.setString(22, json(task.finalGitSnapshot()));
     }
 
     private CodingService.CodingTask map(ResultSet resultSet) throws SQLException {
@@ -145,6 +147,7 @@ class SQLiteCodingTaskRepository implements CodingTaskRepository {
                 parseInstant(resultSet.getString("updated_at")),
                 resultSet.getString("final_answer"),
                 resultSet.getString("system_prompt_version"),
+                getStringOrDefault(resultSet, "opencode_session_id", ""),
                 gitSnapshot(resultSet.getString("initial_git_snapshot_json")),
                 gitSnapshot(resultSet.getString("final_git_snapshot_json"))
         );
@@ -212,5 +215,14 @@ class SQLiteCodingTaskRepository implements CodingTaskRepository {
 
     private String nullToJsonObject(String value) {
         return value == null || value.isBlank() ? "{}" : value;
+    }
+
+    private String getStringOrDefault(ResultSet resultSet, String column, String fallback) {
+        try {
+            String value = resultSet.getString(column);
+            return value == null ? fallback : value;
+        } catch (SQLException exception) {
+            return fallback;
+        }
     }
 }

@@ -2322,8 +2322,19 @@ public class NativeToolLoopService {
     private static final String LOCATION_PATTERN = ".*\\b(?:geoloc|geocod|location|routes?|routing|distanc|"
             + "coordinat|navigat|address|trasa|trase|adres|wspolrzedn|geokod|lokalizacj|dojazd|marszrut|"
             + "dystans|nawigacj|mapa|mape).*";
-    private static final String WEB_PATTERN = ".*\\b(?:web|internet|external|current|live|market|price|"
-            + "prices|listing|search).*";
+    // "current" alone used to be a bare alternative here, so any goal/reason text mentioning
+    // "current application files" or "current workspace state" (e.g. a coding-inspection request)
+    // false-matched WEB_PATTERN, forcing resolvedIntent=SEARCH_WEB / freshness=MUST_BE_LIVE. Since
+    // hasLiveEvidence() only ever recognizes "web"/"mcp_*" tool results, a coding-tool loop could
+    // never satisfy that gate, and the resulting "Live evidence is required, use public web tools"
+    // nudge left the model producing text instead of calling a tool - which then tripped the
+    // consecutiveNoToolProgress backstop after two turns and killed the loop outright. "current" is
+    // now only a trigger when it directly qualifies a finance/market term, matching real cases like
+    // "current exchange rates" while no longer matching unrelated "current <workspace/files/state>"
+    // phrasing.
+    private static final String WEB_PATTERN = ".*\\b(?:web|internet|external|"
+            + "current\\s+(?:price|prices|market|marketplace|rate|rates|exchange|value|cost)|"
+            + "live|market|price|prices|listing|search).*";
 
     private ToolIntent resolveIntent(ToolCallingRequest request) {
         ToolIntent messageIntent = intentDetector.detect(request.userMessage());
