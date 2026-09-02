@@ -335,7 +335,12 @@ public class NativeToolLoopService {
         for (int step = 1; step <= maxCalls; step++) {
             AiTraceTurnContext.set(step);
             turnsUsed = step;
-            if (Duration.between(started, Instant.now()).toSeconds() > properties.timeoutSeconds()) {
+            // timeoutSeconds() <= 0 means "no wall-clock limit" (see ToolRuntimeProperties) - the
+            // loop stays bounded by maxCalls and the other forward-progress guards instead of an
+            // arbitrary clock, so a model genuinely still working (reading files, refining an
+            // answer) is never cut off mid-task just because time ran out.
+            if (properties.timeoutSeconds() > 0
+                    && Duration.between(started, Instant.now()).toSeconds() > properties.timeoutSeconds()) {
                 errors.add("TIMEOUT");
                 break;
             }

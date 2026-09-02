@@ -46,9 +46,12 @@ jarvis:
     max-calls-fast: 8
     max-calls-research: 15
     max-consecutive-failures: 2
-    # Raised alongside max-calls-* above: more turns need more wall-clock time, especially with a
-    # slow-loading local model (each turn here has been observed taking 45-80s).
-    timeout-seconds: 600
+    # 0 disables the wall-clock timeout entirely. A slow local model doing genuine, useful work
+    # (each turn has been observed taking 45-80s, and a long coding task legitimately needs many
+    # turns) must never be cut off mid-task just because a clock ran out - the loop is still
+    # bounded by max-calls-* above and the no-progress/duplicate-detection guards, the same way an
+    # agent like Codex or Claude Code is only limited by real forward progress, not a timer.
+    timeout-seconds: 0
     max-consecutive-operation-repeats: 5
     approval:
       resume-tool-loop-after-approval: true

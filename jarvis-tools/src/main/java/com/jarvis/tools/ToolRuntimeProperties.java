@@ -10,7 +10,12 @@ import org.springframework.boot.context.properties.bind.ConstructorBinding;
  * @param maxCallsFast max tool calls in FAST mode
  * @param maxCallsResearch max tool calls in RESEARCH mode
  * @param maxConsecutiveFailures max consecutive failures before aborting
- * @param timeoutSeconds loop timeout
+ * @param timeoutSeconds wall-clock loop timeout in seconds; {@code <= 0} disables it entirely so
+ *        the loop is bounded only by real forward-progress guards (turn budget, no-progress
+ *        backstop, duplicate/repeat detection) - not by how long the model happens to take. A
+ *        slow local model doing genuine, useful work (reading files, revising an answer) must
+ *        never be cut off mid-task purely because a clock ran out, the same way an agent like
+ *        Codex or Claude Code is never wall-clock-limited while it is still making progress
  * @param runtime default runtime: native or legacy
  * @param maxConsecutiveOperationRepeats max consecutive calls to the same tool+operation
  *        (regardless of arguments) before the loop refuses further calls to it - a coarser,
@@ -58,7 +63,9 @@ public record ToolRuntimeProperties(
         maxCallsFast = maxCallsFast > 0 ? maxCallsFast : 8;
         maxCallsResearch = maxCallsResearch > 0 ? maxCallsResearch : 15;
         maxConsecutiveFailures = maxConsecutiveFailures > 0 ? maxConsecutiveFailures : 2;
-        timeoutSeconds = timeoutSeconds > 0 ? timeoutSeconds : 600;
+        // Unlike the other fields here, 0 (or any non-positive value) is a deliberate, meaningful
+        // setting - "no wall-clock timeout" - not "unset, apply a default". There is no positive
+        // fallback to apply.
         runtime = runtime == null || runtime.isBlank() ? "native" : runtime.trim().toLowerCase(java.util.Locale.ROOT);
         maxConsecutiveOperationRepeats = maxConsecutiveOperationRepeats > 0 ? maxConsecutiveOperationRepeats : 5;
         statefulWorkflowMinToolBudget = statefulWorkflowMinToolBudget > 0 ? statefulWorkflowMinToolBudget : 20;

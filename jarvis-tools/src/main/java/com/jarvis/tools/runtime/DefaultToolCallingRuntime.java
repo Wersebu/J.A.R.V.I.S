@@ -143,7 +143,9 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
 
         try {
             for (int step = 1; step <= maxCalls; step++) {
-                if (Duration.between(started, Instant.now()).toSeconds() > properties.timeoutSeconds()) {
+                // timeoutSeconds() <= 0 means "no wall-clock limit" (see ToolRuntimeProperties).
+                if (properties.timeoutSeconds() > 0
+                        && Duration.between(started, Instant.now()).toSeconds() > properties.timeoutSeconds()) {
                     errors.add("Tool loop timeout");
                     break;
                 }
