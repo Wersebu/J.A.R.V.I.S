@@ -2693,6 +2693,10 @@ public class NativeToolLoopService {
                 Required outcome: %s
                 Criteria: %s
                 The original goal remains authoritative. Intermediate tool goals are subgoals only.
+                If real work toward the required outcome still remains, call system__notify_user with a \
+                short status update and then keep calling tools in this same turn - never end the turn \
+                with a narrative describing what you are about to do next (e.g. "Now I will start on X"); \
+                actually do X before finishing.
                 """.formatted(contract.originalGoal(), contract.requiredOutcome(), contract.completionCriteria());
     }
 
@@ -2709,6 +2713,9 @@ public class NativeToolLoopService {
                 Latest evidence: %s
                 Recommended missing evidence: %s
                 Continue the same native tool loop with the available tools. Do not ask the user to retry a safe read/search/inspect action.
+                If this turn's remaining work will take several more tool calls, call system__notify_user \
+                with a short status update first, then keep calling tools right now - do not stop and \
+                describe the remaining plan as if it were done.
                 """.formatted(
                 contract.originalGoal(),
                 verification.satisfiedCriteria(),
