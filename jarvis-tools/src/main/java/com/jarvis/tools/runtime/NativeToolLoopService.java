@@ -375,7 +375,6 @@ public class NativeToolLoopService {
                 }
                 return handleProviderFailure(request, intent, steps, results, errors, messages, exception, step, started, maxCalls);
             }
-            publishThinking(request, response);
             if (response.hasToolCalls()) {
                 // Real engagement (a genuine tool-call attempt, whether it goes on to succeed or
                 // fail) resets both the general no-progress backstop and the live-evidence-specific
@@ -1088,7 +1087,6 @@ public class NativeToolLoopService {
         Optional<ModelResponse> fallback = fallbackTextTurn(request, messages, error);
         if (fallback.isPresent()) {
             ModelResponse response = fallback.get();
-            publishThinking(request, response);
             String content = response.content().strip();
             if (!content.isBlank()) {
                 steps.add(new ToolRuntimeStep(step, "MODEL_FALLBACK", "", "", "FINISHED", null));
@@ -2315,17 +2313,6 @@ public class NativeToolLoopService {
                 "[AGENT_CONTEXT_CONTINUITY] requestId={} operation={} beforeToolDatasetStores={} afterToolDatasetStores={} attachmentsPreserved=true",
                 request.requestId(), action.operation(),
                 before.map(String::valueOf).orElse("n/a"), after.map(String::valueOf).orElse("n/a"));
-    }
-
-    private void publishThinking(ToolCallingRequest request, ModelResponse response) {
-        if (!response.thinking().isBlank()) {
-            cognitiveEventBus.publish(CognitiveEventType.THINKING_TOKEN, "THINKING", response.thinking(),
-                    "model:" + request.brain().model(), Map.of(
-                            "requestId", request.requestId(),
-                            "conversationId", request.conversationId(),
-                            "source", "native-tool-loop"
-                    ));
-        }
     }
 
     // Fixed word-boundary bug (round 5): the previous pattern wrapped every alternative in

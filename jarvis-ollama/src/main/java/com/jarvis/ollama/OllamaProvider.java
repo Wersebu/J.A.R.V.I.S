@@ -317,11 +317,19 @@ public class OllamaProvider implements AIProvider {
                             "toolDefinitions", tools == null ? 0 : tools.size()
                     ));
             try (OllamaRequestCoordinator.Permit ignored = requestCoordinator.acquire(jobType, requestId)) {
+                // stream=true (previously false): this is the only way to see the model's
+                // "thinking" live for a native-tool-loop turn instead of it being a total black box
+                // until the whole (now-unbounded) call finishes - a turn producing several thousand
+                // reasoning tokens used to show absolutely nothing in the UI/logs for its entire
+                // duration. Every chunk is published live below through the same THINKING_TOKEN
+                // cognitive event the plain streaming chat path already uses, so operators can watch
+                // it happen and judge for themselves whether it's still making progress instead of
+                // that judgment being made for them by an arbitrary cutoff.
                 OllamaChatRequest requestBody = new OllamaChatRequest(
                         brain.model(),
                         toOllamaMessages(messages),
                         toOllamaTools(tools),
-                        false,
+                        true,
                         resolveThink(brain),
                         properties.keepAlive(),
                         contextBudgetService.ollamaOptions()
@@ -343,11 +351,11 @@ public class OllamaProvider implements AIProvider {
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                         .build();
-                HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-                long durationMs = nanosToMillis(System.nanoTime() - started);
+                HttpResponse<InputStream> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
                 if (httpResponse.statusCode() < 200 || httpResponse.statusCode() >= 300) {
+                    String errorBody = new String(httpResponse.body().readAllBytes(), StandardCharsets.UTF_8);
                     LOGGER.error("[JARVIS][requestId={}][OLLAMA] NATIVE_TOOL_CHAT_HTTP_ERROR status={} body={}",
-                            requestId, httpResponse.statusCode(), httpResponse.body());
+                            requestId, httpResponse.statusCode(), errorBody);
                     // The real reason (e.g. Ollama's own "error parsing tool call: unexpected end of
                     // JSON input" when the model's function-call arguments were malformed/truncated)
                     // must reach the caller, not just the log - NativeToolLoopService needs it to
@@ -355,12 +363,12 @@ public class OllamaProvider implements AIProvider {
                     // provider/connection failure. Bounded so a huge body is never dumped into an
                     // exception message.
                     throw new OllamaException("Ollama native tool chat failed with status " + httpResponse.statusCode()
-                            + ": " + truncate(httpResponse.body(), 500));
+                            + ": " + truncate(errorBody, 500));
                 }
-                OllamaChatResponse response = objectMapper.readValue(httpResponse.body(), OllamaChatResponse.class);
-                ModelResponse modelResponse = toModelResponse(response);
-                LOGGER.info("[JARVIS][requestId={}][OLLAMA] NATIVE_TOOL_CHAT_FINISHED durationMs={} contentChars={} toolCalls={}",
-                        requestId, durationMs, modelResponse.content().length(), modelResponse.toolCalls().size());
+                ModelResponse modelResponse = readNativeToolChatStream(httpResponse.body(), brain, jobType, started);
+                long durationMs = nanosToMillis(System.nanoTime() - started);
+                LOGGER.info("[JARVIS][requestId={}][OLLAMA] NATIVE_TOOL_CHAT_FINISHED durationMs={} contentChars={} thinkingChars={} toolCalls={}",
+                        requestId, durationMs, modelResponse.content().length(), modelResponse.thinking().length(), modelResponse.toolCalls().size());
                 publishCognitive(jobType, CognitiveEventType.EXECUTION_TRACE, "FINISHED",
                         "Native tool model turn finished", "model:" + brain.model(), Map.of(
                                 "stage", "NATIVE_TOOL_MODEL_TURN",
@@ -383,6 +391,117 @@ public class OllamaProvider implements AIProvider {
             LOGGER.error("[JARVIS] Ollama native tool request interrupted", exception);
             throw new OllamaException("Ollama native tool request was interrupted", exception);
         }
+    }
+
+    /**
+     * Reads a streamed native-tool-chat ({@code /api/chat}, {@code stream: true}) response
+     * line-by-line, publishing each {@code thinking} chunk live via {@link
+     * CognitiveEventType#THINKING_TOKEN} - the same event the plain streaming chat path already
+     * uses for the "Thinking" panel - as it arrives, instead of the caller only ever seeing the
+     * fully-assembled result once the whole call finishes. Deliberately simpler than {@link
+     * #readChatStream}: this path has no {@code ChatEventSink}/{@code conversationId} (native tool
+     * loop turns aren't tied to one - see {@link com.jarvis.tools.runtime.NativeToolLoopService}),
+     * no Qwen thinking-budget accounting (never applied to native tool-loop turns before this
+     * change either), and must also capture {@code tool_calls}, which the plain chat stream never
+     * carries.
+     *
+     * <p>Unlike {@link #readChatStream}, a line is never skipped just because it also carries
+     * {@code done:true} - a single-chunk response (the whole message delivered on the same line as
+     * completion, as a trivial/non-streaming-style Ollama build might do) must still have its
+     * content captured, not silently dropped.
+     *
+     * @param inputStream the HTTP response body stream
+     * @param brain selected logical brain
+     * @param jobType the calling job type, forwarded to every published cognitive event
+     * @param startedNano {@link System#nanoTime()} when the request was sent, for latency logging
+     * @return the fully assembled model response
+     * @throws IOException on a transport failure, a malformed chunk, or a stream that ended
+     *         without ever sending {@code done:true} (Ollama disconnected mid-response)
+     */
+    private ModelResponse readNativeToolChatStream(InputStream inputStream, Brain brain, AIJobType jobType, long startedNano) throws IOException {
+        StringBuilder thinkingBuilder = new StringBuilder();
+        StringBuilder contentBuilder = new StringBuilder();
+        List<OllamaToolCall> toolCalls = List.of();
+        String doneReason = "";
+        Integer promptEvalCount = null;
+        Integer evalCount = null;
+        boolean thinkingStarted = false;
+        boolean thinkingFinished = false;
+        int thinkingChunks = 0;
+        boolean done = false;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.isBlank()) {
+                    continue;
+                }
+                OllamaChatResponse response = objectMapper.readValue(line, OllamaChatResponse.class);
+                OllamaChatMessage message = response.message();
+                if (message != null) {
+                    String thinking = message.thinking();
+                    if (thinking != null && !thinking.isEmpty()) {
+                        if (!thinkingStarted) {
+                            thinkingStarted = true;
+                            long elapsedMs = nanosToMillis(System.nanoTime() - startedNano);
+                            publishCognitive(jobType, CognitiveEventType.FIRST_TOKEN_RECEIVED, "RECEIVED",
+                                    "First model output received", "model:" + brain.model(), Map.of(
+                                            "latencyMs", elapsedMs, "model", brain.model(), "channel", "thinking"));
+                            publishCognitive(jobType, CognitiveEventType.THINKING_STARTED, "THINKING", "Thinking started",
+                                    "model:" + brain.model(), Map.of(
+                                            "model", brain.model(), "reasoningLevel", brain.reasoningLevel().name()));
+                            LOGGER.info("[JARVIS][requestId={}][OLLAMA] FIRST_THINKING_CHUNK elapsedMs={}", diagnosticsRequestId(), elapsedMs);
+                        }
+                        thinkingBuilder.append(thinking);
+                        thinkingChunks++;
+                        publishCognitive(jobType, CognitiveEventType.THINKING_TOKEN, "THINKING", thinking, "model:" + brain.model(), Map.of(
+                                "text", thinking, "index", thinkingChunks));
+                    }
+                    String content = message.content();
+                    if (content != null && !content.isEmpty()) {
+                        if (thinkingStarted && !thinkingFinished) {
+                            thinkingFinished = true;
+                            publishCognitive(jobType, CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished",
+                                    "model:" + brain.model(), Map.of(
+                                            "durationMs", nanosToMillis(System.nanoTime() - startedNano),
+                                            "chunks", thinkingChunks, "characters", thinkingBuilder.length()));
+                        }
+                        contentBuilder.append(content);
+                    }
+                    if (message.toolCalls() != null && !message.toolCalls().isEmpty()) {
+                        toolCalls = message.toolCalls();
+                    }
+                }
+                if (Boolean.TRUE.equals(response.done())) {
+                    done = true;
+                    doneReason = response.doneReason();
+                    promptEvalCount = response.promptEvalCount();
+                    evalCount = response.evalCount();
+                    break;
+                }
+            }
+        }
+        if (!done) {
+            // Ollama closed the connection (or the process died) before ever sending done:true -
+            // never silently return a truncated/empty answer as if it were a genuine result.
+            throw new OllamaException("Ollama native tool chat stream ended without a completion marker");
+        }
+        if (thinkingStarted && !thinkingFinished) {
+            publishCognitive(jobType, CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished", "model:" + brain.model(), Map.of(
+                    "durationMs", nanosToMillis(System.nanoTime() - startedNano), "chunks", thinkingChunks, "characters", thinkingBuilder.length()));
+        }
+        List<ModelToolCall> modelToolCalls = toolCalls.stream()
+                .filter(call -> call.function() != null)
+                .map(call -> new ModelToolCall(call.id(), call.function().name(), call.function().arguments()))
+                .toList();
+        int promptTokens = promptEvalCount == null ? 0 : promptEvalCount;
+        int completionTokens = evalCount == null ? 0 : evalCount;
+        return new ModelResponse(
+                contentBuilder.toString(),
+                thinkingBuilder.toString(),
+                modelToolCalls,
+                doneReason,
+                new ModelUsage(promptTokens, completionTokens, promptTokens + completionTokens)
+        );
     }
 
     private void streamResponse(
@@ -925,29 +1044,6 @@ public class OllamaProvider implements AIProvider {
                                 "parameters", tool.parameters()
                         )))
                 .toList();
-    }
-
-    private ModelResponse toModelResponse(OllamaChatResponse response) {
-        OllamaChatMessage message = response == null ? null : response.message();
-        List<ModelToolCall> toolCalls = message == null || message.toolCalls() == null
-                ? List.of()
-                : message.toolCalls().stream()
-                .filter(call -> call.function() != null)
-                .map(call -> new ModelToolCall(
-                        call.id(),
-                        call.function().name(),
-                        call.function().arguments()
-                ))
-                .toList();
-        int promptTokens = response == null || response.promptEvalCount() == null ? 0 : response.promptEvalCount();
-        int completionTokens = response == null || response.evalCount() == null ? 0 : response.evalCount();
-        return new ModelResponse(
-                message == null ? "" : message.content(),
-                message == null ? "" : message.thinking(),
-                toolCalls,
-                response == null ? "" : response.doneReason(),
-                new ModelUsage(promptTokens, completionTokens, promptTokens + completionTokens)
-        );
     }
 
     private String normalizeBaseUrl(String baseUrl) {
