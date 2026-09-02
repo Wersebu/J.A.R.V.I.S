@@ -115,6 +115,11 @@ class CodingToolTest {
         }
 
         @Override
+        public CodingDiagnostics diagnostics(String workspaceId) {
+            return new CodingDiagnostics(true, "AVAILABLE", "test", true, true, true, "", "ok");
+        }
+
+        @Override
         public List<WorkspaceFileEntry> listFiles(String workspaceId, String path) {
             return List.of(new WorkspaceFileEntry("WINDOWS_ONLY.txt", false, 7));
         }
