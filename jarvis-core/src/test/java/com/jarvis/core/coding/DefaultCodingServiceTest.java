@@ -430,6 +430,7 @@ class DefaultCodingServiceTest {
     @Test
     void sqliteCodingRepositoriesPersistWorkspacesTasksAndRecoverActiveTasksAsInterrupted() throws Exception {
         Path workspaceRoot = Files.createDirectories(tempDir.resolve("persistent-project"));
+        Path secondWorkspaceRoot = Files.createDirectories(tempDir.resolve("persistent-project-2"));
         Path database = tempDir.resolve("coding.db");
         SQLiteConnectionFactory connectionFactory = new SQLiteConnectionFactory(new MemoryProperties(database.toString(), 20, null, null, null, null));
         SQLiteMemoryInitializer initializer = new SQLiteMemoryInitializer(connectionFactory);
@@ -449,7 +450,12 @@ class DefaultCodingServiceTest {
         CurrentUserContext.runAs("user-a", () -> {
             workspace.set(register(first, workspaceRoot, CodingService.AutonomyLevel.EDIT_AND_TEST));
             activeTask.set(first.startTask(new CodingService.StartTaskRequest(workspace.get().id(), "conv-a", "fake", "run")));
-            var task = first.startTask(new CodingService.StartTaskRequest(workspace.get().id(), "conv-a", "fake", "cancel me"));
+            // A workspace only ever allows one active coding task at a time (see
+            // DefaultCodingService#startTask's executionRegistry.hasActiveWorkspace guard) - the
+            // task above never finishes (its executor is a no-op queue), so the cancelled task
+            // below needs its own workspace rather than reusing the same one.
+            var secondWorkspace = register(first, secondWorkspaceRoot, CodingService.AutonomyLevel.EDIT_AND_TEST);
+            var task = first.startTask(new CodingService.StartTaskRequest(secondWorkspace.id(), "conv-a", "fake", "cancel me"));
             cancelledTask.set(first.cancelTask(task.id(), new CodingService.CodingRequestContext("user-a", "", "conv-a")));
         });
 

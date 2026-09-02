@@ -966,18 +966,18 @@ public class DefaultCodingService implements CodingService, InitializingBean {
             changedFiles.put("initialGitDiffSha256", sha256(initialGit.diff().getBytes(StandardCharsets.UTF_8)));
             task = updateTask(task, CodingTaskStatus.STARTING, complete(complete(task.plan(), "snapshot"), "plan"),
                     "Starting OpenCode on Windows.", 1, changedFiles, buildResult, testResult, "", null);
-            Map<String, Object> started = windowsRequest("opencode_start", Map.of(
-                    "rootPath", state.windowsPath,
-                    "taskId", task.id(),
-                    "executable", configuredOpenCodeExecutable(),
-                    "providerName", configuredOpenCodeProviderName(),
-                    "baseUrl", configuredOpenCodeBaseUrl(),
-                    "model", configuredOpenCodeModel(),
-                    "prompt", openCodePrompt(task, workspace),
-                    "sessionId", task.openCodeSessionId(),
-                    "continueSession", continueSession,
-                    "timeoutSeconds", openCodeTimeoutSeconds(),
-                    "maxOutputCharacters", DEFAULT_MAX_OUTPUT
+            Map<String, Object> started = windowsRequest("opencode_start", Map.ofEntries(
+                    Map.entry("rootPath", state.windowsPath),
+                    Map.entry("taskId", task.id()),
+                    Map.entry("executable", configuredOpenCodeExecutable()),
+                    Map.entry("providerName", configuredOpenCodeProviderName()),
+                    Map.entry("baseUrl", configuredOpenCodeBaseUrl()),
+                    Map.entry("model", configuredOpenCodeModel()),
+                    Map.entry("prompt", openCodePrompt(task, workspace)),
+                    Map.entry("sessionId", task.openCodeSessionId()),
+                    Map.entry("continueSession", continueSession),
+                    Map.entry("timeoutSeconds", openCodeTimeoutSeconds()),
+                    Map.entry("maxOutputCharacters", DEFAULT_MAX_OUTPUT)
             ), WINDOWS_FAST_TIMEOUT);
             currentExecution().ifPresent(execution -> execution.activeProcessId(string(started, "taskId", "")));
             changedFiles.put("workerProcessId", string(started, "processId", ""));

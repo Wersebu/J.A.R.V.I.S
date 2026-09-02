@@ -48,6 +48,7 @@ class CodingControllerTest {
                 Instant.now(),
                 "",
                 "coding-agent-v1",
+                "",
                 new CodingService.GitSnapshot("", "", "", ""),
                 new CodingService.GitSnapshot("", "", "", "")
         );
