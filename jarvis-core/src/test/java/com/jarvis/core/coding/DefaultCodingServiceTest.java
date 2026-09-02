@@ -34,6 +34,8 @@ import com.jarvis.tools.schema.ToolRegistry;
 import com.jarvis.memory.cognitive.MemoryProperties;
 import com.jarvis.memory.sqlite.SQLiteConnectionFactory;
 import com.jarvis.memory.sqlite.SQLiteMemoryInitializer;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -47,6 +49,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -57,6 +61,16 @@ class DefaultCodingServiceTest {
 
     @TempDir
     private Path tempDir;
+
+    @BeforeEach
+    void setAuthenticatedUser() {
+        CurrentUserContext.set("test-user");
+    }
+
+    @AfterEach
+    void clearAuthenticatedUser() {
+        CurrentUserContext.clear();
+    }
 
     @Test
     void blocksPathTraversalReadsAndWritesOutsideWorkspace() throws Exception {
@@ -75,6 +89,29 @@ class DefaultCodingServiceTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("escapes");
         assertThat(tempDir.resolve("created.txt")).doesNotExist();
+    }
+
+    @Test
+    void productionCodingPathRequiresAuthenticatedUserForWorkspaceAndTaskCreation() throws Exception {
+        CurrentUserContext.clear();
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("auth-required-project"));
+        DefaultCodingService service = synchronousService(null);
+
+        assertThatThrownBy(() -> service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
+                "project",
+                workspaceRoot.toString(),
+                CodingService.WorkspaceHost.SERVER,
+                "AUTO",
+                CodingService.AutonomyLevel.EDIT_AND_TEST,
+                "",
+                ""
+        )))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Authenticated user context is required");
+
+        assertThatThrownBy(() -> service.startTask(new CodingService.StartTaskRequest("workspace-1", "conv-1", "fake", "run tests")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Authenticated user context is required");
     }
 
     @Test
@@ -224,7 +261,7 @@ class DefaultCodingServiceTest {
     }
 
     @Test
-    void startTaskReturnsCreatedBeforeBackgroundLoopRuns() throws Exception {
+    void startTaskReturnsQueuedBeforeBackgroundLoopRuns() throws Exception {
         Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));
         Queue<Runnable> queued = new ArrayDeque<>();
         Executor capturingExecutor = queued::add;
@@ -233,8 +270,8 @@ class DefaultCodingServiceTest {
 
         var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run tests"));
 
-        assertThat(task.status()).isEqualTo(CodingService.CodingTaskStatus.CREATED);
-        assertThat(service.task(task.id()).status()).isEqualTo(CodingService.CodingTaskStatus.CREATED);
+        assertThat(task.status()).isEqualTo(CodingService.CodingTaskStatus.QUEUED);
+        assertThat(service.task(task.id()).status()).isEqualTo(CodingService.CodingTaskStatus.QUEUED);
         assertThat(queued).hasSize(1);
     }
 
@@ -316,11 +353,78 @@ class DefaultCodingServiceTest {
         var workspace = register(service, workspaceRoot, CodingService.AutonomyLevel.EDIT_AND_TEST);
         var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "run"));
 
-        var cancelled = service.cancelTask(task.id(), CodingService.CodingRequestContext.local());
+        var cancelled = service.cancelTask(task.id(), new CodingService.CodingRequestContext("test-user", "", "conv-1"));
         queued.remove().run();
 
         assertThat(cancelled.status()).isEqualTo(CodingService.CodingTaskStatus.CANCELLED);
         assertThat(service.task(task.id()).status()).isEqualTo(CodingService.CodingTaskStatus.CANCELLED);
+    }
+
+    @Test
+    void cancellationDuringLongRunningCommandStopsTaskAndPreventsCompletionOverwrite() throws Exception {
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("long-command-project"));
+        DefaultCodingService service = new DefaultCodingService(null, new InMemoryCodingTaskRepository(), null,
+                null, null, Executors.newCachedThreadPool());
+        var workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
+                "project",
+                workspaceRoot.toString(),
+                CodingService.WorkspaceHost.SERVER,
+                "AUTO",
+                CodingService.AutonomyLevel.EDIT_AND_TEST,
+                "",
+                longCommand()
+        ));
+        var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "fake", "long command"));
+
+        awaitStatus(service, task.id(), CodingService.CodingTaskStatus.TESTING);
+        var cancelled = service.cancelTask(task.id(), new CodingService.CodingRequestContext("test-user", "", "conv-1"));
+        awaitStatus(service, task.id(), CodingService.CodingTaskStatus.CANCELLED);
+
+        assertThat(cancelled.status()).isEqualTo(CodingService.CodingTaskStatus.CANCELLED);
+        TimeUnit.MILLISECONDS.sleep(300);
+        assertThat(service.task(task.id()).status()).isEqualTo(CodingService.CodingTaskStatus.CANCELLED);
+    }
+
+    @Test
+    void riskyCodingToolCallCreatesApprovalAndStopsNativeLoop() throws Exception {
+        Path workspaceRoot = Files.createDirectories(tempDir.resolve("approval-project"));
+        Files.writeString(workspaceRoot.resolve("delete-me.txt"), "temporary", StandardCharsets.UTF_8);
+        AtomicReference<ToolCallingRuntime> runtime = new AtomicReference<>();
+        DefaultCodingService service = new DefaultCodingService(null, new InMemoryCodingWorkspaceRepository(),
+                new InMemoryCodingTaskRepository(), new InMemoryCodingApprovalRepository(),
+                runtime::get, null, new NoopCognitiveEventBus(), Runnable::run);
+        CodingTool codingTool = new CodingTool(service);
+        NativeToolLoopService nativeLoop = new NativeToolLoopService(
+                List.of(new DeleteFileProvider()),
+                new SingleToolManager(codingTool),
+                query -> ToolIntent.CODING_WORKSPACE,
+                new ToolRuntimeProperties(true, 4, 4, 1, 60, "native"),
+                new NoopCognitiveEventBus(),
+                new ToolRuntimeDebugService(),
+                new ObjectMapper(),
+                new NativeToolSchemaMapper(new SingleToolRegistry(codingTool.definition())),
+                new StoreAuditDatasetService(new NoopCognitiveEventBus())
+        );
+        runtime.set(nativeLoop::execute);
+        var workspace = register(service, workspaceRoot, CodingService.AutonomyLevel.EDIT_AND_TEST);
+
+        var task = service.startTask(new CodingService.StartTaskRequest(workspace.id(), "conv-1", "stub", "delete temp file"));
+
+        assertThat(service.task(task.id()).status()).isEqualTo(CodingService.CodingTaskStatus.WAITING_FOR_APPROVAL);
+        String approvalId = service.approvals(task.id()).getFirst().id();
+        assertThat(service.approvals(task.id()))
+                .singleElement()
+                .satisfies(approval -> {
+                    assertThat(approval.operation()).isEqualTo("FILE_DELETE");
+                    assertThat(approval.status()).isEqualTo(CodingService.CodingApprovalStatus.PENDING);
+                    assertThat(approval.argumentsDigest()).isNotBlank();
+                });
+        String digest = service.approvals(task.id()).getFirst().argumentsDigest();
+        assertThat(service.requestApproval(task.id(), "FILE_DELETE", "repeat", "HIGH", digest).id()).isEqualTo(approvalId);
+        assertThat(service.approvals(task.id())).hasSize(1);
+        CurrentUserContext.runAs("user-b", () -> assertThatThrownBy(() ->
+                service.approve(task.id(), approvalId, new CodingService.CodingRequestContext("user-b", "", "conv-b")))
+                .isInstanceOf(IllegalArgumentException.class));
     }
 
     @Test
@@ -336,7 +440,8 @@ class DefaultCodingServiceTest {
         SQLiteCodingTaskRepository taskRepository = new SQLiteCodingTaskRepository(connectionFactory, objectMapper);
         Queue<Runnable> queued = new ArrayDeque<>();
 
-        DefaultCodingService first = new DefaultCodingService(null, workspaceRepository, taskRepository, null, null, null, queued::add);
+        DefaultCodingService first = new DefaultCodingService(null, workspaceRepository, taskRepository,
+                new InMemoryCodingApprovalRepository(), null, null, null, queued::add);
         first.afterPropertiesSet();
         AtomicReference<CodingService.CodingWorkspace> workspace = new AtomicReference<>();
         AtomicReference<CodingService.CodingTask> activeTask = new AtomicReference<>();
@@ -348,7 +453,8 @@ class DefaultCodingServiceTest {
             cancelledTask.set(first.cancelTask(task.id(), new CodingService.CodingRequestContext("user-a", "", "conv-a")));
         });
 
-        DefaultCodingService second = new DefaultCodingService(null, workspaceRepository, taskRepository, null, null, null, Runnable::run);
+        DefaultCodingService second = new DefaultCodingService(null, workspaceRepository, taskRepository,
+                new InMemoryCodingApprovalRepository(), null, null, null, Runnable::run);
         second.afterPropertiesSet();
 
         CurrentUserContext.runAs("user-a", () -> {
@@ -455,6 +561,23 @@ class DefaultCodingServiceTest {
                 : "grep -q fixed marker.txt";
     }
 
+    private void awaitStatus(DefaultCodingService service, String taskId, CodingService.CodingTaskStatus status) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            if (service.task(taskId).status() == status) {
+                return;
+            }
+            TimeUnit.MILLISECONDS.sleep(25);
+        }
+        assertThat(service.task(taskId).status()).isEqualTo(status);
+    }
+
+    private String longCommand() {
+        return System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("win")
+                ? "ping 127.0.0.1 -n 30 > nul"
+                : "sleep 30";
+    }
+
     private static final class FakeProvider implements AIProvider {
 
         private final AtomicInteger calls = new AtomicInteger();
@@ -528,6 +651,34 @@ class DefaultCodingServiceTest {
             return messages.stream()
                     .map(ModelMessage::content)
                     .anyMatch(content -> content.contains(expectedJson) || content.contains(expectedToString));
+        }
+    }
+
+    private static final class DeleteFileProvider implements AIProvider {
+
+        private final AtomicInteger calls = new AtomicInteger();
+
+        @Override
+        public String provider() {
+            return "stub";
+        }
+
+        @Override
+        public ChatResponse chat(Brain brain, String prompt) {
+            return new ChatResponse("");
+        }
+
+        @Override
+        public void stream(String conversationId, Brain brain, String prompt, ChatEventSink eventSink) {
+        }
+
+        @Override
+        public ModelResponse toolChat(Brain brain, List<ModelMessage> messages, List<NativeToolDefinition> tools, AIJobType jobType) {
+            if (calls.incrementAndGet() == 1) {
+                return new ModelResponse("", "", List.of(new ModelToolCall("call-delete", "coding__file_delete",
+                        Map.of("path", "delete-me.txt", "approved", false))), "tool_calls", new ModelUsage(0, 0, 0));
+            }
+            return new ModelResponse("waiting", "", List.of(), "stop", new ModelUsage(0, 0, 0));
         }
     }
 

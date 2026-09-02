@@ -53,6 +53,17 @@ jarvis:
     approval:
       resume-tool-loop-after-approval: true
       generate-final-answer: true
+  coding:
+    opencode:
+      enabled: true
+      executable: opencode
+      provider-name: jarvis-ollama
+      base-url: ${JARVIS_CODING_OPENCODE_BASE_URL:http://SERVER_IP:11434/v1}
+      model: ${JARVIS_CODING_OPENCODE_MODEL:gpt-oss:20b}
+      request-timeout: 120s
+      task-timeout: 6h
+      max-concurrent-tasks-per-user: 1
+      require-approval-for-dangerous-actions: true
   mcp:
     enabled: true
     servers:

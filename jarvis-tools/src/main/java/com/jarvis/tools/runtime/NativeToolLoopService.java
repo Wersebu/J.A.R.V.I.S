@@ -3497,6 +3497,8 @@ public class NativeToolLoopService {
         arguments.put("_activeCodingWorkspaceId", activeCodingWorkspaceId(request));
         arguments.put("_activeCodingWorkspaceName", Objects.toString(request.context().getOrDefault("activeCodingWorkspaceName", ""), ""));
         arguments.put("_activeCodingWorkspaceHost", Objects.toString(request.context().getOrDefault("activeCodingWorkspaceHost", ""), ""));
+        arguments.put("_codingTaskId", Objects.toString(request.context().getOrDefault("codingTaskId", ""), ""));
+        arguments.put("_codingUserId", Objects.toString(request.context().getOrDefault("userId", ""), ""));
         return Map.copyOf(arguments);
     }
 

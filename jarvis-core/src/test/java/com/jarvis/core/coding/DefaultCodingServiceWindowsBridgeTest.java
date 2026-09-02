@@ -2,7 +2,10 @@ package com.jarvis.core.coding;
 
 import com.jarvis.api.service.CodingService;
 import com.jarvis.api.service.WindowsCodingBridgeGateway;
+import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.tools.mcp.McpException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -21,6 +24,16 @@ class DefaultCodingServiceWindowsBridgeTest {
 
     @TempDir
     private Path tempDir;
+
+    @BeforeEach
+    void setAuthenticatedUser() {
+        CurrentUserContext.set("test-user");
+    }
+
+    @AfterEach
+    void clearAuthenticatedUser() {
+        CurrentUserContext.clear();
+    }
 
     @Test
     void windowsDrivePathIsValidatedByWindowsBridgeNotByLocalFilesystem() {

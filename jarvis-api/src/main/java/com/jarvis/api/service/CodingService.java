@@ -32,6 +32,11 @@ public interface CodingService {
     }
 
     enum CodingTaskStatus {
+        QUEUED,
+        WAITING_FOR_WORKER,
+        STARTING,
+        RUNNING,
+        WAITING_FOR_USER,
         CREATED,
         IDLE,
         INSPECTING,
@@ -48,21 +53,29 @@ public interface CodingService {
         FIXING,
         COMPLETED,
         FAILED,
+        TIMED_OUT,
         INTERRUPTED,
         WAITING_FOR_HOST,
         CANCELLED,
         BLOCKED
     }
 
+    enum CodingApprovalStatus {
+        PENDING,
+        APPROVED,
+        REJECTED,
+        EXPIRED,
+        CANCELLED,
+        CONSUMED
+    }
+
     record CodingRequestContext(String userId, String sessionId, String conversationId) {
         public CodingRequestContext {
-            userId = blank(userId) ? "local-user" : userId;
+            if (blank(userId)) {
+                throw new IllegalArgumentException("Authenticated user id is required.");
+            }
             sessionId = sessionId == null ? "" : sessionId;
             conversationId = conversationId == null ? "" : conversationId;
-        }
-
-        public static CodingRequestContext local() {
-            return new CodingRequestContext("local-user", "", "");
         }
 
         private static boolean blank(String value) {
@@ -126,7 +139,7 @@ public interface CodingService {
         ) {
             this(id, name, windowsPath, host, projectType, detectedBuildSystems, gitRepository, gitBranch,
                     gitHeadCommit, gitStatus, autonomyLevel, buildCommand, testCommand, lastUsedAt,
-                    "local-user", lastUsedAt, lastUsedAt);
+                    missingOwner(), lastUsedAt, lastUsedAt);
         }
     }
 
@@ -225,12 +238,51 @@ public interface CodingService {
                 String failureReason
         ) {
             this(id, workspaceId, conversationId, model, prompt, status, plan, currentAction, iteration, startedAt,
-                    finishedAt, changedFiles, buildResult, testResult, failureReason, "local-user", startedAt,
+                    finishedAt, changedFiles, buildResult, testResult, failureReason, missingOwner(), startedAt,
                     "", "", new GitSnapshot("", "", "", ""), new GitSnapshot("", "", "", ""));
         }
     }
 
     record StartTaskRequest(String workspaceId, String conversationId, String model, String prompt) {
+    }
+
+    record CodingReplyRequest(String message) {
+    }
+
+    record CodingApprovalDecisionRequest(String approvalId, String message) {
+    }
+
+    record CodingDiagnostics(
+            boolean workerConnected,
+            String openCodeStatus,
+            String openCodeVersion,
+            boolean projectDirectoryAvailable,
+            boolean ollamaAvailable,
+            boolean modelAvailable,
+            String installationHint,
+            String message
+    ) {
+    }
+
+    record CodingApproval(
+            String id,
+            String taskId,
+            String ownerUserId,
+            String operation,
+            String description,
+            String riskLevel,
+            String argumentsDigest,
+            CodingApprovalStatus status,
+            Instant createdAt,
+            Instant expiresAt,
+            Instant decidedAt,
+            Instant consumedAt
+    ) {
+        public CodingApproval {
+            ownerUserId = normalizeUserId(ownerUserId);
+            status = status == null ? CodingApprovalStatus.PENDING : status;
+            createdAt = createdAt == null ? Instant.now() : createdAt;
+        }
     }
 
     List<CodingWorkspace> listWorkspaces();
@@ -273,6 +325,8 @@ public interface CodingService {
 
     CommandResult testRun(String workspaceId, BuildRunRequest request);
 
+    CodingDiagnostics diagnostics(String workspaceId);
+
     CodingTask startTask(StartTaskRequest request);
 
     default CodingTask startTask(StartTaskRequest request, CodingRequestContext context) {
@@ -283,11 +337,44 @@ public interface CodingService {
         throw new UnsupportedOperationException("Coding task cancellation is not implemented.");
     }
 
+    default CodingTask reply(String taskId, CodingReplyRequest request, CodingRequestContext context) {
+        throw new UnsupportedOperationException("Coding task replies are not implemented.");
+    }
+
+    default List<CodingApproval> approvals(String taskId) {
+        throw new UnsupportedOperationException("Coding approvals are not implemented.");
+    }
+
+    default CodingApproval approve(String taskId, String approvalId, CodingRequestContext context) {
+        throw new UnsupportedOperationException("Coding approvals are not implemented.");
+    }
+
+    default CodingApproval reject(String taskId, String approvalId, CodingRequestContext context) {
+        throw new UnsupportedOperationException("Coding approvals are not implemented.");
+    }
+
+    default CodingApproval requestApproval(
+            String taskId,
+            String operation,
+            String description,
+            String riskLevel,
+            String argumentsDigest
+    ) {
+        throw new UnsupportedOperationException("Coding approvals are not implemented.");
+    }
+
     CodingTask task(String taskId);
 
     List<CodingTask> tasks();
 
     private static String normalizeUserId(String userId) {
-        return userId == null || userId.isBlank() ? "local-user" : userId;
+        if (userId == null || userId.isBlank()) {
+            throw new IllegalArgumentException("Explicit owner user id is required.");
+        }
+        return userId;
+    }
+
+    private static String missingOwner() {
+        throw new IllegalArgumentException("Legacy Coding Agent constructors require an explicit owner user id.");
     }
 }

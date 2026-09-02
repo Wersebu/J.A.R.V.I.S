@@ -1,8 +1,12 @@
 package com.jarvis.api.controller;
 
 import com.jarvis.api.service.CodingService;
+import com.jarvis.api.service.CodingService.CodingApproval;
 import com.jarvis.api.service.CodingService.CodingRequestContext;
 import com.jarvis.api.service.CodingService.CodingTask;
+import com.jarvis.api.service.CodingService.CodingDiagnostics;
+import com.jarvis.api.service.CodingService.CodingReplyRequest;
+import com.jarvis.api.service.CodingService.CodingApprovalDecisionRequest;
 import com.jarvis.api.service.CodingService.CodingWorkspace;
 import com.jarvis.api.service.CodingService.CommandRequest;
 import com.jarvis.api.service.CodingService.CommandResult;
@@ -53,9 +57,19 @@ public class CodingController {
         return codingService.listWorkspaces();
     }
 
+    @GetMapping(path = "/api/v1/coding/projects", produces = MediaType.APPLICATION_JSON_VALUE)
+    public List<CodingWorkspace> listProjects() {
+        return listWorkspaces();
+    }
+
     @PostMapping(path = "/api/v1/coding/workspaces", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     public CodingWorkspace registerWorkspace(@RequestBody RegisterWorkspaceRequest request) {
         return wrap(() -> codingService.registerWorkspace(request));
+    }
+
+    @PostMapping(path = "/api/v1/coding/projects", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public CodingWorkspace registerProject(@RequestBody RegisterWorkspaceRequest request) {
+        return registerWorkspace(request);
     }
 
     @GetMapping(path = "/api/v1/coding/workspaces/{workspaceId}", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -71,6 +85,11 @@ public class CodingController {
     @DeleteMapping(path = "/api/v1/coding/workspaces/{workspaceId}")
     public void removeWorkspace(@PathVariable String workspaceId) {
         wrapVoid(() -> codingService.removeWorkspace(workspaceId));
+    }
+
+    @DeleteMapping(path = "/api/v1/coding/projects/{workspaceId}")
+    public void removeProject(@PathVariable String workspaceId) {
+        removeWorkspace(workspaceId);
     }
 
     @GetMapping(path = "/api/v1/coding/workspaces/{workspaceId}/files", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -164,9 +183,51 @@ public class CodingController {
         return wrap(() -> codingService.cancelTask(taskId, requestContext("", httpRequest)));
     }
 
+    @PostMapping(path = "/api/v1/coding/tasks/{taskId}/reply", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public CodingTask reply(@PathVariable String taskId, @RequestBody CodingReplyRequest request, HttpServletRequest httpRequest) {
+        return wrap(() -> codingService.reply(taskId, request, requestContext("", httpRequest)));
+    }
+
+    @GetMapping(path = "/api/v1/coding/tasks/{taskId}/approvals", produces = MediaType.APPLICATION_JSON_VALUE)
+    public List<CodingApproval> approvals(@PathVariable String taskId) {
+        return wrap(() -> codingService.approvals(taskId));
+    }
+
+    @PostMapping(path = "/api/v1/coding/tasks/{taskId}/approvals/{approvalId}/approve", produces = MediaType.APPLICATION_JSON_VALUE)
+    public CodingApproval approve(@PathVariable String taskId, @PathVariable String approvalId, HttpServletRequest httpRequest) {
+        return wrap(() -> codingService.approve(taskId, approvalId, requestContext("", httpRequest)));
+    }
+
+    @PostMapping(path = "/api/v1/coding/tasks/{taskId}/approve", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public CodingApproval approveTaskOperation(@PathVariable String taskId, @RequestBody CodingApprovalDecisionRequest request, HttpServletRequest httpRequest) {
+        return wrap(() -> codingService.approve(taskId, approvalIdFrom(request), requestContext("", httpRequest)));
+    }
+
+    @PostMapping(path = "/api/v1/coding/tasks/{taskId}/approvals/{approvalId}/reject", produces = MediaType.APPLICATION_JSON_VALUE)
+    public CodingApproval reject(@PathVariable String taskId, @PathVariable String approvalId, HttpServletRequest httpRequest) {
+        return wrap(() -> codingService.reject(taskId, approvalId, requestContext("", httpRequest)));
+    }
+
+    @PostMapping(path = "/api/v1/coding/tasks/{taskId}/reject", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public CodingApproval rejectTaskOperation(@PathVariable String taskId, @RequestBody CodingApprovalDecisionRequest request, HttpServletRequest httpRequest) {
+        return wrap(() -> codingService.reject(taskId, approvalIdFrom(request), requestContext("", httpRequest)));
+    }
+
+    @GetMapping(path = "/api/v1/coding/diagnostics", produces = MediaType.APPLICATION_JSON_VALUE)
+    public CodingDiagnostics diagnostics(@RequestParam(required = false) String workspaceId) {
+        return wrap(() -> codingService.diagnostics(workspaceId));
+    }
+
     private CodingRequestContext requestContext(String conversationId, HttpServletRequest request) {
         String sessionId = request.getSession(false) == null ? "" : request.getSession(false).getId();
-        return new CodingRequestContext(CurrentUserContext.requiredUserId(), sessionId, conversationId);
+        return new CodingRequestContext(CurrentUserContext.requireAuthenticatedUserId(), sessionId, conversationId);
+    }
+
+    private String approvalIdFrom(CodingApprovalDecisionRequest request) {
+        if (request == null || request.approvalId() == null || request.approvalId().isBlank()) {
+            throw new IllegalArgumentException("approvalId is required");
+        }
+        return request.approvalId();
     }
 
     private <T> T wrap(ControllerCall<T> call) {

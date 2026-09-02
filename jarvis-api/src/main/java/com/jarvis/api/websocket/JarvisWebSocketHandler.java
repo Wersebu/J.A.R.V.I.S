@@ -18,6 +18,8 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -85,7 +87,7 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
         AutoCloseable logSubscription = JarvisLogBroadcaster.subscribe(event -> send(session, event));
         session.getAttributes().put(LOG_SUBSCRIPTION_ATTRIBUTE, logSubscription);
-        AutoCloseable cognitiveEventSubscription = CognitiveEventBroadcaster.subscribe(event -> send(session, event));
+        AutoCloseable cognitiveEventSubscription = CognitiveEventBroadcaster.subscribe(event -> sendOwnedEvent(session, event));
         session.getAttributes().put(COGNITIVE_EVENT_SUBSCRIPTION_ATTRIBUTE, cognitiveEventSubscription);
         send(session, new WebSocketStatus("CONNECTED", "Jarvis WebSocket online"));
     }
@@ -198,6 +200,34 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
 
     private void sendEvent(WebSocketSession session, CognitiveEvent event) {
         send(session, event);
+    }
+
+    private void sendOwnedEvent(WebSocketSession session, CognitiveEvent event) {
+        String ownerUserId = String.valueOf(event.metadata().getOrDefault("ownerUserId", ""));
+        if (!ownerUserId.isBlank()) {
+            String sessionUserId = String.valueOf(session.getAttributes().getOrDefault("jarvis.userId", ""));
+            if (!ownerUserId.equals(sessionUserId)) {
+                return;
+            }
+        }
+        if (ownerUserId.isBlank()) {
+            send(session, event);
+            return;
+        }
+        Map<String, Object> metadata = new LinkedHashMap<>(event.metadata());
+        metadata.remove("ownerUserId");
+        send(session, new CognitiveEvent(
+                event.requestId(),
+                event.conversationId(),
+                event.timestamp(),
+                event.event(),
+                event.status(),
+                event.message(),
+                event.brain(),
+                event.model(),
+                event.nodeId(),
+                metadata
+        ));
     }
 
     private void send(WebSocketSession session, Object payload) {

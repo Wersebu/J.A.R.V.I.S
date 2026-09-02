@@ -298,6 +298,38 @@ public class SQLiteMemoryInitializer implements InitializingBean {
                 CREATE INDEX IF NOT EXISTS idx_coding_tasks_workspace
                 ON coding_tasks(owner_user_id, workspace_id, started_at)
                 """);
+
+        statement.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS coding_approvals (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    owner_user_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    risk_level TEXT NOT NULL DEFAULT '',
+                    arguments_digest TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    decided_at TEXT NOT NULL DEFAULT '',
+                    consumed_at TEXT NOT NULL DEFAULT ''
+                )
+                """);
+        addColumnIfMissing(statement, "coding_approvals", "owner_user_id", "TEXT NOT NULL DEFAULT 'local-user'");
+        addColumnIfMissing(statement, "coding_approvals", "description", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(statement, "coding_approvals", "risk_level", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(statement, "coding_approvals", "arguments_digest", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(statement, "coding_approvals", "decided_at", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(statement, "coding_approvals", "consumed_at", "TEXT NOT NULL DEFAULT ''");
+        statement.executeUpdate("""
+                CREATE INDEX IF NOT EXISTS idx_coding_approvals_owner_task
+                ON coding_approvals(owner_user_id, task_id, status, created_at)
+                """);
+        statement.executeUpdate("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_coding_approvals_pending_digest
+                ON coding_approvals(task_id, operation, arguments_digest)
+                WHERE status = 'PENDING'
+                """);
     }
 
     /**

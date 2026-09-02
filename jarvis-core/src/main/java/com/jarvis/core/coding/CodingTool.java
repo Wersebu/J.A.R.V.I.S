@@ -11,6 +11,8 @@ import com.jarvis.tools.schema.ToolJsonSchema;
 import com.jarvis.tools.schema.ToolOperationDefinition;
 import com.jarvis.tools.schema.ToolSafetyLevel;
 import com.jarvis.tools.schema.ToolSchemaProvider;
+import com.jarvis.tools.workflow.ToolOperationClassifier;
+import com.jarvis.tools.workflow.ToolOperationRole;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -19,6 +21,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.nio.charset.StandardCharsets;
+import java.util.TreeMap;
 
 /**
  * Model-facing Coding Agent tool backed by {@link CodingService}.
@@ -80,6 +86,17 @@ public class CodingTool implements JarvisTool, ToolSchemaProvider {
         LOGGER.info("[CODING_TOOL] selectedTool=coding_{} requestId={} conversationId={} workspaceId={}",
                 operation.name().toLowerCase(Locale.ROOT), request.requestId(), request.conversationId(), workspaceId);
         try {
+            ApprovalDecision approval = approvalDecision(operation, request);
+            if (approval.required()) {
+                CodingService.CodingApproval created = codingService.requestApproval(
+                        approval.taskId(),
+                        operation.name(),
+                        approval.description(),
+                        approval.riskLevel(),
+                        approval.argumentsDigest()
+                );
+                return approvalRequired(request, operation, created);
+            }
             Object data = executeOperation(operation, workspaceId, request);
             return success(request, operation, data, changed(operation));
         } catch (RuntimeException exception) {
@@ -144,6 +161,82 @@ public class CodingTool implements JarvisTool, ToolSchemaProvider {
     private ToolResult failure(ToolRequest request, String code, String message) {
         return new ToolResult(false, TOOL_NAME, request.operation(), request.requestId(), request.conversationId(),
                 false, List.of(), message, Map.of("error", message), code, message, false, "");
+    }
+
+    private ToolResult approvalRequired(ToolRequest request, CodingOperation operation, CodingService.CodingApproval approval) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("approvalId", approval.id());
+        data.put("taskId", approval.taskId());
+        data.put("operation", approval.operation());
+        data.put("riskLevel", approval.riskLevel());
+        data.put("argumentsDigest", approval.argumentsDigest());
+        return new ToolResult(false, TOOL_NAME, operation.name(), request.requestId(), request.conversationId(),
+                false, List.of("coding-task:" + approval.taskId()),
+                "Approval required for Coding " + operation.name(), data, "CODING_APPROVAL_REQUIRED",
+                "Approval required before executing " + operation.name(), true, approval.id());
+    }
+
+    private ApprovalDecision approvalDecision(CodingOperation operation, ToolRequest request) {
+        ToolOperationRole role = ToolOperationClassifier.classify(TOOL_NAME, operation.name());
+        boolean dangerous = operation == CodingOperation.FILE_DELETE || role == ToolOperationRole.WRITE && dangerousArguments(request.arguments());
+        if (!dangerous) {
+            return ApprovalDecision.notRequired();
+        }
+        String taskId = string(request.arguments().get("_codingTaskId"));
+        if (taskId.isBlank()) {
+            return ApprovalDecision.notRequired();
+        }
+        return new ApprovalDecision(true, taskId, "HIGH",
+                "Coding " + operation.name() + " requires explicit approval.",
+                digest(operation, request.arguments()));
+    }
+
+    private boolean dangerousArguments(Map<String, Object> arguments) {
+        String command = string(arguments.get("command")).toLowerCase(Locale.ROOT);
+        if (command.isBlank()) {
+            return false;
+        }
+        List<String> tokens = List.of(command.split("[^a-z0-9_.-]+"));
+        return containsCommand(tokens, "git", "commit")
+                || containsCommand(tokens, "git", "push")
+                || containsCommand(tokens, "git", "reset")
+                || containsCommand(tokens, "git", "clean")
+                || containsCommand(tokens, "git", "checkout")
+                || containsCommand(tokens, "git", "rebase")
+                || containsCommand(tokens, "git", "merge")
+                || tokens.contains("rm")
+                || tokens.contains("del")
+                || tokens.contains("rmdir")
+                || tokens.contains("remove-item");
+    }
+
+    private boolean containsCommand(List<String> tokens, String first, String second) {
+        for (int i = 0; i < tokens.size() - 1; i++) {
+            if (first.equals(tokens.get(i)) && second.equals(tokens.get(i + 1))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String digest(CodingOperation operation, Map<String, Object> arguments) {
+        TreeMap<String, String> canonical = new TreeMap<>();
+        arguments.forEach((key, value) -> {
+            if (!String.valueOf(key).startsWith("_")) {
+                canonical.put(String.valueOf(key), String.valueOf(value));
+            }
+        });
+        String payload = operation.name() + ":" + canonical;
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(payload.getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder(hash.length * 2);
+            for (byte value : hash) {
+                builder.append(String.format("%02x", value));
+            }
+            return builder.toString();
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable.", exception);
+        }
     }
 
     private CodingOperation operation(String operation) {
@@ -218,5 +311,11 @@ public class CodingTool implements JarvisTool, ToolSchemaProvider {
         COMMAND_CANCEL,
         BUILD_RUN,
         TEST_RUN
+    }
+
+    private record ApprovalDecision(boolean required, String taskId, String riskLevel, String description, String argumentsDigest) {
+        private static ApprovalDecision notRequired() {
+            return new ApprovalDecision(false, "", "", "", "");
+        }
     }
 }

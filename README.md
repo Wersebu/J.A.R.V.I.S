@@ -269,6 +269,16 @@ Jarvis includes a controlled Coding Agent foundation exposed under `POST/GET /ap
 
 The Windows Coding Executor validates canonical paths on Windows before every operation, rejects traversal outside the workspace, follows real paths to catch symlink/junction escapes, blocks destructive commands, applies command timeouts/output limits, and returns structured results over the same bridge response/correlation mechanism used by Windows-hosted MCP servers. Roblox MCP remains a separate `serverId=roblox` flow; Coding uses `serverId=coding` and is not hardcoded to Roblox.
 
+The production Coding Agent path can now run a real OpenCode CLI process on
+Windows for `host=WINDOWS` workspaces. Core keeps task records, authorization,
+Git snapshots, diagnostics and realtime `CODING_*` events; the Windows worker
+starts `opencode run` in the approved project directory and streams stdout/stderr
+back through the existing bridge. OpenCode is configured per task with
+`OPENCODE_CONFIG_CONTENT`, using the OpenAI-compatible Ollama endpoint and model
+from `jarvis.coding.opencode.*`; global OpenCode configuration is not
+overwritten. See [Coding Agent OpenCode Integration](docs/CODING_OPENCODE.md)
+for setup, diagnostics, the first safe test, and limitations.
+
 Key endpoints:
 
 | Path | Purpose |
@@ -289,6 +299,16 @@ Key endpoints:
 | `POST /api/v1/coding/workspaces/{id}/build/run` | Run the detected or requested build command |
 | `POST /api/v1/coding/workspaces/{id}/tests/run` | Run the detected or requested test command |
 | `POST /api/v1/coding/tasks` | Create a persisted task record with an initial plan |
+| `GET /api/v1/coding/tasks` | List the authenticated user's coding task history |
+| `GET /api/v1/coding/tasks/{id}` | Read one coding task |
+| `POST /api/v1/coding/tasks/{id}/cancel` | Stop a running OpenCode/coding task |
+| `POST /api/v1/coding/tasks/{id}/reply` | Record a user reply for a task waiting on input |
+| `POST /api/v1/coding/tasks/{id}/approve` | Resolve a pending coding approval |
+| `POST /api/v1/coding/tasks/{id}/reject` | Reject a pending coding approval |
+| `GET /api/v1/coding/diagnostics` | Check worker, OpenCode, project directory, Ollama and model availability |
+
+`/api/v1/coding/projects` is also available as an alias for workspace
+registration/list/delete in the OpenCode-oriented UI flow.
 
 Autonomy levels:
 

@@ -1307,6 +1307,8 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         arguments.put("_activeCodingWorkspaceId", String.valueOf(request.context().getOrDefault("activeCodingWorkspaceId", "")));
         arguments.put("_activeCodingWorkspaceName", String.valueOf(request.context().getOrDefault("activeCodingWorkspaceName", "")));
         arguments.put("_activeCodingWorkspaceHost", String.valueOf(request.context().getOrDefault("activeCodingWorkspaceHost", "")));
+        arguments.put("_codingTaskId", String.valueOf(request.context().getOrDefault("codingTaskId", "")));
+        arguments.put("_codingUserId", String.valueOf(request.context().getOrDefault("userId", "")));
         return Map.copyOf(arguments);
     }
 

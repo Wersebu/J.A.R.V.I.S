@@ -27,6 +27,15 @@ public final class CurrentUserContext {
         return currentUserId().orElse(LOCAL_USER_ID);
     }
 
+    public static String requireAuthenticatedUserId() {
+        String userId = currentUserId()
+                .orElseThrow(() -> new IllegalStateException("Authenticated user context is required."));
+        if (LOCAL_USER_ID.equals(userId)) {
+            throw new IllegalStateException("Authenticated user context is required.");
+        }
+        return userId;
+    }
+
     public static void clear() {
         USER_ID.remove();
     }

@@ -314,5 +314,18 @@ public enum CognitiveEventType {
     /** A structured workflow dataset invariant (e.g. record count) was violated and the offending operation was rejected. */
     WORKFLOW_DATASET_INVARIANT_VIOLATION,
     /** Conversation-scoped image memory diagnostic summary for one request (current/historical/selected image counts and per-image status). */
-    CONVERSATION_IMAGES
+    CONVERSATION_IMAGES,
+    CODING_TASK_CREATED,
+    CODING_TASK_STATUS_CHANGED,
+    CODING_ITERATION_STARTED,
+    CODING_TOOL_STARTED,
+    CODING_TOOL_OUTPUT,
+    CODING_TOOL_FINISHED,
+    CODING_FILE_CHANGED,
+    CODING_APPROVAL_REQUIRED,
+    CODING_APPROVAL_RESOLVED,
+    CODING_TASK_INTERRUPTED,
+    CODING_TASK_COMPLETED,
+    CODING_TASK_FAILED,
+    CODING_TASK_CANCELLED
 }

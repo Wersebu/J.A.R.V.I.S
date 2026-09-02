@@ -206,9 +206,10 @@ class CodingToolTest {
         }
 
         private CodingWorkspace workspaceRecord(String workspaceId) {
+            Instant now = Instant.now();
             return new CodingWorkspace(workspaceId, "Test", "D:\\JARVIS CODING\\Test", WorkspaceHost.WINDOWS,
                     "Unknown", List.of(), true, "main", "abc", "", AutonomyLevel.ASK_BEFORE_WRITE,
-                    "", "", Instant.now());
+                    "", "", now, "test-user", now, now);
         }
     }
 }
