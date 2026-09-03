@@ -71,7 +71,11 @@ public class CodingTool implements JarvisTool, ToolSchemaProvider {
                 operation("COMMAND_POLL", "Poll an asynchronous command previously started in the active Coding Workspace.", false, ToolSafetyLevel.READ, arg("processId", true)),
                 operation("COMMAND_CANCEL", "Cancel an asynchronous command previously started in the active Coding Workspace.", true, ToolSafetyLevel.WRITE, arg("processId", true)),
                 operation("BUILD_RUN", "Run the detected or supplied build command in the active Coding Workspace through CodingService.", true, ToolSafetyLevel.WRITE, arg("command", false), intArg("timeoutSeconds", false), intArg("maxOutputCharacters", false)),
-                operation("TEST_RUN", "Run the detected or supplied test command in the active Coding Workspace through CodingService.", true, ToolSafetyLevel.WRITE, arg("command", false), intArg("timeoutSeconds", false), intArg("maxOutputCharacters", false))
+                operation("TEST_RUN", "Run the detected or supplied test command in the active Coding Workspace through CodingService.", true, ToolSafetyLevel.WRITE, arg("command", false), intArg("timeoutSeconds", false), intArg("maxOutputCharacters", false)),
+                operation("BROWSER_LIST_TABS", "List inspectable tabs/pages of a browser or Electron/CEF process on the Windows host that was launched with --remote-debugging-port (e.g. a Steam-distributed browser game). Use this first to find a tab id, or to confirm the target is reachable at all.", false, ToolSafetyLevel.READ, intArg("port", false)),
+                operation("BROWSER_EVALUATE", "Run JavaScript inside a Chrome DevTools Protocol target's page context and return the result. Use this to read live game state (variables, objects on window) or call functions - direct access to the actual running game instead of guessing from local files.", false, ToolSafetyLevel.READ, intArg("port", false), arg("tabId", false), arg("expression", true), intArg("timeoutSeconds", false)),
+                operation("BROWSER_CONSOLE_LOGS", "Listen for console.log/warn/error output from a Chrome DevTools Protocol target for a short window and return what was captured.", false, ToolSafetyLevel.READ, intArg("port", false), arg("tabId", false), intArg("captureSeconds", false)),
+                operation("BROWSER_SCREENSHOT_DESCRIBE", "Capture a screenshot of a Chrome DevTools Protocol target and answer a specific question about it using a dedicated vision model (you do not have vision yourself - a raw screenshot is useless to you). Ask a precise, targeted question, e.g. 'describe precisely the middle section of the screen' or 'list every button visible in the top bar and its label' - never a vague 'what do you see'.", false, ToolSafetyLevel.READ, intArg("port", false), arg("tabId", false), arg("question", true))
         ));
     }
 
@@ -145,6 +149,13 @@ public class CodingTool implements JarvisTool, ToolSchemaProvider {
                     stringArg(request, "command"), intArg(request, "timeoutSeconds"), intArg(request, "maxOutputCharacters")));
             case TEST_RUN -> codingService.testRun(workspaceId, new CodingService.BuildRunRequest(
                     stringArg(request, "command"), intArg(request, "timeoutSeconds"), intArg(request, "maxOutputCharacters")));
+            case BROWSER_LIST_TABS -> codingService.browserListTabs(workspaceId, intArg(request, "port"));
+            case BROWSER_EVALUATE -> codingService.browserEvaluate(workspaceId, new CodingService.BrowserEvaluateRequest(
+                    intArg(request, "port"), stringArg(request, "tabId"), stringArg(request, "expression"), intArg(request, "timeoutSeconds")));
+            case BROWSER_CONSOLE_LOGS -> codingService.browserConsoleLogs(workspaceId, new CodingService.BrowserConsoleLogsRequest(
+                    intArg(request, "port"), stringArg(request, "tabId"), intArg(request, "captureSeconds")));
+            case BROWSER_SCREENSHOT_DESCRIBE -> codingService.browserScreenshotDescribe(workspaceId, new CodingService.BrowserScreenshotDescribeRequest(
+                    intArg(request, "port"), stringArg(request, "tabId"), stringArg(request, "question")));
         };
     }
 
@@ -310,7 +321,11 @@ public class CodingTool implements JarvisTool, ToolSchemaProvider {
         COMMAND_POLL,
         COMMAND_CANCEL,
         BUILD_RUN,
-        TEST_RUN
+        TEST_RUN,
+        BROWSER_LIST_TABS,
+        BROWSER_EVALUATE,
+        BROWSER_CONSOLE_LOGS,
+        BROWSER_SCREENSHOT_DESCRIBE
     }
 
     private record ApprovalDecision(boolean required, String taskId, String riskLevel, String description, String argumentsDigest) {

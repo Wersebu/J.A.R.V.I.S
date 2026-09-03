@@ -173,6 +173,33 @@ public interface CodingService {
     record CommandRequest(String command, long timeoutSeconds, int maxOutputCharacters) {
     }
 
+    /**
+     * @param port Chrome DevTools Protocol port (0 uses the default, 9222)
+     * @param tabId target tab id from {@link #browserListTabs}; blank auto-selects the first "page" tab
+     * @param expression JavaScript to evaluate in the target tab's page context
+     * @param timeoutSeconds how long to wait for the result (0 uses the default, 10s; capped at 60s)
+     */
+    record BrowserEvaluateRequest(int port, String tabId, String expression, long timeoutSeconds) {
+    }
+
+    /**
+     * @param port Chrome DevTools Protocol port (0 uses the default, 9222)
+     * @param tabId target tab id from {@link #browserListTabs}; blank auto-selects the first "page" tab
+     * @param captureSeconds how long to listen for console output before returning (0 uses the default, 3s; capped at 30s)
+     */
+    record BrowserConsoleLogsRequest(int port, String tabId, long captureSeconds) {
+    }
+
+    /**
+     * @param port Chrome DevTools Protocol port (0 uses the default, 9222)
+     * @param tabId target tab id from {@link #browserListTabs}; blank auto-selects the first "page" tab
+     * @param question a specific question about the screenshot (e.g. "describe precisely the
+     *                 middle section of the screen"), never a blanket "what do you see" - answered
+     *                 by a dedicated vision model, never the active chat model
+     */
+    record BrowserScreenshotDescribeRequest(int port, String tabId, String question) {
+    }
+
     record BuildRunRequest(String command, long timeoutSeconds, int maxOutputCharacters) {
     }
 
@@ -326,6 +353,44 @@ public interface CodingService {
     CommandResult buildRun(String workspaceId, BuildRunRequest request);
 
     CommandResult testRun(String workspaceId, BuildRunRequest request);
+
+    /**
+     * Lists inspectable targets (tabs/pages) of a browser or Electron/CEF process the user
+     * launched with {@code --remote-debugging-port} on the Windows host - e.g. a browser-based
+     * game distributed through Steam. Returns each target's id, title, url and type; the id feeds
+     * {@link #browserEvaluate}/{@link #browserConsoleLogs}.
+     */
+    default Map<String, Object> browserListTabs(String workspaceId, int port) {
+        throw new UnsupportedOperationException("Browser inspection is not implemented.");
+    }
+
+    /**
+     * Runs JavaScript inside a Chrome DevTools Protocol target's page context and returns the
+     * result - direct, structured access to a running browser-based game's live state (read
+     * variables, call functions) instead of guessing from local files.
+     */
+    default Map<String, Object> browserEvaluate(String workspaceId, BrowserEvaluateRequest request) {
+        throw new UnsupportedOperationException("Browser inspection is not implemented.");
+    }
+
+    /**
+     * Listens for console output (console.log/warn/error/...) from a Chrome DevTools Protocol
+     * target for a short window and returns what was captured.
+     */
+    default Map<String, Object> browserConsoleLogs(String workspaceId, BrowserConsoleLogsRequest request) {
+        throw new UnsupportedOperationException("Browser inspection is not implemented.");
+    }
+
+    /**
+     * Captures a screenshot of a Chrome DevTools Protocol target and answers a specific question
+     * about it using a dedicated vision model - never the active chat model, and never handing
+     * the raw image to a model that cannot see it. Lets a non-vision text model driving the agent
+     * loop learn what a running browser-based game actually looks like (layout, on-screen text,
+     * UI state) without guessing from local files.
+     */
+    default Map<String, Object> browserScreenshotDescribe(String workspaceId, BrowserScreenshotDescribeRequest request) {
+        throw new UnsupportedOperationException("Browser inspection is not implemented.");
+    }
 
     CodingDiagnostics diagnostics(String workspaceId);
 

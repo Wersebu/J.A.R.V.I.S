@@ -1,6 +1,7 @@
 package com.jarvis.ollama;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.common.ai.AIProvider;
 import com.jarvis.common.ai.AIJobType;
@@ -11,6 +12,7 @@ import com.jarvis.common.ai.ModelResponse;
 import com.jarvis.common.ai.ModelToolCall;
 import com.jarvis.common.ai.ModelUsage;
 import com.jarvis.common.ai.NativeToolDefinition;
+import com.jarvis.common.ai.VisionDescriptionProvider;
 import com.jarvis.common.dto.ChatResponse;
 import com.jarvis.common.diagnostics.InferenceDiagnostics;
 import com.jarvis.common.diagnostics.InferenceDiagnosticsContext;
@@ -55,7 +57,7 @@ import java.util.concurrent.TimeUnit;
  * Ollama implementation of the provider-independent AI provider contract.
  */
 @Service
-public class OllamaProvider implements AIProvider {
+public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(OllamaProvider.class);
 
@@ -935,6 +937,62 @@ public class OllamaProvider implements AIProvider {
         String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/chat";
         OllamaChatRequest requestBody = buildChatRequestWithImages(brain, budgetedPrompt, images, Boolean.FALSE);
         return sendStreamingRequest(endpoint, writeJson(requestBody, "Qwen thinking-budget continuation"), brain);
+    }
+
+    /**
+     * Describes an image using a dedicated, independently-named vision model - deliberately never
+     * the currently active chat model (see {@code ModelExecutionStage#respondNoVisionSupport},
+     * which otherwise just refuses an image outright if the active model can't see). This lets a
+     * non-vision text model driving the agent loop ask a targeted question about a screenshot
+     * ("describe precisely the middle section of the screen", not a blanket "what do you see")
+     * without ever needing vision itself, and without disturbing the active model's own loaded
+     * state - a single blocking, non-streaming {@code /api/generate} call, not routed through the
+     * cognitive-event bus, since a background tool-triggered vision probe publishing its own
+     * THINKING_STARTED/THINKING_TOKEN events would visibly cross-talk with the user's live
+     * "Thinking" panel for the actual, unrelated main conversation turn.
+     *
+     * @param model vision-capable Ollama model name, independent of the active chat model
+     * @param question free-form question about the image
+     * @param base64Image the image, base64-encoded, no {@code data:} URI prefix
+     * @param forceCpu when true, sets {@code num_gpu=0} so Ollama runs this model fully on
+     *                 CPU/RAM instead of evicting the (possibly huge-context) main chat model
+     *                 from GPU memory just to make room - slower, but the main session is never
+     *                 interrupted or reloaded to free VRAM for this side call
+     * @return the vision model's raw text answer
+     */
+    @Override
+    public String describeImage(String model, String question, String base64Image, boolean forceCpu) {
+        String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/generate";
+        Map<String, Object> options = forceCpu ? Map.of("num_gpu", 0) : Map.of();
+        OllamaGenerateRequest requestBody = new OllamaGenerateRequest(
+                model, question, false, null, properties.keepAlive(), options, List.of(base64Image));
+        LOGGER.info("[JARVIS][requestId={}][OLLAMA] VISION_DESCRIBE_REQUEST model={} forceCpu={}",
+                diagnosticsRequestId(), model, forceCpu);
+        try {
+            String requestJson = writeJson(requestBody, "vision image description");
+            HttpRequest httpRequest = HttpRequest.newBuilder()
+                    .uri(URI.create(endpoint))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(requestJson))
+                    .build();
+            HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                throw new OllamaException("Vision model '" + model + "' request failed with HTTP "
+                        + response.statusCode() + ": " + response.body());
+            }
+            JsonNode node = objectMapper.readTree(response.body());
+            if (!node.path("done").asBoolean(true)) {
+                throw new OllamaException("Vision model '" + model + "' response did not complete.");
+            }
+            LOGGER.info("[JARVIS][requestId={}][OLLAMA] VISION_DESCRIBE_FINISHED model={} responseChars={}",
+                    diagnosticsRequestId(), model, node.path("response").asText("").length());
+            return node.path("response").asText("");
+        } catch (IOException exception) {
+            throw new OllamaException("Vision model '" + model + "' request failed: " + exception.getMessage(), exception);
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new OllamaException("Vision model '" + model + "' request was interrupted.", exception);
+        }
     }
 
     private String writeJson(Object requestBody, String context) throws IOException {

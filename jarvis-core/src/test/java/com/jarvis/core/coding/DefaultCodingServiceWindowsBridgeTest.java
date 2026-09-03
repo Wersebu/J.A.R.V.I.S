@@ -92,6 +92,79 @@ class DefaultCodingServiceWindowsBridgeTest {
     }
 
     @Test
+    void browserEvaluateIsRoutedThroughTheWindowsBridgeWithDefaultsApplied() {
+        RecordingBridge bridge = new RecordingBridge();
+        DefaultCodingService service = new DefaultCodingService(bridge);
+        CodingService.CodingWorkspace workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
+                "demo", "D:\\workspace", CodingService.WorkspaceHost.WINDOWS, "AUTO",
+                CodingService.AutonomyLevel.ASK_BEFORE_WRITE, "", ""
+        ));
+
+        Map<String, Object> result = service.browserEvaluate(workspace.id(),
+                new CodingService.BrowserEvaluateRequest(0, "", "window.gameState.score", 0));
+
+        assertThat(bridge.operations()).contains("browser_evaluate");
+        assertThat(bridge.lastPayload().get("port")).isEqualTo(9222);
+        assertThat(bridge.lastPayload().get("timeoutSeconds")).isEqualTo(10L);
+        assertThat(bridge.lastPayload()).doesNotContainKey("tabId");
+        assertThat(result.get("value")).isEqualTo(42);
+    }
+
+    @Test
+    void browserListTabsOnAServerWorkspaceIsRejectedWithoutEverReachingTheBridge() {
+        RecordingBridge bridge = new RecordingBridge();
+        DefaultCodingService service = new DefaultCodingService(bridge);
+        CodingService.CodingWorkspace workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
+                "server", tempDir.toString(), CodingService.WorkspaceHost.SERVER, "AUTO",
+                CodingService.AutonomyLevel.ASK_BEFORE_WRITE, "", ""
+        ));
+
+        assertThatThrownBy(() -> service.browserListTabs(workspace.id(), 9222))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Windows-hosted");
+        assertThat(bridge.operations()).doesNotContain("browser_list_tabs");
+    }
+
+    @Test
+    void browserScreenshotDescribeReturnsTheVisionModelsAnswerWithoutEverAskingTheActiveChatModel() {
+        RecordingBridge bridge = new RecordingBridge();
+        DefaultCodingService service = new DefaultCodingService(bridge);
+        RecordingVisionProvider vision = new RecordingVisionProvider("A red button in the top-right corner.");
+        service.visionDescriptionProvider = vision;
+        service.visionModel = "moondream";
+        service.visionForceCpu = true;
+        CodingService.CodingWorkspace workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
+                "demo", "D:\\workspace", CodingService.WorkspaceHost.WINDOWS, "AUTO",
+                CodingService.AutonomyLevel.ASK_BEFORE_WRITE, "", ""
+        ));
+
+        Map<String, Object> result = service.browserScreenshotDescribe(workspace.id(),
+                new CodingService.BrowserScreenshotDescribeRequest(0, "", "describe precisely the top-right corner"));
+
+        assertThat(bridge.operations()).contains("browser_screenshot");
+        assertThat(vision.lastModel()).isEqualTo("moondream");
+        assertThat(vision.lastQuestion()).isEqualTo("describe precisely the top-right corner");
+        assertThat(vision.lastForceCpu()).isTrue();
+        assertThat(result.get("answer")).isEqualTo("A red button in the top-right corner.");
+    }
+
+    @Test
+    void browserScreenshotDescribeFailsClearlyWithoutAConfiguredVisionModel() {
+        RecordingBridge bridge = new RecordingBridge();
+        DefaultCodingService service = new DefaultCodingService(bridge);
+        CodingService.CodingWorkspace workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
+                "demo", "D:\\workspace", CodingService.WorkspaceHost.WINDOWS, "AUTO",
+                CodingService.AutonomyLevel.ASK_BEFORE_WRITE, "", ""
+        ));
+
+        assertThatThrownBy(() -> service.browserScreenshotDescribe(workspace.id(),
+                new CodingService.BrowserScreenshotDescribeRequest(0, "", "what does the health bar show")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("vision model");
+        assertThat(bridge.operations()).doesNotContain("browser_screenshot");
+    }
+
+    @Test
     void serverWorkspaceStillRunsOnLocalServerFilesystem() throws Exception {
         Path root = Files.createDirectories(tempDir.resolve("server-project"));
         Files.writeString(root.resolve("README.md"), "server local", StandardCharsets.UTF_8);
@@ -115,9 +188,14 @@ class DefaultCodingServiceWindowsBridgeTest {
 
     private static final class RecordingBridge implements WindowsCodingBridgeGateway {
         private final List<String> operations = new ArrayList<>();
+        private Map<String, Object> lastPayload = Map.of();
 
         private List<String> operations() {
             return operations;
+        }
+
+        private Map<String, Object> lastPayload() {
+            return lastPayload;
         }
 
         @Override
@@ -128,6 +206,7 @@ class DefaultCodingServiceWindowsBridgeTest {
         @Override
         public Map<String, Object> codingRequest(String operation, Map<String, Object> payload, Duration timeout) {
             operations.add(operation);
+            lastPayload = payload;
             return switch (operation) {
                 case "workspace_validate" -> Map.of("canonicalPath", payload.get("rootPath"), "name", "workspace");
                 case "workspace_inspect" -> Map.of(
@@ -148,8 +227,46 @@ class DefaultCodingServiceWindowsBridgeTest {
                         "content", "from windows",
                         "sha256", "abc"
                 );
+                case "browser_evaluate" -> Map.of(
+                        "expression", payload.get("expression"),
+                        "threw", false,
+                        "type", "number",
+                        "value", 42
+                );
+                case "browser_screenshot" -> Map.of("port", payload.get("port"), "format", "png", "dataBase64", "iVBORw0KGgoAAAANS");
                 default -> throw new AssertionError("Unexpected operation: " + operation);
             };
+        }
+    }
+
+    private static final class RecordingVisionProvider implements com.jarvis.common.ai.VisionDescriptionProvider {
+        private final String answer;
+        private String lastModel;
+        private String lastQuestion;
+        private boolean lastForceCpu;
+
+        private RecordingVisionProvider(String answer) {
+            this.answer = answer;
+        }
+
+        private String lastModel() {
+            return lastModel;
+        }
+
+        private String lastQuestion() {
+            return lastQuestion;
+        }
+
+        private boolean lastForceCpu() {
+            return lastForceCpu;
+        }
+
+        @Override
+        public String describeImage(String model, String question, String base64Image, boolean forceCpu) {
+            this.lastModel = model;
+            this.lastQuestion = question;
+            this.lastForceCpu = forceCpu;
+            return answer;
         }
     }
 

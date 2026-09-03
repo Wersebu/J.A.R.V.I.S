@@ -72,6 +72,16 @@ jarvis:
       task-timeout: 6h
       max-concurrent-tasks-per-user: 1
       require-approval-for-dangerous-actions: true
+    vision:
+      # Vision-capable Ollama model used ONLY by coding__browser_screenshot_describe, never by the
+      # active chat model - empty disables the tool with a clear error instead of silently failing.
+      # Needs a model actually pulled in Ollama, e.g. "qwen2.5vl:7b", "llava:13b", "minicpm-v",
+      # "moondream", or a vision-capable "gemma3:*".
+      model: ""
+      # When true, sends num_gpu=0 for the vision call so Ollama runs it fully on CPU/RAM instead
+      # of evicting the (possibly huge-context) active chat model from GPU memory just to make
+      # room - slower, but the main session is never interrupted or reloaded for this side call.
+      force-cpu: true
   mcp:
     enabled: true
     servers:

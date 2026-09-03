@@ -7,6 +7,7 @@ import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.ai.Brain;
 import com.jarvis.common.ai.BrainType;
 import com.jarvis.common.ai.ReasoningLevel;
+import com.jarvis.common.ai.VisionDescriptionProvider;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
@@ -67,6 +68,11 @@ public class DefaultCodingService implements CodingService, InitializingBean {
     private static final long MAX_READ_BYTES = 1_000_000L;
     private static final java.time.Duration WINDOWS_FAST_TIMEOUT = java.time.Duration.ofSeconds(10);
     private static final java.time.Duration WINDOWS_COMMAND_TIMEOUT = java.time.Duration.ofMinutes(16);
+    // Above WindowsCodingExecutor's own internal caps (60s / 30s) on these operations, so the
+    // bridge round trip never times out first and masks the operation's own, clearer error.
+    private static final java.time.Duration WINDOWS_BROWSER_EVALUATE_TIMEOUT = java.time.Duration.ofSeconds(75);
+    private static final java.time.Duration WINDOWS_BROWSER_CONSOLE_LOGS_TIMEOUT = java.time.Duration.ofSeconds(40);
+    private static final int DEFAULT_CDP_PORT = 9222;
 
     private final Map<String, WorkspaceState> workspaces = new ConcurrentHashMap<>();
     private final CodingWorkspaceRepository workspaceRepository;
@@ -93,6 +99,23 @@ public class DefaultCodingService implements CodingService, InitializingBean {
     private String openCodeModel;
     @Value("${jarvis.coding.opencode.task-timeout:6h}")
     private Duration openCodeTaskTimeout;
+
+    // Field-injected (like the jarvis.coding.opencode.* properties above), not a constructor
+    // parameter: this is the only place in DefaultCodingService that needs a vision model at all,
+    // and adding it to the constructor would mean touching every one of the five overloads below
+    // plus every test that calls them, for a dependency only one method actually uses. Package-
+    // private (not private) so same-package tests can set them directly without a dedicated
+    // test-only setter - Spring's field injection works identically regardless of visibility.
+    @Autowired(required = false)
+    VisionDescriptionProvider visionDescriptionProvider;
+    @Value("${jarvis.coding.vision.model:}")
+    String visionModel;
+    // Default true: without this, describing one screenshot could evict the main chat model from
+    // GPU memory (Ollama loads models on demand), forcing an expensive, disruptive reload for
+    // however many tokens of context that model had already built up mid-session, just to answer
+    // one targeted question about a screenshot. CPU-only inference is far slower but never does that.
+    @Value("${jarvis.coding.vision.force-cpu:true}")
+    boolean visionForceCpu;
 
     public DefaultCodingService() {
         this(null, new InMemoryCodingWorkspaceRepository(), new InMemoryCodingTaskRepository(),
@@ -625,6 +648,85 @@ public class DefaultCodingService implements CodingService, InitializingBean {
         return runCommand(workspaceId, new CommandRequest(command,
                 request == null ? 0 : request.timeoutSeconds(),
                 request == null ? 0 : request.maxOutputCharacters()));
+    }
+
+    @Override
+    public Map<String, Object> browserListTabs(String workspaceId, int port) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        requireWindowsHost(state, "Browser inspection");
+        return windowsRequest("browser_list_tabs", Map.of(
+                "port", port <= 0 ? DEFAULT_CDP_PORT : port
+        ), WINDOWS_FAST_TIMEOUT);
+    }
+
+    @Override
+    public Map<String, Object> browserEvaluate(String workspaceId, BrowserEvaluateRequest request) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        requireWindowsHost(state, "Browser inspection");
+        if (request == null || blank(request.expression())) {
+            throw new IllegalArgumentException("JavaScript expression is required.");
+        }
+        throwIfCurrentTaskCancelled();
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        arguments.put("port", request.port() <= 0 ? DEFAULT_CDP_PORT : request.port());
+        arguments.put("expression", request.expression());
+        arguments.put("timeoutSeconds", request.timeoutSeconds() <= 0 ? 10 : Math.min(request.timeoutSeconds(), 60));
+        if (!blank(request.tabId())) {
+            arguments.put("tabId", request.tabId());
+        }
+        return windowsRequest("browser_evaluate", arguments, WINDOWS_BROWSER_EVALUATE_TIMEOUT);
+    }
+
+    @Override
+    public Map<String, Object> browserConsoleLogs(String workspaceId, BrowserConsoleLogsRequest request) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        requireWindowsHost(state, "Browser inspection");
+        throwIfCurrentTaskCancelled();
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        arguments.put("port", request == null || request.port() <= 0 ? DEFAULT_CDP_PORT : request.port());
+        arguments.put("captureSeconds", request == null || request.captureSeconds() <= 0 ? 3 : Math.min(request.captureSeconds(), 30));
+        if (request != null && !blank(request.tabId())) {
+            arguments.put("tabId", request.tabId());
+        }
+        return windowsRequest("browser_console_logs", arguments, WINDOWS_BROWSER_CONSOLE_LOGS_TIMEOUT);
+    }
+
+    @Override
+    public Map<String, Object> browserScreenshotDescribe(String workspaceId, BrowserScreenshotDescribeRequest request) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        requireWindowsHost(state, "Browser inspection");
+        if (request == null || blank(request.question())) {
+            throw new IllegalArgumentException("A specific question about the screenshot is required "
+                    + "(e.g. \"describe precisely the middle section of the screen\"), not a blanket request.");
+        }
+        if (blank(visionModel)) {
+            throw new IllegalStateException("No vision model is configured - set jarvis.coding.vision.model "
+                    + "to a vision-capable Ollama model name to enable screenshot description.");
+        }
+        if (visionDescriptionProvider == null) {
+            throw new IllegalStateException("Vision description is unavailable in this deployment.");
+        }
+        throwIfCurrentTaskCancelled();
+        Map<String, Object> screenshotArguments = new LinkedHashMap<>();
+        screenshotArguments.put("port", request.port() <= 0 ? DEFAULT_CDP_PORT : request.port());
+        if (!blank(request.tabId())) {
+            screenshotArguments.put("tabId", request.tabId());
+        }
+        Map<String, Object> screenshot = windowsRequest("browser_screenshot", screenshotArguments, WINDOWS_FAST_TIMEOUT);
+        String base64Png = string(screenshot, "dataBase64", "");
+        if (blank(base64Png)) {
+            throw new IllegalStateException("Screenshot capture returned no image data.");
+        }
+        throwIfCurrentTaskCancelled();
+        String answer = visionDescriptionProvider.describeImage(visionModel, request.question(), base64Png, visionForceCpu);
+        return Map.of("question", request.question(), "answer", answer, "visionModel", visionModel);
+    }
+
+    private void requireWindowsHost(WorkspaceState state, String featureName) {
+        if (state.host != CodingService.WorkspaceHost.WINDOWS) {
+            throw new IllegalStateException(featureName + " requires a Windows-hosted Coding Workspace "
+                    + "(this reads a browser/game process running on the user's Windows desktop, not the server).");
+        }
     }
 
     @Override
