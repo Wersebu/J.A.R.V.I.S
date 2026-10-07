@@ -164,7 +164,10 @@ public interface CodingService {
     record FileDeleteRequest(String path, boolean approved) {
     }
 
-    record FileSearchRequest(String query, boolean regex, int maxResults) {
+    record FileSearchRequest(String query, boolean regex, int maxResults, String mode, String path) {
+        public FileSearchRequest(String query, boolean regex, int maxResults) {
+            this(query, regex, maxResults, "content", "");
+        }
     }
 
     record SearchMatch(String path, int line, String preview) {

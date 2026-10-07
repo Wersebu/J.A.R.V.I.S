@@ -613,6 +613,12 @@ public class NativeToolLoopService {
                             result = enrichIfNeeded(request, action, followUp.finalResult(), step);
                         }
                     }
+                    // A successful read of a new directory is real traversal progress.
+                    // Exact duplicate calls are still rejected by callFingerprints above.
+                    if (result.success() && "coding".equalsIgnoreCase(action.tool())
+                            && "FILE_LIST".equalsIgnoreCase(action.operation())) {
+                        operationRepeatCounts.remove(operationKey);
+                    }
                     runtimeState.observe(action, result);
                     Map<String, Object> newFacts = observeAcquiredFacts(action, result, acquiredFacts);
                     logDatasetContinuity(request, action, datasetStoresBeforeCall);
@@ -1713,7 +1719,10 @@ public class NativeToolLoopService {
                 Do not use web tools to inspect the current state of a connected application/runtime.
                 If the user asks about a named connected application/runtime, prefer that provider's MCP tools.
                 Coding Workspace tools are for the user-selected software project. Use coding__file_read to read
-                project files, coding__file_search to search inside the project, coding__file_list for project
+                project files, coding__file_search with mode=filename to find file names/extensions (including binary assets),
+                or mode=content to search text. Use path to narrow expensive searches. Never infer absence from
+                failed, timed-out, or limited searches. coding__file_list provides evidence of file names, not contents.
+                Use coding__file_list for project
                 structure, coding__git_status/coding__git_diff for Git, and coding__build_detect/build/test/command
                 tools for project execution. KnowledgeTool searches the persisted Knowledge Workspace only; never
                 use KnowledgeTool as a fallback for project files in an active Coding Workspace.
@@ -2802,7 +2811,7 @@ public class NativeToolLoopService {
     private String deterministicBlockedAnswer(CompletionAssessment assessment) {
         return "Nie mogę rzetelnie zakończyć tego kroku, bo pętla narzędzi nie uzyskała jeszcze "
                 + "konkretnego wyniku z operacji odczytu/wyszukania/inspekcji. "
-                + assessment.guidance();
+                + "Nie udało się potwierdzić odpowiedzi. Wyniki są niepełne; brak potwierdzenia nie oznacza, że szukane dane nie istnieją.";
     }
 
     private ToolResult duplicateResult(ToolCallingRequest request, ToolAction action) {

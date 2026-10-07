@@ -63,7 +63,7 @@ class NativeToolLoopServiceConfidentWrongAnswerLimitationTest {
                 KnowledgeMode.FAST
         ));
 
-        assertThat(result.finalAnswer()).contains("concrete information from a target system");
+        assertThat(result.finalAnswer()).contains("Nie udało się potwierdzić odpowiedzi").doesNotContain("Do not answer yet", "Call a search");
         assertThat(result.finalAnswer()).doesNotContain("Projekt bez tytulu");
         assertThat(provider.callCount()).isGreaterThan(2);
     }

@@ -56,6 +56,10 @@ public final class ToolOperationClassifier {
                 || containsAny(tokens, SELECTION_WORDS)) {
             return ToolOperationRole.SELECTION;
         }
+        // Listing actual files is inspection; listing sessions/providers remains discovery.
+        if (tokens.contains("list") && containsAny(tokens, Set.of("file", "files", "directory", "directories"))) {
+            return ToolOperationRole.INSPECT;
+        }
         if (containsAny(tokens, DISCOVERY_WORDS) || hasAdjacentPair(tokens, "studio", "state")) {
             return ToolOperationRole.DISCOVERY;
         }

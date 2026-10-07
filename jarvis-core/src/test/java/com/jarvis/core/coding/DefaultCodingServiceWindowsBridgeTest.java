@@ -36,6 +36,18 @@ class DefaultCodingServiceWindowsBridgeTest {
     }
 
     @Test
+    void filenameSearchModeAndScopeReachWindowsExecutor() {
+        RecordingBridge bridge = new RecordingBridge();
+        DefaultCodingService service = new DefaultCodingService(bridge);
+        var workspace = service.registerWorkspace(new CodingService.RegisterWorkspaceRequest(
+                "demo", "D:\\workspace", CodingService.WorkspaceHost.WINDOWS, "AUTO",
+                CodingService.AutonomyLevel.ASK_BEFORE_WRITE, "", ""));
+        service.search(workspace.id(), new CodingService.FileSearchRequest("shield", false, 12, "filename", "graphics"));
+        assertThat(bridge.lastPayload()).containsEntry("mode", "filename").containsEntry("path", "graphics")
+                .containsEntry("query", "shield").containsEntry("maxResults", 12);
+    }
+
+    @Test
     void windowsDrivePathIsValidatedByWindowsBridgeNotByLocalFilesystem() {
         RecordingBridge bridge = new RecordingBridge();
         DefaultCodingService service = new DefaultCodingService(bridge);
@@ -220,6 +232,7 @@ class DefaultCodingServiceWindowsBridgeTest {
                         "buildCommand", "",
                         "testCommand", ""
                 );
+                case "file_search" -> Map.of("matches", List.of());
                 case "file_read" -> Map.of(
                         "path", payload.get("path"),
                         "startLine", 1,

@@ -342,7 +342,9 @@ public class DefaultCodingService implements CodingService, InitializingBean {
                     "rootPath", state.windowsPath,
                     "query", query,
                     "regex", request.regex(),
-                    "maxResults", maxResults
+                    "maxResults", maxResults,
+                    "mode", request.mode() == null ? "content" : request.mode(),
+                    "path", request.path() == null ? "" : request.path()
             ), WINDOWS_FAST_TIMEOUT);
             return maps(response.get("matches")).stream()
                     .map(match -> new SearchMatch(
@@ -354,16 +356,40 @@ public class DefaultCodingService implements CodingService, InitializingBean {
         }
         Pattern pattern = request.regex() ? Pattern.compile(query) : Pattern.compile(Pattern.quote(query), Pattern.CASE_INSENSITIVE);
         List<SearchMatch> matches = new ArrayList<>();
-        try (Stream<Path> stream = Files.walk(state.root)) {
-            for (Path file : stream.filter(Files::isRegularFile).limit(20_000).toList()) {
-                if (matches.size() >= maxResults || size(file) > MAX_READ_BYTES || isIgnored(file)) {
+        String mode = request.mode();
+        boolean filenames = "filename".equalsIgnoreCase(mode);
+        if (mode != null && !mode.isBlank() && !filenames && !"content".equalsIgnoreCase(mode)) {
+            throw new IllegalArgumentException("Search mode must be content or filename");
+        }
+        Path searchRoot = resolveInsideWorkspace(state, request.path() == null ? "" : request.path());
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        try (Stream<Path> stream = Files.walk(searchRoot)) {
+            var paths = stream.iterator();
+            int visited = 0;
+            while (matches.size() < maxResults && paths.hasNext()) {
+                if (++visited > 20_000 || System.nanoTime() > deadline || Thread.currentThread().isInterrupted()) {
+                    throw new IOException("Search limit reached; narrow path. Results are incomplete, not evidence of absence.");
+                }
+                Path file = paths.next();
+                if (!Files.isRegularFile(file) || isIgnored(file)) { continue; }
+                Path real = file.toRealPath();
+                if (!real.startsWith(state.root.toRealPath())) { throw new IOException("Search path escapes workspace"); }
+                String relativePath = relative(state, real);
+                if (filenames) {
+                    if (pattern.matcher(relativePath).find()) { matches.add(new SearchMatch(relativePath, 0, relativePath)); }
                     continue;
                 }
-                List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+                if (size(real) > MAX_READ_BYTES) { continue; }
+                List<String> lines;
+                try {
+                    lines = Files.readAllLines(real, StandardCharsets.UTF_8);
+                } catch (java.nio.charset.MalformedInputException binary) {
+                    continue;
+                }
                 for (int i = 0; i < lines.size() && matches.size() < maxResults; i++) {
                     String line = lines.get(i);
                     if (pattern.matcher(line).find()) {
-                        matches.add(new SearchMatch(relative(state, file), i + 1, trim(line, 240)));
+                        matches.add(new SearchMatch(relativePath, i + 1, trim(line, 240)));
                     }
                 }
             }

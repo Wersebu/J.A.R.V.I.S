@@ -73,6 +73,23 @@ class DefaultCodingServiceTest {
     }
 
     @Test
+    void searchesAssetFilenamesWithoutReadingBinaryContentAndScopesToDirectory() throws Exception {
+        Path root = Files.createDirectories(tempDir.resolve("project"));
+        Path effects = Files.createDirectories(root.resolve("effects"));
+        Files.write(effects.resolve("shield.png"), new byte[] {(byte) 0xff, 0});
+        Files.write(root.resolve("outside.png"), new byte[] {(byte) 0xff});
+        Files.writeString(effects.resolve("notes.txt"), "fake.png needle");
+        DefaultCodingService service = synchronousService(null);
+        var workspace = register(service, root, CodingService.AutonomyLevel.AUTONOMOUS_IN_WORKSPACE);
+        assertThat(service.search(workspace.id(), new CodingService.FileSearchRequest("png", false, 10, "filename", "effects")))
+                .extracting(CodingService.SearchMatch::path).containsExactly("effects/shield.png");
+        assertThat(service.search(workspace.id(), new CodingService.FileSearchRequest("needle", false, 10)))
+                .extracting(CodingService.SearchMatch::path).containsExactly("effects/notes.txt");
+        assertThatThrownBy(() -> service.search(workspace.id(), new CodingService.FileSearchRequest("png", false, 10, "filename", "..")))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void blocksPathTraversalReadsAndWritesOutsideWorkspace() throws Exception {
         Files.writeString(tempDir.resolve("secret.txt"), "outside", StandardCharsets.UTF_8);
         Path workspaceRoot = Files.createDirectories(tempDir.resolve("project"));

@@ -57,7 +57,7 @@ public class CodingTool implements JarvisTool, ToolSchemaProvider {
         return new ToolDefinition(TOOL_NAME, getDescription(), List.of(
                 operation("WORKSPACE_INSPECT", "Inspect the active Coding Workspace metadata and build/Git state. No workspaceId argument is accepted; Core injects the user-selected workspace.", false, ToolSafetyLevel.READ),
                 operation("FILE_LIST", "List project files/directories inside the active Coding Workspace. Use for project structure. This is not KnowledgeTool.", false, ToolSafetyLevel.READ, arg("path", false)),
-                operation("FILE_SEARCH", "Search text inside project files in the active Coding Workspace. Use for source code and project files, including WINDOWS_ONLY.txt. This is not the knowledge database.", false, ToolSafetyLevel.READ, arg("query", true), boolArg("regex", false), intArg("maxResults", false)),
+                operation("FILE_SEARCH", "Search the active Coding Workspace. mode=filename searches relative file paths/extensions without reading binary assets; use it to find textures, images, SWF, or named files. mode=content (default) searches UTF-8 text contents. Optional path scopes the search to a subdirectory. Results may be limited; no matches do not prove absence outside that scope.", false, ToolSafetyLevel.READ, arg("query", true), boolArg("regex", false), intArg("maxResults", false), arg("mode", false), arg("path", false)),
                 operation("FILE_READ", "Read a project file from the active Coding Workspace by relative path. Use this for source files and project files; do not use KnowledgeTool for workspace files.", false, ToolSafetyLevel.READ, arg("path", true), intArg("startLine", false), intArg("endLine", false)),
                 operation("FILE_WRITE", "Write full content to a project file in the active Coding Workspace through CodingService safety checks.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("content", true)),
                 operation("FILE_PATCH", "Patch a project file by replacing an exact expected text block with replacement text through CodingService safety checks.", true, ToolSafetyLevel.WRITE, arg("path", true), arg("expected", true), arg("replacement", true)),
@@ -118,7 +118,7 @@ public class CodingTool implements JarvisTool, ToolSchemaProvider {
             case FILE_SEARCH -> codingService.search(workspaceId, new CodingService.FileSearchRequest(
                     stringArg(request, "query"),
                     boolArg(request, "regex"),
-                    intArg(request, "maxResults")
+                    intArg(request, "maxResults"), stringArg(request, "mode"), stringArg(request, "path")
             ));
             case FILE_READ -> codingService.readFile(workspaceId, stringArg(request, "path"),
                     nullableIntArg(request, "startLine"), nullableIntArg(request, "endLine"));
