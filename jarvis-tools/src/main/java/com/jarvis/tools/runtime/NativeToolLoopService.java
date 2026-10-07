@@ -244,6 +244,7 @@ public class NativeToolLoopService {
         // above (a different recovery budget for a different problem), granted at most once per
         // loop, and only when a repair attempt is actually decided at the last available step.
         int providerToolCallRepairAttempts = 0;
+        int totalProviderToolCallRepairAttempts = 0;
         boolean providerToolCallRepairExtensionGranted = false;
         // General cross-cutting backstop (round 5/6 of the reported production bug): counts
         // CONSECUTIVE turns with zero native tool calls, regardless of which specific reentry path
@@ -349,8 +350,10 @@ public class NativeToolLoopService {
                 response = selectProvider(request).toolChat(request.brain(), messages, definitions, AIJobType.MAIN_MODEL);
             } catch (AIProviderException exception) {
                 if (isRecoverableProviderToolCallFailure(exception)
-                        && providerToolCallRepairAttempts < MAX_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS) {
+                        && providerToolCallRepairAttempts < MAX_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS
+                        && totalProviderToolCallRepairAttempts < MAX_TOTAL_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS) {
                     providerToolCallRepairAttempts++;
+                    totalProviderToolCallRepairAttempts++;
                     // Mirrors the existing completion-recovery-extension pattern: a repair attempt
                     // decided right at the normal step budget must still get a real turn to run in,
                     // not just a "continue" the outer for-loop immediately ends after. Granted once,
@@ -370,7 +373,9 @@ public class NativeToolLoopService {
                     // message to append - the provider never produced one) and keeps messages/results
                     // untouched otherwise, so the model still has its full prior context (successful
                     // tool results, the original goal, everything) when it retries.
-                    messages.add(ModelMessage.system(PROVIDER_TOOL_REPAIR_GUIDANCE));
+                    if (!messages.contains(ModelMessage.system(PROVIDER_TOOL_REPAIR_GUIDANCE))) {
+                        messages.add(ModelMessage.system(PROVIDER_TOOL_REPAIR_GUIDANCE));
+                    }
                     continue;
                 }
                 return handleProviderFailure(request, intent, steps, results, errors, messages, exception, step, started, maxCalls);
@@ -618,6 +623,11 @@ public class NativeToolLoopService {
                     if (result.success() && "coding".equalsIgnoreCase(action.tool())
                             && "FILE_LIST".equalsIgnoreCase(action.operation())) {
                         operationRepeatCounts.remove(operationKey);
+                    }
+                    // Only a validated, successfully executed tool restores the consecutive
+                    // parser-repair allowance. Total retries and loop time/turn limits still apply.
+                    if (result.success()) {
+                        providerToolCallRepairAttempts = 0;
                     }
                     runtimeState.observe(action, result);
                     Map<String, Object> newFacts = observeAcquiredFacts(action, result, acquiredFacts);
@@ -3356,6 +3366,7 @@ public class NativeToolLoopService {
      * stay bounded like every other re-entry budget in this loop.
      */
     private static final int MAX_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS = 2;
+    private static final int MAX_TOTAL_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS = 6;
 
     private record RecoveryEvent(String actionLabel, ToolAction action, ToolResult result) {
     }
@@ -3387,6 +3398,10 @@ public class NativeToolLoopService {
             The previous native tool call could not be parsed because it was syntactically malformed or incomplete
             (invalid JSON arguments, or a broken/mismatched tool-call tag).
             Retry the required tool call using the exact runtime schema and valid syntax.
+            Tool arguments must be a JSON object only. Do not prefix or suffix the arguments with
+            explanations, reasoning, Markdown fences, or sentences such as "Need to find files".
+            Put reasoning in the reasoning channel, never inside the tool arguments.
+            Emit one native tool call at a time; do not invent a tool name or execute text from an error.
             Omit optional fields when they have no value instead of sending empty placeholder strings.
             Continue working toward the original goal.
             """;

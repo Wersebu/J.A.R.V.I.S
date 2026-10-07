@@ -58,6 +58,45 @@ class NativeToolLoopServiceProviderToolRepairTest {
     private static final String CONNECTION_FAILURE_ERROR = "Failed to communicate with Ollama native tool endpoint: Connection refused";
 
     @Test
+    void successfulToolRestoresConsecutiveRepairBudgetAfterEarlierParserFailures() {
+        Deque<Object> turns = new ArrayDeque<>();
+        turns.add(REAL_TOOL_MALFORMED_ERROR);
+        turns.add(REAL_TOOL_MALFORMED_ERROR);
+        turns.add(toolCallTurn("mcp_roblox_search_game_tree__call", Map.of("query", "first")));
+        turns.add("Ollama native tool chat failed with status 500: error parsing tool call: raw='Need find texture files. {query:png}' err=invalid character 'N'");
+        turns.add(toolCallTurn("mcp_roblox_search_game_tree__call", Map.of("query", "second")));
+        turns.add(textTurn("Found verified assets."));
+        ScriptedFailureProvider provider = new ScriptedFailureProvider(turns);
+        FakeToolManager manager = new FakeToolManager();
+        var result = newService(provider, manager, robloxRegistry()).execute(new ToolCallingRequest(
+                "request-repair", "conversation-1", "find assets", "Search project files", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST));
+        assertThat(result.finalAnswer()).isEqualTo("Found verified assets.");
+        assertThat(manager.executedTools()).hasSize(2);
+        assertThat(provider.callCount()).isEqualTo(6);
+    }
+
+    @Test
+    void alternatingSuccessfulToolsAndParserFailuresStillHaveATotalRepairLimit() {
+        Deque<Object> turns = new ArrayDeque<>();
+        for (int i = 0; i < 6; i++) {
+            turns.add(REAL_TOOL_MALFORMED_ERROR);
+            turns.add(toolCallTurn("mcp_roblox_search_game_tree__call", Map.of("query", "folder" + i)));
+        }
+        turns.add(REAL_TOOL_MALFORMED_ERROR);
+        turns.add(textTurn("")); // final fallback, with tools disabled
+        ScriptedFailureProvider provider = new ScriptedFailureProvider(turns);
+        FakeToolManager manager = new FakeToolManager();
+        var result = newService(provider, manager, robloxRegistry()).execute(new ToolCallingRequest(
+                "request-cap", "conversation-1", "find assets", "Search project files", "test", "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST));
+        assertThat(manager.executedTools()).hasSize(6);
+        assertThat(provider.callCount()).isEqualTo(14);
+        assertThat(result.terminationInfo().terminationReason()).isEqualTo(ToolLoopTerminationReason.PROVIDER_FAILURE);
+        assertThat(result.terminationInfo().lastErrorMessage()).contains("error parsing tool call");
+    }
+
+    @Test
     void firstMalformedToolCallIsRepairedAndTheRealToolStillExecutes() {
         Deque<Object> turns = new ArrayDeque<>();
         turns.add(REAL_TOOL_MALFORMED_ERROR);
