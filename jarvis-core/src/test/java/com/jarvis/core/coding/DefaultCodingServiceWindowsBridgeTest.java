@@ -45,6 +45,10 @@ class DefaultCodingServiceWindowsBridgeTest {
         service.search(workspace.id(), new CodingService.FileSearchRequest("shield", false, 12, "filename", "graphics"));
         assertThat(bridge.lastPayload()).containsEntry("mode", "filename").containsEntry("path", "graphics")
                 .containsEntry("query", "shield").containsEntry("maxResults", 12);
+        assertThat(service.fileExtensions(workspace.id(), "graphics"))
+                .containsEntry("extensions", Map.of(".atf", 3L));
+        assertThat(bridge.lastPayload()).containsEntry("path", "graphics");
+
     }
 
     @Test
@@ -232,6 +236,7 @@ class DefaultCodingServiceWindowsBridgeTest {
                         "buildCommand", "",
                         "testCommand", ""
                 );
+                case "file_extensions" -> Map.of("complete", true, "extensions", Map.of(".atf", 3L));
                 case "file_search" -> Map.of("matches", List.of());
                 case "file_read" -> Map.of(
                         "path", payload.get("path"),

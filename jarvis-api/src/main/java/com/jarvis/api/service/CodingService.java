@@ -333,6 +333,10 @@ public interface CodingService {
 
     List<SearchMatch> search(String workspaceId, FileSearchRequest request);
 
+    default Map<String, Object> fileExtensions(String workspaceId, String path) {
+        throw new UnsupportedOperationException("File extension inventory is unavailable on this executor");
+    }
+
     FileContent writeFile(String workspaceId, FileWriteRequest request);
 
     FileContent patchFile(String workspaceId, PatchRequest request);

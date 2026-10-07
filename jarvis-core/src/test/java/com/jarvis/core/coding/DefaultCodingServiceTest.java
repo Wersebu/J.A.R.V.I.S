@@ -83,6 +83,13 @@ class DefaultCodingServiceTest {
         var workspace = register(service, root, CodingService.AutonomyLevel.AUTONOMOUS_IN_WORKSPACE);
         assertThat(service.search(workspace.id(), new CodingService.FileSearchRequest("png", false, 10, "filename", "effects")))
                 .extracting(CodingService.SearchMatch::path).containsExactly("effects/shield.png");
+        assertThat(service.search(workspace.id(), new CodingService.FileSearchRequest("*.png", false, 10, "filename", "effects")))
+                .extracting(CodingService.SearchMatch::path).containsExactly("effects/shield.png");
+        assertThat(service.search(workspace.id(), new CodingService.FileSearchRequest("*", false, 10, "filename", "effects"))).hasSize(2);
+        assertThat(service.fileExtensions(workspace.id(), "effects"))
+                .containsEntry("complete", true).containsEntry("filesScanned", 2L)
+                .containsEntry("extensions", Map.of(".png", 1L, ".txt", 1L));
+
         assertThat(service.search(workspace.id(), new CodingService.FileSearchRequest("needle", false, 10)))
                 .extracting(CodingService.SearchMatch::path).containsExactly("effects/notes.txt");
         assertThatThrownBy(() -> service.search(workspace.id(), new CodingService.FileSearchRequest("png", false, 10, "filename", "..")))

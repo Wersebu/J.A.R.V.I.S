@@ -330,6 +330,64 @@ public class DefaultCodingService implements CodingService, InitializingBean {
     }
 
     @Override
+    public Map<String, Object> fileExtensions(String workspaceId, String path) {
+        WorkspaceState state = requireWorkspace(workspaceId);
+        if (state.host == CodingService.WorkspaceHost.WINDOWS) {
+            return windowsRequest("file_extensions", Map.of("rootPath", state.windowsPath,
+                    "path", path == null ? "" : path), WINDOWS_FAST_TIMEOUT);
+        }
+        Path root = state.root;
+        Path scope = resolveInsideWorkspace(state, path == null ? "" : path);
+        Map<String, Long> extensions = new java.util.TreeMap<>();
+        long[] files = {0};
+        int[] visited = {0};
+        boolean[] complete = {true};
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+        try {
+            Files.walkFileTree(scope, new java.nio.file.SimpleFileVisitor<Path>() {
+                private boolean exhausted() {
+                    if (++visited[0] > 100_000 || System.nanoTime() > deadline || Thread.currentThread().isInterrupted()) {
+                        complete[0] = false;
+                        return true;
+                    }
+                    return false;
+                }
+                @Override
+                public java.nio.file.FileVisitResult preVisitDirectory(Path dir, java.nio.file.attribute.BasicFileAttributes attrs) {
+                    if (exhausted()) { return java.nio.file.FileVisitResult.TERMINATE; }
+                    String name = dir.getFileName().toString();
+                    return java.util.Set.of(".git", "target", "node_modules").contains(name)
+                            ? java.nio.file.FileVisitResult.SKIP_SUBTREE : java.nio.file.FileVisitResult.CONTINUE;
+                }
+                @Override
+                public java.nio.file.FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs) {
+                    if (exhausted()) { return java.nio.file.FileVisitResult.TERMINATE; }
+                    // Do not follow symbolic links outside the selected scope.
+                    if (attrs.isRegularFile()) {
+                        String name = file.getFileName().toString();
+                        int dot = name.lastIndexOf('.');
+                        String extension = dot > 0 ? name.substring(dot).toLowerCase(Locale.ROOT) : "(none)";
+                        extensions.merge(extension, 1L, Long::sum);
+                        files[0]++;
+                    }
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+                @Override
+                public java.nio.file.FileVisitResult visitFileFailed(Path file, IOException error) {
+                    complete[0] = false;
+                    return java.nio.file.FileVisitResult.CONTINUE;
+                }
+            });
+            return Map.of("extensions", extensions, "filesScanned", files[0], "complete", complete[0],
+                    "scope", root.relativize(scope).toString(), "note", complete[0]
+                            ? "Complete inventory excluding .git, target, node_modules and symbolic links."
+                            : "Partial inventory: narrow path. Missing extensions may still exist.");
+        } catch (IOException error) {
+            throw new IllegalStateException("Extension inventory failed: " + error.getMessage(), error);
+        }
+    }
+
+    @Override
     public List<SearchMatch> search(String workspaceId, FileSearchRequest request) {
         WorkspaceState state = requireWorkspace(workspaceId);
         String query = request == null ? "" : request.query();
@@ -358,6 +416,14 @@ public class DefaultCodingService implements CodingService, InitializingBean {
         List<SearchMatch> matches = new ArrayList<>();
         String mode = request.mode();
         boolean filenames = "filename".equalsIgnoreCase(mode);
+        // Filename globs are distinct from literal content searches and explicit regexes.
+        if (filenames && !request.regex() && (query.contains("*") || query.contains("?"))) {
+            StringBuilder glob = new StringBuilder("(?i)^");
+            for (char ch : query.toCharArray()) {
+                glob.append(ch == '*' ? ".*" : ch == '?' ? "." : Pattern.quote(String.valueOf(ch)));
+            }
+            pattern = Pattern.compile(glob.append("$").toString());
+        }
         if (mode != null && !mode.isBlank() && !filenames && !"content".equalsIgnoreCase(mode)) {
             throw new IllegalArgumentException("Search mode must be content or filename");
         }

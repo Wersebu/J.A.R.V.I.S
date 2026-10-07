@@ -292,6 +292,10 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
             if (exception instanceof McpException mcpException) {
                 throw mcpException;
             }
+            if (exception instanceof java.util.concurrent.ExecutionException
+                    && exception.getCause() instanceof McpException bridgeFailure) {
+                throw bridgeFailure;
+            }
             throw new McpException("Windows MCP bridge request failed: " + type + " server=" + serverId, exception);
         }
     }

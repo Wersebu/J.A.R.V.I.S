@@ -1730,7 +1730,8 @@ public class NativeToolLoopService {
                 If the user asks about a named connected application/runtime, prefer that provider's MCP tools.
                 Coding Workspace tools are for the user-selected software project. Use coding__file_read to read
                 project files, coding__file_search with mode=filename to find file names/extensions (including binary assets),
-                or mode=content to search text. Use path to narrow expensive searches. Never infer absence from
+                or mode=content to search text.
+                Use coding__file_extensions to count all extension types recursively; never infer a complete inventory from limited search results. Use path to narrow expensive searches. Never infer absence from
                 failed, timed-out, or limited searches. coding__file_list provides evidence of file names, not contents.
                 Use coding__file_list for project
                 structure, coding__git_status/coding__git_diff for Git, and coding__build_detect/build/test/command

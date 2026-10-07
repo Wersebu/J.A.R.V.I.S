@@ -38,6 +38,18 @@ class WebSocketWindowsMcpBridgeGatewayTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
+    void codingFailurePreservesWindowsErrorCodeAndMessage() {
+        var gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        var session = fakeOpenSession();
+        gateway.register(session);
+        respondImmediately(gateway, session, "{\"requestId\":\"%s\",\"success\":false,"
+                + "\"errorCode\":\"SEARCH_LIMIT\",\"errorMessage\":\"Narrow path; results incomplete\"}");
+        assertThatThrownBy(() -> gateway.codingRequest("file_search", Map.of(), Duration.ofSeconds(1)))
+                .isInstanceOf(McpException.class).hasMessageContaining("SEARCH_LIMIT")
+                .hasMessageContaining("Narrow path; results incomplete");
+    }
+
+    @Test
     void aResponseArrivingAfterTheRequestedTimeoutButWithinTheSlackWindowStillSucceeds() throws Exception {
         WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
         TestWebSocketSession session = fakeOpenSession();
