@@ -59,6 +59,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import com.jarvis.tools.planner.TaskPlan;
+import com.jarvis.tools.planner.TaskPlanService;
 
 /**
  * Native model-owned tool loop.
@@ -83,6 +85,9 @@ public class NativeToolLoopService {
     private final StoreAuditDatasetService datasetService;
     private final WorkflowCompletionValidator completionValidator;
     private final GoalCompletionVerifier goalCompletionVerifier;
+    /** Optional agent planner; when present, unfinished plans raise the budget and gate the final answer. */
+    private TaskPlanService taskPlanService;
+    private static final int MAX_PLAN_GATE_ATTEMPTS = 2;
 
     /**
      * Creates the native tool loop service.
@@ -121,6 +126,16 @@ public class NativeToolLoopService {
                 new GenericGoalCompletionValidator()
         ));
         this.goalCompletionVerifier = this::verifyGoalCompletion;
+    }
+
+    /**
+     * Wires the optional agent planner (setter injection keeps every existing constructor intact).
+     *
+     * @param taskPlanService plan service
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setTaskPlanService(TaskPlanService taskPlanService) {
+        this.taskPlanService = taskPlanService;
     }
 
     /**
@@ -177,6 +192,13 @@ public class NativeToolLoopService {
             // recognized from a stronger signal than the LOCATION keyword regex.
             maxCalls = Math.max(maxCalls, properties.statefulWorkflowMinToolBudget());
         }
+        if (isAgentTask(request, resolvedIntent)) {
+            // Real agent work (a coding workspace task, or a task with an active plan) routinely
+            // needs dozens of read/edit/build/test turns. The no-progress and duplicate guards still
+            // stop a loop that spins without making progress.
+            maxCalls = Math.max(maxCalls, properties.maxCallsAgent());
+        }
+        int planGateAttempts = 0;
         List<ModelMessage> messages = new ArrayList<>();
         List<ToolRuntimeStep> steps = new ArrayList<>();
         List<ToolResult> results = new ArrayList<>();
@@ -334,6 +356,10 @@ public class NativeToolLoopService {
                 request.requestId(), agentState.goalContract().originalGoal(), agentState.goalContract().completionCriteria().size());
 
         for (int step = 1; step <= maxCalls; step++) {
+            if (maxCalls < properties.maxCallsAgent() && hasUnfinishedPlan(request)) {
+                // A plan created mid-loop turns this into an agent task from now on.
+                maxCalls = properties.maxCallsAgent();
+            }
             AiTraceTurnContext.set(step);
             turnsUsed = step;
             // timeoutSeconds() <= 0 means "no wall-clock limit" (see ToolRuntimeProperties) - the
@@ -836,6 +862,26 @@ public class NativeToolLoopService {
                     }
                     LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} step={} live-evidence recovery attempts exhausted, treating text as final content",
                             request.requestId(), step);
+                }
+
+                Optional<TaskPlan> unfinishedPlan = planTouchedThisLoop(steps) ? unfinishedPlan(request) : Optional.empty();
+                if (unfinishedPlan.isPresent() && planGateAttempts < MAX_PLAN_GATE_ATTEMPTS) {
+                    planGateAttempts++;
+                    if (step >= maxCalls) {
+                        maxCalls = step + 2;
+                    }
+                    LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} REENTER_TOOL_LOOP reason=PLAN_UNFINISHED attempt={}",
+                            request.requestId(), step, planGateAttempts);
+                    publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
+                            "Plan has unfinished steps, continuing", null, step,
+                            Map.of("reason", "PLAN_UNFINISHED", "attempt", planGateAttempts));
+                    messages.add(ModelMessage.assistant(content, List.of()));
+                    messages.add(ModelMessage.system("Your plan still has unfinished steps:\n"
+                            + unfinishedPlan.get().render()
+                            + "Continue executing the next step with the tools now. If a step truly cannot be done, "
+                            + "mark it blocked or skipped with plan__update_step and a short reason, then continue. "
+                            + "Give the final answer only when every step is done, blocked or skipped."));
+                    continue;
                 }
 
                 // FINAL_ANSWER (or genuine plain text) is not automatically "workflow complete" -
@@ -1793,6 +1839,7 @@ public class NativeToolLoopService {
                 completionCriteria(request),
                 requiredEvidence(request, resolveIntent(request), "")
         );
+        base = base + planningBlock(request);
         if (request.images().isEmpty() && existingDataset.isEmpty()) {
             return base;
         }
@@ -1813,6 +1860,53 @@ public class NativeToolLoopService {
                 instead of asking the user to resend the original attachments or re-extracting from scratch.
                 """.formatted(dataset.datasetId(), dataset.stage(), dataset.stores().size())));
         return builder.toString();
+    }
+
+    private boolean isAgentTask(ToolCallingRequest request, ToolIntent resolvedIntent) {
+        return resolvedIntent == ToolIntent.CODING_WORKSPACE
+                || !activeCodingWorkspaceId(request).isBlank()
+                || hasUnfinishedPlan(request);
+    }
+
+    private boolean hasUnfinishedPlan(ToolCallingRequest request) {
+        return unfinishedPlan(request).isPresent();
+    }
+
+    private Optional<TaskPlan> unfinishedPlan(ToolCallingRequest request) {
+        if (taskPlanService == null) {
+            return Optional.empty();
+        }
+        try {
+            return taskPlanService.findUnfinished(request.conversationId());
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+    }
+
+    private boolean planTouchedThisLoop(List<ToolRuntimeStep> steps) {
+        return steps.stream().anyMatch(step -> "plan".equalsIgnoreCase(step.tool()));
+    }
+
+    /**
+     * Planning/autonomy guidance plus the conversation's unfinished plan, if any.
+     */
+    private String planningBlock(ToolCallingRequest request) {
+        if (taskPlanService == null) {
+            return "";
+        }
+        StringBuilder block = new StringBuilder("\n\nWorking style (autonomous agent):\n"
+                + "- For a task that needs 3 or more actions, first call plan__create with the goal and concrete steps, "
+                + "then execute the steps yourself, calling plan__update_step (done/blocked + short note) after each.\n"
+                + "- Make reasonable assumptions and proceed; do not stop to ask the user to confirm ordinary, "
+                + "non-destructive steps. Ask only when essential information is truly missing or before an "
+                + "irreversible/destructive action.\n"
+                + "- When a step fails, diagnose and try a different approach before marking it blocked.\n"
+                + "- Finish with a concise summary of what was done, what was verified, and anything left blocked.\n");
+        unfinishedPlan(request).ifPresent(plan -> block
+                .append("\nThis conversation has an UNFINISHED plan from earlier - continue it (do not recreate it "
+                        + "unless the user asked for something different):\n")
+                .append(plan.render()));
+        return block.toString();
     }
 
     private Map<String, Long> toolsByProvider(List<NativeToolDefinition> definitions) {

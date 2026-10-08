@@ -26,6 +26,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
     private final JarvisWebSocketAuthInterceptor authInterceptor;
     private final int maxTextMessageSize;
     private final int maxBinaryMessageSize;
+    private final ChatRunRegistry chatRunRegistry;
 
     /**
      * Creates the WebSocket configuration.
@@ -40,7 +41,10 @@ public class WebSocketConfig implements WebSocketConfigurer {
             McpServerManager mcpServerManager,
             JarvisWebSocketAuthInterceptor authInterceptor,
             @Value("${jarvis.websocket.max-text-message-size:4194304}") int maxTextMessageSize,
-            @Value("${jarvis.websocket.max-binary-message-size:8388608}") int maxBinaryMessageSize
+            @Value("${jarvis.websocket.max-binary-message-size:8388608}") int maxBinaryMessageSize,
+            @Value("${jarvis.websocket.heartbeat-interval:15s}") java.time.Duration heartbeatInterval,
+            @Value("${jarvis.websocket.run-buffer-frames:20000}") int runBufferFrames,
+            @Value("${jarvis.websocket.run-retention:30m}") java.time.Duration runRetention
     ) {
         this.chatService = chatService;
         this.objectMapper = objectMapper;
@@ -49,6 +53,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
         this.authInterceptor = authInterceptor;
         this.maxTextMessageSize = maxTextMessageSize;
         this.maxBinaryMessageSize = maxBinaryMessageSize;
+        this.chatRunRegistry = new ChatRunRegistry(objectMapper, heartbeatInterval, runBufferFrames, runRetention);
     }
 
     /**
@@ -58,7 +63,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
      */
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        registry.addHandler(new JarvisWebSocketHandler(chatService, objectMapper, windowsMcpBridgeGateway, mcpServerManager), "/ws/jarvis")
+        registry.addHandler(new JarvisWebSocketHandler(chatService, objectMapper, windowsMcpBridgeGateway, mcpServerManager, chatRunRegistry), "/ws/jarvis")
                 .addInterceptors(authInterceptor)
                 .setAllowedOrigins("*");
     }

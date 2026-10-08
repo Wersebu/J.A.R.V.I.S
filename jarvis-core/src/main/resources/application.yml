@@ -10,6 +10,12 @@ jarvis:
   websocket:
     max-text-message-size: 4194304
     max-binary-message-size: 8388608
+    # Long-running chat runs survive a dropped WebSocket: every frame gets a seq number and is
+    # buffered so a reconnecting client can CHAT_RESUME without losing the answer. Running runs
+    # send a HEARTBEAT this often (also keeps reverse proxies from closing an idle socket).
+    heartbeat-interval: 15s
+    run-buffer-frames: 20000
+    run-retention: 30m
   workspace:
     root: ./temp-workspaces
     ttl: 60m
@@ -50,6 +56,9 @@ jarvis:
     # mid-task, producing an invalid/rushed call once the budget ran out.
     max-calls-fast: 8
     max-calls-research: 15
+    # Budget for real agent work: an active Coding Workspace / PC task or a task with an active plan
+    # (plan__create). Long edit-build-test cycles need many turns; no-progress guards still apply.
+    max-calls-agent: 60
     max-consecutive-failures: 2
     # 0 disables the wall-clock timeout entirely. A slow local model doing genuine, useful work
     # (each turn has been observed taking 45-80s, and a long coding task legitimately needs many

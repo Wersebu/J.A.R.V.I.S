@@ -31,7 +31,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class ChatController {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ChatController.class);
-    private static final long SSE_TIMEOUT_MS = 600_000L;
+    /**
+     * No servlet-level SSE timeout: a long agentic request (many tool-loop turns, a long build)
+     * must not be cut off by a clock while it is still making progress. Liveness is instead kept by
+     * a periodic heartbeat comment, which also stops reverse proxies from closing an idle stream.
+     */
+    private static final long SSE_TIMEOUT_MS = 0L;
+    private static final long SSE_HEARTBEAT_SECONDS = 15L;
+    private static final java.util.concurrent.ScheduledExecutorService SSE_HEARTBEAT =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "jarvis-sse-heartbeat");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     private final ChatService chatService;
     private final PendingChatStreamStore pendingChatStreamStore;
@@ -91,6 +103,8 @@ public class ChatController {
             return session.emitter();
         }
 
+        java.util.concurrent.ScheduledFuture<?> heartbeat = SSE_HEARTBEAT.scheduleWithFixedDelay(
+                session::heartbeat, SSE_HEARTBEAT_SECONDS, SSE_HEARTBEAT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
         CompletableFuture.runAsync(() -> {
             try {
                 CurrentUserContext.runAs(pending.get().userId(), () -> chatService.stream(pending.get().request(), session::send));
@@ -101,6 +115,8 @@ public class ChatController {
             } catch (RuntimeException exception) {
                 LOGGER.error("[JARVIS] SSE stream failed", exception);
                 session.completeWithError(exception);
+            } finally {
+                heartbeat.cancel(false);
             }
         });
 
@@ -147,14 +163,29 @@ public class ChatController {
                 return;
             }
             try {
-                emitter.send(SseEmitter.event()
-                        .name(event.event().name())
-                        .data(event));
+                synchronized (this) {
+                    emitter.send(SseEmitter.event()
+                            .name(event.event().name())
+                            .data(event));
+                }
             } catch (IllegalStateException exception) {
                 open.set(false);
             } catch (IOException exception) {
                 open.set(false);
                 throw new SseDeliveryException("Failed to send SSE event", exception);
+            }
+        }
+
+        private void heartbeat() {
+            if (!open.get()) {
+                return;
+            }
+            synchronized (this) {
+                try {
+                    emitter.send(SseEmitter.event().comment("heartbeat"));
+                } catch (IOException | IllegalStateException exception) {
+                    open.set(false);
+                }
             }
         }
 

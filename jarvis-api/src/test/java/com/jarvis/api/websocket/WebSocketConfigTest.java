@@ -25,7 +25,10 @@ class WebSocketConfigTest {
                 null,
                 null,
                 MAX_TEXT_MESSAGE_SIZE,
-                MAX_BINARY_MESSAGE_SIZE
+                MAX_BINARY_MESSAGE_SIZE,
+                java.time.Duration.ZERO,
+                1_000,
+                java.time.Duration.ofMinutes(1)
         );
 
         ServletServerContainerFactoryBean container = config.webSocketContainer();

@@ -37,6 +37,7 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway;
     private final McpServerManager mcpServerManager;
+    private final ChatRunRegistry chatRuns;
     /**
      * Jakarta/Spring WebSocket containers deliver one session's incoming frames strictly
      * sequentially - the container will not invoke {@link #handleTextMessage} again for this
@@ -71,10 +72,31 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway,
             McpServerManager mcpServerManager
     ) {
+        this(chatService, objectMapper, windowsMcpBridgeGateway, mcpServerManager,
+                new ChatRunRegistry(objectMapper, java.time.Duration.ZERO, 20_000, java.time.Duration.ofMinutes(15)));
+    }
+
+    /**
+     * Creates the WebSocket handler with an explicit chat-run registry.
+     *
+     * @param chatService chat service
+     * @param objectMapper JSON mapper
+     * @param windowsMcpBridgeGateway Windows bridge gateway
+     * @param mcpServerManager MCP manager
+     * @param chatRuns registry that keeps runs alive across reconnects
+     */
+    public JarvisWebSocketHandler(
+            ChatService chatService,
+            ObjectMapper objectMapper,
+            WebSocketWindowsMcpBridgeGateway windowsMcpBridgeGateway,
+            McpServerManager mcpServerManager,
+            ChatRunRegistry chatRuns
+    ) {
         this.chatService = chatService;
         this.objectMapper = objectMapper;
         this.windowsMcpBridgeGateway = windowsMcpBridgeGateway;
         this.mcpServerManager = mcpServerManager;
+        this.chatRuns = chatRuns;
     }
 
     /**
@@ -118,6 +140,14 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
         if (handleBridgeMessage(session, root, messageType)) {
             return;
         }
+        if ("CHAT_RESUME".equals(messageType)) {
+            resume(session, root);
+            return;
+        }
+        if ("PING".equals(messageType)) {
+            send(session, new WebSocketStatus("PONG", "pong"));
+            return;
+        }
 
         ChatRequest request;
         try {
@@ -130,16 +160,34 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
         // Dispatched, not run inline - see chatExecutor's javadoc. handleTextMessage must return
         // quickly regardless of how long the chat pipeline takes, so the container keeps delivering
         // other frames on this same session (MCP bridge responses in particular) throughout.
+        String userId = userId(session);
+        ChatRunRegistry.ChatRun run = chatRuns.start(userId, request.conversationId(), session);
         chatExecutor.submit(() -> {
             try {
-                CurrentUserContext.runAs(String.valueOf(session.getAttributes().getOrDefault("jarvis.userId", CurrentUserContext.LOCAL_USER_ID)),
-                        () -> chatService.stream(request, event -> sendEvent(session, event)));
-                send(session, new WebSocketStatus("COMPLETED", "Request completed"));
+                CurrentUserContext.runAs(userId, () -> chatService.stream(request, run::emit));
+                run.finish(new WebSocketStatus("COMPLETED", "Request completed"));
             } catch (RuntimeException exception) {
                 LOGGER.error("[JARVIS] WebSocket chat failed", exception);
-                send(session, new WebSocketStatus("ERROR", exception.getMessage() == null ? "Request failed" : exception.getMessage()));
+                run.finish(new WebSocketStatus("ERROR", exception.getMessage() == null ? "Request failed" : exception.getMessage()));
             }
         });
+    }
+
+    private void resume(WebSocketSession session, JsonNode root) {
+        String conversationId = root.path("conversationId").asText("");
+        long afterSeq = root.path("afterSeq").asLong(0);
+        chatRuns.find(userId(session), conversationId).ifPresentOrElse(
+                run -> {
+                    send(session, Map.of("type", "CHAT_RESUMED", "conversationId", conversationId,
+                            "running", run.isRunning()));
+                    run.resume(session, afterSeq);
+                },
+                () -> send(session, Map.of("type", "CHAT_RESUME_UNKNOWN", "conversationId", conversationId,
+                        "message", "No active or recent request for this conversation")));
+    }
+
+    private String userId(WebSocketSession session) {
+        return String.valueOf(session.getAttributes().getOrDefault("jarvis.userId", CurrentUserContext.LOCAL_USER_ID));
     }
 
     /**
@@ -150,6 +198,7 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        chatRuns.detach(session);
         if (windowsMcpBridgeGateway.detach(session)) {
             mcpServerManager.handleWindowsBridgeDisconnected();
             send(session, new WebSocketStatus("MCP_STATUS_CHANGED", "Windows MCP bridge disconnected"));
@@ -166,6 +215,7 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
      */
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) {
+        chatRuns.detach(session);
         if (windowsMcpBridgeGateway.detach(session)) {
             mcpServerManager.handleWindowsBridgeDisconnected();
             send(session, new WebSocketStatus("MCP_STATUS_CHANGED", "Windows MCP bridge disconnected"));
@@ -196,10 +246,6 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             LOGGER.warn("[MCP_BRIDGE] Windows MCP activation failed: {}", exception.getMessage());
             send(session, new WebSocketStatus("MCP_STATUS_CHANGED", "Windows MCP activation failed: " + exception.getMessage()));
         }
-    }
-
-    private void sendEvent(WebSocketSession session, CognitiveEvent event) {
-        send(session, event);
     }
 
     private void sendOwnedEvent(WebSocketSession session, CognitiveEvent event) {

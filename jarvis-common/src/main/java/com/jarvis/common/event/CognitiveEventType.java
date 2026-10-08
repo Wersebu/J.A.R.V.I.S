@@ -239,6 +239,8 @@ public enum CognitiveEventType {
     TOOL_FINISHED,
     /** Native tool loop started. */
     TOOL_LOOP_STARTED,
+    /** The agent task plan was created or a step changed status. */
+    PLAN_UPDATED,
     /** Native structured tool call was received from the model. */
     NATIVE_TOOL_CALL_RECEIVED,
     /** Tool selection started. */

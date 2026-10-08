@@ -51,7 +51,8 @@ public record ToolRuntimeProperties(
         int maxConsecutiveOperationRepeats,
         int statefulWorkflowMinToolBudget,
         int maxConsecutiveNoToolProgressTurns,
-        int maxLiveEvidenceRecoveryAttempts
+        int maxLiveEvidenceRecoveryAttempts,
+        int maxCallsAgent
 ) {
 
     /**
@@ -71,6 +72,26 @@ public record ToolRuntimeProperties(
         statefulWorkflowMinToolBudget = statefulWorkflowMinToolBudget > 0 ? statefulWorkflowMinToolBudget : 20;
         maxConsecutiveNoToolProgressTurns = maxConsecutiveNoToolProgressTurns > 0 ? maxConsecutiveNoToolProgressTurns : 2;
         maxLiveEvidenceRecoveryAttempts = maxLiveEvidenceRecoveryAttempts > 0 ? maxLiveEvidenceRecoveryAttempts : 3;
+        // Budget for genuine agent work (active Coding Workspace or an active task plan). Never below
+        // the ordinary budgets so it can only ever raise a limit.
+        maxCallsAgent = Math.max(maxCallsAgent > 0 ? maxCallsAgent : 60, Math.max(maxCallsFast, maxCallsResearch));
+    }
+
+    public ToolRuntimeProperties(
+            Boolean enabled,
+            int maxCallsFast,
+            int maxCallsResearch,
+            int maxConsecutiveFailures,
+            int timeoutSeconds,
+            String runtime,
+            int maxConsecutiveOperationRepeats,
+            int statefulWorkflowMinToolBudget,
+            int maxConsecutiveNoToolProgressTurns,
+            int maxLiveEvidenceRecoveryAttempts
+    ) {
+        this(enabled, maxCallsFast, maxCallsResearch, maxConsecutiveFailures, timeoutSeconds, runtime,
+                maxConsecutiveOperationRepeats, statefulWorkflowMinToolBudget, maxConsecutiveNoToolProgressTurns,
+                maxLiveEvidenceRecoveryAttempts, 0);
     }
 
     /**
