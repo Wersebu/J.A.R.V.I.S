@@ -16,6 +16,8 @@ import java.util.List;
  * @param activeCodingWorkspaceId user-selected Coding Workspace bound to this chat turn
  * @param activeCodingWorkspaceName display name of the selected Coding Workspace
  * @param activeCodingWorkspaceHost host of the selected Coding Workspace
+ * @param workingDirectory folder on the user's PC this conversation works in (like a coding agent's
+ *        working directory); relative pc__* paths and new terminal sessions start there
  */
 public record ChatRequest(
         String conversationId,
@@ -25,7 +27,8 @@ public record ChatRequest(
         List<AttachmentReference> attachments,
         String activeCodingWorkspaceId,
         String activeCodingWorkspaceName,
-        String activeCodingWorkspaceHost
+        String activeCodingWorkspaceHost,
+        String workingDirectory
 ) {
 
     /**
@@ -37,6 +40,24 @@ public record ChatRequest(
         activeCodingWorkspaceId = activeCodingWorkspaceId == null ? "" : activeCodingWorkspaceId;
         activeCodingWorkspaceName = activeCodingWorkspaceName == null ? "" : activeCodingWorkspaceName;
         activeCodingWorkspaceHost = activeCodingWorkspaceHost == null ? "" : activeCodingWorkspaceHost;
+        workingDirectory = workingDirectory == null ? "" : workingDirectory.strip();
+    }
+
+    /**
+     * Creates a chat request without a working directory.
+     */
+    public ChatRequest(
+            String conversationId,
+            String message,
+            Instant clientRequestTimestamp,
+            KnowledgeMode knowledgeMode,
+            List<AttachmentReference> attachments,
+            String activeCodingWorkspaceId,
+            String activeCodingWorkspaceName,
+            String activeCodingWorkspaceHost
+    ) {
+        this(conversationId, message, clientRequestTimestamp, knowledgeMode, attachments, activeCodingWorkspaceId,
+                activeCodingWorkspaceName, activeCodingWorkspaceHost, "");
     }
 
     /**

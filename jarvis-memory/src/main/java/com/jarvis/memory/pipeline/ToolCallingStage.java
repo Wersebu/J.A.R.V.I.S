@@ -181,6 +181,9 @@ public class ToolCallingStage implements PipelineStage {
             merged.put("activeCodingWorkspaceName", context.request().activeCodingWorkspaceName());
             merged.put("activeCodingWorkspaceHost", context.request().activeCodingWorkspaceHost());
         }
+        if (!context.request().workingDirectory().isBlank()) {
+            merged.put("workingDirectory", context.request().workingDirectory());
+        }
         return Map.copyOf(merged);
     }
 

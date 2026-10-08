@@ -149,6 +149,24 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                 arguments.put(key, value);
             }
         });
+        String workingDirectory = String.valueOf(request.arguments().getOrDefault("_workingDirectory", "")).strip();
+        if (!workingDirectory.isBlank()) {
+            // Windows resolves relative paths and new terminal sessions against the conversation folder.
+            arguments.put("baseDir", workingDirectory);
+        }
+        if ("PROJECT_INSTRUCTIONS".equals(operation)) {
+            // Internal (not offered to the model): loaded once per turn into the loop's system prompt.
+            if (workingDirectory.isBlank()) {
+                return failure(request, operation, "NO_WORKING_DIRECTORY", "No working directory");
+            }
+            try {
+                Map<String, Object> result = gateway.codingRequest("pc_project_instructions", arguments, Duration.ofSeconds(10));
+                return new ToolResult(true, TOOL_NAME, operation, request.requestId(), request.conversationId(), false,
+                        List.of(), "Project instructions", result == null ? Map.of() : result, "", "", false, "");
+            } catch (RuntimeException exception) {
+                return failure(request, operation, "PC_TOOL_FAILED", String.valueOf(exception.getMessage()));
+            }
+        }
         if ("SHELL".equals(operation) && !arguments.containsKey("session")) {
             // One terminal session per conversation: cwd and env persist across the agent's calls.
             arguments.put("session", request.conversationId() == null ? "default" : request.conversationId());

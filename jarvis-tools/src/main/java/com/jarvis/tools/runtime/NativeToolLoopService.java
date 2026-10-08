@@ -1875,7 +1875,7 @@ public class NativeToolLoopService {
                 completionCriteria(request),
                 requiredEvidence(request, resolveIntent(request), "")
         );
-        base = base + planningBlock(request);
+        base = base + planningBlock(request) + workingDirectoryBlock(request);
         if (request.images().isEmpty() && existingDataset.isEmpty()) {
             return base;
         }
@@ -1898,8 +1898,35 @@ public class NativeToolLoopService {
         return builder.toString();
     }
 
+    /**
+     * Tells the model which folder on the user's PC this conversation works in and injects the
+     * project's own instructions (JARVIS.md / AGENTS.md / CLAUDE.md), like a coding agent does.
+     */
+    private String workingDirectoryBlock(ToolCallingRequest request) {
+        String workingDirectory = workingDirectory(request);
+        if (workingDirectory.isBlank()) {
+            return "";
+        }
+        StringBuilder block = new StringBuilder("\n\nWorking directory on the user's PC: " + workingDirectory + "\n"
+                + "Relative paths in pc__* tools resolve against it and the terminal session starts there. Unless the user "
+                + "says otherwise, \"the project\", \"the files\", \"here\" mean this folder.\n");
+        try {
+            ToolResult instructions = toolManager.execute(new ToolRequest("pc", "PROJECT_INSTRUCTIONS", request.conversationId(),
+                    request.requestId(), "load project instructions", "", Map.of("_workingDirectory", workingDirectory)));
+            Object content = instructions.data() == null ? null : instructions.data().get("content");
+            if (instructions.success() && content != null && !String.valueOf(content).isBlank()) {
+                block.append("\nProject instructions from ").append(instructions.data().getOrDefault("path", "the project"))
+                        .append(" (written by the user - follow them):\n").append(content).append('\n');
+            }
+        } catch (RuntimeException exception) {
+            LOGGER.debug("[NATIVE_TOOL_LOOP] project instructions unavailable: {}", exception.getMessage());
+        }
+        return block.toString();
+    }
+
     private boolean isAgentTask(ToolCallingRequest request, ToolIntent resolvedIntent) {
         return resolvedIntent == ToolIntent.CODING_WORKSPACE
+                || !workingDirectory(request).isBlank()
                 || !activeCodingWorkspaceId(request).isBlank()
                 || hasUnfinishedPlan(request);
     }
@@ -3688,6 +3715,15 @@ public class NativeToolLoopService {
     }
 
     private Map<String, Object> executionArguments(ToolCallingRequest request, ToolAction action) {
+        if ("pc".equalsIgnoreCase(action.tool()) || "agent".equalsIgnoreCase(action.tool())) {
+            String workingDirectory = workingDirectory(request);
+            if (workingDirectory.isBlank()) {
+                return action.arguments();
+            }
+            Map<String, Object> arguments = new LinkedHashMap<>(action.arguments());
+            arguments.put("_workingDirectory", workingDirectory);
+            return Map.copyOf(arguments);
+        }
         if (!"coding".equalsIgnoreCase(action.tool())) {
             return action.arguments();
         }
@@ -3698,6 +3734,10 @@ public class NativeToolLoopService {
         arguments.put("_codingTaskId", Objects.toString(request.context().getOrDefault("codingTaskId", ""), ""));
         arguments.put("_codingUserId", Objects.toString(request.context().getOrDefault("userId", ""), ""));
         return Map.copyOf(arguments);
+    }
+
+    private static String workingDirectory(ToolCallingRequest request) {
+        return Objects.toString(request.context().getOrDefault("workingDirectory", ""), "");
     }
 
     private String activeCodingWorkspaceId(ToolCallingRequest request) {
