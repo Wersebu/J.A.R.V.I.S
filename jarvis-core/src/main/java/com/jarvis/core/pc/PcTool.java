@@ -38,6 +38,8 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
     private static final Duration SEARCH = Duration.ofSeconds(60);
     private static final long DEFAULT_SHELL_SECONDS = 120;
     private static final long MAX_SHELL_SECONDS = 900;
+    /** Risky commands wait for the user's click on the PC (the dialog auto-denies after 5 minutes). */
+    private static final Duration APPROVAL_WINDOW = Duration.ofSeconds(330);
 
     private final WindowsCodingBridgeGateway gateway;
     private final boolean enabled;
@@ -112,13 +114,15 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                         arg("path", true, "Absolute directory path")),
                 op("MOVE", "Move or rename a file/folder within the same allowed folder.", ToolSafetyLevel.WRITE, true,
                         arg("sourcePath", true, "Absolute source path"), arg("targetPath", true, "Absolute target path")),
-                op("DELETE", "Delete a file/folder. Only when the user explicitly asked for this deletion; set approved=true.",
-                        ToolSafetyLevel.DELETE, true, arg("path", true, "Absolute path"), boolArg("approved", "User approved")),
+                op("DELETE", "Delete a file/folder. The user is asked to confirm on the PC; if they decline, do not retry.",
+                        ToolSafetyLevel.DELETE, true, arg("path", true, "Absolute path")),
                 op("SHELL", "Run a command in this conversation's terminal session: the working directory and env persist "
                                 + "between calls ('cd project' then 'mvn test' works). cmd.exe by default, shell=powershell for "
                                 + "PowerShell. Waits up to timeoutSeconds (default 120); if still running it keeps running in the "
                                 + "background and you get a processId for pc__shell_wait - nothing is lost. background=true for "
-                                + "servers/watchers. Output = stdout+stderr, long logs keep their beginning and end.",
+                                + "servers/watchers. Output = stdout+stderr, long logs keep their beginning and end. Risky commands "
+                                + "(git push, del/rm, reset --hard, ...) show a confirmation dialog to the user on the PC; if declined, "
+                                + "do not retry. git, gh (GitHub CLI), npm, mvn, python etc. work if installed on the PC.",
                         ToolSafetyLevel.WRITE, true, arg("command", true, "Command line"),
                         arg("cwd", false, "Absolute working directory (changes the session directory)"),
                         intArg("timeoutSeconds", "Max wait before backgrounding (1-900, default 120)"),
@@ -175,12 +179,10 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
             case "FIND", "GREP", "PATCH" -> SEARCH;
             case "SHELL" -> shellTimeout(arguments);
             case "SHELL_WAIT" -> Duration.ofSeconds(clamp(arguments, "waitSeconds", 30, 0, 600) + 30);
+            // The PC asks the user before deleting; leave time for the answer.
+            case "DELETE" -> APPROVAL_WINDOW;
             default -> FAST;
         };
-        if ("DELETE".equals(operation) && !Boolean.parseBoolean(String.valueOf(arguments.getOrDefault("approved", "false")))) {
-            return failure(request, operation, "PC_DELETE_NOT_APPROVED",
-                    "Deletion needs the user's explicit request; ask the user, then call again with approved=true.");
-        }
         try {
             LOGGER.info("[PC_TOOL] requestId={} operation={} path={}", request.requestId(), operation,
                     arguments.getOrDefault("path", arguments.getOrDefault("cwd", "")));
@@ -217,7 +219,7 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
 
     private Duration shellTimeout(Map<String, Object> arguments) {
         if (Boolean.parseBoolean(String.valueOf(arguments.getOrDefault("background", "false")))) {
-            return FAST;
+            return APPROVAL_WINDOW;
         }
         long seconds = DEFAULT_SHELL_SECONDS;
         Object raw = arguments.get("timeoutSeconds");
@@ -230,8 +232,9 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
         }
         seconds = Math.max(1, Math.min(seconds, MAX_SHELL_SECONDS));
         arguments.put("timeoutSeconds", seconds);
-        // Windows enforces the command timeout itself; Core waits a bit longer so it gets the real result.
-        return Duration.ofSeconds(seconds + 30);
+        // Windows enforces the command timeout itself; Core waits longer so it gets the real result,
+        // including time for the user to approve a risky command on the PC.
+        return Duration.ofSeconds(seconds).plus(APPROVAL_WINDOW);
     }
 
     private ToolResult failure(ToolRequest request, String operation, String code, String message) {

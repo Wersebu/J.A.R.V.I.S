@@ -51,7 +51,7 @@ class PcToolTest {
         tool.execute(request("SHELL", Map.of("command", "mvn test", "timeoutSeconds", 5000)));
 
         assertThat(payloads.get(0)).containsEntry("timeoutSeconds", 900L);
-        assertThat(timeouts.get(0)).isEqualTo(Duration.ofSeconds(930));
+        assertThat(timeouts.get(0)).isEqualTo(Duration.ofSeconds(1230));
     }
 
     @Test
@@ -67,13 +67,13 @@ class PcToolTest {
     }
 
     @Test
-    void deleteWithoutApprovalNeverReachesThePc() {
+    void deleteIsForwardedWithTimeForTheUsersConfirmationOnThePc() {
         PcTool tool = new PcTool(gateway, true);
         ToolResult result = tool.execute(request("DELETE", Map.of("path", "C:\\x")));
 
-        assertThat(result.success()).isFalse();
-        assertThat(result.errorCode()).isEqualTo("PC_DELETE_NOT_APPROVED");
-        assertThat(operations).isEmpty();
+        assertThat(result.success()).isTrue();
+        assertThat(operations).containsExactly("pc_delete");
+        assertThat(timeouts.get(0)).isEqualTo(Duration.ofSeconds(330));
     }
 
     @Test
