@@ -137,7 +137,12 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                         arg("processId", true, "processId from pc__shell"), intArg("lines", "Default 100")),
                 op("SHELL_CANCEL", "Stop a running command (and its child processes).", ToolSafetyLevel.WRITE, true,
                         arg("processId", true, "processId from pc__shell")),
-                op("SHELL_LIST", "List terminal sessions (with their directories) and recent commands.", ToolSafetyLevel.READ, false)
+                op("SHELL_LIST", "List terminal sessions (with their directories) and recent commands.", ToolSafetyLevel.READ, false),
+                op("CHANGES", "List files changed by pc__write/edit/patch/delete in this conversation (newest first).",
+                        ToolSafetyLevel.READ, false),
+                op("UNDO", "Undo the last file changes made in this conversation (restores previous content, removes created "
+                                + "files). Changes made through shell commands are not tracked.", ToolSafetyLevel.WRITE, true,
+                        intArg("steps", "How many changes to undo (default 1)"))
         ));
     }
 
@@ -171,8 +176,8 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                 return failure(request, operation, "PC_TOOL_FAILED", String.valueOf(exception.getMessage()));
             }
         }
-        if ("SHELL".equals(operation) && !arguments.containsKey("session")) {
-            // One terminal session per conversation: cwd and env persist across the agent's calls.
+        if (!arguments.containsKey("session")) {
+            // One session per conversation: terminal cwd/env and the undo history of file changes.
             arguments.put("session", request.conversationId() == null ? "default" : request.conversationId());
         }
         Duration timeout = switch (operation) {
@@ -188,7 +193,7 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                     arguments.getOrDefault("path", arguments.getOrDefault("cwd", "")));
             Map<String, Object> result = gateway.codingRequest("pc_" + operation.toLowerCase(Locale.ROOT), arguments, timeout);
             boolean changed = switch (operation) {
-                case "WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "SHELL" -> true;
+                case "WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "SHELL", "UNDO" -> true;
                 default -> false;
             };
             return new ToolResult(true, TOOL_NAME, operation, request.requestId(), request.conversationId(), changed,

@@ -340,6 +340,16 @@ Known MVP limits: the task loop is still in-memory and synchronous, the model-dr
 
 ## Agent Mode: Planning, PC Access, Long Tasks
 
+Polish quick start: [docs/START_PL.md](docs/START_PL.md).
+
+- **Working folder per conversation.** The Windows client sends `workingDirectory`; pc tools resolve
+  relative paths and start the terminal there, and the project's `JARVIS.md` / `AGENTS.md` / `CLAUDE.md`
+  is injected into the agent prompt.
+- **Helper agents (`agent__run`).** Delegates a standalone sub-task to a nested tool loop with a fresh
+  context and returns only its report (no nesting beyond one level).
+- **Undo (`pc__undo`, `pc__changes`)** for file changes made through the pc tool; risky actions are
+  confirmed by the user on the PC.
+
 Jarvis works like a coding agent rather than a question-asker:
 
 - **Planning (`plan__*` tool).** For multi-step work the model writes a plan (`plan__create`), executes

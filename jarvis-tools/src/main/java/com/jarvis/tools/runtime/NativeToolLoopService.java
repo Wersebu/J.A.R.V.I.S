@@ -169,6 +169,30 @@ public class NativeToolLoopService {
         this.historyCharBudget = Math.max(20_000, historyCharBudget);
     }
 
+    private static final ThreadLocal<ToolCallingRequest> CURRENT_REQUEST = new ThreadLocal<>();
+
+    /**
+     * The tool-calling request whose loop is running on this thread (used by helper agents).
+     *
+     * @return current request, or null outside a loop
+     */
+    public static ToolCallingRequest currentRequest() {
+        return CURRENT_REQUEST.get();
+    }
+
+    /**
+     * Restores the current request after a nested (helper agent) loop.
+     *
+     * @param request request to restore
+     */
+    public static void restoreCurrentRequest(ToolCallingRequest request) {
+        if (request == null) {
+            CURRENT_REQUEST.remove();
+        } else {
+            CURRENT_REQUEST.set(request);
+        }
+    }
+
     /**
      * Executes the native model-owned tool loop.
      *
@@ -180,10 +204,13 @@ public class NativeToolLoopService {
         // below - this wrapper guarantees it is always cleared when the loop finishes, regardless
         // of which of executeInternal's several return points was hit, so a pooled thread never
         // leaks a stale turn number into a later, unrelated model call.
+        ToolCallingRequest previous = CURRENT_REQUEST.get();
+        CURRENT_REQUEST.set(request);
         try {
             return executeInternal(request);
         } finally {
             AiTraceTurnContext.clear();
+            restoreCurrentRequest(previous);
         }
     }
 
@@ -1969,7 +1996,10 @@ public class NativeToolLoopService {
                 + "with pc__edit (exact text, unique match) or pc__patch (unified diff), then verify (build/tests via pc__shell).\n"
                 + "- pc__shell keeps the working directory per conversation. A long command returns a processId while it keeps "
                 + "running - use pc__shell_wait (optionally untilPattern) instead of starting it again.\n"
-                + "- A result marked _shortened has an outputId; read the omitted part with output__read / output__grep.\n");
+                + "- A result marked _shortened has an outputId; read the omitted part with output__read / output__grep.\n"
+                + "- For a broad search or analysis whose raw output would be large, delegate it with agent__run and work from "
+                + "its report.\n"
+                + "- If you broke something, pc__undo restores the previous content of files you changed.\n");
         unfinishedPlan(request).ifPresent(plan -> block
                 .append("\nThis conversation has an UNFINISHED plan from earlier - continue it (do not recreate it "
                         + "unless the user asked for something different):\n")
@@ -2633,7 +2663,7 @@ public class NativeToolLoopService {
 
     private static boolean isAgentTool(String tool) {
         String name = tool == null ? "" : tool.toLowerCase(Locale.ROOT);
-        return name.equals("pc") || name.equals("coding") || name.equals("plan") || name.equals("output")
+        return name.equals("pc") || name.equals("coding") || name.equals("plan") || name.equals("output") || name.equals("agent")
                 || name.startsWith("mcp_");
     }
 

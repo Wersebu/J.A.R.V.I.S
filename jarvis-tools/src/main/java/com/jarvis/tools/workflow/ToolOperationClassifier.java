@@ -51,6 +51,10 @@ public final class ToolOperationClassifier {
      * @return best-effort role classification
      */
     public static ToolOperationRole classify(String tool, String operation) {
+        ToolOperationRole agentRole = agentToolRole(safe(tool), safe(operation));
+        if (agentRole != null) {
+            return agentRole;
+        }
         List<String> tokens = tokenize(safe(tool) + "_" + safe(operation));
         if (hasAdjacentPair(tokens, "set", "active") || hasAdjacentPair(tokens, "switch", "active")
                 || containsAny(tokens, SELECTION_WORDS)) {
@@ -82,6 +86,34 @@ public final class ToolOperationClassifier {
             return ToolOperationRole.READ;
         }
         return ToolOperationRole.UNKNOWN;
+    }
+
+    /**
+     * Explicit roles for the agent toolset (PC files/shell, helper agents, stored outputs), whose
+     * operation names are too short for the word heuristics below (e.g. pc LIST is reading a real
+     * directory, not runtime discovery; a helper agent's report is inspection evidence).
+     */
+    private static ToolOperationRole agentToolRole(String tool, String operation) {
+        String t = tool.toLowerCase(java.util.Locale.ROOT);
+        String o = operation.toUpperCase(java.util.Locale.ROOT);
+        if (t.equals("agent")) {
+            return ToolOperationRole.INSPECT;
+        }
+        if (t.equals("output")) {
+            return ToolOperationRole.READ;
+        }
+        if (!t.equals("pc")) {
+            return null;
+        }
+        return switch (o) {
+            case "READ", "SHELL_TAIL", "CHANGES", "PROJECT_INSTRUCTIONS" -> ToolOperationRole.READ;
+            case "LIST", "INFO" -> ToolOperationRole.INSPECT;
+            case "FIND", "GREP" -> ToolOperationRole.SEARCH;
+            case "WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "UNDO" -> ToolOperationRole.WRITE;
+            case "SHELL", "SHELL_WAIT", "SHELL_CANCEL" -> ToolOperationRole.EXECUTE;
+            case "SHELL_LIST" -> ToolOperationRole.DISCOVERY;
+            default -> null;
+        };
     }
 
     private static boolean containsAny(List<String> tokens, Set<String> words) {

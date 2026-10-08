@@ -42,7 +42,7 @@ class PcToolTest {
         assertThat(result.success()).isTrue();
         assertThat(result.data()).containsEntry("content", "hello");
         assertThat(operations).containsExactly("pc_read");
-        assertThat(payloads.get(0)).containsOnlyKeys("path");
+        assertThat(payloads.get(0)).containsOnlyKeys("path", "session");
     }
 
     @Test
