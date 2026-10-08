@@ -100,6 +100,7 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
         server.put("listToolsTimeoutMs", properties.getListToolsTimeout().toMillis());
         server.put("callTimeoutMs", properties.getCallTimeout().toMillis());
         server.put("clientVersion", clientVersion);
+        server.put("env", properties.getEnv());
         request("MCP_CONNECT", serverId, server, properties.getStartupTimeout().plus(properties.getInitializeTimeout()));
     }
 

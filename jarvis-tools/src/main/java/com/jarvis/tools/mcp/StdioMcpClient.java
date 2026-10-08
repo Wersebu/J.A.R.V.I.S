@@ -35,6 +35,7 @@ public class StdioMcpClient implements McpClient {
     private final ObjectMapper objectMapper;
     private final String clientVersion;
     private final AtomicLong requestIds = new AtomicLong();
+    private final Object writerLock = new Object();
     private ExecutorService readerExecutor;
 
     private volatile McpConnectionState state = McpConnectionState.DISCONNECTED;
@@ -70,7 +71,13 @@ public class StdioMcpClient implements McpClient {
             List<String> command = new ArrayList<>();
             command.add(properties.getCommand());
             command.addAll(properties.getArgs());
-            process = new ProcessBuilder(command).start();
+            ProcessBuilder builder = new ProcessBuilder(command);
+            properties.getEnv().forEach((key, value) -> {
+                if (key != null && !key.isBlank() && value != null) {
+                    builder.environment().put(key, value);
+                }
+            });
+            process = builder.start();
             writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
             reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
             if (readerExecutor.isShutdown()) {
@@ -82,6 +89,7 @@ public class StdioMcpClient implements McpClient {
                     "capabilities", Map.of(),
                     "clientInfo", Map.of("name", "jarvis-core", "version", clientVersion)
             ), properties.getInitializeTimeout());
+            notifyInitialized();
             state = McpConnectionState.CONNECTED;
         } catch (Exception ex) {
             state = McpConnectionState.ERROR;
@@ -165,9 +173,7 @@ public class StdioMcpClient implements McpClient {
         request.put("method", method);
         request.put("params", params == null ? Map.of() : params);
         try {
-            writer.write(objectMapper.writeValueAsString(request));
-            writer.write('\n');
-            writer.flush();
+            writeLine(request);
             JsonNode response = readResponse(id, timeout);
             if (response.hasNonNull("error")) {
                 throw new McpException("MCP error from '" + serverId + "': " + response.path("error"));
@@ -179,12 +185,54 @@ public class StdioMcpClient implements McpClient {
         }
     }
 
+    /**
+     * MCP lifecycle: after a successful initialize the client must send notifications/initialized;
+     * strict servers (official SDKs) refuse tools/list until they receive it.
+     */
+    private void notifyInitialized() throws IOException {
+        writeLine(Map.of("jsonrpc", "2.0", "method", "notifications/initialized", "params", Map.of()));
+    }
+
+    private void writeLine(Map<String, Object> message) throws IOException {
+        synchronized (writerLock) {
+            writer.write(objectMapper.writeValueAsString(message));
+            writer.write('\n');
+            writer.flush();
+        }
+    }
+
+    /**
+     * Answers a server-to-client request (e.g. ping) so a server never blocks waiting for us.
+     */
+    private void answerServerRequest(JsonNode node) {
+        try {
+            Map<String, Object> reply = new LinkedHashMap<>();
+            reply.put("jsonrpc", "2.0");
+            reply.put("id", objectMapper.convertValue(node.path("id"), Object.class));
+            if ("ping".equals(node.path("method").asText())) {
+                reply.put("result", Map.of());
+            } else {
+                reply.put("error", Map.of("code", -32601, "message", "Method not supported by Jarvis client"));
+            }
+            writeLine(reply);
+        } catch (IOException | RuntimeException ignored) {
+            // Best effort: the pending client request still has its own timeout.
+        }
+    }
+
     private JsonNode readResponse(long id, Duration timeout) {
         CompletableFuture<JsonNode> future = CompletableFuture.supplyAsync(() -> {
             try {
                 String line;
                 while ((line = reader.readLine()) != null) {
+                    if (line.isBlank() || !line.stripLeading().startsWith("{")) {
+                        continue; // Some servers log banners to stdout; never treat them as protocol.
+                    }
                     JsonNode node = objectMapper.readTree(line);
+                    if (node.hasNonNull("method") && node.has("id")) {
+                        answerServerRequest(node);
+                        continue;
+                    }
                     if (node.path("id").asLong(-1) == id) {
                         return node;
                     }

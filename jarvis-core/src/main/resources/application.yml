@@ -112,6 +112,48 @@ jarvis:
         # a cold start. 30s was observed timing out twice in a row before succeeding once Studio
         # finished attaching.
         call-timeout: 60s
+      # ---- Modules: add any MCP server here (docs/MCP.md "Adding modules"). Disabled by default. ----
+      # GitHub: hosted MCP server over HTTP, nothing to install. Create a fine-grained token at
+      # https://github.com/settings/tokens and export GITHUB_TOKEN + JARVIS_MCP_GITHUB_ENABLED=true.
+      github:
+        enabled: ${JARVIS_MCP_GITHUB_ENABLED:false}
+        execution-host: CORE
+        transport: HTTP
+        url: https://api.githubcopilot.com/mcp/
+        headers:
+          Authorization: "Bearer ${GITHUB_TOKEN:}"
+        access-level: EDIT
+        initialize-timeout: 20s
+        list-tools-timeout: 20s
+        call-timeout: 60s
+        # GitHub exposes ~90 tools; a local model works much better with a focused subset.
+        include-tools: ["get_*", "list_*", "search_*", "create_issue", "add_issue_comment",
+                        "create_pull_request", "create_or_update_file", "create_branch", "push_files"]
+        exclude-tools: ["*secret*"]
+      # Google Workspace (Gmail, Drive, Calendar, Docs, Sheets) via the open-source workspace-mcp
+      # server. Runs on the Windows PC (it opens a browser for Google sign-in once). Needs uv
+      # (https://docs.astral.sh/uv/) and an OAuth client from Google Cloud Console.
+      google:
+        enabled: ${JARVIS_MCP_GOOGLE_ENABLED:false}
+        execution-host: WINDOWS
+        transport: WINDOWS_BRIDGE
+        command: uvx
+        args: ["workspace-mcp", "--single-user", "--tools", "gmail", "drive", "calendar", "docs", "sheets"]
+        env:
+          GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:}
+        access-level: EDIT
+        startup-timeout: 60s
+        initialize-timeout: 60s
+        list-tools-timeout: 30s
+        call-timeout: 120s
+  pc:
+    # pc__* tool: files and shell on the Windows PC running the Jarvis app. Which folders are
+    # reachable is decided on the PC itself in config/pc-access.yml (default: the user folder).
+    enabled: true
+  planner:
+    # Agent task plans (plan__* tool) survive restarts here.
+    storage-dir: ./data/plans
   web-search:
     enabled: true
     base-url: http://127.0.0.1:8888

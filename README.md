@@ -338,6 +338,43 @@ The task loop refreshes the workspace, reads available project instructions (`AG
 
 Known MVP limits: the task loop is still in-memory and synchronous, the model-driven code-edit/fix decision loop is not yet connected to a durable task repository, and rollback/commit approval flows are not yet implemented. The bridge protocol already supports `command_start`, `command_poll`, and `command_cancel`; the current REST command endpoint returns the completed bounded command result. The API and UI avoid claiming unverified success: command results include real exit codes and captured output.
 
+## Agent Mode: Planning, PC Access, Long Tasks
+
+Jarvis works like a coding agent rather than a question-asker:
+
+- **Planning (`plan__*` tool).** For multi-step work the model writes a plan (`plan__create`), executes
+  the steps with real tools, and marks progress (`plan__update_step`). A final answer while steps are
+  still open is sent back to work (bounded). Plans are stored per conversation in
+  `jarvis.planner.storage-dir` (default `./data/plans`), so "kontynuuj" resumes an unfinished plan even
+  after a restart. Every change is streamed as a `PLAN_UPDATED` event; the Windows client shows the
+  checklist live.
+- **Agent budget.** Tasks with an active Coding Workspace or an active plan get
+  `jarvis.tools.max-calls-agent` turns (default 60) instead of the 8/15 chat budgets; no-progress and
+  duplicate-call guards still stop a loop that spins.
+- **Fewer questions.** The main-model policy and `config/jarvis.md` (section 31a) tell the model to act on
+  stated assumptions and ask only when essential information is missing or an action is destructive.
+- **PC access (`pc__*` tool).** Read/write/edit/find/grep/list files and run shell commands on the
+  Windows PC running the Jarvis app, through the existing bridge - limited to folders allowed in the
+  Windows client's `config/pc-access.yml` (default: the user folder). Deletion needs an explicit user
+  request (`approved=true`); destructive shell commands stay blocked. Disable with `jarvis.pc.enabled=false`.
+- **Modules via MCP.** GitHub (hosted, HTTP) and Google Workspace entries are prepared in
+  `application.yml`; any other MCP server can be added the same way - see
+  [Adding modules](docs/MCP.md#adding-modules-github-google-anything-with-an-mcp-server).
+
+### Long-running requests do not get lost
+
+- WebSocket chat runs are independent of the socket that started them: every frame carries a `seq`, is
+  buffered (`jarvis.websocket.run-buffer-frames`), and a reconnecting client sends
+  `{"type":"CHAT_RESUME","conversationId":"...","afterSeq":N}` to get the missed frames and keep
+  streaming (`CHAT_RESUMED` / `CHAT_RESUME_UNKNOWN`). Finished runs stay resumable for
+  `jarvis.websocket.run-retention`.
+- Running runs send `{"type":"HEARTBEAT","elapsedMs":...}` every `jarvis.websocket.heartbeat-interval`
+  (15s), which also keeps reverse proxies from closing idle sockets. `{"type":"PING"}` is answered with `PONG`.
+- The SSE endpoint no longer has a 10-minute hard timeout; it sends heartbeat comments instead.
+- Windows bridge requests (a long build, an OpenCode run) survive a reconnect of the same Windows app
+  instance and are only failed if it does not come back within 90 seconds.
+- Reverse proxy (nginx): set `proxy_read_timeout 3600s;` for `/ws/` and `/api/v1/chat/stream`.
+
 ## Core Features
 
 ### Brain Routing & Model Selection

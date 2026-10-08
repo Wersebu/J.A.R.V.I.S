@@ -22,6 +22,19 @@ public class McpServerProperties {
     private Duration listToolsTimeout = Duration.ofSeconds(5);
     private Duration callTimeout = Duration.ofSeconds(30);
     private Set<String> activeWorkspaces = Set.of();
+    /** Extra environment variables for a STDIO server process (e.g. GITHUB_PERSONAL_ACCESS_TOKEN). */
+    private java.util.Map<String, String> env = new java.util.LinkedHashMap<>();
+    /** Endpoint of an HTTP (streamable HTTP) MCP server, e.g. https://api.githubcopilot.com/mcp/. */
+    private String url = "";
+    /** HTTP headers for an HTTP MCP server, e.g. Authorization: Bearer ${GITHUB_TOKEN}. */
+    private java.util.Map<String, String> headers = new java.util.LinkedHashMap<>();
+    /**
+     * Glob patterns of MCP tool names to expose (empty = all). Large servers (GitHub has ~90 tools)
+     * flood a local model's tool catalog; expose only what is useful, e.g. ["get_*", "list_*", "create_issue"].
+     */
+    private List<String> includeTools = new ArrayList<>();
+    /** Glob patterns of MCP tool names to hide, applied after includeTools. */
+    private List<String> excludeTools = new ArrayList<>();
 
     public boolean isEnabled() {
         return enabled;
@@ -109,6 +122,69 @@ public class McpServerProperties {
 
     public void setCallTimeout(Duration callTimeout) {
         this.callTimeout = callTimeout == null ? Duration.ofSeconds(30) : callTimeout;
+    }
+
+    public java.util.Map<String, String> getEnv() {
+        return env;
+    }
+
+    public void setEnv(java.util.Map<String, String> env) {
+        this.env = env == null ? new java.util.LinkedHashMap<>() : new java.util.LinkedHashMap<>(env);
+    }
+
+    public String getUrl() {
+        return url;
+    }
+
+    public void setUrl(String url) {
+        this.url = url == null ? "" : url.strip();
+    }
+
+    public java.util.Map<String, String> getHeaders() {
+        return headers;
+    }
+
+    public void setHeaders(java.util.Map<String, String> headers) {
+        this.headers = headers == null ? new java.util.LinkedHashMap<>() : new java.util.LinkedHashMap<>(headers);
+    }
+
+    public List<String> getIncludeTools() {
+        return includeTools;
+    }
+
+    public void setIncludeTools(List<String> includeTools) {
+        this.includeTools = includeTools == null ? new ArrayList<>() : new ArrayList<>(includeTools);
+    }
+
+    public List<String> getExcludeTools() {
+        return excludeTools;
+    }
+
+    public void setExcludeTools(List<String> excludeTools) {
+        this.excludeTools = excludeTools == null ? new ArrayList<>() : new ArrayList<>(excludeTools);
+    }
+
+    /**
+     * Applies {@link #getIncludeTools()} / {@link #getExcludeTools()} to an MCP tool name.
+     *
+     * @param toolName MCP-native tool name
+     * @return true when the tool should be exposed
+     */
+    public boolean exposesTool(String toolName) {
+        String name = toolName == null ? "" : toolName;
+        boolean included = includeTools.isEmpty() || includeTools.stream().anyMatch(pattern -> globMatches(pattern, name));
+        return included && excludeTools.stream().noneMatch(pattern -> globMatches(pattern, name));
+    }
+
+    private static boolean globMatches(String pattern, String name) {
+        if (pattern == null || pattern.isBlank()) {
+            return false;
+        }
+        StringBuilder regex = new StringBuilder("(?i)");
+        for (char ch : pattern.strip().toCharArray()) {
+            regex.append(ch == '*' ? ".*" : ch == '?' ? "." : java.util.regex.Pattern.quote(String.valueOf(ch)));
+        }
+        return name.matches(regex.toString());
     }
 
     public Set<String> getActiveWorkspaces() {

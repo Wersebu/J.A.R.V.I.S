@@ -7,5 +7,7 @@ public enum McpTransport {
     /** JSON-RPC over a local stdio process. */
     STDIO,
     /** JSON-RPC relayed through the Windows client bridge. */
-    WINDOWS_BRIDGE
+    WINDOWS_BRIDGE,
+    /** MCP "streamable HTTP" transport: JSON-RPC POSTed to a remote URL (JSON or SSE replies). */
+    HTTP
 }

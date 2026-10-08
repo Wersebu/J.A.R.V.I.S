@@ -36,6 +36,9 @@ public class DefaultMcpClientFactory implements McpClientFactory {
         if (properties.getExecutionHost() == McpExecutionHost.CORE && properties.getTransport() == McpTransport.STDIO) {
             return new StdioMcpClient(serverId, properties, objectMapper, clientVersion);
         }
+        if (properties.getTransport() == McpTransport.HTTP) {
+            return new HttpMcpClient(serverId, properties, objectMapper, clientVersion);
+        }
         if (properties.getExecutionHost() == McpExecutionHost.WINDOWS && properties.getTransport() == McpTransport.WINDOWS_BRIDGE) {
             if (windowsBridgeGateway == null) {
                 return new UnavailableMcpClient(serverId, "Windows MCP bridge gateway is not available in this Core build.");

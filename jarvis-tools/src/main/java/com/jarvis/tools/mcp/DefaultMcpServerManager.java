@@ -310,7 +310,9 @@ public class DefaultMcpServerManager implements McpServerManager {
         long startedNano = System.nanoTime();
         LOGGER.info("[MCP] tools/list requested server={}", serverId);
         try {
-            List<McpToolDescriptor> tools = clients.get(serverId).listTools();
+            List<McpToolDescriptor> tools = clients.get(serverId).listTools().stream()
+                    .filter(tool -> server.exposesTool(tool.name()))
+                    .toList();
             LOGGER.info("[MCP] discovered server={} tools={} names={} durationMs={}",
                     serverId, tools.size(), toolNamesSummary(tools), elapsedMs(startedNano));
             return List.copyOf(tools);

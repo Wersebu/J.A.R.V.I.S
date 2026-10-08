@@ -362,3 +362,45 @@ Secrets and large binary payloads are intentionally not logged - only counts, id
 timings, and sanitized bounded stderr excerpts.
 
 The Windows bridge drains MCP process stderr continuously and keeps a bounded, sanitized diagnostics buffer. This prevents external MCP servers from blocking on a full stderr pipe while still surfacing useful startup and runtime errors.
+
+## Adding modules (GitHub, Google, anything with an MCP server)
+
+Any MCP server becomes a Jarvis module with a few lines under `jarvis.mcp.servers` - its tools show up
+to the model as `mcp_<server>_<tool>__call`, no Java code needed. Three ways to connect one:
+
+| Where the server runs | Config |
+|---|---|
+| Hosted, over HTTP (e.g. GitHub) | `execution-host: CORE`, `transport: HTTP`, `url`, `headers` |
+| Locally on the Core server | `execution-host: CORE`, `transport: STDIO`, `command`, `args`, `env` |
+| On the Windows PC (needs a browser/desktop app) | `execution-host: WINDOWS`, `transport: WINDOWS_BRIDGE`, `command`, `args`, `env` |
+
+Extra keys:
+
+- `env` - environment variables for STDIO servers (tokens, OAuth client ids). Use `${ENV_VAR:}`
+  placeholders so secrets stay out of the file.
+- `url` / `headers` - endpoint and HTTP headers for `transport: HTTP` (MCP "streamable HTTP": JSON or
+  SSE replies, `Mcp-Session-Id` handled automatically, paginated `tools/list` followed).
+- `include-tools` / `exclude-tools` - glob filters on MCP tool names. Big servers (GitHub ~90 tools)
+  overwhelm a local model; expose only what you need.
+
+Ready-made (disabled) entries are in `application.yml`:
+
+```bash
+# GitHub - hosted server, nothing to install
+export GITHUB_TOKEN=github_pat_...            # fine-grained token with the repo permissions you want
+export JARVIS_MCP_GITHUB_ENABLED=true
+
+# Google Workspace (Gmail, Drive, Calendar, Docs, Sheets) - runs on the Windows PC via uv
+#   1. install uv on Windows:  powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+#   2. Google Cloud Console -> OAuth client (Desktop app) -> client id/secret
+export GOOGLE_OAUTH_CLIENT_ID=...
+export GOOGLE_OAUTH_CLIENT_SECRET=...
+export JARVIS_MCP_GOOGLE_ENABLED=true
+```
+
+Other useful servers follow the same pattern, e.g. `npx -y @modelcontextprotocol/server-filesystem <dir>`,
+`npx -y @playwright/mcp` (browser automation), Slack, Notion, Home Assistant. On Windows use
+`command: cmd.exe` with `args: ["/c", "npx", "-y", "..."]` for npm-based servers.
+
+The STDIO client sends `notifications/initialized` after `initialize` (required by servers built on the
+official SDKs), answers server `ping` requests, and ignores non-JSON banner lines on stdout.
