@@ -59,6 +59,20 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
     private final AtomicReference<WebSocketSession> bridgeSession = new AtomicReference<>();
     private final java.util.Set<WebSocketSession> bridgeSessions = ConcurrentHashMap.newKeySet();
     private final Map<String, CompletableFuture<JsonNode>> pending = new ConcurrentHashMap<>();
+    /**
+     * How long in-flight bridge requests survive a dropped Windows socket. The same Windows app
+     * instance usually reconnects within seconds and then delivers the result of a long command on
+     * the new socket, so failing everything instantly would throw away e.g. a 10-minute build.
+     */
+    private static final Duration RECONNECT_GRACE = Duration.ofSeconds(90);
+    private static final java.util.concurrent.ScheduledExecutorService GRACE_SCHEDULER =
+            java.util.concurrent.Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "jarvis-mcp-bridge-grace");
+                thread.setDaemon(true);
+                return thread;
+            });
+    private volatile String bridgeInstanceId = "";
+    private volatile java.util.concurrent.ScheduledFuture<?> graceFailure;
 
     /**
      * Creates the gateway.
@@ -205,12 +219,32 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
      * @param session WebSocket session
      */
     public void register(WebSocketSession session) {
+        register(session, "");
+    }
+
+    /**
+     * Registers a Windows WebSocket session as the active bridge. When the same Windows app
+     * instance (same {@code instanceId}) reconnects, in-flight requests are kept: the client answers
+     * them on the new socket.
+     *
+     * @param session WebSocket session
+     * @param instanceId id of the Windows app instance, blank when unknown
+     */
+    public synchronized void register(WebSocketSession session, String instanceId) {
+        String newInstance = instanceId == null ? "" : instanceId;
+        boolean sameInstance = !newInstance.isBlank() && newInstance.equals(bridgeInstanceId);
+        cancelGraceFailure();
         bridgeSessions.add(session);
         WebSocketSession previous = bridgeSession.getAndSet(session);
-        if (previous != null && previous != session) {
+        if (previous != null && previous != session && sameInstance) {
+            bridgeSessions.remove(previous);
+        }
+        if (!sameInstance && (previous != null && previous != session || !bridgeInstanceId.isBlank())) {
             completeAllExceptionally("Windows MCP bridge session was replaced.");
         }
-        LOGGER.info("[MCP_BRIDGE] Windows bridge registered session={}", session.getId());
+        bridgeInstanceId = newInstance;
+        LOGGER.info("[MCP_BRIDGE] Windows bridge registered session={} sameInstance={} keptPending={}",
+                session.getId(), sameInstance, sameInstance ? pending.size() : 0);
     }
 
     /**
@@ -239,14 +273,32 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
      *
      * @param session closed session
      */
-    public boolean detach(WebSocketSession session) {
+    public synchronized boolean detach(WebSocketSession session) {
         bridgeSessions.remove(session);
         if (bridgeSession.compareAndSet(session, null)) {
-            completeAllExceptionally("Windows MCP bridge disconnected.");
-            LOGGER.info("[MCP_BRIDGE] Windows bridge disconnected session={}", session.getId());
+            if (pending.isEmpty() || bridgeInstanceId.isBlank()) {
+                completeAllExceptionally("Windows MCP bridge disconnected.");
+            } else {
+                cancelGraceFailure();
+                graceFailure = GRACE_SCHEDULER.schedule(() -> {
+                    if (bridgeSession.get() == null) {
+                        completeAllExceptionally("Windows MCP bridge disconnected and did not reconnect in time.");
+                    }
+                }, RECONNECT_GRACE.toMillis(), TimeUnit.MILLISECONDS);
+            }
+            LOGGER.info("[MCP_BRIDGE] Windows bridge disconnected session={} pendingKeptForGrace={}",
+                    session.getId(), pending.size());
             return true;
         }
         return false;
+    }
+
+    private void cancelGraceFailure() {
+        java.util.concurrent.ScheduledFuture<?> scheduled = graceFailure;
+        if (scheduled != null) {
+            scheduled.cancel(false);
+            graceFailure = null;
+        }
     }
 
     private long openBridgeSessions() {

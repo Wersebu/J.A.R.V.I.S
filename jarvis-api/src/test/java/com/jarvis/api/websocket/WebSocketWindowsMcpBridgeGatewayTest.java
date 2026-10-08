@@ -188,6 +188,54 @@ class WebSocketWindowsMcpBridgeGatewayTest {
                 .hasMessageContaining("multiple Windows Bridge sessions");
     }
 
+    @Test
+    void longRunningRequestSurvivesReconnectOfTheSameWindowsInstance() throws Exception {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        TestWebSocketSession first = fakeOpenSession("session-1");
+        gateway.register(first, "instance-A");
+        java.util.concurrent.atomic.AtomicReference<String> requestId = new java.util.concurrent.atomic.AtomicReference<>();
+        first.onSend(message -> {
+            try {
+                requestId.set(objectMapper.readTree(((TextMessage) message).getPayload()).path("requestId").asText());
+            } catch (Exception exception) {
+                throw new AssertionError(exception);
+            }
+        });
+        java.util.concurrent.CompletableFuture<Map<String, Object>> result = java.util.concurrent.CompletableFuture.supplyAsync(
+                () -> gateway.codingRequest("build_run", Map.of("rootPath", "D:\\w"), Duration.ofSeconds(5)));
+        long deadline = System.currentTimeMillis() + 2_000;
+        while (requestId.get() == null && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        first.close();
+        gateway.detach(first);
+        TestWebSocketSession second = fakeOpenSession("session-2");
+        gateway.register(second, "instance-A");
+        gateway.handleResponse(objectMapper.readTree("{\"requestId\":\"" + requestId.get()
+                + "\",\"success\":true,\"payload\":{\"exitCode\":0}}"));
+
+        assertThat(result.get(2, TimeUnit.SECONDS)).containsEntry("exitCode", 0);
+    }
+
+    @Test
+    void differentWindowsInstanceFailsPendingRequestsImmediately() throws Exception {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        TestWebSocketSession first = fakeOpenSession("session-1");
+        gateway.register(first, "instance-A");
+        java.util.concurrent.CompletableFuture<Map<String, Object>> result = java.util.concurrent.CompletableFuture.supplyAsync(
+                () -> gateway.codingRequest("build_run", Map.of("rootPath", "D:\\w"), Duration.ofSeconds(5)));
+        long deadline = System.currentTimeMillis() + 2_000;
+        while (first.sentMessages().isEmpty() && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+        first.close();
+        gateway.detach(first);
+        gateway.register(fakeOpenSession("session-2"), "instance-B");
+
+        assertThatThrownBy(() -> result.get(2, TimeUnit.SECONDS)).hasMessageContaining("replaced");
+    }
+
     private void respondImmediately(WebSocketWindowsMcpBridgeGateway gateway, TestWebSocketSession session, String payloadTemplate) {
         session.onSend(sentMessage -> {
             TextMessage message = (TextMessage) sentMessage;

@@ -226,7 +226,7 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
 
     private boolean handleBridgeMessage(WebSocketSession session, JsonNode root, String messageType) {
         if ("MCP_BRIDGE_REGISTER".equals(messageType)) {
-            windowsMcpBridgeGateway.register(session);
+            windowsMcpBridgeGateway.register(session, root.path("instanceId").asText(""));
             send(session, new WebSocketStatus("MCP_BRIDGE_CONNECTED", "Windows MCP bridge connected"));
             CompletableFuture.runAsync(() -> activateWindowsBridgeServers(session));
             return true;
