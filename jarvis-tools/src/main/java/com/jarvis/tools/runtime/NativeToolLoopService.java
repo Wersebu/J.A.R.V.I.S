@@ -87,6 +87,12 @@ public class NativeToolLoopService {
     private final GoalCompletionVerifier goalCompletionVerifier;
     /** Optional agent planner; when present, unfinished plans raise the budget and gate the final answer. */
     private TaskPlanService taskPlanService;
+    /** Keeps full tool outputs that were shortened or elided (read back with the output tool). */
+    private ToolOutputStore toolOutputStore;
+    /** Per-result budget for agent tools (pc, coding, plan, output, MCP) before visible shortening. */
+    private int maxResultChars = 16_000;
+    /** Budget for all loop message contents before the oldest tool results are elided. */
+    private int historyCharBudget = 120_000;
     private static final int MAX_PLAN_GATE_ATTEMPTS = 2;
 
     /**
@@ -136,6 +142,31 @@ public class NativeToolLoopService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setTaskPlanService(TaskPlanService taskPlanService) {
         this.taskPlanService = taskPlanService;
+    }
+
+    /**
+     * Wires the store for shortened/elided tool outputs.
+     *
+     * @param toolOutputStore output store
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setToolOutputStore(ToolOutputStore toolOutputStore) {
+        this.toolOutputStore = toolOutputStore;
+    }
+
+    /**
+     * Configures context budgets.
+     *
+     * @param maxResultChars per-result budget for agent tools
+     * @param historyCharBudget total loop message budget
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setContextBudgets(
+            @org.springframework.beans.factory.annotation.Value("${jarvis.tools.max-result-chars:16000}") int maxResultChars,
+            @org.springframework.beans.factory.annotation.Value("${jarvis.tools.history-char-budget:120000}") int historyCharBudget
+    ) {
+        this.maxResultChars = Math.max(2_000, maxResultChars);
+        this.historyCharBudget = Math.max(20_000, historyCharBudget);
     }
 
     /**
@@ -372,6 +403,11 @@ public class NativeToolLoopService {
                 break;
             }
             ModelResponse response;
+            int elided = ContextBudget.compactHistory(messages, historyCharBudget, 4, toolOutputStore);
+            if (elided > 0) {
+                LOGGER.info("[CONTEXT_BUDGET] requestId={} step={} elidedOldToolResults={} budgetChars={}",
+                        request.requestId(), step, elided, historyCharBudget);
+            }
             try {
                 response = selectProvider(request).toolChat(request.brain(), messages, definitions, AIJobType.MAIN_MODEL);
             } catch (AIProviderException exception) {
@@ -1901,7 +1937,12 @@ public class NativeToolLoopService {
                 + "non-destructive steps. Ask only when essential information is truly missing or before an "
                 + "irreversible/destructive action.\n"
                 + "- When a step fails, diagnose and try a different approach before marking it blocked.\n"
-                + "- Finish with a concise summary of what was done, what was verified, and anything left blocked.\n");
+                + "- Finish with a concise summary of what was done, what was verified, and anything left blocked.\n"
+                + "- Files on the user's PC: locate with pc__find / pc__grep, always pc__read before changing a file, change it "
+                + "with pc__edit (exact text, unique match) or pc__patch (unified diff), then verify (build/tests via pc__shell).\n"
+                + "- pc__shell keeps the working directory per conversation. A long command returns a processId while it keeps "
+                + "running - use pc__shell_wait (optionally untilPattern) instead of starting it again.\n"
+                + "- A result marked _shortened has an outputId; read the omitted part with output__read / output__grep.\n");
         unfinishedPlan(request).ifPresent(plan -> block
                 .append("\nThis conversation has an UNFINISHED plan from earlier - continue it (do not recreate it "
                         + "unless the user asked for something different):\n")
@@ -2550,11 +2591,23 @@ public class NativeToolLoopService {
             value.put("errorCode", result.errorCode());
             value.put("errorMessage", result.errorMessage());
             value.put("requiresApproval", result.requiresApproval());
+            if (isAgentTool(result.tool())) {
+                // Agent tools (files, shell, MCP) need complete results - a silently cut file or log
+                // makes the model act on wrong information. Shorten only past the budget, visibly.
+                value.put("data", result.data() == null ? Map.of() : result.data());
+                return ContextBudget.fit(value, maxResultChars, toolOutputStore, objectMapper);
+            }
             value.put("data", compactData(result.data()));
             return objectMapper.writeValueAsString(value);
         } catch (JsonProcessingException exception) {
             return result.message();
         }
+    }
+
+    private static boolean isAgentTool(String tool) {
+        String name = tool == null ? "" : tool.toLowerCase(Locale.ROOT);
+        return name.equals("pc") || name.equals("coding") || name.equals("plan") || name.equals("output")
+                || name.startsWith("mcp_");
     }
 
     private static final int MAX_COMPACT_CONTENT_CHARS = 2500;

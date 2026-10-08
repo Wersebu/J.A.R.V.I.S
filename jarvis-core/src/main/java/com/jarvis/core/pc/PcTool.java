@@ -6,6 +6,7 @@ import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
 import com.jarvis.tools.schema.ToolArgumentDefinition;
 import com.jarvis.tools.schema.ToolDefinition;
+import com.jarvis.tools.schema.ToolJsonSchema;
 import com.jarvis.tools.schema.ToolOperationDefinition;
 import com.jarvis.tools.schema.ToolSafetyLevel;
 import com.jarvis.tools.schema.ToolSchemaProvider;
@@ -68,39 +69,71 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
         if (!enabled) {
             return new ToolDefinition(TOOL_NAME, getDescription(), List.of());
         }
+        ToolJsonSchema editItem = ToolJsonSchema.object(new java.util.LinkedHashMap<>(Map.of(
+                "expected", ToolJsonSchema.string("Exact current text (copy from pc__read without the line-number prefix)"),
+                "replacement", ToolJsonSchema.string("New text"),
+                "replaceAll", ToolJsonSchema.bool("Replace every occurrence instead of requiring a unique match"))),
+                List.of("expected", "replacement"), "One exact-text replacement");
         return new ToolDefinition(TOOL_NAME, getDescription(), List.of(
                 op("INFO", "Show allowed folders, user home, OS and shell. Call this first when unsure where files are.",
                         ToolSafetyLevel.READ, false),
                 op("LIST", "List a directory on the PC (absolute path; blank = first allowed folder).",
                         ToolSafetyLevel.READ, false, arg("path", false, "Absolute directory path")),
-                op("READ", "Read a text file on the PC, optionally a line range.", ToolSafetyLevel.READ, false,
-                        arg("path", true, "Absolute file path"), intArg("startLine"), intArg("endLine")),
-                op("FIND", "Find files by name below a folder. query is a glob like *.pdf or *raport*, or a regex with regex=true.",
-                        ToolSafetyLevel.READ, false, arg("path", false, "Absolute folder to search in"),
-                        arg("query", true, "File name glob, e.g. *.docx"), boolArg("regex"), intArg("maxResults")),
-                op("GREP", "Search text inside files below a folder (literal, or regex with regex=true).",
-                        ToolSafetyLevel.READ, false, arg("path", false, "Absolute folder to search in"),
-                        arg("query", true, "Text or regex to find"), boolArg("regex"), intArg("maxResults")),
-                op("WRITE", "Create or overwrite a text file on the PC with the full content.", ToolSafetyLevel.WRITE, true,
-                        arg("path", true, "Absolute file path"), arg("content", true, "Full file content")),
-                op("EDIT", "Replace an exact text fragment in a file (read the file first; expected must match exactly once).",
+                op("READ", "Read a text file with line numbers ('   12<TAB>text'), 2000 lines per call; use startLine/limit "
+                                + "to page through big files. Returns sha256 for pc__edit. Never copy the number prefix into edits.",
+                        ToolSafetyLevel.READ, false, arg("path", true, "Absolute file path"),
+                        intArg("startLine", "First line to read (1-based)"), intArg("limit", "Max lines (default 2000)")),
+                op("FIND", "Find files by glob, newest first. '*.pdf' matches names anywhere below path; "
+                                + "'src/**/*.java' matches relative paths. Skips .git/node_modules/target/build folders.",
+                        ToolSafetyLevel.READ, false, arg("pattern", true, "Glob, e.g. *.docx or **/*Test.java"),
+                        arg("path", false, "Absolute folder to search in"), intArg("maxResults", "Default 200")),
+                op("GREP", "Search file contents like ripgrep. pattern is a regex (literal=true for plain text). "
+                                + "outputMode: content (file:line:text, default), files (only file names) or count.",
+                        ToolSafetyLevel.READ, false, arg("pattern", true, "Regex or text"),
+                        arg("path", false, "Absolute folder or file"), arg("glob", false, "File-name filter, e.g. *.java or *.{ts,tsx}"),
+                        boolArg("ignoreCase", "Case-insensitive"), boolArg("literal", "Treat pattern as plain text"),
+                        intArg("context", "Lines of context around each match (0-5)"),
+                        arg("outputMode", false, "content | files | count"), intArg("maxResults", "Default 100")),
+                op("WRITE", "Create or overwrite a whole text file. For changes to an existing file prefer pc__edit or pc__patch.",
+                        ToolSafetyLevel.WRITE, true, arg("path", true, "Absolute file path"), arg("content", true, "Full file content")),
+                op("EDIT", "Replace exact text in a file. expected must occur exactly once (add surrounding lines to make it "
+                                + "unique) unless replaceAll=true. For several changes in one file pass edits=[{expected, replacement}] "
+                                + "- applied all-or-nothing. Pass expectedSha256 from pc__read to refuse editing a changed file.",
                         ToolSafetyLevel.WRITE, true, arg("path", true, "Absolute file path"),
-                        arg("expected", true, "Exact current text"), arg("replacement", true, "New text")),
+                        arg("expected", false, "Exact current text"), arg("replacement", false, "New text"),
+                        boolArg("replaceAll", "Replace all occurrences"),
+                        new ToolArgumentDefinition("edits", false, ToolJsonSchema.arrayOf(editItem, "Several edits, applied in order")),
+                        arg("expectedSha256", false, "sha256 from pc__read")),
+                op("PATCH", "Apply a unified diff (one or many files; '--- a/x' '+++ b/x' '@@ ... @@' hunks with exact context "
+                                + "lines). Paths relative to path. All files or none are changed. '--- /dev/null' creates a file.",
+                        ToolSafetyLevel.WRITE, true, arg("patch", true, "Unified diff text"),
+                        arg("path", false, "Base directory for relative paths in the diff")),
                 op("MKDIR", "Create a directory (and parents).", ToolSafetyLevel.WRITE, true,
                         arg("path", true, "Absolute directory path")),
                 op("MOVE", "Move or rename a file/folder within the same allowed folder.", ToolSafetyLevel.WRITE, true,
                         arg("sourcePath", true, "Absolute source path"), arg("targetPath", true, "Absolute target path")),
                 op("DELETE", "Delete a file/folder. Only when the user explicitly asked for this deletion; set approved=true.",
-                        ToolSafetyLevel.DELETE, true, arg("path", true, "Absolute path"), boolArg("approved")),
-                op("SHELL", "Run a command on the PC (cmd.exe; use 'powershell -NoProfile -Command ...' for PowerShell) in cwd. "
-                                + "Returns exit code, stdout and stderr. For long commands set async=true and poll with pc__shell_poll.",
+                        ToolSafetyLevel.DELETE, true, arg("path", true, "Absolute path"), boolArg("approved", "User approved")),
+                op("SHELL", "Run a command in this conversation's terminal session: the working directory and env persist "
+                                + "between calls ('cd project' then 'mvn test' works). cmd.exe by default, shell=powershell for "
+                                + "PowerShell. Waits up to timeoutSeconds (default 120); if still running it keeps running in the "
+                                + "background and you get a processId for pc__shell_wait - nothing is lost. background=true for "
+                                + "servers/watchers. Output = stdout+stderr, long logs keep their beginning and end.",
                         ToolSafetyLevel.WRITE, true, arg("command", true, "Command line"),
-                        arg("cwd", false, "Absolute working directory inside an allowed folder"),
-                        intArg("timeoutSeconds"), boolArg("async"), intArg("maxOutputCharacters")),
-                op("SHELL_POLL", "Get the status/output of an async command started with pc__shell.", ToolSafetyLevel.READ, false,
-                        arg("processId", true, "processId returned by pc__shell")),
-                op("SHELL_CANCEL", "Stop an async command.", ToolSafetyLevel.WRITE, true,
-                        arg("processId", true, "processId returned by pc__shell"))
+                        arg("cwd", false, "Absolute working directory (changes the session directory)"),
+                        intArg("timeoutSeconds", "Max wait before backgrounding (1-900, default 120)"),
+                        boolArg("background", "Start and return immediately"), arg("shell", false, "cmd (default) or powershell"),
+                        boolArg("killOnTimeout", "Kill instead of backgrounding when the wait is over")),
+                op("SHELL_WAIT", "Wait for a background command: returns when it finishes, when untilPattern (regex) appears in "
+                                + "new output, or after waitSeconds. Returns only output produced since the last call.",
+                        ToolSafetyLevel.READ, false, arg("processId", true, "processId from pc__shell"),
+                        intArg("waitSeconds", "Max wait (0-600, default 30)"),
+                        arg("untilPattern", false, "Regex that ends the wait early, e.g. 'BUILD (SUCCESS|FAILURE)' or 'listening on'")),
+                op("SHELL_TAIL", "Show the last lines of a command's output (does not consume it).", ToolSafetyLevel.READ, false,
+                        arg("processId", true, "processId from pc__shell"), intArg("lines", "Default 100")),
+                op("SHELL_CANCEL", "Stop a running command (and its child processes).", ToolSafetyLevel.WRITE, true,
+                        arg("processId", true, "processId from pc__shell")),
+                op("SHELL_LIST", "List terminal sessions (with their directories) and recent commands.", ToolSafetyLevel.READ, false)
         ));
     }
 
@@ -116,9 +149,14 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                 arguments.put(key, value);
             }
         });
+        if ("SHELL".equals(operation) && !arguments.containsKey("session")) {
+            // One terminal session per conversation: cwd and env persist across the agent's calls.
+            arguments.put("session", request.conversationId() == null ? "default" : request.conversationId());
+        }
         Duration timeout = switch (operation) {
-            case "FIND", "GREP" -> SEARCH;
+            case "FIND", "GREP", "PATCH" -> SEARCH;
             case "SHELL" -> shellTimeout(arguments);
+            case "SHELL_WAIT" -> Duration.ofSeconds(clamp(arguments, "waitSeconds", 30, 0, 600) + 30);
             default -> FAST;
         };
         if ("DELETE".equals(operation) && !Boolean.parseBoolean(String.valueOf(arguments.getOrDefault("approved", "false")))) {
@@ -130,7 +168,7 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                     arguments.getOrDefault("path", arguments.getOrDefault("cwd", "")));
             Map<String, Object> result = gateway.codingRequest("pc_" + operation.toLowerCase(Locale.ROOT), arguments, timeout);
             boolean changed = switch (operation) {
-                case "WRITE", "EDIT", "MKDIR", "MOVE", "DELETE", "SHELL" -> true;
+                case "WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "SHELL" -> true;
                 default -> false;
             };
             return new ToolResult(true, TOOL_NAME, operation, request.requestId(), request.conversationId(), changed,
@@ -144,7 +182,25 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
         }
     }
 
+    private static long clamp(Map<String, Object> arguments, String key, long fallback, long min, long max) {
+        long value = fallback;
+        Object raw = arguments.get(key);
+        if (raw != null) {
+            try {
+                value = (long) Double.parseDouble(String.valueOf(raw).strip());
+            } catch (NumberFormatException ignored) {
+                value = fallback;
+            }
+        }
+        value = Math.max(min, Math.min(value, max));
+        arguments.put(key, value);
+        return value;
+    }
+
     private Duration shellTimeout(Map<String, Object> arguments) {
+        if (Boolean.parseBoolean(String.valueOf(arguments.getOrDefault("background", "false")))) {
+            return FAST;
+        }
         long seconds = DEFAULT_SHELL_SECONDS;
         Object raw = arguments.get("timeoutSeconds");
         if (raw != null) {
@@ -174,11 +230,11 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
         return new ToolArgumentDefinition(name, "string", required, description);
     }
 
-    private static ToolArgumentDefinition intArg(String name) {
-        return new ToolArgumentDefinition(name, "integer", false, name);
+    private static ToolArgumentDefinition intArg(String name, String description) {
+        return new ToolArgumentDefinition(name, "integer", false, description);
     }
 
-    private static ToolArgumentDefinition boolArg(String name) {
-        return new ToolArgumentDefinition(name, "boolean", false, name);
+    private static ToolArgumentDefinition boolArg(String name, String description) {
+        return new ToolArgumentDefinition(name, "boolean", false, description);
     }
 }

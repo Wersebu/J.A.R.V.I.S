@@ -189,7 +189,16 @@ public class ChatRunRegistry implements AutoCloseable {
                 if (!node.has("conversationId") || node.path("conversationId").asText("").isBlank()) {
                     node.put("conversationId", conversationId);
                 }
-                lastEvent = node.path("event").asText(node.path("type").asText(""));
+                String event = node.path("event").asText(node.path("type").asText(""));
+                if (!event.isBlank() && !"EXECUTION_TRACE".equals(event) && !"JARVIS_LOG".equals(event)
+                        && !event.endsWith("TOKEN")) {
+                    // Human-meaningful progress for heartbeats, e.g. "TOOL_STARTED pc.SHELL".
+                    String tool = node.path("metadata").path("tool").asText(node.path("metadata").path("toolName").asText(""));
+                    String operation = node.path("metadata").path("operation").asText("");
+                    lastEvent = tool.isBlank() ? event : event + " " + tool + (operation.isBlank() ? "" : "." + operation);
+                } else if (event.endsWith("TOKEN")) {
+                    lastEvent = "GENERATING";
+                }
                 text = node.toString();
                 buffer.addLast(new Frame(seq, text));
                 while (buffer.size() > maxBufferedFrames) {

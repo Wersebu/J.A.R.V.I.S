@@ -55,6 +55,18 @@ class PcToolTest {
     }
 
     @Test
+    void shellUsesTheConversationAsTerminalSessionAndWaitGetsLongerCoreTimeout() {
+        PcTool tool = new PcTool(gateway, true);
+        tool.execute(request("SHELL", Map.of("command", "cd app")));
+        tool.execute(request("SHELL_WAIT", Map.of("processId", "p1", "waitSeconds", 9999)));
+
+        assertThat(payloads.get(0)).containsEntry("session", "c");
+        assertThat(payloads.get(1)).containsEntry("waitSeconds", 600L);
+        assertThat(timeouts.get(1)).isEqualTo(Duration.ofSeconds(630));
+        assertThat(operations).containsExactly("pc_shell", "pc_shell_wait");
+    }
+
+    @Test
     void deleteWithoutApprovalNeverReachesThePc() {
         PcTool tool = new PcTool(gateway, true);
         ToolResult result = tool.execute(request("DELETE", Map.of("path", "C:\\x")));

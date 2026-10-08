@@ -357,6 +357,16 @@ Jarvis works like a coding agent rather than a question-asker:
   Windows PC running the Jarvis app, through the existing bridge - limited to folders allowed in the
   Windows client's `config/pc-access.yml` (default: the user folder). Deletion needs an explicit user
   request (`approved=true`); destructive shell commands stay blocked. Disable with `jarvis.pc.enabled=false`.
+- **Coding-agent toolset on the PC.** `pc__read` (numbered lines, paging, UTF-8/windows-1250), `pc__edit`
+  (exact text, refuses ambiguous matches, multi-edit all-or-nothing, optional sha256 guard, keeps CRLF),
+  `pc__patch` (multi-file unified diff, atomic), `pc__grep` (regex, glob filter, context lines,
+  content/files/count), `pc__find` (recursive globs, newest first), `pc__shell` with a per-conversation
+  terminal session (cwd + env persist), commands that outlive their wait time keep running in the
+  background (`pc__shell_wait` with `untilPattern`, `pc__shell_tail`, `pc__shell_cancel`, `pc__shell_list`).
+- **Context budget.** Results of agent tools (pc, coding, plan, MCP) are sent complete up to
+  `jarvis.tools.max-result-chars` (16000); larger ones are shortened visibly (head + tail + `outputId`)
+  and the full text can be paged with `output__read` / `output__grep`. When the loop exceeds
+  `jarvis.tools.history-char-budget` (120000 chars) the oldest tool results become short stubs.
 - **Modules via MCP.** GitHub (hosted, HTTP) and Google Workspace entries are prepared in
   `application.yml`; any other MCP server can be added the same way - see
   [Adding modules](docs/MCP.md#adding-modules-github-google-anything-with-an-mcp-server).
