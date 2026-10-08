@@ -15,8 +15,8 @@ Jak skonfigurować Jarvisa, żeby pracował jak agent: planował, czytał i edyt
 
 ## 2. PC (aplikacja Windows)
 
-1. Skopiuj `config/pc-access.example.yml` jako `config/pc-access.yml` i wpisz foldery, do których Jarvis ma dostęp (domyślnie tylko folder użytkownika).
-2. W czacie kliknij **📁 Wybierz folder roboczy**. Od tej pory w tej rozmowie:
+1. W czacie kliknij **📁 Wybierz folder roboczy** — wybrany folder jest od razu dozwolony (nic nie trzeba wpisywać w konfiguracji). `config/pc-access.yml` jest opcjonalny: tylko do dodatkowych folderów lub ograniczenia zapisu/terminala.
+2. Po wybraniu folderu Od tej pory w tej rozmowie:
    - ścieżki względne i terminal startują w tym folderze;
    - Jarvis czyta `JARVIS.md` (albo `AGENTS.md` / `CLAUDE.md`) z tego folderu i stosuje się do niego.
 3. Zainstaluj na PC to, czego Jarvis ma używać: `git`, [`gh`](https://cli.github.com/) (GitHub CLI, potem `gh auth login`), JDK/Maven, Node, Python…

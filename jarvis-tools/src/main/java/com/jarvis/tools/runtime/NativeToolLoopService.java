@@ -93,7 +93,9 @@ public class NativeToolLoopService {
     private int maxResultChars = 16_000;
     /** Budget for all loop message contents before the oldest tool results are elided. */
     private int historyCharBudget = 120_000;
-    private static final int MAX_PLAN_GATE_ATTEMPTS = 2;
+    private static final int MAX_PLAN_GATE_ATTEMPTS = 1;
+    /** A rejected-but-real answer at least this long is kept as the fallback final answer. */
+    private static final int MIN_FALLBACK_ANSWER_LENGTH = 20;
 
     /**
      * Creates the native tool loop service.
@@ -223,6 +225,11 @@ public class NativeToolLoopService {
         ToolScopeResolution scope = schemaMapper.resolveScope(intent, request.userMessage(), request.goal(), request.context());
         ToolIntent resolvedIntent = scope.resolvedIntent();
         List<NativeToolDefinition> definitions = scope.definitions();
+        if (!workingDirectory(request).isBlank() && activeCodingWorkspaceId(request).isBlank()) {
+            // The conversation works in a folder chosen in the chat (pc__* tools). coding__* tools need a
+            // workspace pinned in the "Kod" tab and would only fail and confuse the model here.
+            definitions = definitions.stream().filter(definition -> !definition.name().startsWith("coding__")).toList();
+        }
         if (definitions.isEmpty()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
         }
@@ -257,6 +264,10 @@ public class NativeToolLoopService {
             maxCalls = Math.max(maxCalls, properties.maxCallsAgent());
         }
         int planGateAttempts = 0;
+        // The last real answer a gate sent back for more work. If the follow-up turns then produce
+        // nothing usable (a small model often believes it already answered), the user gets this
+        // answer instead of a generic "could not finish" message - a real answer is never thrown away.
+        String lastRejectedAnswer = "";
         List<ModelMessage> messages = new ArrayList<>();
         List<ToolRuntimeStep> steps = new ArrayList<>();
         List<ToolResult> results = new ArrayList<>();
@@ -867,7 +878,7 @@ public class NativeToolLoopService {
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "NO_NATIVE_TOOL_CALL_PROGRESS",
                             "Native tool loop stopped: consecutive turns produced no native tool call and no new evidence",
                             null, step, terminationMetadata(Map.of("consecutiveNoToolProgress", consecutiveNoToolProgress), noProgressInfo));
-                    return new ToolCallingResult(true, deterministicBlockedAnswer(new CompletionAssessment(false,
+                    return new ToolCallingResult(true, answerOrBlocked(lastRejectedAnswer, new CompletionAssessment(false,
                             "NO_NATIVE_TOOL_CALL_PROGRESS", "Two consecutive turns produced no native tool call and no new evidence.")),
                             steps, results, noProgressInfo);
                 }
@@ -928,8 +939,16 @@ public class NativeToolLoopService {
                 }
 
                 Optional<TaskPlan> unfinishedPlan = planTouchedThisLoop(steps) ? unfinishedPlan(request) : Optional.empty();
+                if (unfinishedPlan.isPresent() && onlyFinalStepLeft(unfinishedPlan.get())) {
+                    // "Give the answer / summarize" is the last step: this answer completes it.
+                    completeFinalPlanStep(request, unfinishedPlan.get());
+                    unfinishedPlan = Optional.empty();
+                }
                 if (unfinishedPlan.isPresent() && planGateAttempts < MAX_PLAN_GATE_ATTEMPTS) {
                     planGateAttempts++;
+                    if (content.strip().length() >= MIN_FALLBACK_ANSWER_LENGTH) {
+                        lastRejectedAnswer = content.strip();
+                    }
                     if (step >= maxCalls) {
                         maxCalls = step + 2;
                     }
@@ -941,9 +960,9 @@ public class NativeToolLoopService {
                     messages.add(ModelMessage.assistant(content, List.of()));
                     messages.add(ModelMessage.system("Your plan still has unfinished steps:\n"
                             + unfinishedPlan.get().render()
-                            + "Continue executing the next step with the tools now. If a step truly cannot be done, "
-                            + "mark it blocked or skipped with plan__update_step and a short reason, then continue. "
-                            + "Give the final answer only when every step is done, blocked or skipped."));
+                            + "IMPORTANT: the user has NOT seen your message above - it was held back. Either continue the "
+                            + "remaining steps with tools, or, if they are already done or not needed, mark them with "
+                            + "plan__update_step (done/skipped) and then write your COMPLETE final answer again."));
                     continue;
                 }
 
@@ -1011,6 +1030,9 @@ public class NativeToolLoopService {
                     }
                     LOGGER.info("[AGENT_CONTINUE] requestId={} step={} attempt={} reason=GOAL_CONTRACT_INCOMPLETE",
                             request.requestId(), step, attempt);
+                    if (content.strip().length() >= MIN_FALLBACK_ANSWER_LENGTH) {
+                        lastRejectedAnswer = content.strip();
+                    }
                     messages.add(ModelMessage.assistant(content, List.of()));
                     messages.add(ModelMessage.system(goalContinueStatusBlock(agentState.goalContract(), verification, results)));
                     continue;
@@ -1027,7 +1049,7 @@ public class NativeToolLoopService {
                             verification.nextGoal().isBlank() ? verification.reason() : verification.nextGoal(),
                             verification.missingCriteria());
                     logTerminationSummary(request, blockedInfo);
-                    return new ToolCallingResult(true, deterministicBlockedAnswer(new CompletionAssessment(false,
+                    return new ToolCallingResult(true, answerOrBlocked(lastRejectedAnswer, new CompletionAssessment(false,
                             "GOAL_CONTRACT_INCOMPLETE", verification.reason())), steps, results, blockedInfo);
                 } else {
                     LOGGER.info("[AGENT_FINISH] requestId={} step={} status=COMPLETE", request.requestId(), step);
@@ -1121,7 +1143,7 @@ public class NativeToolLoopService {
                             verification.nextGoal().isBlank() ? verification.reason() : verification.nextGoal(),
                             verification.missingCriteria());
                     logTerminationSummary(request, blockedInfo);
-                    return new ToolCallingResult(true, deterministicBlockedAnswer(new CompletionAssessment(false,
+                    return new ToolCallingResult(true, answerOrBlocked(lastRejectedAnswer, new CompletionAssessment(false,
                             "GOAL_CONTRACT_INCOMPLETE", verification.reason())), steps, results, blockedInfo);
                 }
                 LOGGER.info("[FINAL_SYNTHESIS] requestId={} goalComplete=true", request.requestId());
@@ -3023,6 +3045,49 @@ public class NativeToolLoopService {
                 || "READ_RETRY_PERMISSION_QUESTION_NOT_COMPLETE".equals(assessment.reason());
     }
 
+    /**
+     * Prefers a real answer the model already wrote (and a gate held back) over the generic
+     * "could not finish" text.
+     */
+    private String answerOrBlocked(String lastRejectedAnswer, CompletionAssessment assessment) {
+        if (lastRejectedAnswer != null && !lastRejectedAnswer.isBlank()) {
+            LOGGER.info("[NATIVE_TOOL_LOOP] returning the last real answer instead of a blocked message reason={}",
+                    assessment.reason());
+            return lastRejectedAnswer;
+        }
+        return deterministicBlockedAnswer(assessment);
+    }
+
+    private static final java.util.regex.Pattern FINAL_STEP_PATTERN = java.util.regex.Pattern.compile(
+            "(?iu)(answer|respond|reply|report|summar|present|final|tell the user|odpowied|podsumuj|przedstaw|zwr[oó]ć|"
+                    + "poda[jć]|wynik|raport|przeka[zż])");
+
+    private static boolean onlyFinalStepLeft(TaskPlan plan) {
+        List<TaskPlan.Step> open = plan.steps().stream()
+                .filter(step -> step.status() == TaskPlanService.StepStatus.PENDING
+                        || step.status() == TaskPlanService.StepStatus.IN_PROGRESS)
+                .toList();
+        if (open.size() != 1) {
+            return false;
+        }
+        TaskPlan.Step last = plan.steps().get(plan.steps().size() - 1);
+        return open.get(0).number() == last.number() && FINAL_STEP_PATTERN.matcher(last.title()).find();
+    }
+
+    private void completeFinalPlanStep(ToolCallingRequest request, TaskPlan plan) {
+        try {
+            TaskPlan.Step last = plan.steps().get(plan.steps().size() - 1);
+            TaskPlan updated = taskPlanService.update(request.conversationId(), last.number(), TaskPlanService.StepStatus.DONE,
+                    "final answer given");
+            Map<String, Object> metadata = new LinkedHashMap<>();
+            metadata.put("plan", updated.toMap());
+            metadata.put("conversationId", updated.conversationId());
+            cognitiveEventBus.publish(CognitiveEventType.PLAN_UPDATED, "FINISHED", updated.render(), null, metadata);
+        } catch (RuntimeException exception) {
+            LOGGER.debug("[NATIVE_TOOL_LOOP] could not complete final plan step: {}", exception.getMessage());
+        }
+    }
+
     private String deterministicBlockedAnswer(CompletionAssessment assessment) {
         return "Nie mogę rzetelnie zakończyć tego kroku, bo pętla narzędzi nie uzyskała jeszcze "
                 + "konkretnego wyniku z operacji odczytu/wyszukania/inspekcji. "
@@ -3777,7 +3842,8 @@ public class NativeToolLoopService {
     private String activeCodingWorkspaceLabel(ToolCallingRequest request) {
         String workspaceId = activeCodingWorkspaceId(request);
         if (workspaceId.isBlank()) {
-            return "none selected";
+            return workingDirectory(request).isBlank() ? "none selected"
+                    : "none (this conversation uses the working folder below - use pc__* tools, not coding__*)";
         }
         return "id=" + workspaceId
                 + ", name=" + Objects.toString(request.context().getOrDefault("activeCodingWorkspaceName", ""), "")

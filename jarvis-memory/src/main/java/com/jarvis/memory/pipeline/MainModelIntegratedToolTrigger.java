@@ -125,13 +125,18 @@ public class MainModelIntegratedToolTrigger implements ToolTriggerStrategy {
     }
 
     private String codingWorkspacePolicy(PipelineContext context) {
+        String workingDirectory = context.request().workingDirectory();
+        String folder = workingDirectory.isBlank() ? ""
+                : "Working folder on the user's PC (chosen by the user for this conversation): " + workingDirectory
+                + ". \"The project\", \"the selected/working folder\", \"here\" and relative file names refer to it. "
+                + "Requests about its files, code, build or Git need TOOL_REQUEST (Core uses the pc__* tools there).\n";
         if (context.request().activeCodingWorkspaceId().isBlank()) {
-            return "Active Coding Workspace: none selected.\n";
+            return folder.isBlank() ? "Active Coding Workspace: none selected.\n" : folder;
         }
         return "Active Coding Workspace: id=" + context.request().activeCodingWorkspaceId()
                 + ", name=" + context.request().activeCodingWorkspaceName()
                 + ", host=" + context.request().activeCodingWorkspaceHost()
-                + ". The user selected this workspace; do not ask the model to choose or change it.\n";
+                + ". The user selected this workspace; do not ask the model to choose or change it.\n" + folder;
     }
 
     private String advisoryRule(ToolIntent detectedIntent) {
