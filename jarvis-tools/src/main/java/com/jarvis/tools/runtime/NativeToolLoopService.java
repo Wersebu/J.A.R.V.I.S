@@ -87,6 +87,11 @@ public class NativeToolLoopService {
     private final GoalCompletionVerifier goalCompletionVerifier;
     /** Optional agent planner; when present, unfinished plans raise the budget and gate the final answer. */
     private TaskPlanService taskPlanService;
+    /** Tells whether the active model can see images (screenshots are then shown to it directly). */
+    private com.jarvis.common.model.ActiveModelService activeModelService;
+    private static final String IMAGE_KEY = "_imageBase64";
+    private static final String SCREENSHOT_PREFIX = "[Screenshot from pc__screenshot]";
+    private static final int MAX_SCREENSHOTS_IN_CONTEXT = 2;
     /** Keeps full tool outputs that were shortened or elided (read back with the output tool). */
     private ToolOutputStore toolOutputStore;
     /** Per-result budget for agent tools (pc, coding, plan, output, MCP) before visible shortening. */
@@ -144,6 +149,62 @@ public class NativeToolLoopService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setTaskPlanService(TaskPlanService taskPlanService) {
         this.taskPlanService = taskPlanService;
+    }
+
+    /**
+     * Wires the active-model capability source used to decide whether screenshots can be shown.
+     *
+     * @param activeModelService active model service
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setActiveModelService(com.jarvis.common.model.ActiveModelService activeModelService) {
+        this.activeModelService = activeModelService;
+    }
+
+    private boolean modelCanSeeImages() {
+        try {
+            return activeModelService != null && activeModelService.activeModelCapabilities()
+                    .contains(com.jarvis.common.model.ModelCapability.VISION);
+        } catch (RuntimeException exception) {
+            return false;
+        }
+    }
+
+    /**
+     * Shows a screenshot returned by a tool to a vision-capable model as an image in the
+     * conversation (only the newest few are kept, older ones become text stubs).
+     */
+    private void attachScreenshot(List<ModelMessage> messages, ToolResult result) {
+        Object image = result.data() == null ? null : result.data().get(IMAGE_KEY);
+        if (!(image instanceof String base64) || base64.isBlank() || !modelCanSeeImages()) {
+            return;
+        }
+        List<Integer> older = new ArrayList<>();
+        for (int i = 0; i < messages.size(); i++) {
+            ModelMessage message = messages.get(i);
+            if (message.content() != null && message.content().startsWith(SCREENSHOT_PREFIX) && !message.images().isEmpty()) {
+                older.add(i);
+            }
+        }
+        for (int k = 0; k < older.size() - (MAX_SCREENSHOTS_IN_CONTEXT - 1); k++) {
+            int index = older.get(k);
+            messages.set(index, ModelMessage.user(messages.get(index).content() + " (older screenshot removed to save context)"));
+        }
+        String target = String.valueOf(result.data().getOrDefault("target", ""));
+        messages.add(ModelMessage.user(SCREENSHOT_PREFIX + " " + target + " (" + result.data().getOrDefault("viewport", "") + ")\n"
+                        + "Look at it carefully as a demanding reviewer: compare it with what the user asked for, list concrete "
+                        + "visual and content problems (layout, spacing, contrast, broken elements, wrong or invented data, "
+                        + "mobile layout), then fix them with pc__edit and take another screenshot to verify."
+                        + consoleErrorsNote(result),
+                List.of(new com.jarvis.common.ai.ImageAttachment(base64, "screenshot.png"))));
+    }
+
+    private static String consoleErrorsNote(ToolResult result) {
+        Object errors = result.data().get("consoleErrors");
+        if (errors instanceof java.util.Collection<?> list && !list.isEmpty()) {
+            return "\nThe page also reported errors - fix them too: " + list;
+        }
+        return "";
     }
 
     /**
@@ -429,8 +490,8 @@ public class NativeToolLoopService {
                 request.requestId(), agentState.goalContract().originalGoal(), agentState.goalContract().completionCriteria().size());
 
         for (int step = 1; step <= maxCalls; step++) {
-            if (maxCalls < properties.maxCallsAgent() && hasUnfinishedPlan(request)) {
-                // A plan created mid-loop turns this into an agent task from now on.
+            if (maxCalls < properties.maxCallsAgent() && (hasUnfinishedPlan(request) || usedAgentTools(steps))) {
+                // A plan created mid-loop, or real work on the PC/project, turns this into an agent task.
                 maxCalls = properties.maxCallsAgent();
             }
             AiTraceTurnContext.set(step);
@@ -809,6 +870,7 @@ public class NativeToolLoopService {
                             result.success() ? "OK" : "FAILED", result));
                     recordGoalEvidence(request, agentState, action, result);
                     messages.add(toolResultMessage(request, step, call, compactToolResult(result)));
+                    attachScreenshot(messages, result);
                     if (!newFacts.isEmpty()) {
                         messages.add(ModelMessage.system(acquiredFactsBlock(acquiredFacts)));
                     }
@@ -2012,6 +2074,13 @@ public class NativeToolLoopService {
         }
     }
 
+    private static boolean usedAgentTools(List<ToolRuntimeStep> steps) {
+        return steps.stream().anyMatch(step -> {
+            String tool = step.tool() == null ? "" : step.tool().toLowerCase(Locale.ROOT);
+            return tool.equals("pc") || tool.equals("coding") || tool.equals("agent");
+        });
+    }
+
     private boolean planTouchedThisLoop(List<ToolRuntimeStep> steps) {
         return steps.stream().anyMatch(step -> "plan".equalsIgnoreCase(step.tool()));
     }
@@ -2038,7 +2107,15 @@ public class NativeToolLoopService {
                 + "- A result marked _shortened has an outputId; read the omitted part with output__read / output__grep.\n"
                 + "- For a broad search or analysis whose raw output would be large, delegate it with agent__run and work from "
                 + "its report.\n"
-                + "- If you broke something, pc__undo restores the previous content of files you changed.\n");
+                + "- If you broke something, pc__undo restores the previous content of files you changed.\n"
+                + "- Quality loop for anything you create (web page, UI, document, code): do not stop at the first draft. "
+                + "Check it (pc__write/pc__edit report 'problems' - fix every one; run builds/tests for code; for pages and UIs "
+                + "take pc__screenshot on desktop and device=mobile), critique it against the user's request, improve it, "
+                + "and repeat 2-3 times before the final answer.\n"
+                + "- Real-world content (a business, product, person, place): gather real facts with web__search / "
+                + "web__read_web_page (more reviews, services, hours, photos' descriptions) and use only what you found or "
+                + "were given - never invent reviews, ratings or prices; keep quoted text exact and ratings consistent with "
+                + "the review's tone.\n");
         unfinishedPlan(request).ifPresent(plan -> block
                 .append("\nThis conversation has an UNFINISHED plan from earlier - continue it (do not recreate it "
                         + "unless the user asked for something different):\n")
@@ -2687,6 +2764,18 @@ public class NativeToolLoopService {
             value.put("errorCode", result.errorCode());
             value.put("errorMessage", result.errorMessage());
             value.put("requiresApproval", result.requiresApproval());
+            if (result.data() != null && result.data().containsKey(IMAGE_KEY)) {
+                // Never put image bytes into the text context; the image itself is attached separately.
+                Map<String, Object> withoutImage = new LinkedHashMap<>(result.data());
+                withoutImage.remove(IMAGE_KEY);
+                withoutImage.put("image", modelCanSeeImages()
+                        ? "The screenshot is attached in the next message - look at it."
+                        : "Screenshot taken, but the active model cannot see images. Switch to a vision model "
+                        + "(e.g. gemma3/gemma4, qwen2.5vl) for visual review.");
+                result = new ToolResult(result.success(), result.tool(), result.operation(), result.requestId(),
+                        result.conversationId(), result.changed(), result.targetNodeIds(), result.message(), withoutImage,
+                        result.errorCode(), result.errorMessage(), result.requiresApproval(), result.draftId());
+            }
             if (isAgentTool(result.tool())) {
                 // Agent tools (files, shell, MCP) need complete results - a silently cut file or log
                 // makes the model act on wrong information. Shorten only past the budget, visibly.

@@ -138,6 +138,17 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                 op("SHELL_CANCEL", "Stop a running command (and its child processes).", ToolSafetyLevel.WRITE, true,
                         arg("processId", true, "processId from pc__shell")),
                 op("SHELL_LIST", "List terminal sessions (with their directories) and recent commands.", ToolSafetyLevel.READ, false),
+                op("SCREENSHOT", "Render a local HTML file (path) or a URL (url, e.g. http://localhost:5173) in a headless "
+                                + "browser on the PC and LOOK at it. Use after creating/changing a page or UI to review it visually; "
+                                + "device=mobile checks the phone layout; anchor=<section id> shows lower sections; fullPage=true captures the "
+                                + "whole page. The result also lists JavaScript/console errors and failed resources.", ToolSafetyLevel.READ, false,
+                        arg("path", false, "Absolute or relative path of an .html file"),
+                        arg("url", false, "http(s) URL instead of a file"),
+                        arg("device", false, "desktop (default, 1366x900) or mobile (390x844)"),
+                        arg("anchor", false, "Section id to scroll to, e.g. reviews or contact - use it to see lower parts of the page"),
+                        boolArg("fullPage", "Capture the whole page top to bottom (good for a first overview)"),
+                        intArg("width", "Viewport width in px"),
+                        intArg("height", "Viewport height in px (keep ~900: 100vh sections grow with it; use anchor instead)")),
                 op("CHANGES", "List files changed by pc__write/edit/patch/delete in this conversation (newest first).",
                         ToolSafetyLevel.READ, false),
                 op("UNDO", "Undo the last file changes made in this conversation (restores previous content, removes created "
@@ -181,7 +192,7 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
             arguments.put("session", request.conversationId() == null ? "default" : request.conversationId());
         }
         Duration timeout = switch (operation) {
-            case "FIND", "GREP", "PATCH" -> SEARCH;
+            case "FIND", "GREP", "PATCH", "SCREENSHOT" -> SEARCH;
             case "SHELL" -> shellTimeout(arguments);
             case "SHELL_WAIT" -> Duration.ofSeconds(clamp(arguments, "waitSeconds", 30, 0, 600) + 30);
             // The PC asks the user before deleting; leave time for the answer.
@@ -196,8 +207,15 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                 case "WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "SHELL", "UNDO" -> true;
                 default -> false;
             };
+            Map<String, Object> data = result == null ? Map.of() : result;
+            if (data.containsKey("imageBase64")) {
+                // The loop shows the image to a vision model separately; keep the bytes out of the text.
+                Map<String, Object> copy = new LinkedHashMap<>(data);
+                copy.put("_imageBase64", copy.remove("imageBase64"));
+                data = copy;
+            }
             return new ToolResult(true, TOOL_NAME, operation, request.requestId(), request.conversationId(), changed,
-                    List.of(), "PC " + operation + " finished", result == null ? Map.of() : result, "", "", false, "");
+                    List.of(), "PC " + operation + " finished", data, "", "", false, "");
         } catch (RuntimeException exception) {
             String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
             if (message.contains("not connected") || message.contains("no Windows Bridge")) {

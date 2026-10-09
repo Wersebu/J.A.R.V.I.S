@@ -151,6 +151,40 @@ class NativeToolLoopServicePlanGateTest {
                 || "DUPLICATE_TOOL_CALL".equals(step.action()));
     }
 
+    @Test
+    void screenshotsAreShownToAVisionModelAsImagesNotAsTextAndOnlyTheNewestTwoAreKept() {
+        CognitiveEventBus bus = new NoopBus();
+        TaskPlanService plans = new TaskPlanService(new ObjectMapper(), "");
+        PlanTool planTool = new PlanTool(plans, bus);
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(call("pc__read", Map.of("path", "index.html")));
+        turns.add(call("pc__screenshot", Map.of("path", "index.html")));
+        turns.add(call("pc__screenshot", Map.of("path", "index.html", "device", "mobile")));
+        turns.add(call("pc__screenshot", Map.of("path", "index.html", "width", 1600)));
+        turns.add(text("Strona sprawdzona na 3 zrzutach, poprawki naniesione - wersja 2.0.28."));
+        RecordingProvider provider = new RecordingProvider(turns);
+        NativeToolLoopService service = service(provider, planTool, plans, bus);
+        service.setActiveModelService(new com.jarvis.common.model.ActiveModelService() {
+            @Override public String activeModel() { return "gemma4"; }
+            @Override public java.util.Set<com.jarvis.common.model.ModelCapability> activeModelCapabilities() {
+                return java.util.Set.of(com.jarvis.common.model.ModelCapability.VISION);
+            }
+            @Override public com.jarvis.common.model.ModelCatalog catalog() { return null; }
+            @Override public com.jarvis.common.model.ModelSwitchResult switchTo(String requestedModel) { return null; }
+        });
+
+        ToolCallingResult result = service.execute(request("conv-shot"));
+
+        assertThat(result.finalAnswer()).contains("3 zrzutach");
+        List<ModelMessage> last = provider.lastMessages;
+        long withImages = last.stream().filter(message -> !message.images().isEmpty()).count();
+        assertThat(withImages).isEqualTo(2);
+        assertThat(last.stream().filter(message -> "tool".equals(message.role())).map(ModelMessage::content))
+                .allMatch(content -> !content.contains("iVBORw0KGgo"))
+                .anyMatch(content -> content.contains("attached in the next message"));
+        assertThat(provider.sawSystemNote("Quality loop")).isTrue();
+    }
+
     private NativeToolLoopService service(RecordingProvider provider, PlanTool planTool, TaskPlanService plans, CognitiveEventBus bus) {
         JarvisTool pc = fakePcReadTool();
         ToolManager manager = new ToolManager() {
@@ -173,6 +207,12 @@ class NativeToolLoopServicePlanGateTest {
             @Override public String getName() { return "pc"; }
             @Override public String getDescription() { return "pc"; }
             @Override public ToolResult execute(ToolRequest request) {
+                if ("SCREENSHOT".equalsIgnoreCase(request.operation())) {
+                    return new ToolResult(true, "pc", "SCREENSHOT", request.requestId(), request.conversationId(), false, List.of(),
+                            "PC SCREENSHOT finished", Map.of("target", "file:///index.html", "viewport", "1366x900",
+                            "_imageBase64", "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="),
+                            "", "", false, "");
+                }
                 return new ToolResult(true, "pc", "READ", request.requestId(), request.conversationId(), false, List.of(),
                         "PC READ finished", Map.of("content", "   1\tWersja aplikacji: 2.0.28"), "", "", false, "");
             }
@@ -183,6 +223,11 @@ class NativeToolLoopServicePlanGateTest {
         ToolDefinition pc = new ToolDefinition("pc", "pc", List.of(
                 new com.jarvis.tools.schema.ToolOperationDefinition("READ", "read",
                         List.of(new com.jarvis.tools.schema.ToolArgumentDefinition("path", "string", true, "path")), false,
+                        com.jarvis.tools.schema.ToolSafetyLevel.READ),
+                new com.jarvis.tools.schema.ToolOperationDefinition("SCREENSHOT", "screenshot",
+                        List.of(new com.jarvis.tools.schema.ToolArgumentDefinition("path", "string", false, "path"),
+                                new com.jarvis.tools.schema.ToolArgumentDefinition("device", "string", false, "device"),
+                                new com.jarvis.tools.schema.ToolArgumentDefinition("width", "integer", false, "width")), false,
                         com.jarvis.tools.schema.ToolSafetyLevel.READ),
                 new com.jarvis.tools.schema.ToolOperationDefinition("EDIT", "edit",
                         List.of(new com.jarvis.tools.schema.ToolArgumentDefinition("path", "string", true, "path")), true,
@@ -223,6 +268,7 @@ class NativeToolLoopServicePlanGateTest {
     private static final class RecordingProvider implements AIProvider {
         private final Deque<ModelResponse> turns;
         private final List<String> systemNotes = new ArrayList<>();
+        private List<ModelMessage> lastMessages = List.of();
         private int calls;
 
         private RecordingProvider(Deque<ModelResponse> turns) {
@@ -250,6 +296,7 @@ class NativeToolLoopServicePlanGateTest {
         @Override
         public ModelResponse toolChat(Brain brain, List<ModelMessage> messages, List<NativeToolDefinition> tools, AIJobType jobType) {
             calls++;
+            lastMessages = List.copyOf(messages);
             messages.stream().filter(message -> "system".equalsIgnoreCase(String.valueOf(message.role())))
                     .forEach(message -> systemNotes.add(String.valueOf(message.content())));
             return turns.isEmpty() ? text("") : turns.poll();
