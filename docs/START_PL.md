@@ -40,6 +40,11 @@ Przykładowy `JARVIS.md` w projekcie:
 - Zerwane połączenie nie przerywa pracy — aplikacja sama się wznawia.
 - „Kontynuuj” wznawia niedokończony plan. „Cofnij zmiany” → Jarvis używa `pc__undo`.
 
+### Głos
+
+- **🔊 Głos** i **🎤** (Ctrl+Spacja): rozmowa głosowa, Jarvis mówi, co robi, i czyta odpowiedzi. Do mówienia *do* Jarvisa potrzebny jest Whisper na serwerze — instrukcja w `docs/VOICE_PL.md`.
+- „Otwórz Spotify i puść muzykę”, „następny utwór”, „ścisz” — `pc__open` i `pc__media`.
+
 ### Przeglądarka Jarvisa
 
 - Jarvis ma własną przeglądarkę (Edge/Chrome na Twoim PC, osobny profil — Twoje konta i hasła są nietknięte): otwiera linki, klika, wpisuje, przewija, cofa i robi zrzuty ekranu (`browser__*`). Nadaje się do stron, które wymagają JavaScriptu lub klikania — Google Maps i opinie, sklepy, formularze — oraz do sprawdzania strony, którą zbudował.

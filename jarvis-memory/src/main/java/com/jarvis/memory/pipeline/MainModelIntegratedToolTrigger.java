@@ -126,10 +126,15 @@ public class MainModelIntegratedToolTrigger implements ToolTriggerStrategy {
 
     private String codingWorkspacePolicy(PipelineContext context) {
         String workingDirectory = context.request().workingDirectory();
-        String folder = workingDirectory.isBlank() ? ""
+        String voice = context.request().voiceMode()
+                ? "VOICE CONVERSATION: the user is talking to you by voice and hears your answer read aloud. Answer like "
+                + "a spoken assistant (think J.A.R.V.I.S.): short, natural sentences, no markdown tables, lists or code "
+                + "in the spoken part, no URLs read out. Put long details (code, tables) after a short spoken summary.\n"
+                : "";
+        String folder = voice + (workingDirectory.isBlank() ? ""
                 : "Working folder on the user's PC (chosen by the user for this conversation): " + workingDirectory
                 + ". \"The project\", \"the selected/working folder\", \"here\" and relative file names refer to it. "
-                + "Requests about its files, code, build or Git need TOOL_REQUEST (Core uses the pc__* tools there).\n";
+                + "Requests about its files, code, build or Git need TOOL_REQUEST (Core uses the pc__* tools there).\n");
         if (context.request().activeCodingWorkspaceId().isBlank()) {
             return folder.isBlank() ? "Active Coding Workspace: none selected.\n" : folder;
         }

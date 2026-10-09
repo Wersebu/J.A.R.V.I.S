@@ -151,6 +151,24 @@ jarvis:
     # pc__* tool: files and shell on the Windows PC running the Jarvis app. Which folders are
     # reachable is decided on the PC itself in config/pc-access.yml (default: the user folder).
     enabled: true
+  browser:
+    # browser__* tool: Jarvis's own web browser (Edge/Chrome) on the PC running the Jarvis app.
+    enabled: ${JARVIS_BROWSER_ENABLED:true}
+  voice:
+    # Voice mode of the Windows app. Speech recognition needs an OpenAI-compatible audio server
+    # (/v1/audio/transcriptions), e.g. speaches (faster-whisper) next to Ollama - see docs/VOICE_PL.md.
+    language: ${JARVIS_VOICE_LANGUAGE:pl}
+    stt:
+      base-url: ${JARVIS_VOICE_STT_URL:}
+      api-key: ${JARVIS_VOICE_STT_API_KEY:}
+      model: ${JARVIS_VOICE_STT_MODEL:Systran/faster-whisper-medium}
+    tts:
+      # Optional: a nicer server voice (/v1/audio/speech, WAV). Empty = the Windows system voice.
+      base-url: ${JARVIS_VOICE_TTS_URL:}
+      api-key: ${JARVIS_VOICE_TTS_API_KEY:}
+      model: ${JARVIS_VOICE_TTS_MODEL:}
+      voice: ${JARVIS_VOICE_TTS_VOICE:}
+      speed: ${JARVIS_VOICE_TTS_SPEED:1.0}
   planner:
     # Agent task plans (plan__* tool) survive restarts here.
     storage-dir: ./data/plans

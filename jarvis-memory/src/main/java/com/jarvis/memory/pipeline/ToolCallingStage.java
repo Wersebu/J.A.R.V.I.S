@@ -184,6 +184,9 @@ public class ToolCallingStage implements PipelineStage {
         if (!context.request().workingDirectory().isBlank()) {
             merged.put("workingDirectory", context.request().workingDirectory());
         }
+        if (context.request().voiceMode()) {
+            merged.put("voiceMode", true);
+        }
         return Map.copyOf(merged);
     }
 

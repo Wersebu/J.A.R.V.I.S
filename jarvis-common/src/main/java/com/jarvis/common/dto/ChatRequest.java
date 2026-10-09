@@ -18,6 +18,7 @@ import java.util.List;
  * @param activeCodingWorkspaceHost host of the selected Coding Workspace
  * @param workingDirectory folder on the user's PC this conversation works in (like a coding agent's
  *        working directory); relative pc__* paths and new terminal sessions start there
+ * @param voiceMode the user talks by voice and hears the answer read aloud (short spoken style)
  */
 public record ChatRequest(
         String conversationId,
@@ -28,7 +29,8 @@ public record ChatRequest(
         String activeCodingWorkspaceId,
         String activeCodingWorkspaceName,
         String activeCodingWorkspaceHost,
-        String workingDirectory
+        String workingDirectory,
+        boolean voiceMode
 ) {
 
     /**
@@ -46,6 +48,21 @@ public record ChatRequest(
     /**
      * Creates a chat request without a working directory.
      */
+    public ChatRequest(
+            String conversationId,
+            String message,
+            Instant clientRequestTimestamp,
+            KnowledgeMode knowledgeMode,
+            List<AttachmentReference> attachments,
+            String activeCodingWorkspaceId,
+            String activeCodingWorkspaceName,
+            String activeCodingWorkspaceHost,
+            String workingDirectory
+    ) {
+        this(conversationId, message, clientRequestTimestamp, knowledgeMode, attachments, activeCodingWorkspaceId,
+                activeCodingWorkspaceName, activeCodingWorkspaceHost, workingDirectory, false);
+    }
+
     public ChatRequest(
             String conversationId,
             String message,

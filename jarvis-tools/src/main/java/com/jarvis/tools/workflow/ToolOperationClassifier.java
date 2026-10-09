@@ -117,7 +117,7 @@ public final class ToolOperationClassifier {
             case "LIST", "INFO" -> ToolOperationRole.INSPECT;
             case "FIND", "GREP" -> ToolOperationRole.SEARCH;
             case "WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "UNDO" -> ToolOperationRole.WRITE;
-            case "SHELL", "SHELL_WAIT", "SHELL_CANCEL" -> ToolOperationRole.EXECUTE;
+            case "SHELL", "SHELL_WAIT", "SHELL_CANCEL", "OPEN", "MEDIA" -> ToolOperationRole.EXECUTE;
             case "SHELL_LIST" -> ToolOperationRole.DISCOVERY;
             default -> null;
         };

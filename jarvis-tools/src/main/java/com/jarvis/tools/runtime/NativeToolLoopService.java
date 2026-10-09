@@ -2176,6 +2176,11 @@ public class NativeToolLoopService {
                 .append("\nThis conversation has an UNFINISHED plan from earlier - continue it (do not recreate it "
                         + "unless the user asked for something different):\n")
                 .append(plan.render()));
+        if (Boolean.TRUE.equals(request.context().get("voiceMode"))) {
+            block.append("\nVoice conversation: the user hears you. Your final answer is read aloud - start it with one to "
+                    + "three short, natural spoken sentences (what you did / the result), then any details. During long tasks "
+                    + "a short system__notify_user (\"Zbieram dane, za chwilę wracam.\") keeps the user informed.\n");
+        }
         return block.toString();
     }
 

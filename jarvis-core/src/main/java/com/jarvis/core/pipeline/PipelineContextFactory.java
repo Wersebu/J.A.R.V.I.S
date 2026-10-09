@@ -89,7 +89,8 @@ public class PipelineContextFactory {
                         request.activeCodingWorkspaceId(),
                         request.activeCodingWorkspaceName(),
                         request.activeCodingWorkspaceHost(),
-                        request.workingDirectory()
+                        request.workingDirectory(),
+                        request.voiceMode()
                 ),
                 modelEventSink,
                 eventSink

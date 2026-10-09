@@ -149,6 +149,15 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                         boolArg("fullPage", "Capture the whole page top to bottom (good for a first overview)"),
                         intArg("width", "Viewport width in px"),
                         intArg("height", "Viewport height in px (keep ~900: 100vh sections grow with it; use anchor instead)")),
+                op("OPEN", "Open something on the PC for the user, like double-clicking it: an app by name (spotify, "
+                                + "notepad, calc, chrome, discord, steam...), an app link (spotify:, spotify:search:daft punk, "
+                                + "ms-settings:, mailto:...), a web address in the user's default browser, or a file/folder. "
+                                + "Opening programs/scripts (.exe, .bat, .ps1...) asks the user first.", ToolSafetyLevel.WRITE, false,
+                        arg("target", true, "App name, URI, URL, or path")),
+                op("MEDIA", "Control music/video playing on the PC (Spotify, YouTube in a browser, ...) with the media keys. "
+                                + "To start music: pc__open spotify, wait a moment, then MEDIA play_pause.", ToolSafetyLevel.WRITE, false,
+                        arg("action", true, "play_pause, next, previous, stop, volume_up, volume_down or mute"),
+                        intArg("times", "Repeat count, e.g. volume_up 5 times (default 1)")),
                 op("CHANGES", "List files changed by pc__write/edit/patch/delete in this conversation (newest first).",
                         ToolSafetyLevel.READ, false),
                 op("UNDO", "Undo the last file changes made in this conversation (restores previous content, removes created "
