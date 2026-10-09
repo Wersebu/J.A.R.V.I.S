@@ -85,6 +85,9 @@ Szybkość mowy: `JARVIS_VOICE_TTS_SPEED` w Core (np. `1.1`).
 
 - „Otwórz Spotify i puść muzykę” → `pc__open spotify`, potem `pc__media play app=spotify` — czeka, aż Spotify będzie gotowy, i steruje właśnie Spotify (przez systemowe sterowanie multimediami Windows, jak nakładka głośności); odpowiada, co gra.
 - „Następny utwór”, „Pauza”, „Co teraz leci?” → `pc__media next / pause / status app=spotify`; „Ścisz”, „Wycisz” → `volume_down / mute`.
+- „Pokaż polubione piosenki”, „Sprawdź bibliotekę”, „Znajdź utwór…” → `pc__spotify action=liked / library / search` (wyszukiwanie: `query`). Dane pochodzą z oficjalnego Spotify Web API; `play` z URI znalezionego utworu steruje aplikacją Spotify na Windowsie przez Spotify Connect. To nie jest Web Player.
+- Jednorazowe połączenie: skonfiguruj Client ID w `config/spotify.json` klienta Windows i powiedz „Połącz moje konto Spotify” (`action=connect`). Przeglądarka otwiera się wyłącznie do zgody OAuth. Po zgodzie `status` pokazuje zapisane połączenie, a `devices` dostępne urządzenia. Spotify na komputerze musi korzystać z tego samego konta Premium. [Pełna konfiguracja](SPOTIFY_PL.md).
+- Biblioteka jest stronicowana (`limit`, `offset`, `hasMore`, `nextOffset`). `play`, `pause`, `next`, `previous`, `enqueue`, `volume`, `seek`, `shuffle`, `repeat` wybierają urządzenie desktopowe; `current` zwraca obserwowany stan. Potwierdzenie przyjęcia komendy nie oznacza jeszcze rozpoczęcia odtwarzania. `save`/`remove`, `create_playlist`, `add_to_playlist` zmieniają bibliotekę na polecenie użytkownika.
 - „Otwórz YouTube”, „Otwórz ustawienia”, „Otwórz folder Pobrane” → `pc__open` (strona, `ms-settings:`, folder).
 - „Znajdź opinie o … na mapach” → przeglądarka Jarvisa (`browser__*`).
 

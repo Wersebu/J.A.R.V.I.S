@@ -2195,7 +2195,13 @@ public class NativeToolLoopService {
                 + "web__read_web_page returns little): use the browser like a person - browser__open the link, accept the "
                 + "cookie dialog, click the tab you need (e.g. 'Opinie'/'Reviews'), browser__scroll inside the list (ref of the "
                 + "panel) to load more, read the text, and take browser__screenshot when you need to see the page. After "
-                + "every action use the refs from the newest elements list.\n");
+                + "every action use the refs from the newest elements list.\n"
+                + "- Spotify: use pc__spotify (official API) to search, read liked songs/library, select a track and play "
+                + "it in the native Windows Spotify app. Use status/connect for one-time account linking; the browser "
+                + "is only for OAuth consent, never a Web Player workaround. Open desktop Spotify with pc__open if "
+                + "needed, inspect devices, then play a URI returned by search/library on the correct computer. "
+                + "Follow pagination. Do not claim playback until observedPlayback/current confirms it; commands are "
+                + "asynchronous. Respect API errors, account requirements and Retry-After; never fabricate results.\n");
         unfinishedPlan(request).ifPresent(plan -> block
                 .append("\nThis conversation has an UNFINISHED plan from earlier - continue it (do not recreate it "
                         + "unless the user asked for something different):\n")

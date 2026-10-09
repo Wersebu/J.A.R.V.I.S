@@ -44,6 +44,7 @@ Przykładowy `JARVIS.md` w projekcie:
 
 - **🔊 Głos** i **🎤** (Ctrl+Spacja): rozmowa głosowa, Jarvis mówi, co robi, i czyta odpowiedzi. Do mówienia *do* Jarvisa potrzebny jest Whisper na serwerze — instrukcja w `docs/VOICE_PL.md`.
 - „Otwórz Spotify i puść muzykę”, „następny utwór”, „ścisz” — `pc__open` i `pc__media`.
+- „Pokaż polubione utwory”, „Sprawdź bibliotekę Spotify”, „Wyszukaj piosenkę i zagraj na komputerze” — `pc__spotify` przez oficjalne API i Spotify Connect do aplikacji Windows. Jednorazowo ustaw Client ID i połącz konto Premium przez OAuth. [Konfiguracja Spotify](SPOTIFY_PL.md). Wymaga aktualizacji serwera oraz klienta Windows.
 
 ### Przeglądarka Jarvisa
 

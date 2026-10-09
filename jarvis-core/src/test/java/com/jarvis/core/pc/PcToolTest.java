@@ -35,6 +35,26 @@ class PcToolTest {
     };
 
     @Test
+    void spotifyIsDiscoverableAndForwardsApiArguments() {
+        PcTool tool = new PcTool(gateway, true);
+        assertThat(tool.definition().operations()).anySatisfy(op ->
+                assertThat(op.name()).isEqualTo("SPOTIFY"));
+        ToolResult result = tool.execute(request("SPOTIFY", Map.of("action", "search", "query", "Daft Punk")));
+        assertThat(result.success()).isTrue();
+        assertThat(operations).containsExactly("pc_spotify");
+        assertThat(payloads.get(0)).containsEntry("session", "c").containsEntry("query", "Daft Punk");
+        assertThat(timeouts.get(0)).isEqualTo(Duration.ofSeconds(120));
+    }
+
+    @Test
+    void spotifyMarksMutationsButNotLibraryReadsAsChanged() {
+        PcTool tool = new PcTool(gateway, true);
+        assertThat(tool.execute(request("SPOTIFY", Map.of("action", "liked"))).changed()).isFalse();
+        assertThat(tool.execute(request("SPOTIFY", Map.of("action", "play", "target", "spotify:track:7fODjB7BrQTGqh0hogW6XD", "deviceId", "pc"))).changed()).isTrue();
+        assertThat(payloads.get(1)).containsEntry("deviceId", "pc").containsEntry("target", "spotify:track:7fODjB7BrQTGqh0hogW6XD");
+    }
+
+    @Test
     void forwardsOperationsToTheWindowsBridgeWithoutInternalArguments() {
         PcTool tool = new PcTool(gateway, true);
         ToolResult result = tool.execute(request("READ", Map.of("path", "C:\\Users\\D\\a.txt", "_activeCodingWorkspaceId", "w")));

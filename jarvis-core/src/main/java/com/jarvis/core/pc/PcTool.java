@@ -62,7 +62,7 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
 
     @Override
     public String getDescription() {
-        return "Files and shell on the user's Windows PC (only inside folders the user allowed). Use absolute Windows "
+        return "Windows PC files, shell, apps, media controls and Spotify search/library browsing. Use absolute Windows "
                 + "paths such as C:\\Users\\Name\\Documents\\file.txt. Call pc__info first to see the allowed folders.";
     }
 
@@ -156,10 +156,36 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                         arg("target", true, "App name, URI, URL, or path")),
                 op("MEDIA", "Control music/video on the PC (Spotify, YouTube in a browser...) through Windows media controls. "
                                 + "To start music: pc__open spotify, then pc__media action=play app=spotify (it waits until Spotify "
-                                + "is ready). Returns what is playing now. status = only tell what is playing.", ToolSafetyLevel.WRITE, false,
+                                + "is ready). Returns what is playing now. status = only tell what is playing. "
+                                + "For Spotify search, liked songs, library and playlists use pc__spotify, not MEDIA.", ToolSafetyLevel.WRITE, false,
                         arg("action", true, "play, pause, play_pause, next, previous, stop, status, volume_up, volume_down or mute"),
                         arg("app", false, "App to control, e.g. spotify (recommended - otherwise the current media session)"),
                         intArg("times", "Repeat count, e.g. volume_up 5 times or next 2 times (default 1)")),
+                op("SPOTIFY", "Spotify Web API + Connect for the user's NATIVE Windows Spotify app. Start with status; "
+                                + "connect opens one-time OAuth consent (requires Client ID in Windows config/spotify.json and Premium). "
+                                + "No Web Player. Search returns URIs; pass the chosen URI to play/enqueue/save. Read liked songs and "
+                                + "library with limit/offset; follow nextOffset when hasMore. library defaults to playlists. "
+                                + "Use pc__open spotify if desktop app is closed, then devices. Playback always targets a desktop "
+                                + "computer; use deviceName/deviceId from devices if it cannot identify the local PC. Never choose "
+                                + "a phone or another computer without the user's request. play without target resumes. "
+                                + "An accepted command is not proof of playback: inspect observedPlayback or current. "
+                                + "In Development Mode, reading playlist contents may be limited to owned/collaborative playlists. "
+                                + "Modify library/playlists only as requested. Never ask for a password or Client Secret.",
+                        ToolSafetyLevel.WRITE, false,
+                        arg("action", true, "status | connect | disconnect | search | liked | library | playlists | playlist_tracks | album_tracks | devices | current | queue | play | pause | next | previous | enqueue | volume | seek | shuffle | repeat | save | remove | create_playlist | add_to_playlist"),
+                        arg("query", false, "Search text"),
+                        arg("type", false, "Search: track (default), album, artist, playlist, show, episode (comma-separated). Library: track, album or playlist."),
+                        arg("target", false, "Spotify URI or https://open.spotify.com link from actual results"),
+                        arg("deviceId", false, "Desktop device ID returned by devices"),
+                        arg("deviceName", false, "Exact desktop device name returned by devices"),
+                        intArg("limit", "Page size: 1-10 for search, 1-50 for library"),
+                        intArg("offset", "Page offset, initially 0; use nextOffset"),
+                        intArg("value", "volume: 0-100; seek: position in milliseconds"),
+                        arg("state", false, "shuffle: true/false; repeat: off/track/context"),
+                        arg("name", false, "New playlist name"),
+                        arg("description", false, "New playlist description"),
+                        boolArg("public", "Create a public playlist (default false)"),
+                        arg("playlist", false, "Playlist URI/URL for add_to_playlist; target is the track to add")),
                 op("CHANGES", "List files changed by pc__write/edit/patch/delete in this conversation (newest first).",
                         ToolSafetyLevel.READ, false),
                 op("UNDO", "Undo the last file changes made in this conversation (restores previous content, removes created "
@@ -204,6 +230,7 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
         }
         Duration timeout = switch (operation) {
             case "FIND", "GREP", "PATCH", "SCREENSHOT" -> SEARCH;
+            case "SPOTIFY" -> Duration.ofSeconds(120);
             case "SHELL" -> shellTimeout(arguments);
             case "SHELL_WAIT" -> Duration.ofSeconds(clamp(arguments, "waitSeconds", 30, 0, 600) + 30);
             // The PC asks the user before deleting; leave time for the answer.
@@ -215,6 +242,9 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                     arguments.getOrDefault("path", arguments.getOrDefault("cwd", "")));
             Map<String, Object> result = gateway.codingRequest("pc_" + operation.toLowerCase(Locale.ROOT), arguments, timeout);
             boolean changed = switch (operation) {
+                case "SPOTIFY" -> java.util.Set.of("play", "pause", "next", "previous", "enqueue", "volume", "seek",
+                        "shuffle", "repeat", "save", "remove", "create_playlist", "add_to_playlist", "disconnect")
+                        .contains(String.valueOf(arguments.getOrDefault("action", "")).toLowerCase(Locale.ROOT));
                 case "WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "SHELL", "UNDO" -> true;
                 default -> false;
             };
