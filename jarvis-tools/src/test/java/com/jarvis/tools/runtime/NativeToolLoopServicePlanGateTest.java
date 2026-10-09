@@ -127,6 +127,30 @@ class NativeToolLoopServicePlanGateTest {
         assertThat(provider.sawSystemNote("the user has NOT seen your message above")).isTrue();
     }
 
+    @Test
+    void readingManyDifferentFilesAndRereadingAfterAnEditIsNotBlockedAsNoProgress() {
+        CognitiveEventBus bus = new NoopBus();
+        TaskPlanService plans = new TaskPlanService(new ObjectMapper(), "");
+        PlanTool planTool = new PlanTool(plans, bus);
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        for (int i = 1; i <= 8; i++) {
+            turns.add(call("pc__read", Map.of("path", "lib/file" + i + ".js")));
+        }
+        turns.add(call("pc__edit", Map.of("path", "lib/file1.js")));
+        turns.add(call("pc__read", Map.of("path", "lib/file1.js")));   // verification re-read
+        turns.add(text("Przeczytałem 8 plików i poprawiłem file1.js - wersja 2.0.28 bez zmian."));
+        RecordingProvider provider = new RecordingProvider(turns);
+        NativeToolLoopService service = service(provider, planTool, plans, bus);
+
+        ToolCallingResult result = service.execute(new ToolCallingRequest("r", "conv-many", "przeanalizuj pliki", "audit", "",
+                Map.of("workingDirectory", "D:\\JarvisBot"), "Base",
+                new Brain(BrainType.FAST, "stub", "m", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST, List.of(), ""));
+
+        assertThat(result.finalAnswer()).contains("Przeczytałem 8 plików");
+        assertThat(result.steps()).noneMatch(step -> "NO_PROGRESS_BLOCKED".equals(step.action())
+                || "DUPLICATE_TOOL_CALL".equals(step.action()));
+    }
+
     private NativeToolLoopService service(RecordingProvider provider, PlanTool planTool, TaskPlanService plans, CognitiveEventBus bus) {
         JarvisTool pc = fakePcReadTool();
         ToolManager manager = new ToolManager() {
@@ -156,9 +180,13 @@ class NativeToolLoopServicePlanGateTest {
     }
 
     private static ToolRegistry registryWithPc(PlanTool tool) {
-        ToolDefinition pc = new ToolDefinition("pc", "pc", List.of(new com.jarvis.tools.schema.ToolOperationDefinition("READ", "read",
-                List.of(new com.jarvis.tools.schema.ToolArgumentDefinition("path", "string", true, "path")), false,
-                com.jarvis.tools.schema.ToolSafetyLevel.READ)));
+        ToolDefinition pc = new ToolDefinition("pc", "pc", List.of(
+                new com.jarvis.tools.schema.ToolOperationDefinition("READ", "read",
+                        List.of(new com.jarvis.tools.schema.ToolArgumentDefinition("path", "string", true, "path")), false,
+                        com.jarvis.tools.schema.ToolSafetyLevel.READ),
+                new com.jarvis.tools.schema.ToolOperationDefinition("EDIT", "edit",
+                        List.of(new com.jarvis.tools.schema.ToolArgumentDefinition("path", "string", true, "path")), true,
+                        com.jarvis.tools.schema.ToolSafetyLevel.WRITE)));
         return new ToolRegistry() {
             @Override public List<ToolDefinition> definitions() { return List.of(tool.definition(), pc); }
             @Override public String promptSection() { return ""; }

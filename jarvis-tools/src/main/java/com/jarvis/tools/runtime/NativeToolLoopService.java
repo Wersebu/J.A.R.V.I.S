@@ -225,6 +225,10 @@ public class NativeToolLoopService {
         ToolScopeResolution scope = schemaMapper.resolveScope(intent, request.userMessage(), request.goal(), request.context());
         ToolIntent resolvedIntent = scope.resolvedIntent();
         List<NativeToolDefinition> definitions = scope.definitions();
+        if (Boolean.TRUE.equals(request.context().get("subagent"))) {
+            // Helper agents cannot start further helpers; do not offer the tool at all.
+            definitions = definitions.stream().filter(definition -> !definition.name().startsWith("agent__")).toList();
+        }
         if (!workingDirectory(request).isBlank() && activeCodingWorkspaceId(request).isBlank()) {
             // The conversation works in a folder chosen in the chat (pc__* tools). coding__* tools need a
             // workspace pinned in the "Kod" tab and would only fail and confuse the model here.
@@ -723,6 +727,19 @@ public class NativeToolLoopService {
                     if (result.success() && "coding".equalsIgnoreCase(action.tool())
                             && "FILE_LIST".equalsIgnoreCase(action.operation())) {
                         operationRepeatCounts.remove(operationKey);
+                    }
+                    // Agent work (reading many files, many plan updates, several commands) repeats the
+                    // same operation with new arguments by nature - a successful call with a new
+                    // fingerprint is progress. Exact duplicates are still rejected above.
+                    if (result.success() && isAgentTool(action.tool())) {
+                        operationRepeatCounts.remove(operationKey);
+                        if (changesFiles(action)) {
+                            // After a change, reading/listing/running the same thing again is verification,
+                            // not a duplicate.
+                            String prefix = action.tool().toLowerCase(Locale.ROOT) + "::";
+                            String sameOperation = prefix + action.operation().toUpperCase(Locale.ROOT) + "::";
+                            callFingerprints.removeIf(known -> known.startsWith(prefix) && !known.startsWith(sameOperation));
+                        }
                     }
                     // Only a validated, successfully executed tool restores the consecutive
                     // parser-repair allowance. Total retries and loop time/turn limits still apply.
@@ -2681,6 +2698,13 @@ public class NativeToolLoopService {
         } catch (JsonProcessingException exception) {
             return result.message();
         }
+    }
+
+    private static boolean changesFiles(ToolAction action) {
+        String operation = action.operation().toUpperCase(Locale.ROOT);
+        return Set.of("WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "UNDO", "SHELL",
+                "FILE_WRITE", "FILE_PATCH", "FILE_MOVE", "FILE_DELETE", "DIRECTORY_CREATE", "COMMAND_START",
+                "BUILD_RUN", "TEST_RUN").contains(operation);
     }
 
     private static boolean isAgentTool(String tool) {

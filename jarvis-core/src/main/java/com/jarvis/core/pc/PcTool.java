@@ -81,10 +81,10 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                         ToolSafetyLevel.READ, false),
                 op("LIST", "List a directory on the PC (absolute path; blank = first allowed folder).",
                         ToolSafetyLevel.READ, false, arg("path", false, "Absolute directory path")),
-                op("READ", "Read a text file with line numbers ('   12<TAB>text'), 2000 lines per call; use startLine/limit "
+                op("READ", "Read a text file with line numbers ('   12<TAB>text'), 400 lines per call (limit up to 2000); use startLine/limit "
                                 + "to page through big files. Returns sha256 for pc__edit. Never copy the number prefix into edits.",
                         ToolSafetyLevel.READ, false, arg("path", true, "Absolute file path"),
-                        intArg("startLine", "First line to read (1-based)"), intArg("limit", "Max lines (default 2000)")),
+                        intArg("startLine", "First line to read (1-based)"), intArg("limit", "Max lines (default 400)")),
                 op("FIND", "Find files by glob, newest first. '*.pdf' matches names anywhere below path; "
                                 + "'src/**/*.java' matches relative paths. Skips .git/node_modules/target/build folders.",
                         ToolSafetyLevel.READ, false, arg("pattern", true, "Glob, e.g. *.docx or **/*Test.java"),
