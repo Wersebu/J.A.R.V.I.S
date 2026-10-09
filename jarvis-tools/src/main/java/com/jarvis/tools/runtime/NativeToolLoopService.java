@@ -13,6 +13,7 @@ import com.jarvis.common.ai.ModelToolCall;
 import com.jarvis.common.ai.NativeToolDefinition;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
+import com.jarvis.common.run.ChatRunControl;
 import com.jarvis.common.knowledge.KnowledgeMode;
 import com.jarvis.common.trace.AiTraceLogger;
 import com.jarvis.common.trace.AiTraceSettings;
@@ -90,6 +91,38 @@ public class NativeToolLoopService {
     /** Tells whether the active model can see images (screenshots are then shown to it directly). */
     private com.jarvis.common.model.ActiveModelService activeModelService;
     private static final String IMAGE_KEY = "_imageBase64";
+    private static final int STEER_EXTENSION = 8;
+
+    /**
+     * Adds messages the user sent while this loop was running (see {@link ChatRunControl}) as user
+     * turns, so the agent takes them into account from its next step on.
+     *
+     * @param draftAnswer answer the model was about to give (kept so it can build on it), may be blank
+     * @return true when something was injected
+     */
+    private boolean injectUserMessages(ToolCallingRequest request, List<ModelMessage> messages, String draftAnswer) {
+        if (Boolean.TRUE.equals(request.context().get("subagent"))) {
+            return false; // the main agent reads the user's follow-ups, not its helpers
+        }
+        List<String> incoming = ChatRunControl.drain(request.conversationId());
+        if (incoming.isEmpty()) {
+            return false;
+        }
+        if (draftAnswer != null && !draftAnswer.isBlank()) {
+            messages.add(ModelMessage.assistant(draftAnswer, List.of()));
+        }
+        StringBuilder text = new StringBuilder("[The user sent this while you were working - take it into account now. "
+                + "It may add requirements, correct you or change the plan; do not start over unless asked, and update "
+                + "the plan if it changes the steps.]\n");
+        for (String message : incoming) {
+            text.append("\n").append(message);
+        }
+        messages.add(ModelMessage.user(text.toString()));
+        LOGGER.info("[USER_STEER] requestId={} conversationId={} messages={}", request.requestId(), request.conversationId(), incoming.size());
+        publish(request, CognitiveEventType.TOOL_LOOP_RESUMED, "USER_MESSAGE",
+                "Uwzględniam Twoją dosłaną wiadomość", null, 0, Map.of("source", "user-steer", "messages", incoming.size()));
+        return true;
+    }
     private static final String SCREENSHOT_PREFIX = "[Screenshot from pc__screenshot]";
     private static final int MAX_SCREENSHOTS_IN_CONTEXT = 2;
     /** Keeps full tool outputs that were shortened or elided (read back with the output tool). */
@@ -496,6 +529,10 @@ public class NativeToolLoopService {
             }
             AiTraceTurnContext.set(step);
             turnsUsed = step;
+            ChatRunControl.checkNotCancelled(request.conversationId());
+            if (injectUserMessages(request, messages, "") && step >= maxCalls - 2) {
+                maxCalls += STEER_EXTENSION; // a new instruction deserves room to act on it
+            }
             // timeoutSeconds() <= 0 means "no wall-clock limit" (see ToolRuntimeProperties) - the
             // loop stays bounded by maxCalls and the other forward-progress guards instead of an
             // arbitrary clock, so a model genuinely still working (reading files, refining an
@@ -1134,6 +1171,13 @@ public class NativeToolLoopService {
                     LOGGER.info("[AGENT_FINISH] requestId={} step={} status=COMPLETE", request.requestId(), step);
                 }
 
+                if (injectUserMessages(request, messages, content)) {
+                    // The user added something while this answer was being written - act on it first.
+                    if (step >= maxCalls) {
+                        maxCalls += STEER_EXTENSION;
+                    }
+                    continue;
+                }
                 saveDebug(request, intent, steps, "FINISHED", errors);
                 ToolLoopTerminationInfo finishedInfo = buildTerminationInfo(ToolLoopTerminationReason.COMPLETED,
                         true, true, started, step, maxCalls, steps, results, content, "", List.of());
@@ -3812,8 +3856,32 @@ public class NativeToolLoopService {
         if (start < 0 || end <= start) {
             return Optional.empty();
         }
+        Optional<String> whole = envelopeType(stripped.substring(start, end + 1));
+        if (whole.isPresent()) {
+            return whole;
+        }
+        // Prose around the envelope may itself contain braces (code, CSS, HTML snippets the model
+        // quoted while thinking out loud), so the outermost {...} is not valid JSON - look for a
+        // balanced object that starts with a "type" field instead.
+        java.util.regex.Matcher matcher = ENVELOPE_START.matcher(stripped);
+        while (matcher.find()) {
+            int objectEnd = balancedObjectEnd(stripped, matcher.start());
+            if (objectEnd > 0) {
+                Optional<String> type = envelopeType(stripped.substring(matcher.start(), objectEnd + 1));
+                if (type.isPresent()) {
+                    return type;
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static final java.util.regex.Pattern ENVELOPE_START = java.util.regex.Pattern.compile(
+            "\\{\\s*\"type\"\\s*:\\s*\"(?i:TOOL_REQUEST|FINAL_ANSWER|CLARIFICATION)\"");
+
+    private Optional<String> envelopeType(String json) {
         try {
-            JsonNode node = objectMapper.readTree(stripped.substring(start, end + 1));
+            JsonNode node = objectMapper.readTree(json);
             JsonNode type = node.path("type");
             if (type.isMissingNode() || type.isNull() || type.asText("").isBlank()) {
                 return Optional.empty();
@@ -3822,6 +3890,32 @@ public class NativeToolLoopService {
         } catch (JsonProcessingException | RuntimeException exception) {
             return Optional.empty();
         }
+    }
+
+    /** Index of the brace closing the object opened at {@code start}, honouring JSON strings; -1 if unbalanced. */
+    private static int balancedObjectEnd(String text, int start) {
+        int depth = 0;
+        boolean inString = false;
+        for (int i = start; i < text.length(); i++) {
+            char ch = text.charAt(i);
+            if (inString) {
+                if (ch == '\\') {
+                    i++;
+                } else if (ch == '"') {
+                    inString = false;
+                }
+            } else if (ch == '"') {
+                inString = true;
+            } else if (ch == '{') {
+                depth++;
+            } else if (ch == '}') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return -1;
     }
 
     private String stripMarkdownFence(String value) {

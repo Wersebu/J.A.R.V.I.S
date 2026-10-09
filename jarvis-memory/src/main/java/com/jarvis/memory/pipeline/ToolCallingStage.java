@@ -373,10 +373,15 @@ public class ToolCallingStage implements PipelineStage {
         if (!any) {
             builder.append("- dalszych operacji narzedziowych (model nie podal szczegolow)\n");
         }
-        builder.append("\nPetla nie zostala wznowiona, poniewaz ")
-                .append(loopInfo.terminationReason() == ToolLoopTerminationReason.TIMEOUT
-                        ? "przekroczono limit czasu petli narzedziowej."
-                        : "osiagnieto limit " + loopInfo.configuredMaxTurns() + " tur.");
+        builder.append("\nPetla nie zostala wznowiona, poniewaz ");
+        if (loopInfo.terminationReason() == ToolLoopTerminationReason.TIMEOUT) {
+            builder.append("przekroczono limit czasu petli narzedziowej.");
+        } else if (loopInfo.terminationReason() == ToolLoopTerminationReason.MAX_TURNS_REACHED) {
+            builder.append("osiagnieto limit ").append(loopInfo.configuredMaxTurns()).append(" tur.");
+        } else {
+            builder.append("model mimo ponaglen opisywal wywolanie narzedzia tekstem (JSON) zamiast je wykonac. "
+                    + "Napisz \"kontynuuj\", a sprobuje ponownie.");
+        }
         return builder.toString();
     }
 

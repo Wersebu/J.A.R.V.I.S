@@ -185,6 +185,80 @@ class NativeToolLoopServicePlanGateTest {
         assertThat(provider.sawSystemNote("Quality loop")).isTrue();
     }
 
+    @Test
+    void aToolRequestWrittenAsTextAmidCodeWithBracesIsSentBackForARealToolCall() {
+        CognitiveEventBus bus = new NoopBus();
+        TaskPlanService plans = new TaskPlanService(new ObjectMapper(), "");
+        PlanTool planTool = new PlanTool(plans, bus);
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(call("pc__read", Map.of("path", "index.html")));
+        turns.add(text("""
+                I will add the review card. Current CSS: .review-card { padding: 30px; } and the card:
+                ```html
+                <div class="review-card glass">...</div>
+                ```
+                I will formulate a TOOL_REQUEST for pc:WRITE.
+                {"type": "TOOL_REQUEST", "goal": "Update index.html with the new review", "reason": "inject it", "context": {"importantEntities": ["C:\\\\x\\\\index.html"]}}
+                """));
+        turns.add(call("pc__edit", Map.of("path", "index.html")));
+        turns.add(text("Dodałem opinię Andrzeja Kowalskiego do sekcji opinii (wersja 2.0.28)."));
+        RecordingProvider provider = new RecordingProvider(turns);
+        NativeToolLoopService service = service(provider, planTool, plans, bus);
+
+        ToolCallingResult result = service.execute(request("conv-text-request"));
+
+        assertThat(result.finalAnswer()).contains("Dodałem opinię");
+        assertThat(provider.sawSystemNote("You described a tool request")).isTrue();
+        assertThat(result.steps()).anyMatch(step -> "EDIT".equalsIgnoreCase(step.operation()));
+    }
+
+    @Test
+    void messagesSentWhileWorkingReachTheModelAsUserTurns() {
+        CognitiveEventBus bus = new NoopBus();
+        TaskPlanService plans = new TaskPlanService(new ObjectMapper(), "");
+        PlanTool planTool = new PlanTool(plans, bus);
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(call("pc__read", Map.of("path", "index.html")));
+        turns.add(text("Gotowe - dodałem też stopkę (wersja 2.0.28)."));
+        RecordingProvider provider = new RecordingProvider(turns);
+        NativeToolLoopService service = service(provider, planTool, plans, bus);
+        Object control = com.jarvis.common.run.ChatRunControl.open("conv-steer", null);
+        try {
+            assertThat(com.jarvis.common.run.ChatRunControl.post("conv-steer", "dodaj jeszcze stopkę")).isTrue();
+
+            ToolCallingResult result = service.execute(request("conv-steer"));
+
+            assertThat(result.finalAnswer()).contains("stopkę");
+            assertThat(provider.lastMessages).anyMatch(message -> "user".equals(message.role())
+                    && message.content().contains("dodaj jeszcze stopkę") && message.content().contains("while you were working"));
+            assertThat(com.jarvis.common.run.ChatRunControl.hasPending("conv-steer")).isFalse();
+        } finally {
+            com.jarvis.common.run.ChatRunControl.close("conv-steer", control);
+        }
+        assertThat(com.jarvis.common.run.ChatRunControl.post("conv-steer", "za późno")).isFalse();
+    }
+
+    @Test
+    void stopEndsTheLoopAtTheNextStep() {
+        CognitiveEventBus bus = new NoopBus();
+        TaskPlanService plans = new TaskPlanService(new ObjectMapper(), "");
+        PlanTool planTool = new PlanTool(plans, bus);
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(call("pc__read", Map.of("path", "index.html")));
+        turns.add(text("nie powinno do tego dojść"));
+        RecordingProvider provider = new RecordingProvider(turns);
+        NativeToolLoopService service = service(provider, planTool, plans, bus);
+        Object control = com.jarvis.common.run.ChatRunControl.open("conv-stop", null);
+        try {
+            assertThat(com.jarvis.common.run.ChatRunControl.cancel("conv-stop")).isTrue();
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.execute(request("conv-stop")))
+                    .isInstanceOf(com.jarvis.common.run.ChatRunCancelledException.class);
+            assertThat(provider.calls).isZero();
+        } finally {
+            com.jarvis.common.run.ChatRunControl.close("conv-stop", control);
+        }
+    }
+
     private NativeToolLoopService service(RecordingProvider provider, PlanTool planTool, TaskPlanService plans, CognitiveEventBus bus) {
         JarvisTool pc = fakePcReadTool();
         ToolManager manager = new ToolManager() {

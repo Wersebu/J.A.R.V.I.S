@@ -8,6 +8,7 @@ import com.jarvis.api.service.ChatService;
 import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.dto.ChatRequest;
 import com.jarvis.common.event.CognitiveEvent;
+import com.jarvis.common.run.ChatRunControl;
 import com.jarvis.tools.mcp.McpServerManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -144,6 +145,22 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             resume(session, root);
             return;
         }
+        if ("CHAT_STEER".equals(messageType)) {
+            String conversationId = root.path("conversationId").asText("");
+            String text = root.path("message").asText("");
+            boolean accepted = ChatRunControl.post(conversationId, text);
+            LOGGER.info("[USER_STEER] conversationId={} accepted={} chars={}", conversationId, accepted, text.length());
+            send(session, Map.of("type", accepted ? "CHAT_STEER_ACCEPTED" : "CHAT_STEER_REJECTED",
+                    "conversationId", conversationId, "message", text));
+            return;
+        }
+        if ("CHAT_CANCEL".equals(messageType)) {
+            String conversationId = root.path("conversationId").asText("");
+            boolean cancelled = ChatRunControl.cancel(conversationId);
+            LOGGER.info("[CHAT_CANCEL] conversationId={} active={}", conversationId, cancelled);
+            send(session, Map.of("type", "CHAT_CANCEL_ACCEPTED", "conversationId", conversationId, "active", cancelled));
+            return;
+        }
         if ("PING".equals(messageType)) {
             send(session, new WebSocketStatus("PONG", "pong"));
             return;
@@ -162,15 +179,45 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
         // other frames on this same session (MCP bridge responses in particular) throughout.
         String userId = userId(session);
         ChatRunRegistry.ChatRun run = chatRuns.start(userId, request.conversationId(), session);
+        String conversationId = request.conversationId();
         chatExecutor.submit(() -> {
+            Object control = ChatRunControl.open(conversationId, Thread.currentThread());
             try {
-                CurrentUserContext.runAs(userId, () -> chatService.stream(request, run::emit));
-                run.finish(new WebSocketStatus("COMPLETED", "Request completed"));
+                CurrentUserContext.runAs(userId, () -> chatService.stream(request, event -> {
+                    // After Stop nothing more reaches the user; throwing here unwinds the pipeline at
+                    // its next event (e.g. the next streamed token) instead of letting it run on.
+                    ChatRunControl.checkNotCancelled(conversationId);
+                    run.emit(event);
+                }));
+                finishRun(run, conversationId, control, new WebSocketStatus("COMPLETED", "Request completed"));
             } catch (RuntimeException exception) {
-                LOGGER.error("[JARVIS] WebSocket chat failed", exception);
-                run.finish(new WebSocketStatus("ERROR", exception.getMessage() == null ? "Request failed" : exception.getMessage()));
+                if (ChatRunControl.isCancelled(conversationId)) {
+                    LOGGER.info("[CHAT_CANCEL] conversationId={} run stopped by the user", conversationId);
+                    finishRun(run, conversationId, control, new WebSocketStatus("CANCELLED", "Zatrzymano na Twoją prośbę"));
+                } else {
+                    LOGGER.error("[JARVIS] WebSocket chat failed", exception);
+                    finishRun(run, conversationId, control, new WebSocketStatus("ERROR",
+                            exception.getMessage() == null ? "Request failed" : exception.getMessage()));
+                }
+            } finally {
+                ChatRunControl.close(conversationId, control);
+                Thread.interrupted(); // never leak a Stop interrupt into the next pooled task
             }
         });
+    }
+
+    /**
+     * Ends a run. Messages the user sent mid-run that the agent never picked up (e.g. the answer
+     * needed no tools) are handed back so the client sends them as the next normal message.
+     */
+    private void finishRun(ChatRunRegistry.ChatRun run, String conversationId, Object control, WebSocketStatus status) {
+        boolean cancelled = ChatRunControl.isCancelled(conversationId);
+        java.util.List<String> leftovers = ChatRunControl.close(conversationId, control);
+        if (!leftovers.isEmpty() && !cancelled) {
+            run.emit(Map.of("type", "CHAT_STEER_UNCONSUMED", "conversationId", conversationId, "messages", leftovers));
+        }
+        run.finish(cancelled && "COMPLETED".equals(status.type())
+                ? new WebSocketStatus("CANCELLED", "Zatrzymano na Twoją prośbę") : status);
     }
 
     private void resume(WebSocketSession session, JsonNode root) {
