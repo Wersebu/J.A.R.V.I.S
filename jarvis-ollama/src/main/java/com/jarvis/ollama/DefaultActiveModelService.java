@@ -134,6 +134,24 @@ public class DefaultActiveModelService implements ActiveModelService, Initializi
             LOGGER.warn("[JARVIS] [MODEL] Failed to resolve active model capabilities: {}", exception.getMessage());
             return Set.of();
         }
+        if (!reported.contains(ModelCapability.VISION)) {
+            // Most Ollama versions list capabilities only in /api/show, not in /api/tags - without this a
+            // vision model (gemma4, qwen2.5vl...) looked text-only: images were refused and screenshots
+            // were never shown to it.
+            Set<ModelCapability> shown = showCapabilities(model);
+            if (!shown.isEmpty()) {
+                Set<ModelCapability> merged = EnumSet.noneOf(ModelCapability.class);
+                merged.addAll(reported);
+                merged.addAll(shown);
+                reported = Set.copyOf(merged);
+            }
+        }
+        if (!reported.contains(ModelCapability.VISION) && !isVisionOverridden(model) && probedVision(model)) {
+            Set<ModelCapability> withProbe = EnumSet.noneOf(ModelCapability.class);
+            withProbe.addAll(reported);
+            withProbe.add(ModelCapability.VISION);
+            return Set.copyOf(withProbe);
+        }
         if (reported.contains(ModelCapability.VISION) || !isVisionOverridden(model)) {
             return reported;
         }
@@ -142,6 +160,102 @@ public class DefaultActiveModelService implements ActiveModelService, Initializi
         Set<ModelCapability> withVisionOverride = new java.util.LinkedHashSet<>(reported);
         withVisionOverride.add(ModelCapability.VISION);
         return Set.copyOf(withVisionOverride);
+    }
+
+    private static final Duration SHOW_CACHE_TTL = Duration.ofMinutes(10);
+    private final Map<String, CachedCapabilities> showCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private record CachedCapabilities(Set<ModelCapability> capabilities, long fetchedAtMillis) {
+    }
+
+    /** Capabilities from Ollama's /api/show (cached per model); empty when unavailable. */
+    private Set<ModelCapability> showCapabilities(String model) {
+        if (model == null || model.isBlank()) {
+            return Set.of();
+        }
+        CachedCapabilities cached = showCache.get(model);
+        if (cached != null && System.currentTimeMillis() - cached.fetchedAtMillis() < SHOW_CACHE_TTL.toMillis()) {
+            return cached.capabilities();
+        }
+        String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/show";
+        Set<ModelCapability> capabilities = Set.of();
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(endpoint))
+                    .timeout(Duration.ofSeconds(10))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(Map.of("model", model))))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                com.fasterxml.jackson.databind.JsonNode node = objectMapper.readTree(response.body()).path("capabilities");
+                List<String> raw = new java.util.ArrayList<>();
+                node.forEach(item -> raw.add(item.asText()));
+                capabilities = Set.copyOf(mapCapabilities(raw));
+                LOGGER.info("[JARVIS] [MODEL] Capabilities from /api/show: model={} capabilities={}", model, raw);
+            }
+        } catch (IOException exception) {
+            LOGGER.warn("[JARVIS] [MODEL] /api/show failed for {}: {}", model, exception.getMessage());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return Set.of();
+        }
+        showCache.put(model, new CachedCapabilities(capabilities, System.currentTimeMillis()));
+        return capabilities;
+    }
+
+    /** Model families that are multimodal in their releases even when a local Ollama build does not say so. */
+    private static final java.util.regex.Pattern LIKELY_VISION = java.util.regex.Pattern.compile(
+            "(?i)(gemma3|gemma4|gemma-3|gemma-4|llava|bakllava|vision|[-.:]vl|vl[-.:0-9]|minicpm-v|moondream|qwen3\\.5|"
+                    + "mistral-small3\\.[12]|llama4|granite3\\.2-vision)");
+    /** A 32x32 solid green PNG: only a model that really sees images can name the colour. */
+    private static final String GREEN_PNG = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR42u3NQQkAAAgAseufzFim8CEM9l9NtwQC"
+            + "gUAgEAgEAsGXYAEoXSAuyTDRZQAAAABJRU5ErkJggg==";
+    private final Map<String, Boolean> visionProbes = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Checks once per model, with a real image, whether a likely-multimodal model can see - Ollama
+     * builds often list gemma4/gemma3 without "vision" although images work.
+     */
+    private boolean probedVision(String model) {
+        if (model == null || model.isBlank() || !LIKELY_VISION.matcher(model).find()) {
+            return false;
+        }
+        return Boolean.TRUE.equals(visionProbes.computeIfAbsent(model, this::runVisionProbe));
+    }
+
+    /** @return the verdict, or null when Ollama could not be asked (not cached - retried next time) */
+    private Boolean runVisionProbe(String model) {
+        String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/chat";
+        try {
+            Map<String, Object> body = Map.of(
+                    "model", model,
+                    "stream", false,
+                    "messages", List.of(Map.of("role", "user",
+                            "content", "What single colour fills this image? Answer with one word.",
+                            "images", List.of(GREEN_PNG))),
+                    "options", Map.of("num_predict", 400, "temperature", 0));
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(endpoint))
+                    .timeout(Duration.ofSeconds(180)) // the first call may load the model
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
+                    .build();
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            String answer = response.statusCode() >= 200 && response.statusCode() < 300
+                    ? objectMapper.readTree(response.body()).path("message").path("content").asText("")
+                    : "";
+            boolean sees = answer.toLowerCase(Locale.ROOT).matches("(?s).*(green|zielon).*");
+            LOGGER.info("[JARVIS] [MODEL] Vision probe: model={} status={} answer=\"{}\" vision={}", model,
+                    response.statusCode(), answer.strip().replaceAll("\\s+", " "), sees);
+            return sees;
+        } catch (IOException exception) {
+            LOGGER.warn("[JARVIS] [MODEL] Vision probe failed for {}: {}", model, exception.getMessage());
+            return null;
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            return null;
+        }
     }
 
     private boolean isVisionOverridden(String model) {

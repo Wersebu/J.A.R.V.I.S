@@ -374,6 +374,20 @@ class NativeToolSchemaMapperTest {
         assertThat(action.arguments().get("studio_id")).asString().startsWith("<?xml");
     }
 
+    // Regression: a whole index.html written with pc__write was rejected because its search form had
+    // placeholder="Szukaj" - the model then wasted turns guessing what was wrong with its page.
+    @Test
+    void fileContentMentioningPlaceholderIsNotRejected() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(searchGameTreeFullSchemaRegistry());
+
+        ToolAction action = mapper.toAction("mcp_roblox_search_game_tree__call", Map.of(
+                "studio_id", "<form>\n  <input name=\"q\" placeholder=\"Szukaj usługi\">\n</form>",
+                "datamodel_type", "Edit"
+        ), "test");
+
+        assertThat(action.arguments().get("studio_id")).asString().contains("placeholder=");
+    }
+
     @Test
     void normalConcreteRequiredStringIsAccepted() {
         NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(searchGameTreeFullSchemaRegistry());

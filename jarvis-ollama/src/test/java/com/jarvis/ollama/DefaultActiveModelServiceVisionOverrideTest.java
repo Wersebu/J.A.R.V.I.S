@@ -95,6 +95,70 @@ class DefaultActiveModelServiceVisionOverrideTest {
         assertThat(service.activeModelCapabilities()).doesNotContain(ModelCapability.VISION);
     }
 
+    @Test
+    void readsCapabilitiesFromApiShowWhenTagsListsNone() throws IOException {
+        startTagsServer("""
+                {"models":[{"name":"llava:7b","size":1,"details":{}}]}
+                """);
+        respond("/api/show", """
+                {"capabilities":["completion","vision"]}
+                """);
+
+        DefaultActiveModelService service = service(properties("llava:7b", Set.of()));
+
+        assertThat(service.activeModelCapabilities()).contains(ModelCapability.VISION, ModelCapability.TEXT);
+    }
+
+    @Test
+    void probesALikelyVisionModelWithARealImageWhenOllamaDoesNotReportVision() throws IOException {
+        startTagsServer("""
+                {"models":[{"name":"gemma4:26b","size":1,"details":{},"capabilities":["completion","tools"]}]}
+                """);
+        respond("/api/show", """
+                {"capabilities":["completion","tools"]}
+                """);
+        java.util.concurrent.atomic.AtomicInteger probes = new java.util.concurrent.atomic.AtomicInteger();
+        server.createContext("/api/chat", exchange -> {
+            String request = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            probes.incrementAndGet();
+            byte[] bytes = (request.contains("\"images\"") ? "{\"message\":{\"content\":\"Green\"}}"
+                    : "{\"message\":{\"content\":\"?\"}}").getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+
+        DefaultActiveModelService service = service(properties("gemma4:26b", Set.of()));
+
+        assertThat(service.activeModelCapabilities()).contains(ModelCapability.VISION, ModelCapability.TOOLS);
+        assertThat(service.activeModelCapabilities()).contains(ModelCapability.VISION);
+        assertThat(probes.get()).as("probed once, then cached").isEqualTo(1);
+    }
+
+    @Test
+    void aModelThatCannotNameTheColourStaysTextOnly() throws IOException {
+        startTagsServer("""
+                {"models":[{"name":"gemma4:26b","size":1,"details":{},"capabilities":["completion","tools"]}]}
+                """);
+        respond("/api/chat", """
+                {"message":{"content":"I cannot see images."}}
+                """);
+
+        DefaultActiveModelService service = service(properties("gemma4:26b", Set.of()));
+
+        assertThat(service.activeModelCapabilities()).doesNotContain(ModelCapability.VISION);
+    }
+
+    private void respond(String path, String body) {
+        server.createContext(path, exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+    }
+
     private DefaultActiveModelService service(OllamaProperties properties) {
         return new DefaultActiveModelService(HttpClient.newHttpClient(), new ObjectMapper(), properties,
                 new ByteArrayResource(new byte[0]));

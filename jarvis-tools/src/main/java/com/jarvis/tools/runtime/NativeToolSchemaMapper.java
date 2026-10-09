@@ -423,6 +423,12 @@ public class NativeToolSchemaMapper {
             return false;
         }
         String normalized = text.trim().toLowerCase(Locale.ROOT);
+        if (normalized.length() > 60 || normalized.contains("\n") || normalized.contains(" ")) {
+            // Real content (an HTML form with placeholder="...", CSS ::placeholder, a written plan)
+            // is never an invented id - only short single-token values are checked. Regression: a
+            // whole index.html was rejected because its search box had a placeholder attribute.
+            return ANGLE_BRACKET_PLACEHOLDER.matcher(normalized).matches();
+        }
         return normalized.contains("placeholder")
                 || normalized.startsWith("example_")
                 || normalized.startsWith("default_")
