@@ -1,0 +1,19 @@
+[Unit]
+Description=Jarvis voice server (speech recognition and voice)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/jarvis-voice.env
+WorkingDirectory=/opt/jarvis-voice
+ExecStart=/opt/jarvis-voice/venv/bin/python /opt/jarvis-voice/server.py
+Restart=on-failure
+RestartSec=5
+User=jarvis-voice
+# model downloads (Whisper, XTTS) are cached here
+Environment=HF_HOME=/opt/jarvis-voice/cache
+Environment=XDG_CACHE_HOME=/opt/jarvis-voice/cache
+Environment=XDG_DATA_HOME=/opt/jarvis-voice/cache
+
+[Install]
+WantedBy=multi-user.target

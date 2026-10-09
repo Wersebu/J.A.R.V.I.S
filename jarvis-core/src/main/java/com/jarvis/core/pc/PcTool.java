@@ -154,10 +154,12 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                                 + "ms-settings:, mailto:...), a web address in the user's default browser, or a file/folder. "
                                 + "Opening programs/scripts (.exe, .bat, .ps1...) asks the user first.", ToolSafetyLevel.WRITE, false,
                         arg("target", true, "App name, URI, URL, or path")),
-                op("MEDIA", "Control music/video playing on the PC (Spotify, YouTube in a browser, ...) with the media keys. "
-                                + "To start music: pc__open spotify, wait a moment, then MEDIA play_pause.", ToolSafetyLevel.WRITE, false,
-                        arg("action", true, "play_pause, next, previous, stop, volume_up, volume_down or mute"),
-                        intArg("times", "Repeat count, e.g. volume_up 5 times (default 1)")),
+                op("MEDIA", "Control music/video on the PC (Spotify, YouTube in a browser...) through Windows media controls. "
+                                + "To start music: pc__open spotify, then pc__media action=play app=spotify (it waits until Spotify "
+                                + "is ready). Returns what is playing now. status = only tell what is playing.", ToolSafetyLevel.WRITE, false,
+                        arg("action", true, "play, pause, play_pause, next, previous, stop, status, volume_up, volume_down or mute"),
+                        arg("app", false, "App to control, e.g. spotify (recommended - otherwise the current media session)"),
+                        intArg("times", "Repeat count, e.g. volume_up 5 times or next 2 times (default 1)")),
                 op("CHANGES", "List files changed by pc__write/edit/patch/delete in this conversation (newest first).",
                         ToolSafetyLevel.READ, false),
                 op("UNDO", "Undo the last file changes made in this conversation (restores previous content, removes created "
