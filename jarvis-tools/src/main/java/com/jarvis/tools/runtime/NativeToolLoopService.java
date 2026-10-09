@@ -92,6 +92,21 @@ public class NativeToolLoopService {
     private com.jarvis.common.model.ActiveModelService activeModelService;
     private static final String IMAGE_KEY = "_imageBase64";
     private static final int STEER_EXTENSION = 8;
+    /** Turns added at a time when an agent reaches its budget while still making progress. */
+    private static final int AGENT_TURN_EXTENSION = 25;
+    /** Absolute turn limit for one request, however long the agent keeps making progress. */
+    private static final int AGENT_TURN_CEILING = 400;
+
+    /** Recent turns produced successful, varied tool calls (not the same failing call over and over). */
+    private static boolean makingProgress(List<ToolRuntimeStep> steps) {
+        List<ToolRuntimeStep> recent = steps.subList(Math.max(0, steps.size() - 8), steps.size());
+        long ok = recent.stream().filter(step -> "TOOL_CALL".equals(step.action()) && "OK".equals(step.status())).count();
+        long distinct = recent.stream().filter(step -> "OK".equals(step.status()))
+                .map(step -> step.tool() + "." + step.operation() + "#"
+                        + (step.result() == null ? 0 : java.util.Objects.hashCode(step.result().data())))
+                .distinct().count();
+        return ok >= 4 && distinct >= 2;
+    }
 
     /**
      * Adds messages the user sent while this loop was running (see {@link ChatRunControl}) as user
@@ -544,10 +559,19 @@ public class NativeToolLoopService {
             // loop stays bounded by maxCalls and the other forward-progress guards instead of an
             // arbitrary clock, so a model genuinely still working (reading files, refining an
             // answer) is never cut off mid-task just because time ran out.
-            if (properties.timeoutSeconds() > 0
+            boolean agentWork = hasUnfinishedPlan(request) || usedAgentTools(steps);
+            // An agent task (a plan, work on the PC/in the browser) is never cut off by the clock -
+            // like Claude Code it may work for hours while it makes progress; turns and the
+            // no-progress guards bound it instead. The wall-clock limit only applies to quick lookups.
+            if (!agentWork && properties.timeoutSeconds() > 0
                     && Duration.between(started, Instant.now()).toSeconds() > properties.timeoutSeconds()) {
                 errors.add("TIMEOUT");
                 break;
+            }
+            if (agentWork && step == maxCalls && maxCalls < AGENT_TURN_CEILING && makingProgress(steps)) {
+                maxCalls = Math.min(AGENT_TURN_CEILING, maxCalls + AGENT_TURN_EXTENSION);
+                LOGGER.info("[AGENT_BUDGET] requestId={} step={} still making progress - turn budget extended to {}",
+                        request.requestId(), step, maxCalls);
             }
             ModelResponse response;
             int elided = ContextBudget.compactHistory(messages, historyCharBudget, 4, toolOutputStore);

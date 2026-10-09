@@ -259,7 +259,34 @@ class NativeToolLoopServicePlanGateTest {
         }
     }
 
+    @Test
+    void agentWorkIsNeverCutOffByTheClockAndGetsMoreTurnsWhileMakingProgress() {
+        CognitiveEventBus bus = new NoopBus();
+        TaskPlanService plans = new TaskPlanService(new ObjectMapper(), "");
+        PlanTool planTool = new PlanTool(plans, bus);
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        for (int i = 1; i <= 9; i++) {
+            turns.add(call("pc__read", Map.of("path", "src/file" + i + ".js")));
+        }
+        turns.add(text("Przeczytałem 9 plików, wszystko gotowe (wersja 2.0.28)."));
+        RecordingProvider provider = new RecordingProvider(turns);
+        provider.delayMillis = 250; // 10 turns take ~2.5 s, the configured wall clock allows 1 s
+        // timeoutSeconds=1, maxCallsAgent=6: both would have stopped this loop before.
+        NativeToolLoopService service = service(provider, planTool, plans, bus,
+                new ToolRuntimeProperties(true, 3, 3, 1, 1, "native", 5, 20, 2, 3, 6));
+
+        ToolCallingResult result = service.execute(request("conv-long"));
+
+        assertThat(result.finalAnswer()).contains("Przeczytałem 9 plików");
+        assertThat(result.steps()).filteredOn(step -> "TOOL_CALL".equals(step.action())).hasSize(9);
+    }
+
     private NativeToolLoopService service(RecordingProvider provider, PlanTool planTool, TaskPlanService plans, CognitiveEventBus bus) {
+        return service(provider, planTool, plans, bus, new ToolRuntimeProperties(true, 3, 3, 1, 0, "native", 5, 20, 2, 3, 30));
+    }
+
+    private NativeToolLoopService service(RecordingProvider provider, PlanTool planTool, TaskPlanService plans, CognitiveEventBus bus,
+                                          ToolRuntimeProperties properties) {
         JarvisTool pc = fakePcReadTool();
         ToolManager manager = new ToolManager() {
             @Override public List<JarvisTool> listTools() { return List.of(planTool, pc); }
@@ -269,7 +296,7 @@ class NativeToolLoopServicePlanGateTest {
             @Override public ToolResult execute(ToolRequest request) { return findTool(request.toolName()).orElseThrow().execute(request); }
         };
         NativeToolLoopService service = new NativeToolLoopService(List.of(provider), manager,
-                query -> ToolIntent.NO_TOOL, new ToolRuntimeProperties(true, 3, 3, 1, 0, "native", 5, 20, 2, 3, 30), bus,
+                query -> ToolIntent.NO_TOOL, properties, bus,
                 new ToolRuntimeDebugService(), new ObjectMapper(), new NativeToolSchemaMapper(registryWithPc(planTool)),
                 new com.jarvis.tools.dataset.StoreAuditDatasetService(bus));
         service.setTaskPlanService(plans);
@@ -288,7 +315,8 @@ class NativeToolLoopServicePlanGateTest {
                             "", "", false, "");
                 }
                 return new ToolResult(true, "pc", "READ", request.requestId(), request.conversationId(), false, List.of(),
-                        "PC READ finished", Map.of("content", "   1\tWersja aplikacji: 2.0.28"), "", "", false, "");
+                        "PC READ finished", Map.of("path", String.valueOf(request.arguments().getOrDefault("path", "")),
+                        "content", "   1\tWersja aplikacji: 2.0.28"), "", "", false, "");
             }
         };
     }
@@ -344,6 +372,7 @@ class NativeToolLoopServicePlanGateTest {
         private final List<String> systemNotes = new ArrayList<>();
         private List<ModelMessage> lastMessages = List.of();
         private int calls;
+        private long delayMillis;
 
         private RecordingProvider(Deque<ModelResponse> turns) {
             this.turns = turns;
@@ -370,6 +399,13 @@ class NativeToolLoopServicePlanGateTest {
         @Override
         public ModelResponse toolChat(Brain brain, List<ModelMessage> messages, List<NativeToolDefinition> tools, AIJobType jobType) {
             calls++;
+            if (delayMillis > 0) {
+                try {
+                    Thread.sleep(delayMillis);
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             lastMessages = List.copyOf(messages);
             messages.stream().filter(message -> "system".equalsIgnoreCase(String.valueOf(message.role())))
                     .forEach(message -> systemNotes.add(String.valueOf(message.content())));

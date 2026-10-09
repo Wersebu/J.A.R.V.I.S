@@ -516,12 +516,13 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
         }
         List<ModelToolCall> modelToolCalls = toolCalls.stream()
                 .filter(call -> call.function() != null)
-                .map(call -> new ModelToolCall(call.id(), call.function().name(), call.function().arguments()))
+                .map(call -> new ModelToolCall(call.id(), call.function().name(),
+                        com.jarvis.common.ai.ByteTokenText.repairArguments(call.function().arguments())))
                 .toList();
         int promptTokens = promptEvalCount == null ? 0 : promptEvalCount;
         int completionTokens = evalCount == null ? 0 : evalCount;
         return new ModelResponse(
-                contentBuilder.toString(),
+                com.jarvis.common.ai.ByteTokenText.repair(contentBuilder.toString()),
                 thinkingBuilder.toString(),
                 modelToolCalls,
                 doneReason,
