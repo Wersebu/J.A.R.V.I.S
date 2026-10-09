@@ -35,9 +35,18 @@ Przykładowy `JARVIS.md` w projekcie:
 - Pisz cel, nie instrukcje krok po kroku: *„dodaj walidację e‑maila w formularzu rejestracji, uruchom testy i popraw, jeśli coś padnie”*.
 - Jarvis tworzy plan i pracuje sam. Pasek nad polem czatu pokazuje, co robi; po najechaniu widać cały plan.
 - Ryzykowne operacje (git push, usuwanie, reset --hard) wyświetlają okno zgody na PC.
-- Gdy aplikacja jest zminimalizowana, w rogu ekranu jest małe okienko statusu, a po zakończeniu przychodzi powiadomienie.
+- Okienko statusu na pulpicie włączasz przyciskiem „🪟 Okienko” (pokazuje się, gdy Jarvis pracuje); prośby o zgodę i pytania wyskakują w nim zawsze.
+- W trakcie pracy możesz dopisać wiadomość (Enter) — Jarvis uwzględni ją w następnym kroku. **⏹ Stop** (lub Esc) przerywa zadanie.
 - Zerwane połączenie nie przerywa pracy — aplikacja sama się wznawia.
 - „Kontynuuj” wznawia niedokończony plan. „Cofnij zmiany” → Jarvis używa `pc__undo`.
+
+### Przeglądarka Jarvisa
+
+- Jarvis ma własną przeglądarkę (Edge/Chrome na Twoim PC, osobny profil — Twoje konta i hasła są nietknięte): otwiera linki, klika, wpisuje, przewija, cofa i robi zrzuty ekranu (`browser__*`). Nadaje się do stron, które wymagają JavaScriptu lub klikania — Google Maps i opinie, sklepy, formularze — oraz do sprawdzania strony, którą zbudował.
+- Przycisk „🌐 Przeglądarka: ukryta/widoczna” w aplikacji: w trybie widocznym oglądasz każde kliknięcie na żywo.
+- Zrzuty ekranu model *widzi* tylko, jeśli ma wizję (np. `gemma3`/`gemma4`, `qwen2.5vl`); inne modele pracują na liście elementów i tekście strony.
+- Kliknięcia typu „kup / zapłać / zamów” i wpisywanie haseł zawsze wymagają Twojej zgody na PC.
+- Wyłączenie po stronie serwera: `jarvis.browser.enabled=false`.
 
 ## 4. GitHub
 

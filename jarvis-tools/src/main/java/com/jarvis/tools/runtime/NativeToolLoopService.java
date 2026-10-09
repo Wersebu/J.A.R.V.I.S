@@ -123,7 +123,7 @@ public class NativeToolLoopService {
                 "Uwzględniam Twoją dosłaną wiadomość", null, 0, Map.of("source", "user-steer", "messages", incoming.size()));
         return true;
     }
-    private static final String SCREENSHOT_PREFIX = "[Screenshot from pc__screenshot]";
+    private static final String SCREENSHOT_PREFIX = "[Screenshot]";
     private static final int MAX_SCREENSHOTS_IN_CONTEXT = 2;
     /** Keeps full tool outputs that were shortened or elided (read back with the output tool). */
     private ToolOutputStore toolOutputStore;
@@ -222,6 +222,13 @@ public class NativeToolLoopService {
         for (int k = 0; k < older.size() - (MAX_SCREENSHOTS_IN_CONTEXT - 1); k++) {
             int index = older.get(k);
             messages.set(index, ModelMessage.user(messages.get(index).content() + " (older screenshot removed to save context)"));
+        }
+        if ("browser".equalsIgnoreCase(result.tool())) {
+            messages.add(ModelMessage.user(SCREENSHOT_PREFIX + " browser: " + result.data().getOrDefault("url", "") + "\n"
+                            + "This is what the browser shows right now. Use it with the latest elements list (refs) to decide "
+                            + "the next action - close dialogs, click, scroll - and read the information you need from it.",
+                    List.of(new com.jarvis.common.ai.ImageAttachment(base64, "screenshot.png"))));
+            return;
         }
         String target = String.valueOf(result.data().getOrDefault("target", ""));
         messages.add(ModelMessage.user(SCREENSHOT_PREFIX + " " + target + " (" + result.data().getOrDefault("viewport", "") + ")\n"
@@ -2121,7 +2128,7 @@ public class NativeToolLoopService {
     private static boolean usedAgentTools(List<ToolRuntimeStep> steps) {
         return steps.stream().anyMatch(step -> {
             String tool = step.tool() == null ? "" : step.tool().toLowerCase(Locale.ROOT);
-            return tool.equals("pc") || tool.equals("coding") || tool.equals("agent");
+            return tool.equals("pc") || tool.equals("coding") || tool.equals("agent") || tool.equals("browser");
         });
     }
 
@@ -2159,7 +2166,12 @@ public class NativeToolLoopService {
                 + "- Real-world content (a business, product, person, place): gather real facts with web__search / "
                 + "web__read_web_page (more reviews, services, hours, photos' descriptions) and use only what you found or "
                 + "were given - never invent reviews, ratings or prices; keep quoted text exact and ratings consistent with "
-                + "the review's tone.\n");
+                + "the review's tone.\n"
+                + "- Pages that need JavaScript or clicks (a Google Maps link, reviews, shops, forms, anything where "
+                + "web__read_web_page returns little): use the browser like a person - browser__open the link, accept the "
+                + "cookie dialog, click the tab you need (e.g. 'Opinie'/'Reviews'), browser__scroll inside the list (ref of the "
+                + "panel) to load more, read the text, and take browser__screenshot when you need to see the page. After "
+                + "every action use the refs from the newest elements list.\n");
         unfinishedPlan(request).ifPresent(plan -> block
                 .append("\nThis conversation has an UNFINISHED plan from earlier - continue it (do not recreate it "
                         + "unless the user asked for something different):\n")
@@ -2843,7 +2855,7 @@ public class NativeToolLoopService {
     private static boolean isAgentTool(String tool) {
         String name = tool == null ? "" : tool.toLowerCase(Locale.ROOT);
         return name.equals("pc") || name.equals("coding") || name.equals("plan") || name.equals("output") || name.equals("agent")
-                || name.startsWith("mcp_");
+                || name.equals("browser") || name.startsWith("mcp_");
     }
 
     private static final int MAX_COMPACT_CONTENT_CHARS = 2500;
@@ -2949,8 +2961,8 @@ public class NativeToolLoopService {
             if (!result.success()) {
                 continue;
             }
-            if (result.tool().startsWith("mcp_")) {
-                return true;
+            if (result.tool().startsWith("mcp_") || "browser".equalsIgnoreCase(result.tool())) {
+                return true; // a page Jarvis opened itself is live evidence
             }
             if (!"web".equalsIgnoreCase(result.tool())) {
                 continue;
@@ -4017,7 +4029,8 @@ public class NativeToolLoopService {
     }
 
     private Map<String, Object> executionArguments(ToolCallingRequest request, ToolAction action) {
-        if ("pc".equalsIgnoreCase(action.tool()) || "agent".equalsIgnoreCase(action.tool())) {
+        if ("pc".equalsIgnoreCase(action.tool()) || "agent".equalsIgnoreCase(action.tool())
+                || "browser".equalsIgnoreCase(action.tool())) {
             String workingDirectory = workingDirectory(request);
             if (workingDirectory.isBlank()) {
                 return action.arguments();

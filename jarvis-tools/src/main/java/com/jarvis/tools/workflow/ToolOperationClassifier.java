@@ -102,6 +102,13 @@ public final class ToolOperationClassifier {
         if (t.equals("output")) {
             return ToolOperationRole.READ;
         }
+        if (t.equals("browser")) {
+            return switch (o) {
+                case "OPEN", "SNAPSHOT", "SCREENSHOT", "WAIT" -> ToolOperationRole.READ;
+                case "CLICK", "TYPE", "PRESS", "SCROLL", "BACK", "CLOSE" -> ToolOperationRole.EXECUTE;
+                default -> null;
+            };
+        }
         if (!t.equals("pc")) {
             return null;
         }
