@@ -24,6 +24,9 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
     private String observedDevice = "local-id";
     private String observedUri = URI;
     private boolean workflowMissing;
+    private boolean missingRoutedPath;
+    private boolean noCandidates;
+    private String candidatePath = "procedures/Spotify playback.md";
     private boolean workflowPartial;
     private String userMessage = "odpalisz mi coś fajnego na spotify?";
     private String delegatedGoal = "Play music";
@@ -185,11 +188,76 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                 .doesNotContain("Real search title", "inną playlistę", "Sprawdź sam");
     }
 
+    @Test void discoveryReadsExactCandidateAndPlaysLikedSongsDespiteWrongDelegation() {
+        userMessage = "odpal mi coś z polubionych na spotify";
+        delegatedGoal = "Play a track from user's favorite playlists on Spotify";
+        opened = true;
+        ToolCallingResult result = run(findWorkflow(), readWorkflow(candidatePath), spotify("status"), spotify("liked"),
+                spotify("devices"), play(URI), answer("Done"));
+        assertThat(executed).containsExactly("knowledge/FIND_WORKFLOW", "knowledge/READ_WORKFLOW", "status", "liked", "devices", "play");
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.finalAnswer()).contains("Real liked title", "Local desktop");
+    }
+
+    @Test void missingDocumentRequiresDiscoveryInsteadOfMoreGuessedPaths() {
+        missingRoutedPath = true;
+        opened = true;
+        ToolCallingResult result = run(workflow(), readWorkflow("spotify/workflows/GraphicDesignWorkflow.md"),
+                findWorkflow(), readWorkflow(candidatePath), spotify("status"), spotify("devices"), search(), play(URI), answer("Done"));
+        assertThat(executed).containsExactly("knowledge/READ_WORKFLOW", "knowledge/FIND_WORKFLOW", "knowledge/READ_WORKFLOW",
+                "status", "devices", "search", "play");
+        assertThat(result.steps()).anyMatch(s -> s.action().equals("SPOTIFY_POLICY_BLOCKED")
+                && s.arguments().containsValue("spotify/workflows/GraphicDesignWorkflow.md"));
+        assertThat(result.terminationInfo().completed()).isTrue();
+    }
+
+    @Test void candidatePathCannotBePrefixedAndPartialDiscoveryReadCannotAuthorizePlayback() {
+        workflowPartial = true;
+        ToolCallingResult result = run(findWorkflow(), readWorkflow("spotify/" + candidatePath), readWorkflow(candidatePath),
+                spotify("status"), answer("Gotowe"), answer("Gotowe"));
+        assertThat(executed).containsExactly("knowledge/FIND_WORKFLOW", "knowledge/READ_WORKFLOW");
+        assertThat(result.terminationInfo().completed()).isFalse();
+    }
+
+    @Test void announcingSearchWithoutToolCallDoesNotExecuteDiscoveryOrProveWorkflowRead() {
+        ToolCallingResult result = run(readWorkflow("spotify/Spotify.md"),
+                answer("Let's search for Spotify using knowledge__find_workflow."),
+                answer("Let's search for Spotify using knowledge__find_workflow."));
+        assertThat(executed).isEmpty();
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.finalAnswer()).contains("Nie odczytano kompletnej procedury");
+    }
+
+    @Test void noCandidatesCannotBeReplacedWithTheOldRoutingHint() {
+        noCandidates = true;
+        ToolCallingResult result = run(findWorkflow(), workflow(), spotify("status"), answer("Gotowe"), answer("Gotowe"));
+        assertThat(executed).containsExactly("knowledge/FIND_WORKFLOW");
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.finalAnswer()).contains("Nie odczytano kompletnej procedury");
+    }
+
+    @Test void everyPartOfDiscoveredProcedureMustBeReadBeforePlayback() {
+        workflowPartial = true;
+        opened = true;
+        ToolCallingResult result = run(findWorkflow(), readWorkflow(candidatePath),
+                call("knowledge__read_workflow", Map.of("path", candidatePath, "part", "2")),
+                spotify("status"), spotify("devices"), search(), play(URI), answer("Done"));
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(Collections.frequency(executed, "knowledge/READ_WORKFLOW")).isEqualTo(2);
+    }
+
+    private ModelResponse findWorkflow() { return call("knowledge__find_workflow", Map.of("query", "Spotify")); }
+    private ModelResponse readWorkflow(String path) { return call("knowledge__read_workflow", Map.of("path", path)); }
+
     private ToolCallingResult run(ModelResponse... turns) {
         Deque<ModelResponse> script = new ArrayDeque<>(List.of(turns));
         AIProvider provider = mock(AIProvider.class);
         when(provider.provider()).thenReturn("stub");
-        when(provider.toolChat(any(), anyList(), anyList(), any())).thenAnswer(inv -> script.isEmpty() ? answer("") : script.removeFirst());
+        when(provider.toolChat(any(), anyList(), anyList(), any())).thenAnswer(inv -> {
+            List<NativeToolDefinition> definitions = inv.getArgument(2);
+            assertThat(definitions).extracting(NativeToolDefinition::name).contains("knowledge__find_workflow", "knowledge__read_workflow");
+            return script.isEmpty() ? answer("") : script.removeFirst();
+        });
         ToolManager manager = mock(ToolManager.class);
         when(manager.findTool(anyString())).thenReturn(Optional.of(mock(JarvisTool.class)));
         when(manager.execute(any())).thenAnswer(inv -> execute(inv.getArgument(0)));
@@ -197,7 +265,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         ToolRegistry registry = mock(ToolRegistry.class);
         when(registry.definitions()).thenReturn(List.of(
                 new ToolDefinition("pc", "desktop", List.of(op("SPOTIFY", "action", "target", "query", "deviceId"), op("OPEN", "target"), op("SHELL", "command"))),
-                new ToolDefinition("knowledge", "vault", List.of(op("READ_WORKFLOW", "path"))),
+                new ToolDefinition("knowledge", "vault", List.of(op("READ_WORKFLOW", "path", "part"), op("FIND_WORKFLOW", "query"))),
                 new ToolDefinition("browser", "browser", List.of(op("OPEN", "url")))));
         NativeToolLoopService service = new NativeToolLoopService(List.of(provider), manager, query -> ToolIntent.NO_TOOL,
                 new ToolRuntimeProperties(true, 20, 20, 2, 30, "native"), bus, new ToolRuntimeDebugService(),
@@ -211,10 +279,15 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         boolean success = true;
         String action = Objects.toString(request.arguments().get("action"), "");
         if (request.toolName().equals("knowledge")) {
-            executed.add("knowledge/READ_WORKFLOW");
-            success = !workflowMissing;
+            executed.add("knowledge/" + request.operation());
+            if (request.operation().equals("FIND_WORKFLOW")) {
+                return new ToolResult(true, "knowledge", "FIND_WORKFLOW", "r", "c", false, List.of(), "Candidates found",
+                        Map.of("candidates", noCandidates ? List.of() : List.of(new com.jarvis.knowledge.vault.read.WorkflowCandidate("doc-id", candidatePath,
+                                "Spotify playback", "active", "v1", "", 100, 1, 1.0, List.of()))), "", "", false, "");
+            }
+            success = !workflowMissing && !(missingRoutedPath && request.arguments().get("path").equals("workflows/Spotify.md"));
             data = Map.of("content", "Procedure: status, devices, search, play, verify", "parts", workflowPartial ? 2 : 1,
-                    "part", 1, "version", "v1", "complete", !workflowPartial);
+                    "part", Integer.parseInt(Objects.toString(request.arguments().getOrDefault("part", "1"))), "version", "v1", "complete", !workflowPartial);
         } else if (request.operation().equals("OPEN")) {
             executed.add("open:" + request.arguments().get("target")); opened = true; data = Map.of("kind", "app");
         } else {

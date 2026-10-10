@@ -502,7 +502,12 @@ public class NativeToolLoopService {
         }
         messages.add(ModelMessage.system(goalContractStatusBlock(agentState.goalContract())));
         if (SpotifyPlaybackPolicy.applies(request)) {
-            messages.add(ModelMessage.system("Desktop Spotify playback requires reading workflows/Spotify.md first with "
+            LOGGER.info("[SPOTIFY_WORKFLOW_DISCOVERY] requestId={} findWorkflowAvailable={} readWorkflowAvailable={}",
+                    request.requestId(), definitions.stream().anyMatch(d -> d.name().equals("knowledge__find_workflow")),
+                    definitions.stream().anyMatch(d -> d.name().equals("knowledge__read_workflow")));
+            messages.add(ModelMessage.system("Find the Spotify procedure using knowledge__find_workflow(query=Spotify), then copy the returned path exactly into READ_WORKFLOW. "
+                    + "The routing hint is workflows/Spotify.md; never prepend spotify/ or any other directory. After a missing document, use FIND_WORKFLOW, not guessed paths. "
+                    + "Polubione means liked songs (action=liked), never favorite playlists. Read the complete procedure with "
                     + "knowledge__read_workflow (or read_document). Then status, devices, optional pc__open(target=spotify) "
                     + "and devices again, search (or liked for liked songs), play with the returned URI and local=true deviceId, then verify observedPlayback/current. "
                     + "Readiness observations after OPEN/play are bounded but are not automatically duplicate-blocked. No browser fallback."));

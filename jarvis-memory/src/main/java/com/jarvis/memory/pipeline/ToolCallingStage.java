@@ -156,6 +156,14 @@ public class ToolCallingStage implements PipelineStage {
     }
 
     private String toolGoal(PipelineContext context, MainModelAction recoveredAction) {
+        String original = context.request().message();
+        String normalized = java.text.Normalizer.normalize(original, java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "").toLowerCase(java.util.Locale.ROOT).replace('ł', 'l');
+        if (normalized.contains("spotify") && normalized.contains("polubion")
+                && java.util.regex.Pattern.compile("\\b(odpal|odtworz|wlacz|pusc)\\w*").matcher(normalized).find()) {
+            return original + " (Play liked songs using action=liked; do not substitute favorite playlists.)";
+        }
+
         if (recoveredAction != null && !recoveredAction.goal().isBlank()) {
             return recoveredAction.goal();
         }

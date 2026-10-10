@@ -93,3 +93,37 @@ w swojej konfiguracji Windows. Nie uruchamiamy automatycznie logowania ani nie z
 
 Zmian nie wdrożono i nie wysłano przez push. Repozytoria Core i Windows są osobne;
 zmiany vault/UI obecne wcześniej w Windows pozostają poza tą poprawką.
+
+
+## Odnajdywanie procedury i „polubione” (2026-10-11)
+
+Przebieg przekazany przez użytkownika pokazuje wykonane odczyty zgadywanych
+ścieżek, listingi, a potem tylko tekst zapowiadający wyszukiwanie. Nie zawiera
+zdarzenia odbioru, walidacji ani wykonania search. Jest to przesłanka braku
+native tool call, nie dowód blokady wyszukiwania przez Core. Bez surowego śladu
+odpowiedzi modelu nie można rozstrzygnąć tego definitywnie.
+
+W bieżącym kodzie READ_WORKFLOW i FIND_WORKFLOW wystawia ten sam vaultDefinition;
+mapper dla Spotify nie usuwa FIND_WORKFLOW z katalogu. Polityka pozwala wykonać
+FIND_WORKFLOW przed odczytem procedury. Dodano log SPOTIFY_WORKFLOW_DISCOVERY
+z requestId i informacją o dostępności obu schematów. W połączeniu ze zdarzeniami
+NATIVE_TOOL_CALL i krokami SPOTIFY_POLICY_BLOCKED pozwala odróżnić brak schematu,
+brak wywołania modelu i odrzucenie wywołania przez politykę.
+
+Polityka przyjmuje dokładną ścieżkę względną z wyniku FIND_WORKFLOW (także obiekt
+WorkflowCandidate zwracany przez rzeczywisty KnowledgeTool), bez dopisywania
+katalogów. Domyślny routing workflows/Spotify.md pozostaje poprawną ścieżką
+względem skonfigurowanego vault. Błędny odczyt unieważnia ścieżkę do czasu
+ponownego wyszukania. Zgadywanie następnych nazw i listingi zamiast odnalezienia
+procedury są blokowane. Pusty wynik discovery nie uprawnia do użycia starej
+ścieżki. Żaden katalog Ubuntu nie został zakodowany w poprawce.
+
+Pełny odczyt jest wiązany ze ścieżką, wersją i kompletem części tego samego
+workflow. Wymagania źródła URI, lokalnego urządzenia oraz obserwowanego playback
+pozostają aktywne. Sam tekst „wyszukam” nadal nie stanowi dowodu wykonania.
+
+Przy delegacji odtwarzania „z polubionych” zachowywany jest oryginalny cel i
+jednoznaczne action=liked; błędny cel favorite playlists go nie zastępuje.
+Regresje obejmują discovery → odczyt → status → liked → devices → play →
+observedPlayback, odczyt wieloczęściowy, brak kandydatów, błędne prefiksy,
+Document not found → discovery oraz zapowiedź search bez tool call.

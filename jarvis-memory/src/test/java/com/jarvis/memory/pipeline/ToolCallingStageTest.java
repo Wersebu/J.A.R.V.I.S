@@ -34,6 +34,27 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ToolCallingStageTest {
 
     @Test
+    void likedSongsPlaybackIntentSurvivesFavoritePlaylistsDelegation() {
+        AtomicReference<ToolCallingRequest> captured = new AtomicReference<>();
+        ToolCallingStage stage = new ToolCallingStage(request -> {
+            captured.set(request);
+            return new ToolCallingResult(true, "Nie potwierdzono odtwarzania", List.of(), List.of());
+        }, List.of(), new MainModelActionParser(new ObjectMapper()), new StoreAuditDatasetService(new NoopCognitiveEventBus()));
+        String original = "odpal mi coś z polubionych na spotify";
+        PipelineContext context = PipelineContext.initial("conversation-1", "request-1",
+                new ChatRequest("conversation-1", original, Instant.now()), event -> { }, event -> { })
+                .withExecution(new com.jarvis.brain.decision.ExecutionPlan(
+                        com.jarvis.brain.decision.TaskType.CONVERSATION, 1.0, 1, false, 0, 0,
+                        BrainType.FAST, "stub-model", ReasoningLevel.LOW, "test"),
+                        new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW))
+                .withResponse("{\"type\":\"TOOL_REQUEST\",\"goal\":\"Play a track from user's favorite playlists on Spotify\",\"reason\":\"Spotify playback\"}",
+                        GenerationFinishedEvent.create("conversation-1", 0, BrainType.FAST, "stub-model", null, 1, null));
+        stage.execute(context);
+        assertThat(captured.get().userMessage()).isEqualTo(original);
+        assertThat(captured.get().goal()).startsWith(original).contains("action=liked");
+    }
+
+    @Test
     void responseBodyToolRequestIsForwardedToNativeToolLoopEvenWhenMetadataWasLost() {
         AtomicReference<ToolCallingRequest> captured = new AtomicReference<>();
         ToolCallingStage stage = new ToolCallingStage(request -> {

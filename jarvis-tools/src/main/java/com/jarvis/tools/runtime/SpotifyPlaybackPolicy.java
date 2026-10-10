@@ -1,6 +1,7 @@
 package com.jarvis.tools.runtime;
 
 import com.jarvis.tools.workflow.CompletionAssessment;
+import com.jarvis.knowledge.vault.read.WorkflowCandidate;
 import java.text.Normalizer;
 import java.util.*;
 
@@ -24,11 +25,19 @@ final class SpotifyPlaybackPolicy {
     static String guard(ToolCallingRequest request, ToolAction action, List<ToolRuntimeStep> steps) {
         String tool = action.tool().toLowerCase(Locale.ROOT);
         String op = action.operation().toUpperCase(Locale.ROOT);
-        if (tool.equals("knowledge") && Set.of("READ_WORKFLOW", "READ_DOCUMENT", "FIND_WORKFLOW", "SEARCH_CONTENT",
-                "SEARCH_DOCUMENT", "LIST_TREE", "LIST_FOLDER").contains(op)) return "";
+        if (tool.equals("knowledge")) {
+            if (op.equals("FIND_WORKFLOW")) return "";
+            if (Set.of("READ_WORKFLOW", "READ_DOCUMENT").contains(op)) {
+                String path = text(action.arguments(), "path");
+                if (workflowPaths(steps).contains(path)) return "";
+                return "Use knowledge__find_workflow(query=Spotify), then READ_WORKFLOW with the exact returned candidate path. "
+                        + "Do not prefix directories or invent filenames. Routed path: " + WORKFLOW;
+            }
+            if (!workflowRead(steps)) return "Find the procedure with knowledge__find_workflow(query=Spotify); folder listings and search fragments do not replace it.";
+            if (Set.of("SEARCH_CONTENT", "SEARCH_DOCUMENT", "LIST_TREE", "LIST_FOLDER").contains(op)) return "";
+        }
         if (tool.equals("plan") || tool.equals("system") && op.equals("NOTIFY_USER")) return "";
-        if (!workflowRead(steps)) return "Read the complete " + WORKFLOW
-                + " using knowledge__read_workflow (or read_document) before executing Spotify. Do not infer a procedure from memory.";
+        if (!workflowRead(steps)) return workflowGuidance(steps);
         if (!tool.equals("pc")) return "Use desktop pc__spotify; do not switch to browser/Web Player or other execution tools.";
         if (op.equals("OPEN")) {
             if (!"spotify".equalsIgnoreCase(text(action.arguments(), "target")))
@@ -74,7 +83,7 @@ final class SpotifyPlaybackPolicy {
     }
 
     static CompletionAssessment assess(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
-        if (!workflowRead(steps)) return missing("Read the complete Spotify workflow first.");
+        if (!workflowRead(steps)) return missing(workflowGuidance(steps));
         if (!confirmed(request, steps)) return missing("Playback is not confirmed. Complete status -> devices -> optional desktop OPEN -> devices "
                 + "-> " + (fromLiked(request) ? "liked" : "search/library") + " -> play on the local device. After accepted play, read current (bounded) unless observedPlayback "
                 + "already proves isPlaying=true on the selected device with the selected URI. Do not repeat the mutation or use Web Player.");
@@ -130,12 +139,46 @@ final class SpotifyPlaybackPolicy {
         return observed instanceof Map<?, ?> state ? state : Map.of();
     }
 
+    private static String workflowGuidance(List<ToolRuntimeStep> steps) {
+        return "Use knowledge__find_workflow(query=Spotify) to find candidates, then knowledge__read_workflow with "
+                + "the exact returned path and every part. Never invent paths or merely announce a search. "
+                + "Currently grounded vault-relative paths: " + workflowPaths(steps)
+                + ". If discovery is unavailable or returns no matching candidate, report the procedure as unavailable.";
+    }
+
+    private static Set<String> workflowPaths(List<ToolRuntimeStep> steps) {
+        Set<String> paths = new LinkedHashSet<>();
+        paths.add(WORKFLOW); // vault-relative routing hint, never an OS path
+        for (ToolRuntimeStep step : steps) {
+            if (!executed(step) || !"knowledge".equalsIgnoreCase(step.tool())) continue;
+            if (Set.of("READ_WORKFLOW", "READ_DOCUMENT").contains(step.operation()) && !step.result().success()) {
+                paths.remove(text(step.arguments(), "path"));
+            }
+            if ("FIND_WORKFLOW".equals(step.operation()) && step.result().success()
+                    && step.result().data().get("candidates") instanceof List<?> candidates) {
+                paths.clear();
+                for (Object value : candidates) {
+                    String path = "", title = "";
+                    if (value instanceof WorkflowCandidate candidate) {
+                        path = candidate.path(); title = candidate.title();
+                    } else if (value instanceof Map<?, ?> candidate) {
+                        path = Objects.toString(candidate.get("path"), "");
+                        title = Objects.toString(candidate.get("title"), "");
+                    }
+                    if (!path.isBlank() && normalize(path + " " + title).contains("spotify")) paths.add(path);
+                }
+            }
+        }
+        return paths;
+    }
+
     private static boolean workflowRead(List<ToolRuntimeStep> steps) {
         Map<String, Set<Integer>> versions = new HashMap<>();
-        for (ToolRuntimeStep step : steps) {
+        for (int index = 0; index < steps.size(); index++) {
+            ToolRuntimeStep step = steps.get(index);
             if (!executed(step) || !step.result().success() || !"knowledge".equalsIgnoreCase(step.tool())
                     || !Set.of("READ_WORKFLOW", "READ_DOCUMENT").contains(step.operation().toUpperCase(Locale.ROOT))
-                    || !WORKFLOW.equalsIgnoreCase(text(step.arguments(), "path").replace('\\', '/'))) continue;
+                    || !workflowPaths(steps.subList(0, index)).contains(text(step.arguments(), "path"))) continue;
             Map<String, Object> data = step.result().data();
             if (!(data.get("content") instanceof String content) || content.isBlank()) continue;
             int parts = data.get("parts") instanceof Number n ? n.intValue() : 1;
@@ -144,7 +187,7 @@ final class SpotifyPlaybackPolicy {
             if (parts == 1 && !Boolean.FALSE.equals(data.get("complete"))) return true;
             String version = text(data, "version");
             if (version.isBlank()) continue;
-            Set<Integer> seen = versions.computeIfAbsent(version + ":" + parts, ignored -> new HashSet<>());
+            Set<Integer> seen = versions.computeIfAbsent(text(step.arguments(), "path") + ":" + version + ":" + parts, ignored -> new HashSet<>());
             seen.add(part);
             if (seen.size() == parts) return true;
         }
