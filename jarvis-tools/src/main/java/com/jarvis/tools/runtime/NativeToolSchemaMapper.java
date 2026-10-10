@@ -205,7 +205,8 @@ public class NativeToolSchemaMapper {
     private void validateArguments(String toolName, String operationName, Map<String, Object> arguments) {
         Optional<ToolOperationDefinition> operation = findOperation(toolName, operationName);
         if (operation.isEmpty()) {
-            return;
+            throw new InvalidToolArgumentException("Unsupported tool operation: " + toolName + "__"
+                    + operationName.toLowerCase(Locale.ROOT) + ". Use an operation from the runtime schema.");
         }
         Map<String, Object> safeArguments = arguments == null ? Map.of() : arguments;
         List<ToolArgumentDefinition> definitions = operation.get().arguments();

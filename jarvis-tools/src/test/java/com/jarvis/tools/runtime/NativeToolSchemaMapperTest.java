@@ -21,6 +21,15 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class NativeToolSchemaMapperTest {
 
     @Test
+    void unknownOperationCannotBypassArgumentValidation() {
+        NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(twoToolRegistry());
+        assertThatThrownBy(() -> mapper.toAction("knowledge__wait", Map.of(), "test"))
+                .isInstanceOf(InvalidToolArgumentException.class).hasMessageContaining("Unsupported tool operation");
+        assertThatThrownBy(() -> mapper.toAction("pc__wait", Map.of(), "test"))
+                .isInstanceOf(InvalidToolArgumentException.class).hasMessageContaining("Unsupported tool operation");
+    }
+
+    @Test
     void legacyIntentOnlyCallStillReturnsTheFullCatalog() {
         NativeToolSchemaMapper mapper = new NativeToolSchemaMapper(twoToolRegistry());
 

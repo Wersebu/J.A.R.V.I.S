@@ -508,6 +508,12 @@ class NativeToolLoopServiceCanonicalDatasetIdentityTest {
                 new ToolOperationDefinition("GET_DATASET", "Get dataset.", List.of(
                         new ToolArgumentDefinition("datasetId", "string", false, "Dataset id")
                 ), false, ToolSafetyLevel.READ),
+                // The scripted workflow uses this real operation; expose it in the test catalog too.
+                new ToolOperationDefinition("SET_PREFERENCES", "Set preferences.", List.of(
+                        new ToolArgumentDefinition("year", "number", false, "Year"),
+                        new ToolArgumentDefinition("month", "number", false, "Month"),
+                        new ToolArgumentDefinition("preferredDaysOfWeek", "array", false, "Days")
+                ), true, ToolSafetyLevel.WRITE),
                 new ToolOperationDefinition("SUBMIT_SCHEDULE", "Submit schedule.", List.of(
                         new ToolArgumentDefinition("datasetId", "string", false, "Dataset id"),
                         new ToolArgumentDefinition("days", "array", true, "Days")

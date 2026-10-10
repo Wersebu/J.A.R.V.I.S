@@ -317,6 +317,10 @@ public class NativeToolLoopService {
      */
     public ToolCallingResult execute(ToolCallingRequest request) {
         ToolCallingResult result = executeLoop(request);
+        if (result.handled() && SpotifyPlaybackPolicy.applies(request)) {
+            return new ToolCallingResult(true, SpotifyPlaybackPolicy.answer(request, result.steps()), result.steps(),
+                    result.results(), result.terminationInfo());
+        }
         if (!result.handled() || !SpotifyReadEvidence.applies(request)) {
             return result;
         }
@@ -497,6 +501,12 @@ public class NativeToolLoopService {
                     """.formatted(request.conversationContext())));
         }
         messages.add(ModelMessage.system(goalContractStatusBlock(agentState.goalContract())));
+        if (SpotifyPlaybackPolicy.applies(request)) {
+            messages.add(ModelMessage.system("Desktop Spotify playback requires reading workflows/Spotify.md first with "
+                    + "knowledge__read_workflow (or read_document). Then status, devices, optional pc__open(target=spotify) "
+                    + "and devices again, search (or liked for liked songs), play with the returned URI and local=true deviceId, then verify observedPlayback/current. "
+                    + "Readiness observations after OPEN/play are bounded but are not automatically duplicate-blocked. No browser fallback."));
+        }
         messages.add(ModelMessage.user(request.userMessage(), request.images()));
 
         // Coarse workflow label for telemetry only (never used for behavioral branching beyond what
@@ -654,6 +664,26 @@ public class NativeToolLoopService {
                         messages.add(ModelMessage.system(schemaRepairGuidance(call.name(), acquiredFacts)));
                         continue;
                     }
+                    if (SpotifyPlaybackPolicy.applies(request)) {
+                        String blockedReason = SpotifyPlaybackPolicy.guard(request, action, steps);
+                        if (!blockedReason.isBlank()) {
+                            ToolResult blocked = new ToolResult(false, action.tool(), action.operation(), request.requestId(),
+                                    request.conversationId(), false, List.of(), blockedReason, Map.of(),
+                                    SpotifyPlaybackPolicy.BLOCKED, blockedReason, false, "");
+                            results.add(blocked);
+                            steps.add(new ToolRuntimeStep(step, "SPOTIFY_POLICY_BLOCKED", action.tool(), action.operation(),
+                                    "BLOCKED", blocked, action.arguments()));
+                            messages.add(toolResultMessage(request, step, call, compactToolResult(blocked)));
+                            if (steps.stream().filter(s -> "SPOTIFY_POLICY_BLOCKED".equals(s.action())).count() >= 6) {
+                                ToolLoopTerminationInfo blockedInfo = buildTerminationInfo(ToolLoopTerminationReason.INCOMPLETE_GOAL,
+                                        false, false, started, step, maxCalls, steps, results, "", blockedReason,
+                                        remainingCriteriaDescriptions(agentState.goalContract()));
+                                logTerminationSummary(request, blockedInfo);
+                                return new ToolCallingResult(true, SpotifyPlaybackPolicy.answer(request, steps), steps, results, blockedInfo);
+                            }
+                            continue;
+                        }
+                    }
                     // Core owns the active Store Audit dataset's identity - the model is never the
                     // source of truth for which dataset a follow-up storeDataset/GEOCODE_DATASET
                     // call targets. When a canonical dataset is already active this loop, a missing
@@ -733,7 +763,8 @@ public class NativeToolLoopService {
                         }
                     }
                     String operationKey = action.tool().toLowerCase(Locale.ROOT) + "::" + action.operation().toUpperCase(Locale.ROOT);
-                    String fingerprint = actionFingerprint(action);
+                    String fingerprint = actionFingerprint(action) + (SpotifyPlaybackPolicy.applies(request)
+                            ? SpotifyPlaybackPolicy.observationIdentity(action, steps) : "");
                     if (!callFingerprints.add(fingerprint)) {
                         // An exact-duplicate call still counts toward the same no-progress budget as
                         // argument-varying repeats below - otherwise a model stuck retrying one exact
@@ -875,7 +906,8 @@ public class NativeToolLoopService {
                             // not a duplicate.
                             String prefix = action.tool().toLowerCase(Locale.ROOT) + "::";
                             String sameOperation = prefix + action.operation().toUpperCase(Locale.ROOT) + "::";
-                            callFingerprints.removeIf(known -> known.startsWith(prefix) && !known.startsWith(sameOperation));
+                            callFingerprints.removeIf(known -> known.startsWith(prefix) && !known.startsWith(sameOperation)
+                                    && !known.startsWith("pc::SPOTIFY::"));
                         }
                     }
                     // Only a validated, successfully executed tool restores the consecutive
@@ -3069,6 +3101,10 @@ public class NativeToolLoopService {
             List<ToolRuntimeStep> steps,
             WorkflowCompletionContext completionContext
     ) {
+        if (SpotifyPlaybackPolicy.applies(request)) {
+            CompletionAssessment playback = SpotifyPlaybackPolicy.assess(request, steps);
+            if (!playback.complete()) return playback;
+        }
         if (SpotifyReadEvidence.applies(request)) {
             CompletionAssessment spotify = SpotifyReadEvidence.assess(steps);
             if (!spotify.complete()) return spotify;
@@ -3107,6 +3143,10 @@ public class NativeToolLoopService {
     private GoalContract createGoalContract(ToolCallingRequest request, List<String> requiredEvidence) {
         List<CompletionCriterion> criteria = new ArrayList<>();
         criteria.add(new CompletionCriterion("original_goal", "Answer the user's original request: " + request.userMessage(), false));
+        if (SpotifyPlaybackPolicy.applies(request)) {
+            criteria.add(new CompletionCriterion("spotify_playback", "Read the Spotify workflow, choose an actual source URI, "
+                    + "play on the identified local PC and observe matching URI, device and isPlaying=true", false));
+        }
         if (SpotifyReadEvidence.applies(request)) {
             criteria.add(new CompletionCriterion("spotify_status", "Read Spotify connection with action=status", false));
             criteria.add(new CompletionCriterion("spotify_devices", "Read available Spotify devices with action=devices", false));
@@ -3123,7 +3163,7 @@ public class NativeToolLoopService {
             criteria.add(new CompletionCriterion("verified_answer",
                     "Use tool evidence when the request needs current, external, runtime, or repository state.", false));
         }
-        String requiredOutcome = request.goal() == null || request.goal().isBlank()
+        String requiredOutcome = SpotifyPlaybackPolicy.applies(request) || request.goal() == null || request.goal().isBlank()
                 ? request.userMessage()
                 : request.goal();
         return new GoalContract(request.userMessage(), requiredOutcome, criteria, List.of(),
@@ -3297,7 +3337,8 @@ public class NativeToolLoopService {
     }
 
     private boolean isDeterministicCompletionBlock(CompletionAssessment assessment) {
-        return SpotifyReadEvidence.MISSING.equals(assessment.reason())
+        return SpotifyPlaybackPolicy.BLOCKED.equals(assessment.reason())
+                || SpotifyReadEvidence.MISSING.equals(assessment.reason())
                 || "DETERMINISTIC_EVIDENCE_REQUIRED".equals(assessment.reason())
                 || "READ_RETRY_PERMISSION_QUESTION_NOT_COMPLETE".equals(assessment.reason())
                 || "BOOTSTRAP_ONLY_EVIDENCE_INSUFFICIENT_ANSWER".equals(assessment.reason());

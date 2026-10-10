@@ -166,8 +166,8 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                                 + "No Web Player. Search returns URIs; pass the chosen URI to play/enqueue/save. Read liked songs and "
                                 + "library with limit/offset; follow nextOffset when hasMore. library defaults to playlists. "
                                 + "Use pc__open spotify if desktop app is closed, then devices. Playback always targets a desktop "
-                                + "computer; use deviceName/deviceId from devices if it cannot identify the local PC. Never choose "
-                                + "a phone or another computer without the user's request. play without target resumes. "
+                                + "computer identified by local=true in devices; pass its deviceId to play. If none is local, "
+                                + "open the app and re-read devices or configure deviceName; never guess another PC. play without target resumes. "
                                 + "An accepted command is not proof of playback: inspect observedPlayback or current. "
                                 + "In Development Mode, reading playlist contents may be limited to owned/collaborative playlists. "
                                 + "Modify library/playlists only as requested. Never ask for a password or Client Secret.",
