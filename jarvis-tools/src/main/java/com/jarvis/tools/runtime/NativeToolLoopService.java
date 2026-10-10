@@ -316,6 +316,17 @@ public class NativeToolLoopService {
      * @return tool-calling result
      */
     public ToolCallingResult execute(ToolCallingRequest request) {
+        ToolCallingResult result = executeLoop(request);
+        if (!result.handled() || !SpotifyReadEvidence.applies(request)) {
+            return result;
+        }
+        // Ground every exit, including provider fallback and blank-response synthesis, in the
+        // action-specific results. Do not publish model-invented device names or connection actions.
+        return new ToolCallingResult(true, SpotifyReadEvidence.answer(result.steps()), result.steps(),
+                result.results(), result.terminationInfo());
+    }
+
+    private ToolCallingResult executeLoop(ToolCallingRequest request) {
         // AiTraceTurnContext is a thread-scoped diagnostic value (see its javadoc) set per turn
         // below - this wrapper guarantees it is always cleared when the loop finishes, regardless
         // of which of executeInternal's several return points was hit, so a pooled thread never
@@ -3058,6 +3069,10 @@ public class NativeToolLoopService {
             List<ToolRuntimeStep> steps,
             WorkflowCompletionContext completionContext
     ) {
+        if (SpotifyReadEvidence.applies(request)) {
+            CompletionAssessment spotify = SpotifyReadEvidence.assess(steps);
+            if (!spotify.complete()) return spotify;
+        }
         if (failedReadToolCallCount(steps) > 0
                 && steps.stream().noneMatch(step -> step.result() != null && step.result().success())) {
             return new CompletionAssessment(false, "DETERMINISTIC_EVIDENCE_REQUIRED",
@@ -3092,6 +3107,10 @@ public class NativeToolLoopService {
     private GoalContract createGoalContract(ToolCallingRequest request, List<String> requiredEvidence) {
         List<CompletionCriterion> criteria = new ArrayList<>();
         criteria.add(new CompletionCriterion("original_goal", "Answer the user's original request: " + request.userMessage(), false));
+        if (SpotifyReadEvidence.applies(request)) {
+            criteria.add(new CompletionCriterion("spotify_status", "Read Spotify connection with action=status", false));
+            criteria.add(new CompletionCriterion("spotify_devices", "Read available Spotify devices with action=devices", false));
+        }
         if (requiredEvidence != null) {
             int index = 1;
             for (String evidence : requiredEvidence) {
@@ -3278,7 +3297,8 @@ public class NativeToolLoopService {
     }
 
     private boolean isDeterministicCompletionBlock(CompletionAssessment assessment) {
-        return "DETERMINISTIC_EVIDENCE_REQUIRED".equals(assessment.reason())
+        return SpotifyReadEvidence.MISSING.equals(assessment.reason())
+                || "DETERMINISTIC_EVIDENCE_REQUIRED".equals(assessment.reason())
                 || "READ_RETRY_PERMISSION_QUESTION_NOT_COMPLETE".equals(assessment.reason())
                 || "BOOTSTRAP_ONLY_EVIDENCE_INSUFFICIENT_ANSWER".equals(assessment.reason());
     }

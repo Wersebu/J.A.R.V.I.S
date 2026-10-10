@@ -64,7 +64,7 @@ class NativeToolLoopServiceSpotifyStatusTest {
         assertThat(result.terminationInfo().terminationReason()).isEqualTo(ToolLoopTerminationReason.COMPLETED);
         assertThat(result.terminationInfo().completed()).isTrue();
         assertThat(result.terminationInfo().goalSatisfied()).isTrue();
-        assertThat(result.finalAnswer()).isEqualTo(reply);
+        assertThat(result.finalAnswer()).contains("Spotify jest połączone", "DESKTOP-JARVIS");
     }
 
     @Test
@@ -78,7 +78,7 @@ class NativeToolLoopServiceSpotifyStatusTest {
         assertThat(result.terminationInfo().terminationReason()).isEqualTo(ToolLoopTerminationReason.COMPLETED);
         assertThat(result.terminationInfo().completed()).isTrue();
         assertThat(result.terminationInfo().goalSatisfied()).isTrue();
-        assertThat(result.finalAnswer()).contains("nie widzę żadnych urządzeń");
+        assertThat(result.finalAnswer()).contains("Dostępne urządzenia: 0");
     }
 
     @Test
@@ -86,7 +86,7 @@ class NativeToolLoopServiceSpotifyStatusTest {
         ToolCallingResult result = run(statusConnected(), devices(List.of()), answer("Połączono. Urządzenia: 0."));
         assertThat(result.terminationInfo().completed()).isTrue();
         assertThat(result.terminationInfo().successfulToolCalls()).isEqualTo(2);
-        assertThat(result.finalAnswer()).isEqualTo("Połączono. Urządzenia: 0.");
+        assertThat(result.finalAnswer()).contains("Spotify jest połączone", "Dostępne urządzenia: 0").doesNotContain("Połączono");
     }
 
     @Test
@@ -105,7 +105,7 @@ class NativeToolLoopServiceSpotifyStatusTest {
         ToolCallingResult result = run(failedRead(), failedRead(), answer(retry), answer(retry));
         assertThat(result.terminationInfo().completed()).isFalse();
         assertThat(result.terminationInfo().goalSatisfied()).isFalse();
-        assertThat(result.finalAnswer()).contains("Nie mogę rzetelnie zakończyć").doesNotContain("Czy mam");
+        assertThat(result.finalAnswer()).contains("Nie ukończono odczytu dostępnych urządzeń").doesNotContain("Czy mam");
     }
 
     @Test
@@ -114,7 +114,106 @@ class NativeToolLoopServiceSpotifyStatusTest {
         ToolCallingResult result = run(failedRead(), failedRead(), answer(claim), answer(claim));
         assertThat(result.terminationInfo().completed()).isFalse();
         assertThat(result.terminationInfo().goalSatisfied()).isFalse();
-        assertThat(result.finalAnswer()).contains("Nie mogę rzetelnie zakończyć").doesNotContain("działa poprawnie");
+        assertThat(result.finalAnswer()).contains("Nie ukończono odczytu dostępnych urządzeń").doesNotContain("działa poprawnie");
+    }
+
+    @Test
+    void statusAloneCannotSupportAnInventedDeviceOrCompleteTheCompoundGoal() {
+        String hallucination = "Połączenie zostało nawiązane. Dostępne urządzenie: Domowy komputer (Computer).";
+        ToolCallingResult result = runTurns(statusConnected(), devices(List.of()), new ArrayDeque<>(List.of(
+                call("status"), answer(hallucination), answer(hallucination))), List.of("status"));
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.terminationInfo().goalSatisfied()).isFalse();
+        assertThat(result.finalAnswer()).contains("Spotify jest połączone", "Nie ukończono odczytu")
+                .doesNotContain("Domowy komputer", "zostało nawiązane");
+    }
+
+    @Test
+    void missingDevicesReadCanBeRecoveredAfterTheUnsupportedAnswer() {
+        ToolCallingResult result = runTurns(statusConnected(), devices(List.of(device("Actual PC", "Computer", false))),
+                new ArrayDeque<>(List.of(call("status"), answer("Domowy komputer (Computer) jest dostępny."),
+                        call("devices"), answer("Domowy komputer jest dostępny."))), List.of("status", "devices"));
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.terminationInfo().goalSatisfied()).isTrue();
+        assertThat(result.finalAnswer()).contains("Actual PC").doesNotContain("Domowy komputer");
+    }
+
+    @Test
+    void emptyDevicesCannotSupportAnInventedDevice() {
+        ToolCallingResult result = run(statusConnected(), devices(List.of()), answer("Domowy komputer (Computer)."));
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.finalAnswer()).contains("Dostępne urządzenia: 0").doesNotContain("Domowy komputer");
+    }
+
+    @Test
+    void devicesDoNotSubstituteForTheMissingConnectionRead() {
+        ToolCallingResult result = runTurns(statusConnected(), devices(List.of()), new ArrayDeque<>(List.of(
+                call("devices"), answer("Spotify jest połączone. Urządzenia: 0."),
+                answer("Spotify jest połączone. Urządzenia: 0."))), List.of("devices"));
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.terminationInfo().goalSatisfied()).isFalse();
+        assertThat(result.finalAnswer()).contains("Nie potwierdzono stanu połączenia", "Dostępne urządzenia: 0");
+    }
+
+    @Test
+    void failedDevicesReadDoesNotBecomeAnEmptyList() {
+        ToolCallingResult result = run(statusConnected(), failedRead(), answer("Urządzenia: 0."), answer("Urządzenia: 0."));
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.finalAnswer()).contains("Nie ukończono odczytu").doesNotContain("Urządzenia: 0");
+    }
+
+    @Test
+    void disconnectedStatusWithoutDevicesIsStillPartialAndDoesNotConnect() {
+        ToolResult disconnected = new ToolResult(true, "pc", "SPOTIFY", "", "", false, List.of(), "status",
+                Map.of("connected", false), "", "", false, "");
+        ToolCallingResult result = runTurns(disconnected, devices(List.of()), new ArrayDeque<>(List.of(
+                call("status"), answer("Spotify nie jest połączone."), answer("Spotify nie jest połączone."))), List.of("status"));
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.finalAnswer()).contains("Spotify nie jest połączone", "Nie ukończono odczytu");
+    }
+
+    @Test
+    void malformedDevicesPayloadIsNotEvidence() {
+        ToolResult malformed = new ToolResult(true, "pc", "SPOTIFY", "", "", false, List.of(), "ok",
+                Map.of("hint", "Domowy komputer"), "", "", false, "");
+        ToolCallingResult result = run(statusConnected(), malformed, answer("Domowy komputer."), answer("Domowy komputer."));
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.finalAnswer()).contains("Nie ukończono odczytu").doesNotContain("Domowy komputer");
+    }
+
+    @Test
+    void blankFinalTurnCannotBypassTheMissingDevicesCriterion() {
+        ToolCallingResult result = runTurns(statusConnected(), devices(List.of()), new ArrayDeque<>(List.of(
+                call("status"), answer(""), answer(""), answer(""), answer(""))), List.of("status"));
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.terminationInfo().goalSatisfied()).isFalse();
+        assertThat(result.finalAnswer()).contains("Nie ukończono odczytu");
+    }
+
+    @Test
+    void longUnsupportedAnswerCannotEscapeAfterCompletionRetryBudget() {
+        String claim = "Domowy komputer (Computer) jest dostępny. " + "Połączenie zostało nawiązane. ".repeat(20);
+        ToolCallingResult result = runTurns(statusConnected(), devices(List.of()), new ArrayDeque<>(List.of(
+                call("status"), answer(claim), answer(claim), answer(claim), answer(claim), answer(claim))), List.of("status"));
+        assertThat(result.terminationInfo().terminationReason()).isEqualTo(ToolLoopTerminationReason.INCOMPLETE_GOAL);
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.terminationInfo().goalSatisfied()).isFalse();
+        assertThat(result.finalAnswer()).contains("Nie ukończono odczytu").doesNotContain("Domowy komputer");
+    }
+
+    @Test
+    void devicesKeyInStatusResultDoesNotProveDevicesActionRan() {
+        ToolResult misleadingStatus = new ToolResult(true, "pc", "SPOTIFY", "", "", false, List.of(), "status",
+                Map.of("connected", true, "devices", List.of(device("Wrong source", "Computer", false))), "", "", false, "");
+        ToolCallingResult result = runTurns(misleadingStatus, devices(List.of()), new ArrayDeque<>(List.of(
+                call("status"), answer("Wrong source jest dostępne."), answer("Wrong source jest dostępne."))), List.of("status"));
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.finalAnswer()).doesNotContain("Wrong source").contains("Nie ukończono odczytu");
+    }
+
+    private ModelResponse call(String action) {
+        return new ModelResponse("", "", List.of(new ModelToolCall("c-" + action, "pc__spotify", Map.of("action", action))),
+                "tool_calls", new ModelUsage(0, 0, 0));
     }
 
     private ToolResult failedRead() {
@@ -129,6 +228,11 @@ class NativeToolLoopServiceSpotifyStatusTest {
         turns.add(new ModelResponse("", "", List.of(new ModelToolCall("c2", "pc__spotify", Map.of("action", "devices"))), "tool_calls",
                 new ModelUsage(0, 0, 0)));
         turns.addAll(List.of(answers));
+        return runTurns(status, devices, turns, List.of("status", "devices"));
+    }
+
+    private ToolCallingResult runTurns(ToolResult status, ToolResult devices, Deque<ModelResponse> turns,
+                                      List<String> expectedActions) {
         FakePcToolManager tools = new FakePcToolManager(status, devices);
         NativeToolLoopService service = new NativeToolLoopService(
                 List.of(new ScriptedProvider(turns)), tools, query -> ToolIntent.NO_TOOL,
@@ -136,9 +240,9 @@ class NativeToolLoopServiceSpotifyStatusTest {
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
                 new NativeToolSchemaMapper(registry()),
                 new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus()));
-        ToolCallingResult result = service.execute(new ToolCallingRequest("request-spotify", "conversation-1", USER, GOAL, GOAL,
+        ToolCallingResult result = service.execute(new ToolCallingRequest("request-spotify", "conversation-1", USER, "Check the Spotify connection", GOAL,
                 "Base prompt", new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST));
-        assertThat(tools.actions).containsExactly("status", "devices");
+        assertThat(tools.actions).containsExactlyElementsOf(expectedActions);
         return result;
     }
 

@@ -28,6 +28,43 @@ uruchamiają connect ani play. Ta poprawka nie wymaga zmian repo Windows.
 verificationPerformed nadal oznacza istniejące role VERIFY/EXECUTE; sam READ może mieć
 completed=true i goalSatisfied=true przy verificationPerformed=false.
 
+## Uzupełnienie po teście requestu 458e725f-55bf-4c42-b492-6f4226845c22
+
+Raport z Ubuntu wykazał brak action=devices po udanym action=status. Dotychczasowy kontrakt
+uznawał dowolny wynik narzędzia i niepustą odpowiedź za wystarczające, nie przypisując dowodów
+do osobnych części celu. Zmiana klasyfikacji status na READ nie rozwiązywała tej luki.
+
+Dodano deterministyczny kontrakt dla złożonego pytania o połączenie Spotify i urządzenia
+(rozpoznawanie polskich i angielskich określeń w oryginalnym poleceniu, niezależnie od zawężonego
+podcelu modelu). Kontrakt wymaga osobno:
+
+- udanego pc/SPOTIFY action=status z polem connected typu boolean;
+- udanego pc/SPOTIFY action=devices z listą urządzeń, również pustą.
+
+Sam status, hint, devices umieszczone w odpowiedzi status, nieudany odczyt ani brak pola devices
+nie spełniają drugiego kryterium. Bramka obejmuje zwykły finał, długą odpowiedź po wyczerpaniu
+prób zakończenia oraz pustą odpowiedź kierowaną do syntezy. Przy brakującym wyniku model
+otrzymuje wskazanie brakującego odczytu w istniejącym budżecie; jeżeli go nie wykona, wynik
+pozostaje nieukończony. Nie zwiększono limitów.
+
+Dla tego złożonego pytania końcowe podsumowanie powstaje z danych narzędzi, a nie swobodnego
+tekstu modelu. Nazwy i typy urządzeń pochodzą tylko z action=devices. connected=true oznacza
+„Spotify jest połączone”, a nie „nawiązano połączenie”. Brakujące odczyty są jawnie wymienione,
+również w awaryjnych ścieżkach zakończenia. connected=false jest poprawnym wynikiem statusu;
+nie zastępuje brakującego wyniku devices. Nie dodano automatycznego connect/play.
+
+Testy obejmują zgłoszony przebieg status → niepotwierdzone urządzenie, uzupełnienie devices
+po odrzuceniu odpowiedzi, zmyśloną nazwę mimo devices=[], odwrotnie brakujący status,
+nieudany/malformed devices, connected=false bez devices, puste i długie finały oraz fałszywe
+pole devices w odpowiedzi status. Poprzednie asercje braku sukcesu zachowano; asercje dokładnego
+tekstu udanego finału dostosowano do podsumowania z dowodów zamiast słów modelu.
+
+Walidacja uzupełnienia: pełne `mvn -o -pl jarvis-core -am verify` — BUILD SUCCESS,
+802 testy, zero failures/errors/skipped (428 tools, 83 core). Zestaw Spotify obejmuje 17 testów.
+
+To kontrakt dla wskazanego złożonego odczytu Spotify, nie ogólny semantyczny walidator każdego
+możliwego celu wieloczęściowego. Pozostałe cele zachowują dotychczasową walidację.
+
 ## Osobny problem: routing i workflow (propozycja, bez implementacji)
 
 NativeToolLoopService.systemPrompt buduje własny prompt; nie używa request.basePrompt.
