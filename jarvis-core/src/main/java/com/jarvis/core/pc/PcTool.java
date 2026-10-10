@@ -256,7 +256,8 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                 data = copy;
             }
             return new ToolResult(true, TOOL_NAME, operation, request.requestId(), request.conversationId(), changed,
-                    List.of(), "PC " + operation + " finished", data, "", "", false, "");
+                    List.of(), "SPOTIFY".equals(operation) ? spotifyMessage(arguments, data) : "PC " + operation + " finished",
+                    data, "", "", false, "");
         } catch (RuntimeException exception) {
             String message = exception.getMessage() == null ? exception.getClass().getSimpleName() : exception.getMessage();
             if (message.contains("not connected") || message.contains("no Windows Bridge")) {
@@ -264,6 +265,40 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
             }
             return failure(request, operation, "PC_TOOL_FAILED", message);
         }
+    }
+
+    /**
+     * States what a Spotify read actually returned, so the model never mistakes a successful call
+     * for a connected account or an empty device list for an error.
+     */
+    static String spotifyMessage(Map<String, Object> arguments, Map<String, Object> data) {
+        String action = String.valueOf(arguments.getOrDefault("action", "")).strip().toLowerCase(Locale.ROOT);
+        if (action.equals("status")) {
+            boolean connected = Boolean.TRUE.equals(data.get("connected"));
+            boolean configured = Boolean.TRUE.equals(data.get("configured"));
+            boolean pending = Boolean.TRUE.equals(data.get("authorizationPending"));
+            String lastError = String.valueOf(data.getOrDefault("lastError", "")).strip();
+            StringBuilder message = new StringBuilder("Spotify status read: connected=").append(connected)
+                    .append(", configured=").append(configured).append(", authorizationPending=").append(pending).append('.');
+            if (!lastError.isEmpty() && !lastError.equals("null")) {
+                message.append(" lastError: ").append(lastError).append('.');
+            }
+            if (!connected) {
+                message.append(" Spotify is NOT connected; tell the user. Connecting opens a browser login - do it only if the "
+                        + "user explicitly asks to connect.");
+            }
+            return message.toString();
+        }
+        if (action.equals("devices")) {
+            Object devices = data.get("devices");
+            if (devices instanceof List<?> list) {
+                if (list.isEmpty()) {
+                    return "Spotify devices read: 0 devices. An empty list is a valid result: Spotify returned no available devices for this account.";
+                }
+                return "Spotify devices read: " + list.size() + " device(s).";
+            }
+        }
+        return "PC SPOTIFY " + (action.isEmpty() ? "" : action + " ") + "finished";
     }
 
     private static long clamp(Map<String, Object> arguments, String key, long fallback, long min, long max) {

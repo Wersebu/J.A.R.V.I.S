@@ -60,6 +60,24 @@ class GenericGoalCompletionValidatorTest {
         assertThat(assessment.guidance()).contains("list the project's folders");
     }
 
+    @Test
+    void retryGateRequiresAVisibleQuestionAndFailedRead() {
+        for (String question : new String[] {"Czy mam spróbować ponownie?", "Should I try again?",
+                "Search failed. Czy chcesz, zebym sprobowal ponownie?", "Can I retry?"}) {
+            assertThat(validator.assess(retryContext(question, "", 1)).reason())
+                    .isEqualTo("READ_RETRY_PERMISSION_QUESTION_NOT_COMPLETE");
+            assertThat(validator.assess(retryContext(question, "", 0)).complete()).isTrue();
+        }
+        assertThat(validator.assess(retryContext("Wynik odczytu. Czy mam włączyć muzykę?", "", 1)).complete()).isTrue();
+        assertThat(validator.assess(retryContext("Wynik odczytu.", "Should I try again?", 1)).complete()).isTrue();
+        assertThat(validator.assess(retryContext("I can retry later. Is that device yours?", "", 1)).complete()).isTrue();
+    }
+
+    private WorkflowCompletionContext retryContext(String visible, String thinking, int failedReads) {
+        return new WorkflowCompletionContext("r", "c", false, "", false, false, "",
+                "Check Spotify", 2, false, visible + " " + thinking, visible, failedReads);
+    }
+
     private WorkflowCompletionContext context(int toolCallCount, boolean bootstrapOnlyEvidence, String proposedFinalText) {
         return new WorkflowCompletionContext(
                 "request-1", "conversation-1", false, "", false, false, "",

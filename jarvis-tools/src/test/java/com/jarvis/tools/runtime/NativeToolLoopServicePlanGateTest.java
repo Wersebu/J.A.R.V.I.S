@@ -124,6 +124,9 @@ class NativeToolLoopServicePlanGateTest {
         ToolCallingResult result = service.execute(request("conv-held"));
 
         assertThat(result.finalAnswer()).contains("2.0.28").doesNotContain("Nie mogę rzetelnie");
+        assertThat(result.finalAnswer()).contains("Zadanie pozostaje nieukończone", "częściowa odpowiedź");
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.terminationInfo().goalSatisfied()).isFalse();
         assertThat(provider.sawSystemNote("the user has NOT seen your message above")).isTrue();
     }
 

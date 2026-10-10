@@ -147,8 +147,6 @@ public class NativeToolLoopService {
     /** Budget for all loop message contents before the oldest tool results are elided. */
     private int historyCharBudget = 120_000;
     private static final int MAX_PLAN_GATE_ATTEMPTS = 1;
-    /** A rejected-but-real answer at least this long is kept as the fallback final answer. */
-    private static final int MIN_FALLBACK_ANSWER_LENGTH = 20;
 
     /**
      * Creates the native tool loop service.
@@ -384,10 +382,7 @@ public class NativeToolLoopService {
             maxCalls = Math.max(maxCalls, properties.maxCallsAgent());
         }
         int planGateAttempts = 0;
-        // The last real answer a gate sent back for more work. If the follow-up turns then produce
-        // nothing usable (a small model often believes it already answered), the user gets this
-        // answer instead of a generic "could not finish" message - a real answer is never thrown away.
-        String lastRejectedAnswer = "";
+        String planHeldAnswer = "";
         List<ModelMessage> messages = new ArrayList<>();
         List<ToolRuntimeStep> steps = new ArrayList<>();
         List<ToolResult> results = new ArrayList<>();
@@ -828,7 +823,8 @@ public class NativeToolLoopService {
                         for (RecoveryEvent event : outcome.events()) {
                             results.add(event.result());
                             steps.add(new ToolRuntimeStep(step, event.actionLabel(), event.action().tool(),
-                                    event.action().operation(), event.result().success() ? "OK" : "FAILED", event.result()));
+                                    event.action().operation(), event.result().success() ? "OK" : "FAILED", event.result(),
+                                    event.action().arguments()));
                             recordGoalEvidence(request, agentState, event.action(), event.result());
                             messages.add(ModelMessage.tool(toolCallId(call), nativeFunctionName(event.action()),
                                     compactToolResult(event.result())));
@@ -842,7 +838,8 @@ public class NativeToolLoopService {
                             for (RecoveryEvent event : followUp.events()) {
                                 results.add(event.result());
                                 steps.add(new ToolRuntimeStep(step, event.actionLabel(), event.action().tool(),
-                                        event.action().operation(), event.result().success() ? "OK" : "FAILED", event.result()));
+                                        event.action().operation(), event.result().success() ? "OK" : "FAILED", event.result(),
+                                        event.action().arguments()));
                                 recordGoalEvidence(request, agentState, event.action(), event.result());
                                 messages.add(ModelMessage.tool(toolCallId(call), nativeFunctionName(event.action()),
                                         compactToolResult(event.result())));
@@ -935,7 +932,7 @@ public class NativeToolLoopService {
                     }
                     results.add(result);
                     steps.add(new ToolRuntimeStep(step, "TOOL_CALL", action.tool(), action.operation(),
-                            result.success() ? "OK" : "FAILED", result));
+                            result.success() ? "OK" : "FAILED", result, action.arguments()));
                     recordGoalEvidence(request, agentState, action, result);
                     messages.add(toolResultMessage(request, step, call, compactToolResult(result)));
                     attachScreenshot(messages, result);
@@ -1025,7 +1022,7 @@ public class NativeToolLoopService {
                     publish(request, CognitiveEventType.TOOL_LOOP_FINISHED, "NO_NATIVE_TOOL_CALL_PROGRESS",
                             "Native tool loop stopped: consecutive turns produced no native tool call and no new evidence",
                             null, step, terminationMetadata(Map.of("consecutiveNoToolProgress", consecutiveNoToolProgress), noProgressInfo));
-                    return new ToolCallingResult(true, answerOrBlocked(lastRejectedAnswer, new CompletionAssessment(false,
+                    return new ToolCallingResult(true, answerOrBlocked(planHeldAnswer, new CompletionAssessment(false,
                             "NO_NATIVE_TOOL_CALL_PROGRESS", "Two consecutive turns produced no native tool call and no new evidence.")),
                             steps, results, noProgressInfo);
                 }
@@ -1093,8 +1090,15 @@ public class NativeToolLoopService {
                 }
                 if (unfinishedPlan.isPresent() && planGateAttempts < MAX_PLAN_GATE_ATTEMPTS) {
                     planGateAttempts++;
-                    if (content.strip().length() >= MIN_FALLBACK_ANSWER_LENGTH) {
-                        lastRejectedAnswer = content.strip();
+                    WorkflowCompletionContext draftContext = new WorkflowCompletionContext(
+                            request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId,
+                            workflowDocumentLoaded, datasetCreationAttemptFailed, lastDatasetCreationError,
+                            request.userMessage(), toolCallCount(steps), isBootstrapOnlyEvidence(steps),
+                            (content + " " + response.thinking()).strip(), content, failedReadToolCallCount(steps));
+                    if (assessCompletion(request, steps, draftContext).complete()
+                            && hasNonBootstrapEvidence(steps)
+                            && goalCompletionVerifier.verify(agentState.goalContract(), content).decision() == CompletionDecision.COMPLETE) {
+                        planHeldAnswer = content;
                     }
                     if (step >= maxCalls) {
                         maxCalls = step + 2;
@@ -1120,11 +1124,14 @@ public class NativeToolLoopService {
                 WorkflowCompletionContext completionContext = new WorkflowCompletionContext(
                         request.requestId(), request.conversationId(), datasetTouchedThisLoop, activeDatasetId, workflowDocumentLoaded,
                         datasetCreationAttemptFailed, lastDatasetCreationError, request.userMessage(), toolCallCount(steps),
-                        isBootstrapOnlyEvidence(steps), (content + " " + response.thinking()).strip());
+                        isBootstrapOnlyEvidence(steps), (content + " " + response.thinking()).strip(), content,
+                        failedReadToolCallCount(steps));
                 CompletionAssessment assessment = assessCompletion(request, steps, completionContext);
                 LOGGER.info("[COMPLETION_GATE] workflow=STORE_AUDIT requestId={} step={} stage={} complete={} nextRequiredAction={}",
                         request.requestId(), step, datasetStageLabel(activeDatasetId), assessment.complete(), nextRequiredActionFor(activeDatasetId, workflowDocumentLoaded));
                 if (!assessment.complete()) {
+                    // A failed evidence gate invalidates even an earlier plan-only draft.
+                    planHeldAnswer = "";
                     if (agentState.completionAttempts() < MAX_COMPLETION_GATE_ATTEMPTS) {
                         int attempt = agentState.incrementCompletionAttempts();
                         boolean recoveryExtension = false;
@@ -1177,9 +1184,6 @@ public class NativeToolLoopService {
                     }
                     LOGGER.info("[AGENT_CONTINUE] requestId={} step={} attempt={} reason=GOAL_CONTRACT_INCOMPLETE",
                             request.requestId(), step, attempt);
-                    if (content.strip().length() >= MIN_FALLBACK_ANSWER_LENGTH) {
-                        lastRejectedAnswer = content.strip();
-                    }
                     messages.add(ModelMessage.assistant(content, List.of()));
                     messages.add(ModelMessage.system(goalContinueStatusBlock(agentState.goalContract(), verification, results)));
                     continue;
@@ -1196,7 +1200,7 @@ public class NativeToolLoopService {
                             verification.nextGoal().isBlank() ? verification.reason() : verification.nextGoal(),
                             verification.missingCriteria());
                     logTerminationSummary(request, blockedInfo);
-                    return new ToolCallingResult(true, answerOrBlocked(lastRejectedAnswer, new CompletionAssessment(false,
+                    return new ToolCallingResult(true, answerOrBlocked(planHeldAnswer, new CompletionAssessment(false,
                             "GOAL_CONTRACT_INCOMPLETE", verification.reason())), steps, results, blockedInfo);
                 } else {
                     LOGGER.info("[AGENT_FINISH] requestId={} step={} status=COMPLETE", request.requestId(), step);
@@ -1297,7 +1301,7 @@ public class NativeToolLoopService {
                             verification.nextGoal().isBlank() ? verification.reason() : verification.nextGoal(),
                             verification.missingCriteria());
                     logTerminationSummary(request, blockedInfo);
-                    return new ToolCallingResult(true, answerOrBlocked(lastRejectedAnswer, new CompletionAssessment(false,
+                    return new ToolCallingResult(true, answerOrBlocked(planHeldAnswer, new CompletionAssessment(false,
                             "GOAL_CONTRACT_INCOMPLETE", verification.reason())), steps, results, blockedInfo);
                 }
                 LOGGER.info("[FINAL_SYNTHESIS] requestId={} goalComplete=true", request.requestId());
@@ -2409,6 +2413,19 @@ public class NativeToolLoopService {
         return count;
     }
 
+    private int failedReadToolCallCount(List<ToolRuntimeStep> steps) {
+        int failed = 0;
+        for (ToolRuntimeStep step : steps) {
+            ToolOperationRole role = ToolOperationClassifier.classify(step.tool(), step.operation(), step.arguments());
+            if (step.result() != null && !step.result().success()
+                    && (role == ToolOperationRole.READ || role == ToolOperationRole.SEARCH
+                    || role == ToolOperationRole.INSPECT || role == ToolOperationRole.VERIFY)) {
+                failed++;
+            }
+        }
+        return failed;
+    }
+
     /**
      * True when at least one tool call has actually executed this loop and every successful one
      * classifies as bootstrap-only ({@link ToolOperationRole#isBootstrap()}) - e.g. only listing
@@ -2426,7 +2443,7 @@ public class NativeToolLoopService {
                 continue;
             }
             anySuccessful = true;
-            ToolOperationRole role = ToolOperationClassifier.classify(step.tool(), step.operation());
+            ToolOperationRole role = ToolOperationClassifier.classify(step.tool(), step.operation(), step.arguments());
             if (!role.isBootstrap()) {
                 return false;
             }
@@ -2537,7 +2554,7 @@ public class NativeToolLoopService {
         boolean changesMade = results.stream().anyMatch(result -> result.success() && result.changed());
         boolean verificationPerformed = steps.stream().anyMatch(step -> "TOOL_CALL".equals(step.action())
                 && step.result() != null && step.result().success() && isVerificationRole(
-                        ToolOperationClassifier.classify(step.tool(), step.operation())));
+                        ToolOperationClassifier.classify(step.tool(), step.operation(), step.arguments())));
         long elapsedMs = Duration.between(started, Instant.now()).toMillis();
         return new ToolLoopTerminationInfo(reason, completed, goalSatisfied, configuredMaxTurns, usedTurns,
                 executed, successful, failed, elapsedMs, lastToolName, lastToolOperation, lastErrorCode,
@@ -2972,7 +2989,7 @@ public class NativeToolLoopService {
             result = withMarketplaceState(result, collector);
             results.add(result);
             steps.add(new ToolRuntimeStep(step, "TOOL_CALL", action.tool(), action.operation(),
-                    result.success() ? "OK" : "FAILED", result));
+                    result.success() ? "OK" : "FAILED", result, action.arguments()));
             // No single ModelToolCall exists for these Core-synthesized candidate reads (they never
             // came from the model itself) - the native function name is reconstructed from the
             // action that actually ran, using the exact same tool__operation convention every real
@@ -3041,6 +3058,12 @@ public class NativeToolLoopService {
             List<ToolRuntimeStep> steps,
             WorkflowCompletionContext completionContext
     ) {
+        if (failedReadToolCallCount(steps) > 0
+                && steps.stream().noneMatch(step -> step.result() != null && step.result().success())) {
+            return new CompletionAssessment(false, "DETERMINISTIC_EVIDENCE_REQUIRED",
+                    "All attempted tool calls failed. Do not claim the requested state was verified. "
+                            + "Retry a safe read if possible, otherwise report the read failure explicitly.");
+        }
         CompletionAssessment workflowAssessment = completionValidator.assess(completionContext);
         if (!workflowAssessment.complete()) {
             return workflowAssessment;
@@ -3209,7 +3232,7 @@ public class NativeToolLoopService {
             if (result == null || !result.success() || "system".equalsIgnoreCase(result.tool())) {
                 continue;
             }
-            ToolOperationRole role = ToolOperationClassifier.classify(result.tool(), result.operation());
+            ToolOperationRole role = ToolOperationClassifier.classify(result.tool(), result.operation(), step.arguments());
             if (role == ToolOperationRole.SEARCH
                     || role == ToolOperationRole.READ
                     || role == ToolOperationRole.INSPECT
@@ -3245,7 +3268,7 @@ public class NativeToolLoopService {
                 diagnosticClue = true;
                 continue;
             }
-            ToolOperationRole role = ToolOperationClassifier.classify(result.tool(), result.operation());
+            ToolOperationRole role = ToolOperationClassifier.classify(result.tool(), result.operation(), step.arguments());
             if (role == ToolOperationRole.SEARCH || role == ToolOperationRole.READ
                     || role == ToolOperationRole.INSPECT || role == ToolOperationRole.VERIFY) {
                 verified = true;
@@ -3256,20 +3279,8 @@ public class NativeToolLoopService {
 
     private boolean isDeterministicCompletionBlock(CompletionAssessment assessment) {
         return "DETERMINISTIC_EVIDENCE_REQUIRED".equals(assessment.reason())
-                || "READ_RETRY_PERMISSION_QUESTION_NOT_COMPLETE".equals(assessment.reason());
-    }
-
-    /**
-     * Prefers a real answer the model already wrote (and a gate held back) over the generic
-     * "could not finish" text.
-     */
-    private String answerOrBlocked(String lastRejectedAnswer, CompletionAssessment assessment) {
-        if (lastRejectedAnswer != null && !lastRejectedAnswer.isBlank()) {
-            LOGGER.info("[NATIVE_TOOL_LOOP] returning the last real answer instead of a blocked message reason={}",
-                    assessment.reason());
-            return lastRejectedAnswer;
-        }
-        return deterministicBlockedAnswer(assessment);
+                || "READ_RETRY_PERMISSION_QUESTION_NOT_COMPLETE".equals(assessment.reason())
+                || "BOOTSTRAP_ONLY_EVIDENCE_INSUFFICIENT_ANSWER".equals(assessment.reason());
     }
 
     private static final java.util.regex.Pattern FINAL_STEP_PATTERN = java.util.regex.Pattern.compile(
@@ -3300,6 +3311,14 @@ public class NativeToolLoopService {
         } catch (RuntimeException exception) {
             LOGGER.debug("[NATIVE_TOOL_LOOP] could not complete final plan step: {}", exception.getMessage());
         }
+    }
+
+    private String answerOrBlocked(String planHeldAnswer, CompletionAssessment assessment) {
+        if (!planHeldAnswer.isBlank()) {
+            return "Zadanie pozostaje nieukończone. Poniżej częściowa odpowiedź z odczytów; "
+                    + "nie stanowi potwierdzenia wykonania całego planu.\n\n" + planHeldAnswer;
+        }
+        return deterministicBlockedAnswer(assessment);
     }
 
     private String deterministicBlockedAnswer(CompletionAssessment assessment) {

@@ -35,6 +35,40 @@ class PcToolTest {
     };
 
     @Test
+    void spotifyReadMessagesPreserveConnectionAndDeviceFactsWithoutSideEffects() {
+        List<Map<String, Object>> replies = List.of(
+                Map.of("connected", true, "configured", true, "authorizationPending", false),
+                Map.of("connected", false, "configured", true, "authorizationPending", false, "lastError", "Token expired"),
+                Map.of("devices", List.of()),
+                Map.of("devices", List.of(Map.of("name", "Desktop"))));
+        WindowsCodingBridgeGateway spotifyGateway = new WindowsCodingBridgeGateway() {
+            public String codingStatus() { return "CONNECTED"; }
+            public Map<String, Object> codingRequest(String operation, Map<String, Object> payload, Duration timeout) {
+                operations.add(operation);
+                payloads.add(payload);
+                return replies.get(payloads.size() - 1);
+            }
+        };
+        PcTool tool = new PcTool(spotifyGateway, true);
+        ToolResult connected = tool.execute(request("SPOTIFY", Map.of("action", "status")));
+        ToolResult disconnected = tool.execute(request("SPOTIFY", Map.of("action", "status")));
+        ToolResult empty = tool.execute(request("SPOTIFY", Map.of("action", "devices")));
+        ToolResult available = tool.execute(request("SPOTIFY", Map.of("action", "devices")));
+        assertThat(connected.message()).contains("connected=true");
+        assertThat(disconnected.message()).contains("connected=false", "NOT connected", "Token expired", "only if");
+        assertThat(empty.message()).contains("0 devices", "valid result");
+        assertThat(available.message()).contains("1 device(s)");
+        for (ToolResult result : List.of(connected, disconnected, empty, available)) {
+            assertThat(result.success()).isTrue();
+            assertThat(result.changed()).isFalse();
+        }
+        assertThat(payloads).extracting(payload -> payload.get("action")).containsExactly("status", "status", "devices", "devices");
+        assertThat(operations).containsOnly("pc_spotify");
+        assertThat(disconnected.data()).containsEntry("connected", false);
+        assertThat(empty.data()).containsEntry("devices", List.of());
+    }
+
+    @Test
     void spotifyIsDiscoverableAndForwardsApiArguments() {
         PcTool tool = new PcTool(gateway, true);
         assertThat(tool.definition().operations()).anySatisfy(op ->

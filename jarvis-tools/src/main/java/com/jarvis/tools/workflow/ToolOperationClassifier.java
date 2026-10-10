@@ -51,6 +51,25 @@ public final class ToolOperationClassifier {
      * @return best-effort role classification
      */
     public static ToolOperationRole classify(String tool, String operation) {
+        return classify(tool, operation, java.util.Map.of());
+    }
+
+    /**
+     * Classifies a tool call using its arguments when the operation itself is generic. pc SPOTIFY
+     * and pc MEDIA carry their real meaning in {@code action}: reading the Spotify status or the
+     * device list is a READ, playback control/connect/disconnect is EXECUTE, and changing the
+     * library or playlists is WRITE.
+     *
+     * @param tool tool name
+     * @param operation operation name
+     * @param arguments call arguments (may be empty)
+     * @return best-effort role classification
+     */
+    public static ToolOperationRole classify(String tool, String operation, java.util.Map<String, Object> arguments) {
+        ToolOperationRole actionRole = pcActionRole(safe(tool), safe(operation), arguments);
+        if (actionRole != null) {
+            return actionRole;
+        }
         ToolOperationRole agentRole = agentToolRole(safe(tool), safe(operation));
         if (agentRole != null) {
             return agentRole;
@@ -121,6 +140,43 @@ public final class ToolOperationClassifier {
             case "SHELL_LIST" -> ToolOperationRole.DISCOVERY;
             default -> null;
         };
+    }
+
+    private static final Set<String> SPOTIFY_READ_ACTIONS = Set.of(
+            "status", "devices", "current", "queue", "liked", "library", "playlists", "playlist_tracks", "album_tracks");
+    private static final Set<String> SPOTIFY_EXECUTE_ACTIONS = Set.of(
+            "play", "pause", "next", "previous", "enqueue", "volume", "seek", "shuffle", "repeat", "connect", "disconnect");
+    private static final Set<String> SPOTIFY_WRITE_ACTIONS = Set.of("save", "remove", "create_playlist", "add_to_playlist");
+
+    private static ToolOperationRole pcActionRole(String tool, String operation, java.util.Map<String, Object> arguments) {
+        if (!tool.equalsIgnoreCase("pc") || arguments == null) {
+            return null;
+        }
+        Object raw = arguments.get("action");
+        String action = raw == null ? "" : String.valueOf(raw).strip().toLowerCase(Locale.ROOT);
+        if (action.isEmpty()) {
+            return null;
+        }
+        String o = operation.toUpperCase(Locale.ROOT);
+        if (o.equals("SPOTIFY")) {
+            if (action.equals("search")) {
+                return ToolOperationRole.SEARCH;
+            }
+            if (SPOTIFY_READ_ACTIONS.contains(action)) {
+                return ToolOperationRole.READ;
+            }
+            if (SPOTIFY_WRITE_ACTIONS.contains(action)) {
+                return ToolOperationRole.WRITE;
+            }
+            if (SPOTIFY_EXECUTE_ACTIONS.contains(action)) {
+                return ToolOperationRole.EXECUTE;
+            }
+            return null;
+        }
+        if (o.equals("MEDIA")) {
+            return action.equals("status") ? ToolOperationRole.READ : ToolOperationRole.EXECUTE;
+        }
+        return null;
     }
 
     private static boolean containsAny(List<String> tokens, Set<String> words) {

@@ -30,6 +30,8 @@ package com.jarvis.tools.workflow;
  *         with a different role succeeds, and always false when {@code toolCallCount} is zero
  * @param proposedFinalText the model's own proposed final content plus reasoning/thinking text for
  *         this turn, so a validator can detect the model admitting its own answer is incomplete
+ * @param proposedAnswerContent visible answer only, excluding reasoning
+ * @param failedReadToolCallCount failed read/search/inspect/verify calls; excludes state changes
  */
 public record WorkflowCompletionContext(
         String requestId,
@@ -42,7 +44,9 @@ public record WorkflowCompletionContext(
         String originalUserRequest,
         int toolCallCount,
         boolean bootstrapOnlyEvidence,
-        String proposedFinalText
+        String proposedFinalText,
+        String proposedAnswerContent,
+        int failedReadToolCallCount
 ) {
 
     /**
@@ -55,6 +59,29 @@ public record WorkflowCompletionContext(
         lastDatasetCreationErrorMessage = lastDatasetCreationErrorMessage == null ? "" : lastDatasetCreationErrorMessage;
         originalUserRequest = originalUserRequest == null ? "" : originalUserRequest;
         proposedFinalText = proposedFinalText == null ? "" : proposedFinalText;
+        proposedAnswerContent = proposedAnswerContent == null ? "" : proposedAnswerContent;
+        failedReadToolCallCount = Math.max(0, failedReadToolCallCount);
+    }
+
+    /**
+     * Creates a context where the answer content equals the proposed text and no failures are known.
+     */
+    public WorkflowCompletionContext(
+            String requestId,
+            String conversationId,
+            boolean datasetTouchedThisLoop,
+            String activeDatasetId,
+            boolean requiredDocumentLoaded,
+            boolean datasetCreationFailed,
+            String lastDatasetCreationErrorMessage,
+            String originalUserRequest,
+            int toolCallCount,
+            boolean bootstrapOnlyEvidence,
+            String proposedFinalText
+    ) {
+        this(requestId, conversationId, datasetTouchedThisLoop, activeDatasetId, requiredDocumentLoaded, datasetCreationFailed,
+                lastDatasetCreationErrorMessage, originalUserRequest, toolCallCount, bootstrapOnlyEvidence, proposedFinalText,
+                proposedFinalText, 0);
     }
 
     /**

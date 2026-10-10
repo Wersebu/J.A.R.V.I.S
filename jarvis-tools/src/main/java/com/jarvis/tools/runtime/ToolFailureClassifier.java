@@ -55,7 +55,7 @@ final class ToolFailureClassifier {
         if (action == null) {
             return false;
         }
-        return ToolOperationClassifier.classify(action.tool(), action.operation()) == ToolOperationRole.WRITE;
+        return ToolOperationClassifier.classify(action.tool(), action.operation(), action.arguments()) == ToolOperationRole.WRITE;
     }
 
     private String requiredMode(ToolAction action, String text) {
