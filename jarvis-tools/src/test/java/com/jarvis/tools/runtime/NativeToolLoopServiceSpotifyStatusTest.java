@@ -211,6 +211,55 @@ class NativeToolLoopServiceSpotifyStatusTest {
         assertThat(result.finalAnswer()).doesNotContain("Wrong source").contains("Nie ukończono odczytu");
     }
 
+    @Test
+    void documentationSummaryCompletesWithoutSpotifyCalls() {
+        assertDocumentationSummary(false);
+    }
+
+    @Test
+    void explicitBanBlocksModelAttemptToReadLiveState() {
+        assertDocumentationSummary(true);
+    }
+
+    private void assertDocumentationSummary(boolean attemptsLiveRead) {
+        String user = "Znajdź i przeczytaj cały workflow Spotify w bazie wiedzy. "
+                + "Podsumuj zasady sprawdzania połączenia, wyboru urządzenia i potwierdzania odtwarzania. "
+                + "Nie wykonuj żadnych operacji Spotify.";
+        String summary = "Workflow zaleca sprawdzenie połączenia przez status, wybór lokalnego urządzenia z devices "
+                + "i potwierdzenie odtwarzania przez current: utwór, urządzenie oraz isPlaying. To opis procedury.";
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(new ModelResponse("", "", List.of(new ModelToolCall("doc", "knowledge__read_document",
+                Map.of("path", "workflows/Spotify.md"))), "tool_calls", new ModelUsage(0, 0, 0)));
+        if (attemptsLiveRead) {
+            turns.add(call("status"));
+            turns.add(call("devices"));
+        }
+        turns.add(answer(summary));
+        ToolCallingResult result = runTurns(statusConnected(), devices(List.of()), turns,
+                List.of("READ_DOCUMENT"), user);
+        assertThat(result.terminationInfo().terminationReason()).isEqualTo(ToolLoopTerminationReason.COMPLETED);
+        assertThat(result.terminationInfo().goalSatisfied()).isTrue();
+        assertThat(result.finalAnswer()).isEqualTo(summary);
+        assertThat(turns).isEmpty();
+    }
+
+    @Test
+    void procedureTopicDoesNotActivateLiveReadContractButMixedRequestDoes() {
+        for (String message : List.of(
+                "Przeczytaj workflow Spotify. Podsumuj zasady sprawdzania połączenia i wyboru urządzenia.",
+                "Show the rules for checking Spotify connection and devices.",
+                "Explain Spotify status and devices.")) {
+            assertThat(SpotifyReadEvidence.applies(intentRequest(message))).as(message).isFalse();
+        }
+        assertThat(SpotifyReadEvidence.applies(intentRequest(
+                "Przeczytaj workflow Spotify, potem sprawdź połączenie i pokaż urządzenia."))).isTrue();
+    }
+
+    private ToolCallingRequest intentRequest(String message) {
+        return new ToolCallingRequest("intent", "conversation", message, GOAL, GOAL, "Base prompt",
+                new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST);
+    }
+
     private ModelResponse call(String action) {
         return new ModelResponse("", "", List.of(new ModelToolCall("c-" + action, "pc__spotify", Map.of("action", action))),
                 "tool_calls", new ModelUsage(0, 0, 0));
@@ -233,6 +282,11 @@ class NativeToolLoopServiceSpotifyStatusTest {
 
     private ToolCallingResult runTurns(ToolResult status, ToolResult devices, Deque<ModelResponse> turns,
                                       List<String> expectedActions) {
+        return runTurns(status, devices, turns, expectedActions, USER);
+    }
+
+    private ToolCallingResult runTurns(ToolResult status, ToolResult devices, Deque<ModelResponse> turns,
+                                      List<String> expectedActions, String user) {
         FakePcToolManager tools = new FakePcToolManager(status, devices);
         NativeToolLoopService service = new NativeToolLoopService(
                 List.of(new ScriptedProvider(turns)), tools, query -> ToolIntent.NO_TOOL,
@@ -240,7 +294,7 @@ class NativeToolLoopServiceSpotifyStatusTest {
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
                 new NativeToolSchemaMapper(registry()),
                 new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus()));
-        ToolCallingResult result = service.execute(new ToolCallingRequest("request-spotify", "conversation-1", USER, "Check the Spotify connection", GOAL,
+        ToolCallingResult result = service.execute(new ToolCallingRequest("request-spotify", "conversation-1", user, "Check the Spotify connection", GOAL,
                 "Base prompt", new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST));
         assertThat(tools.actions).containsExactlyElementsOf(expectedActions);
         return result;
@@ -276,7 +330,9 @@ class NativeToolLoopServiceSpotifyStatusTest {
         return new ToolRegistry() {
             @Override
             public List<ToolDefinition> definitions() {
-                return List.of(pc);
+                return List.of(pc, new ToolDefinition("knowledge", "Knowledge documents", List.of(
+                        new ToolOperationDefinition("READ_DOCUMENT", "Read entire document", List.of(
+                                new ToolArgumentDefinition("path", "string", true, "Document path")), false, ToolSafetyLevel.READ))));
             }
 
             @Override
@@ -330,7 +386,7 @@ class NativeToolLoopServiceSpotifyStatusTest {
 
         @Override
         public Optional<JarvisTool> findTool(String name) {
-            return "pc".equalsIgnoreCase(name) ? Optional.of(new JarvisTool() {
+            return ("pc".equalsIgnoreCase(name) || "knowledge".equalsIgnoreCase(name)) ? Optional.of(new JarvisTool() {
                 @Override
                 public String getName() {
                     return "pc";
@@ -350,6 +406,12 @@ class NativeToolLoopServiceSpotifyStatusTest {
 
         @Override
         public ToolResult execute(ToolRequest request) {
+            if ("knowledge".equals(request.toolName())) {
+                actions.add("READ_DOCUMENT");
+                return new ToolResult(true, "knowledge", "READ_DOCUMENT", "", "", false, List.of(),
+                        "Document read completely", Map.of("content", "Sprawdź połączenie Spotify przez status. Pokaż urządzenia przez devices. Play, potem current.",
+                        "complete", true), "", "", false, "");
+            }
             String action = Objects.toString(request.arguments().get("action"), "");
             actions.add(action);
             return switch (action) {

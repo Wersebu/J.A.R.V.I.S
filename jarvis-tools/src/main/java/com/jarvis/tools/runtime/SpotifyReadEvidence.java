@@ -21,7 +21,23 @@ final class SpotifyReadEvidence {
         // The original request is authoritative; a model-generated subgoal cannot drop a criterion.
         String text = Normalizer.normalize(request.userMessage(), Normalizer.Form.NFD)
                 .replaceAll("\\p{M}", "").toLowerCase(Locale.ROOT).replace('ł', 'l');
-        return text.contains("spotify") && STATUS.matcher(text).find() && DEVICES.matcher(text).find();
+        return !operationsForbidden(request) && text.contains("spotify")
+                && STATUS.matcher(text).find() && DEVICES.matcher(text).find()
+                // Require a request to observe live state, not nouns describing a procedure.
+                && Pattern.compile("\\b(sprawdz|zweryfikuj|pokaz|wyswietl|check|verify|show|list)\\b"
+                        + "(?:(?!zasad|procedur|workflow|rules|how to|instructions)[^.!?]){0,70}"
+                        + "(polacz|connection|connected|status|urzadzen|devices?)|czy spotify (jest|ma)|jakie .*urzadzenia")
+                        .matcher(text).find();
+    }
+
+    static boolean operationsForbidden(ToolCallingRequest request) {
+        String text = Normalizer.normalize(request.userMessage(), Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "").toLowerCase(Locale.ROOT).replace('ł', 'l');
+        return text.contains("spotify") && Pattern.compile(
+                "nie (wykonuj|uruchamiaj|wywoluj) (zadnych |zadnej )?(operacji|akcji|narzedzi) spotify"
+                        + "|bez wykonywania (operacji|akcji) spotify"
+                        + "|do not (perform|execute|run) (any )?spotify (operations|actions|tools)")
+                .matcher(text).find();
     }
 
     static CompletionAssessment assess(List<ToolRuntimeStep> steps) {

@@ -11,6 +11,7 @@ final class SpotifyPlaybackPolicy {
     private static final int MAX_OBSERVATIONS = 4; // initial read plus three bounded readiness observations
 
     static boolean applies(ToolCallingRequest request) {
+        if (SpotifyReadEvidence.operationsForbidden(request)) return false;
         String text = normalize(request.userMessage());
         String domain = text + " " + normalize(Objects.toString(request.goal(), "")) + " " + normalize(request.conversationContext());
         if (!domain.contains("spotify") || text.contains("web player")) return false;

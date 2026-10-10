@@ -664,6 +664,18 @@ public class NativeToolLoopService {
                         messages.add(ModelMessage.system(schemaRepairGuidance(call.name(), acquiredFacts)));
                         continue;
                     }
+                    if (SpotifyReadEvidence.operationsForbidden(request)
+                            && "pc".equalsIgnoreCase(action.tool()) && "SPOTIFY".equalsIgnoreCase(action.operation())) {
+                        String reason = "The original user request forbids Spotify operations. Summarize the knowledge document without live Spotify calls.";
+                        ToolResult blocked = new ToolResult(false, action.tool(), action.operation(), request.requestId(),
+                                request.conversationId(), false, List.of(), reason, Map.of(),
+                                "SPOTIFY_OPERATIONS_FORBIDDEN", reason, false, "");
+                        results.add(blocked);
+                        steps.add(new ToolRuntimeStep(step, "SPOTIFY_POLICY_BLOCKED", action.tool(), action.operation(),
+                                "BLOCKED", blocked, action.arguments()));
+                        messages.add(toolResultMessage(request, step, call, compactToolResult(blocked)));
+                        continue;
+                    }
                     if (SpotifyPlaybackPolicy.applies(request)) {
                         String blockedReason = SpotifyPlaybackPolicy.guard(request, action, steps);
                         if (!blockedReason.isBlank()) {

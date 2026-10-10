@@ -189,3 +189,21 @@ sudo systemctl start "$SERVICE"
 sudo systemctl status "$SERVICE" --no-pager
 sudo journalctl -u "$SERVICE" -n 100 --no-pager
 ```
+
+
+## Regresja odczytu dokumentacji (abafcd64-9c16-4d23-950e-e8e2f93dffaf)
+
+Przyczyną było uruchamianie SpotifyReadEvidence na podstawie samych słów
+Spotify, połączenie i urządzenia w oryginalnym poleceniu. Ta sama decyzja
+włączała kryteria zakończenia oraz zastępowała podsumowanie odpowiedzią o stanie.
+Warunek wymaga teraz polecenia sprawdzenia rzeczywistego stanu; opis zasad
+procedury nie wystarcza. Treść dokumentów, historia i zawężony cel delegacji
+nie stanowią źródła nowych wymagań tej bramki.
+Jawny zakaz operacji Spotify wyłącza wymagania odczytu i playback oraz blokuje
+pc/SPOTIFY przed wykonaniem narzędzia. Odczyt knowledge pozostaje dozwolony.
+
+Regresje całej pętli: READ_DOCUMENT → podsumowanie → COMPLETED, także przy
+błędnym celu delegacji żądającym połączenia i urządzeń; osobny wariant blokuje
+próby status/devices i kończy podsumowaniem. Test klasyfikacji rozróżnia opis
+procedury od polecenia przeczytania workflow i następnie sprawdzenia stanu.
+Dotychczasowe regresje źródła nazw urządzeń pozostają zachowane.
