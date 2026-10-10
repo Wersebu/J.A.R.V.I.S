@@ -1,0 +1,28 @@
+# Explicit vault migration plan (optional). Without --plan the migration only adds missing ids
+# and creates the suggested folders. Nothing here is applied without --apply, and a backup of the
+# whole vault is made first. Moves never overwrite an existing file.
+#
+#   java -cp jarvis-core.jar -Dloader.main=com.jarvis.knowledge.vault.migration.VaultMigrationCli \
+#        org.springframework.boot.loader.launch.PropertiesLauncher --vault ./knowledge --plan config/vault-migration.yml
+#
+# Suggested folders (created only when missing; existing folders and paths stay where they are).
+createFolders: [workflows, projects, knowledge, preferences, decisions]
+
+# Frontmatter values to set (only the listed keys are touched; the rest of the file is preserved).
+frontmatter:
+  # The store audit procedure is a workflow. Its path stays unchanged because config/jarvis.md
+  # (sections 14-28) references Work/Scheduling/StoreAuditScheduleWorkflow.md by path.
+  - path: Work/Scheduling/StoreAuditScheduleWorkflow.md
+    set: { type: workflow, status: active }
+
+# Moves - DECISION REQUIRED, therefore commented out.
+# GraphicDesignWorkflow.md is NOT a graphic design workflow: its whole content is the first
+# ~7.6k characters of StoreAuditScheduleWorkflow.md (an older/truncated copy of the store audit
+# procedure). Prompt section 29 points to Work/Creative/GraphicDesignWorkflow.md, which does not exist.
+# Proposal: archive the truncated copy so it is excluded from search by default.
+moves: []
+#  - from: GraphicDesignWorkflow.md
+#    to: archive/StoreAuditScheduleWorkflow - obcieta kopia (dawniej GraphicDesignWorkflow).md
+#frontmatter (add to the list above together with the move):
+#  - path: GraphicDesignWorkflow.md
+#    set: { status: archived }

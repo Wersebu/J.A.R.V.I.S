@@ -2867,7 +2867,7 @@ public class NativeToolLoopService {
                         result.conversationId(), result.changed(), result.targetNodeIds(), result.message(), withoutImage,
                         result.errorCode(), result.errorMessage(), result.requiresApproval(), result.draftId());
             }
-            if (isAgentTool(result.tool())) {
+            if (isAgentTool(result.tool()) || isVaultKnowledgeResult(result)) {
                 // Agent tools (files, shell, MCP) need complete results - a silently cut file or log
                 // makes the model act on wrong information. Shorten only past the budget, visibly.
                 value.put("data", result.data() == null ? Map.of() : result.data());
@@ -2885,6 +2885,16 @@ public class NativeToolLoopService {
         return Set.of("WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "UNDO", "SHELL",
                 "FILE_WRITE", "FILE_PATCH", "FILE_MOVE", "FILE_DELETE", "DIRECTORY_CREATE", "COMMAND_START",
                 "BUILD_RUN", "TEST_RUN").contains(operation);
+    }
+
+    /**
+     * Knowledge vault results (knowledge.vault.mode=VAULT, marked with contentRole) are already
+     * bounded by the vault itself (fragment budget, explicit document/workflow parts). They must
+     * reach the model complete instead of having "content" silently cut to a fixed length; past
+     * the result budget they are shortened visibly by ContextBudget like agent tool results.
+     */
+    private static boolean isVaultKnowledgeResult(ToolResult result) {
+        return "knowledge".equalsIgnoreCase(result.tool()) && result.data() != null && result.data().containsKey("contentRole");
     }
 
     private static boolean isAgentTool(String tool) {

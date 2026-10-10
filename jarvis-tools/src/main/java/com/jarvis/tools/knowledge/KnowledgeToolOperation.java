@@ -19,5 +19,9 @@ public enum KnowledgeToolOperation {
     MOVE_FOLDER,
     LIST_TREE,
     DOCUMENT_EXISTS,
-    PLAN_KNOWLEDGE_UPDATE
+    PLAN_KNOWLEDGE_UPDATE,
+    /** Vault mode: list workflow candidates (no procedure text). */
+    FIND_WORKFLOW,
+    /** Vault mode: read an explicitly selected workflow completely (in explicit parts when long). */
+    READ_WORKFLOW
 }

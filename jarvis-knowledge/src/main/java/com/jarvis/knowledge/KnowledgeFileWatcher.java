@@ -1,7 +1,10 @@
 package com.jarvis.knowledge;
 
 import org.slf4j.Logger;
+import com.jarvis.knowledge.vault.VaultPathPolicy;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Service;
 
@@ -37,6 +40,7 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
     private final SupportedFileTypes supportedFileTypes;
     private final Map<WatchKey, Path> directoriesByKey = new ConcurrentHashMap<>();
     private final Map<Path, ScheduledFuture<?>> pendingEvents = new ConcurrentHashMap<>();
+    private final ObjectProvider<VaultPathPolicy> pathPolicy;
 
     private volatile boolean running;
     private WatchService watchService;
@@ -55,9 +59,28 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
             KnowledgeService knowledgeService,
             SupportedFileTypes supportedFileTypes
     ) {
+        this(properties, knowledgeService, supportedFileTypes, null);
+    }
+
+    /**
+     * Creates the knowledge file watcher with vault exclusions.
+     *
+     * @param properties knowledge configuration
+     * @param knowledgeService knowledge service
+     * @param supportedFileTypes supported file type detector
+     * @param pathPolicy vault path policy; excluded folders such as .obsidian and .git are not watched
+     */
+    @Autowired
+    public KnowledgeFileWatcher(
+            KnowledgeProperties properties,
+            KnowledgeService knowledgeService,
+            SupportedFileTypes supportedFileTypes,
+            ObjectProvider<VaultPathPolicy> pathPolicy
+    ) {
         this.properties = properties;
         this.knowledgeService = knowledgeService;
         this.supportedFileTypes = supportedFileTypes;
+        this.pathPolicy = pathPolicy;
     }
 
     /**
@@ -165,9 +188,19 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
                 }
                 registerRecursively(changedPath);
                 LOGGER.info("[KNOWLEDGE_WATCHER] CREATE path={}", changedPath);
+                // A folder moved or renamed in Obsidian arrives as a new directory full of files
+                // that produce no individual events: rescan instead of missing them.
+                scheduleFullReindex("CREATE_DIRECTORY");
                 continue;
             }
-            if (isWorkspaceInternal(changedPath) || !supportedFileTypes.supports(changedPath)) {
+            if (isWorkspaceInternal(changedPath)) {
+                continue;
+            }
+            if (!supportedFileTypes.supports(changedPath)) {
+                if (event.kind() == ENTRY_DELETE && !hasExtension(changedPath)) {
+                    // Probably a deleted or moved-away folder; its files produce no events of their own.
+                    scheduleFullReindex("DELETE_DIRECTORY");
+                }
                 continue;
             }
             if (event.kind() == ENTRY_DELETE) {
@@ -198,6 +231,17 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
         pendingEvents.put(path, future);
     }
 
+    private void scheduleFullReindex(String reason) {
+        Path root = Path.of(properties.root()).toAbsolutePath().normalize();
+        schedule(root, knowledgeService::reindex, reason);
+    }
+
+    private boolean hasExtension(Path path) {
+        String name = path.getFileName() == null ? "" : path.getFileName().toString();
+        int dot = name.lastIndexOf('.');
+        return dot > 0 && dot < name.length() - 1;
+    }
+
     private void registerRecursively(Path root) throws IOException {
         try (var paths = Files.walk(root)) {
             paths.filter(Files::isDirectory).forEach(this::registerDirectory);
@@ -221,6 +265,10 @@ public class KnowledgeFileWatcher implements SmartLifecycle {
         Path normalizedPath = path.toAbsolutePath().normalize();
         if (!normalizedPath.startsWith(root)) {
             return false;
+        }
+        VaultPathPolicy policy = pathPolicy == null ? null : pathPolicy.getIfAvailable();
+        if (policy != null && !normalizedPath.equals(root) && policy.isExcluded(normalizedPath)) {
+            return true;
         }
         Path relative = root.relativize(normalizedPath);
         for (Path part : relative) {

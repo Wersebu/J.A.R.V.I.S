@@ -1,0 +1,237 @@
+[
+  {
+    "question": "Jaki model czatu działa w Ollamie?",
+    "expectedPath": "knowledge/Ollama i modele.md",
+    "expectedAnswers": [
+      "gemma4:12b"
+    ]
+  },
+  {
+    "question": "Ile VRAM ma karta graficzna serwera?",
+    "expectedPath": "knowledge/Serwer domowy.md",
+    "expectedAnswers": [
+      "16 GB"
+    ]
+  },
+  {
+    "question": "O której godzinie startuje nocna kopia zapasowa serwera?",
+    "expectedPath": "knowledge/Serwer domowy.md",
+    "expectedAnswers": [
+      "03:15"
+    ]
+  },
+  {
+    "question": "Na jakim porcie działa SSH na serwerze?",
+    "expectedPath": "knowledge/Serwer domowy.md",
+    "expectedAnswers": [
+      "2222"
+    ]
+  },
+  {
+    "question": "Jaki zasilacz awaryjny chroni serwer?",
+    "expectedPath": "knowledge/Serwer domowy.md",
+    "expectedAnswers": [
+      "APC Back-UPS 1400"
+    ]
+  },
+  {
+    "question": "Jaki jest budżet projektu Nova?",
+    "expectedPath": "projects/Projekt Nova.md",
+    "expectedAnswers": [
+      "40 000"
+    ]
+  },
+  {
+    "question": "Kiedy mija termin projektu Nova?",
+    "expectedPath": "projects/Projekt Nova.md",
+    "expectedAnswers": [
+      "15.12.2026"
+    ]
+  },
+  {
+    "question": "Jakiego modelu embeddingów używamy i ile ma wymiarów?",
+    "expectedPath": "knowledge/Ollama i modele.md",
+    "expectedAnswers": [
+      "multilingual-e5-base",
+      "768"
+    ]
+  },
+  {
+    "question": "Dlaczego embeddingi liczymy na CPU?",
+    "expectedPath": "decisions/2026-09 Embeddingi na CPU.md",
+    "expectedAnswers": [
+      "VRAM"
+    ]
+  },
+  {
+    "question": "Dlaczego wybraliśmy SQLite zamiast pgvector?",
+    "expectedPath": "decisions/2026-08 Magazyn indeksu.md",
+    "expectedAnswers": [
+      "bez dodatkowej usługi"
+    ]
+  },
+  {
+    "question": "Jak zrestartować usługi Jarvisa?",
+    "expectedPath": "workflows/Restart usług Jarvisa.md",
+    "expectedAnswers": [
+      "systemctl restart jarvis"
+    ]
+  },
+  {
+    "question": "Ile dni przechowujemy kopie zapasowe vault?",
+    "expectedPath": "workflows/Kopia zapasowa vault.md",
+    "expectedAnswers": [
+      "30 dni"
+    ]
+  },
+  {
+    "question": "Ile trwa jeden audyt w sklepie?",
+    "expectedPath": "workflows/Audyt sklepów – planowanie.md",
+    "expectedAnswers": [
+      "45 minut"
+    ]
+  },
+  {
+    "question": "Skąd startuje trasa audytów sklepów?",
+    "expectedPath": "workflows/Audyt sklepów – planowanie.md",
+    "expectedAnswers": [
+      "Łodzi"
+    ]
+  },
+  {
+    "question": "Ile maksymalnie sklepów planujemy dziennie?",
+    "expectedPath": "workflows/Audyt sklepów – planowanie.md",
+    "expectedAnswers": [
+      "9 sklepów"
+    ]
+  },
+  {
+    "question": "W jakim formacie podawać daty?",
+    "expectedPath": "preferences/Styl odpowiedzi.md",
+    "expectedAnswers": [
+      "DD.MM.RRRR"
+    ]
+  },
+  {
+    "question": "Czy w odpowiedziach można używać emoji?",
+    "expectedPath": "preferences/Styl odpowiedzi.md",
+    "expectedAnswers": [
+      "bez emoji"
+    ]
+  },
+  {
+    "question": "Od której godziny można planować spotkania?",
+    "expectedPath": "preferences/Kawa i spotkania.md",
+    "expectedAnswers": [
+      "9:00"
+    ]
+  },
+  {
+    "question": "Jaki adres IP ma Pi-hole?",
+    "expectedPath": "knowledge/Sieć domowa.md",
+    "expectedAnswers": [
+      "192.168.100.5"
+    ]
+  },
+  {
+    "question": "Na którym kanale działa Wi-Fi 5 GHz?",
+    "expectedPath": "knowledge/Sieć domowa.md",
+    "expectedAnswers": [
+      "kanale 36"
+    ]
+  },
+  {
+    "question": "Gdzie stoi router?",
+    "expectedPath": "knowledge/Sieć domowa.md",
+    "expectedAnswers": [
+      "piwnicy"
+    ]
+  },
+  {
+    "question": "Jaki dysk zamontowano ostatnio w serwerze?",
+    "expectedPath": "knowledge/Dziennik zmian serwera.md",
+    "expectedAnswers": [
+      "Samsung 990 Pro 2 TB"
+    ]
+  },
+  {
+    "question": "Jakiego silnika używa rozpoznawanie mowy?",
+    "expectedPath": "knowledge/Głos Jarvisa.md",
+    "expectedAnswers": [
+      "faster-whisper"
+    ]
+  },
+  {
+    "question": "Jaki jest docelowy czas odpowiedzi głosowej?",
+    "expectedPath": "knowledge/Głos Jarvisa.md",
+    "expectedAnswers": [
+      "1,5 s"
+    ]
+  },
+  {
+    "question": "W jakim frameworku napisano klienta Windows?",
+    "expectedPath": "projects/Jarvis Windows.md",
+    "expectedAnswers": [
+      "JavaFX 21"
+    ]
+  },
+  {
+    "question": "Jaki jest znany problem klienta Windows po uśpieniu komputera?",
+    "expectedPath": "projects/Jarvis Windows.md",
+    "expectedAnswers": [
+      "WebSocket"
+    ]
+  },
+  {
+    "question": "Czego nie wolno uruchamiać jednocześnie na GPU?",
+    "expectedPath": "knowledge/Ollama i modele.md",
+    "expectedAnswers": [
+      "dwóch modeli 12B"
+    ]
+  },
+  {
+    "question": "W którym VLAN są urządzenia IoT?",
+    "expectedPath": "knowledge/Sieć domowa.md",
+    "expectedAnswers": [
+      "VLAN 20"
+    ]
+  },
+  {
+    "question": "Jak sprawdzić, czy kopia zapasowa vault się udała?",
+    "expectedPath": "workflows/Kopia zapasowa vault.md",
+    "expectedAnswers": [
+      "sha256sum"
+    ]
+  },
+  {
+    "question": "Jakie okno kontekstu ma model czatu?",
+    "expectedPath": "knowledge/Ollama i modele.md",
+    "expectedAnswers": [
+      "32768"
+    ]
+  },
+  {
+    "question": "W jakim języku ma odpowiadać Jarvis?",
+    "expectedPath": "preferences/Styl odpowiedzi.md",
+    "expectedAnswers": [
+      "po polsku"
+    ]
+  },
+  {
+    "question": "Ile czasu podtrzymuje UPS pracę serwera?",
+    "expectedPath": "knowledge/Serwer domowy.md",
+    "expectedAnswers": [
+      "20 minut"
+    ]
+  },
+  {
+    "question": "Jaka jest stolica Australii?",
+    "expectedPath": null,
+    "expectedAnswers": []
+  },
+  {
+    "question": "Ile kosztowała licencja programu Photoshop?",
+    "expectedPath": null,
+    "expectedAnswers": []
+  }
+]

@@ -10,7 +10,9 @@ import com.jarvis.knowledge.KnowledgeService;
 import com.jarvis.knowledge.retrieval.KnowledgeRetriever;
 import com.jarvis.knowledge.retrieval.RetrievalResult;
 import org.slf4j.Logger;
+import com.jarvis.knowledge.vault.VaultPathPolicy;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -19,7 +21,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Instant;
-import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -49,6 +50,7 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     private final KnowledgeRetriever knowledgeRetriever;
     private final CognitiveEventBus cognitiveEventBus;
     private final Map<String, PendingDraft> pendingDrafts = new ConcurrentHashMap<>();
+    private final ObjectProvider<VaultPathPolicy> pathPolicy;
 
     /**
      * Creates the workspace service.
@@ -59,8 +61,10 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
             KnowledgeService knowledgeService,
             KnowledgeIndex knowledgeIndex,
             KnowledgeRetriever knowledgeRetriever,
-            CognitiveEventBus cognitiveEventBus
+            CognitiveEventBus cognitiveEventBus,
+            ObjectProvider<VaultPathPolicy> pathPolicy
     ) {
+        this.pathPolicy = pathPolicy;
         this.knowledgeProperties = knowledgeProperties;
         this.workspaceProperties = workspaceProperties;
         this.knowledgeService = knowledgeService;
@@ -96,6 +100,16 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     public KnowledgeToolResult read(String logicalPath) {
         Path path = resolveRelative(logicalPath);
         String relativePath = relativePath(path);
+        VaultPathPolicy policy = pathPolicy == null ? null : pathPolicy.getIfAvailable();
+        if (policy != null && (policy.isExcluded(path) || (Files.isRegularFile(path) && !policy.isSafeRegularFile(path)))) {
+            return result("knowledge.read", false, false, "Document is excluded from the knowledge workspace", nodeId(relativePath),
+                    relativePath, Map.of(
+                            "exists", false,
+                            "excluded", true,
+                            "content", "",
+                            "characters", 0
+                    ));
+        }
         if (!Files.isRegularFile(path)) {
             return result("knowledge.read", false, false, "Document not found", nodeId(relativePath),
                     relativePath, Map.of(
@@ -284,18 +298,7 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     @Override
     public List<KnowledgeVersion> history(UUID documentId) {
         KnowledgeDocument document = document(documentId);
-        Path folder = historyRoot().resolve(document.id().toString());
-        if (!Files.isDirectory(folder)) {
-            return List.of();
-        }
-        try (Stream<Path> paths = Files.list(folder)) {
-            return paths.filter(path -> path.getFileName().toString().endsWith(".meta"))
-                    .sorted(Comparator.reverseOrder())
-                    .map(this::readVersion)
-                    .toList();
-        } catch (IOException exception) {
-            throw new KnowledgeException("Failed to read knowledge history for " + document.id(), exception);
-        }
+        return historyStore().list(document.id());
     }
 
     @Override
@@ -485,30 +488,12 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
 
     private void saveVersion(KnowledgeDocument document, String summary) throws IOException {
         Path source = resolveRelative(document.relativePath());
-        if (!Files.isRegularFile(source)) {
-            return;
-        }
-        Path folder = historyRoot().resolve(document.id().toString());
-        ensureDirectory(folder);
-        String versionId = DateTimeFormatter.ISO_INSTANT.format(Instant.now()).replace(':', '-');
-        KnowledgeWorkspaceAuditContext.Audit audit = KnowledgeWorkspaceAuditContext.current();
-        Path copy = folder.resolve(versionId + "__" + source.getFileName());
-        Files.copy(source, copy, StandardCopyOption.REPLACE_EXISTING);
-        Path metadata = folder.resolve(versionId + ".meta");
-        Files.writeString(metadata, String.join(System.lineSeparator(),
-                "versionId=" + versionId,
-                "documentId=" + document.id(),
-                "relativePath=" + document.relativePath(),
-                "timestamp=" + Instant.now(),
-                "author=" + AI_AUTHOR,
-                "summary=" + summary,
-                "conversationId=" + sanitizeAudit(audit.conversationId()),
-                "requestId=" + sanitizeAudit(audit.requestId()),
-                "tool=" + sanitizeAudit(audit.tool()),
-                "reason=" + sanitizeAudit(audit.reason()),
-                "reasoningSummary=" + sanitizeAudit(audit.reasoningSummary()),
-                "previousVersionPath=" + rootPath().relativize(copy).toString().replace('\\', '/')
-        ), StandardCharsets.UTF_8);
+        historyStore().save(document.id(), document.relativePath(), source, AI_AUTHOR, summary,
+                KnowledgeWorkspaceAuditContext.current());
+    }
+
+    private KnowledgeHistoryStore historyStore() {
+        return new KnowledgeHistoryStore(rootPath(), historyRoot());
     }
 
     private void saveVersionsForDelete(Path target) throws IOException {
@@ -537,34 +522,6 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
                             });
                 }
             }
-        }
-    }
-
-    private KnowledgeVersion readVersion(Path metadata) {
-        try {
-            Map<String, String> values = new HashMap<>();
-            Files.readAllLines(metadata, StandardCharsets.UTF_8).forEach(line -> {
-                int separator = line.indexOf('=');
-                if (separator > 0) {
-                    values.put(line.substring(0, separator), line.substring(separator + 1));
-                }
-            });
-            return new KnowledgeVersion(
-                    values.getOrDefault("versionId", metadata.getFileName().toString()),
-                    values.getOrDefault("documentId", ""),
-                    values.getOrDefault("relativePath", ""),
-                    Instant.parse(values.getOrDefault("timestamp", Instant.EPOCH.toString())),
-                    values.getOrDefault("author", AI_AUTHOR),
-                    values.getOrDefault("summary", ""),
-                    values.getOrDefault("conversationId", ""),
-                    values.getOrDefault("requestId", ""),
-                    values.getOrDefault("tool", ""),
-                    values.getOrDefault("reason", ""),
-                    values.getOrDefault("reasoningSummary", ""),
-                    values.getOrDefault("previousVersionPath", "")
-            );
-        } catch (IOException exception) {
-            throw new KnowledgeException("Failed to read version metadata " + metadata, exception);
         }
     }
 
@@ -714,6 +671,10 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     }
 
     private boolean isInternal(Path path) {
+        VaultPathPolicy policy = pathPolicy == null ? null : pathPolicy.getIfAvailable();
+        if (policy != null && policy.isExcluded(path)) {
+            return true;
+        }
         Path relative = rootPath().relativize(path.toAbsolutePath().normalize());
         for (Path part : relative) {
             String name = part.toString();

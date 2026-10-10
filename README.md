@@ -6,6 +6,14 @@ Current version: **`2.24.0-SNAPSHOT`**. Runs on Java 21 with Maven, targets Ubun
 
 MCP Windows bridge lifecycle is automatic: when the Windows client registers its bridge, Core asynchronously initializes enabled Windows-hosted MCP servers, discovers their tools, and refreshes MCP status without requiring manual reconnect calls. A reconnect never leaves an orphaned MCP process behind, a silently-dead process is detected and transparently relaunched instead of reused, and a genuinely empty `tools/list` result is retried a bounded number of times instead of being cached as final forever (see [Discovery Lifecycle & Reliability](docs/MCP.md#discovery-lifecycle--reliability)).
 
+## Knowledge vault (Obsidian-compatible)
+
+The knowledge root is a plain-Markdown vault that Obsidian can open; Core never needs Obsidian. With
+`JARVIS_KNOWLEDGE_VAULT_MODE=VAULT` Core keeps a rebuildable full-content chunk index (SQLite, CPU embeddings),
+answers `SEARCH_CONTENT` with sourced fragments and reads workflows completely via `FIND_WORKFLOW`/`READ_WORKFLOW`.
+The default `LEGACY` keeps the previous behaviour. See [docs/KNOWLEDGE_VAULT_PL.md](docs/KNOWLEDGE_VAULT_PL.md),
+[benchmark](docs/VAULT_BENCHMARK_PL.md) and the [prompt modularization draft](docs/PROMPT_MODULARIZATION_DRAFT_PL.md).
+
 ## Requirements
 
 - Java 21 (JDK)

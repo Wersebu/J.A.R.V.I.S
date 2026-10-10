@@ -60,6 +60,30 @@ class NativeToolLoopServiceCompactionTest {
     }
 
     @Test
+    void vaultKnowledgeResultsReachTheModelCompleteWhileLegacyResultsKeepTheirLimit() throws Exception {
+        NativeToolLoopService service = new NativeToolLoopService(
+                List.of(), new NoopToolManager(), query -> ToolIntent.NO_TOOL,
+                new ToolRuntimeProperties(true, 2, 8, 2, 30, "native"),
+                new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
+                new NativeToolSchemaMapper(emptyRegistry()),
+                new com.jarvis.tools.dataset.StoreAuditDatasetService(new NoopCognitiveEventBus())
+        );
+        Method compact = NativeToolLoopService.class.getDeclaredMethod("compactToolResult", ToolResult.class);
+        compact.setAccessible(true);
+        String workflowPart = "krok ".repeat(1800) + "OSTATNI KROK";
+        ToolResult vault = new ToolResult(true, "knowledge", "READ_WORKFLOW", "", "", false, List.of(), "Read",
+                Map.of("contentRole", "procedure", "content", workflowPart), "", "", false, "");
+        ToolResult legacy = new ToolResult(true, "knowledge", "READ_DOCUMENT", "", "", false, List.of(), "Read",
+                Map.of("content", workflowPart), "", "", false, "");
+
+        String vaultJson = (String) compact.invoke(service, vault);
+        String legacyJson = (String) compact.invoke(service, legacy);
+
+        assertThat(vaultJson).contains("OSTATNI KROK").doesNotContain("_shortened");
+        assertThat(legacyJson).doesNotContain("OSTATNI KROK");
+    }
+
+    @Test
     void compactDataBoundsLargeContentAndListsWithoutDroppingThem() throws Exception {
         NativeToolLoopService service = new NativeToolLoopService(
                 List.of(), new NoopToolManager(), query -> ToolIntent.NO_TOOL,

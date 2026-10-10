@@ -4,8 +4,11 @@ import com.jarvis.common.event.KnowledgeEvent;
 import com.jarvis.common.event.KnowledgeEventType;
 import com.jarvis.knowledge.extract.DocumentExtractor;
 import com.jarvis.knowledge.extract.DocumentExtractorRegistry;
+import com.jarvis.knowledge.vault.VaultPathPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -35,6 +38,8 @@ public class DefaultKnowledgeService implements KnowledgeService {
     private final DocumentExtractorRegistry extractorRegistry;
     private final Sha256Hasher sha256Hasher;
     private final KnowledgeEventPublisher eventPublisher;
+    private final ObjectProvider<VaultPathPolicy> pathPolicy;
+    private final ObjectProvider<KnowledgeChangeListener> changeListeners;
 
     /**
      * Creates the default knowledge service.
@@ -54,12 +59,40 @@ public class DefaultKnowledgeService implements KnowledgeService {
             Sha256Hasher sha256Hasher,
             KnowledgeEventPublisher eventPublisher
     ) {
+        this(properties, index, supportedFileTypes, extractorRegistry, sha256Hasher, eventPublisher, null, null);
+    }
+
+    /**
+     * Creates the knowledge service with vault exclusions and change listeners.
+     *
+     * @param properties knowledge configuration
+     * @param index metadata index
+     * @param supportedFileTypes supported file type detector
+     * @param extractorRegistry document extractor registry
+     * @param sha256Hasher SHA-256 hasher
+     * @param eventPublisher knowledge event publisher
+     * @param pathPolicy vault path policy (excludes .obsidian, .git, temp files, secrets, system prompt copies)
+     * @param changeListeners listeners notified after index changes (vault chunk index)
+     */
+    @Autowired
+    public DefaultKnowledgeService(
+            KnowledgeProperties properties,
+            KnowledgeIndex index,
+            SupportedFileTypes supportedFileTypes,
+            DocumentExtractorRegistry extractorRegistry,
+            Sha256Hasher sha256Hasher,
+            KnowledgeEventPublisher eventPublisher,
+            ObjectProvider<VaultPathPolicy> pathPolicy,
+            ObjectProvider<KnowledgeChangeListener> changeListeners
+    ) {
         this.properties = properties;
         this.index = index;
         this.supportedFileTypes = supportedFileTypes;
         this.extractorRegistry = extractorRegistry;
         this.sha256Hasher = sha256Hasher;
         this.eventPublisher = eventPublisher;
+        this.pathPolicy = pathPolicy;
+        this.changeListeners = changeListeners;
     }
 
     /**
@@ -124,6 +157,7 @@ public class DefaultKnowledgeService implements KnowledgeService {
                     .forEach(path -> indexFile(path, DocumentStatus.INDEXED, previousDocuments));
             eventPublisher.publish(KnowledgeEvent.indexCompleted());
             LOGGER.info("[JARVIS] Knowledge index completed documents={}", index.list().size());
+            notifyChanged(root);
             return index.list();
         } catch (IOException exception) {
             throw new KnowledgeException("Failed to rebuild knowledge index from " + root, exception);
@@ -144,6 +178,7 @@ public class DefaultKnowledgeService implements KnowledgeService {
             return Optional.empty();
         }
         KnowledgeDocument document = indexFile(normalizedPath, status, Map.of());
+        notifyChanged(normalizedPath);
         return Optional.of(document);
     }
 
@@ -164,6 +199,7 @@ public class DefaultKnowledgeService implements KnowledgeService {
                     document.relativePath()));
             LOGGER.info("[JARVIS] Knowledge document removed path={}", document.relativePath());
         });
+        notifyChanged(path.toAbsolutePath().normalize());
         return removed;
     }
 
@@ -193,12 +229,9 @@ public class DefaultKnowledgeService implements KnowledgeService {
             LOGGER.info("[KNOWLEDGE_WATCHER] DOCUMENT_INDEXING_STARTED path={} hashChanged={}", relativePath, existing.isEmpty());
             String extension = supportedFileTypes.extension(path);
             String preview = preview(path, extension);
-            KnowledgeDocument previousDocument = previousDocuments.get(relativePath);
-            KnowledgeDocument existingDocument = existing.orElse(null);
-            UUID id = Optional.ofNullable(existingDocument)
-                    .map(KnowledgeDocument::id)
-                    .or(() -> Optional.ofNullable(previousDocument).map(KnowledgeDocument::id))
-                    .orElseGet(UUID::randomUUID);
+            // Deterministic: frontmatter id when declared, otherwise the path. Random ids used to
+            // detach .history/<id> version folders from their document after every restart.
+            UUID id = KnowledgeDocumentIds.of(relativePath, KnowledgeDocumentIds.frontmatterId(path));
 
             KnowledgeDocument document = new KnowledgeDocument(
                     id,
@@ -278,11 +311,28 @@ public class DefaultKnowledgeService implements KnowledgeService {
         return separator > 0 ? normalizedPath.substring(0, separator) : "";
     }
 
+    private void notifyChanged(Path path) {
+        if (changeListeners == null) {
+            return;
+        }
+        changeListeners.orderedStream().forEach(listener -> {
+            try {
+                listener.onKnowledgeChanged(path);
+            } catch (RuntimeException exception) {
+                LOGGER.warn("[JARVIS] Knowledge change listener failed: {}", exception.getMessage());
+            }
+        });
+    }
+
     private boolean isWorkspaceInternal(Path path) {
         Path root = rootPath();
         Path normalizedPath = path.toAbsolutePath().normalize();
         if (!normalizedPath.startsWith(root)) {
             return false;
+        }
+        VaultPathPolicy policy = pathPolicy == null ? null : pathPolicy.getIfAvailable();
+        if (policy != null && !normalizedPath.equals(root) && policy.isExcluded(normalizedPath)) {
+            return true;
         }
         Path relative = root.relativize(normalizedPath);
         for (Path part : relative) {

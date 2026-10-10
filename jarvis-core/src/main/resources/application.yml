@@ -303,7 +303,8 @@ brains:
     description: GPT-OSS with LOW reasoning for background memory decisions.
 
 knowledge:
-  root: ./knowledge
+  # Knowledge root = Obsidian-compatible vault (plain Markdown, Obsidian itself is not needed on the server).
+  root: ${JARVIS_KNOWLEDGE_ROOT:./knowledge}
   watch: true
   preview-length: 500
   watcher-debounce-ms: 300
@@ -311,5 +312,46 @@ knowledge:
     write-mode: AUTO_DRAFT
     history-directory: .history
     drafts-directory: .drafts
+  # Obsidian-compatible vault, full-content chunk index and workflow reads - see docs/KNOWLEDGE_VAULT_PL.md.
+  # LEGACY = previous document-level retrieval (no chunk index, no new embeddings). VAULT = new mode.
+  # Rollback: set JARVIS_KNOWLEDGE_VAULT_MODE=LEGACY and restart; Markdown files are never changed by the index.
+  vault:
+    mode: ${JARVIS_KNOWLEDGE_VAULT_MODE:LEGACY}
+    # Rebuildable cache (delete it any time); separate from conversation memory (data/jarvis-memory.db).
+    index-database: ${JARVIS_KNOWLEDGE_INDEX_DB:./data/knowledge-index.db}
+    # The system prompt is an instruction contract, never knowledge: it and copies of it are not indexed.
+    prompt-files:
+      - config/jarvis.md
+    exclude-defaults: true
+    exclude: []
+    debounce-ms: 1500
+    search:
+      max-results: 6
+      max-context-tokens: 2500
+      # Semantic-only hits below this cosine similarity are dropped (ranking signal, tune with the benchmark).
+      min-semantic-similarity: ${JARVIS_KNOWLEDGE_MIN_SIMILARITY:0.0}
+    workflow:
+      folders: [workflows]
+      max-part-tokens: 3500
+      # Keeps one READ_WORKFLOW / READ_DOCUMENT part inside jarvis.tools.max-result-chars, so a part is never shortened.
+      max-part-characters: 10000
+    chunking:
+      target-tokens: 320
+      min-tokens: 40
+    embedding:
+      # none | core (existing jarvis.memory.embedding provider) | ollama (dedicated model, CPU) | openai (OpenAI-compatible, e.g. TEI CPU)
+      provider: ${JARVIS_KNOWLEDGE_EMBEDDING_PROVIDER:none}
+      base-url: ${JARVIS_KNOWLEDGE_EMBEDDING_URL:}
+      model: ${JARVIS_KNOWLEDGE_EMBEDDING_MODEL:}
+      dimensions: ${JARVIS_KNOWLEDGE_EMBEDDING_DIMENSIONS:0}
+      query-prefix: "${JARVIS_KNOWLEDGE_EMBEDDING_QUERY_PREFIX:}"
+      passage-prefix: "${JARVIS_KNOWLEDGE_EMBEDDING_PASSAGE_PREFIX:}"
+      max-input-tokens: ${JARVIS_KNOWLEDGE_EMBEDDING_MAX_TOKENS:512}
+      tokenizer: ${JARVIS_KNOWLEDGE_EMBEDDING_TOKENIZER:heuristic}
+      force-cpu: true
+      normalize: true
+      batch-size: 16
+      timeout: 60s
+      api-key: ${JARVIS_KNOWLEDGE_EMBEDDING_API_KEY:}
   persistence:
     mode: EXPLICIT_ONLY
