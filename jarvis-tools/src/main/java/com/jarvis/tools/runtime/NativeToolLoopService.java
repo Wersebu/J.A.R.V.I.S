@@ -713,6 +713,12 @@ public class NativeToolLoopService {
                         messages.add(ModelMessage.system(schemaRepairGuidance(call.name(), acquiredFacts)));
                         continue;
                     }
+                    ToolAction redirected = SpotifyAutopilot.redirect(action);
+                    if (redirected != action) {
+                        LOGGER.info("[SPOTIFY_REDIRECT] requestId={} from={} to=pc__{} arguments={}", request.requestId(),
+                                action.arguments(), redirected.operation().toLowerCase(Locale.ROOT), redirected.arguments());
+                        action = redirected;
+                    }
                     if (SpotifyReadEvidence.operationsForbidden(request)
                             && "pc".equalsIgnoreCase(action.tool()) && "SPOTIFY".equalsIgnoreCase(action.operation())) {
                         String reason = "The original user request forbids Spotify operations. Summarize the knowledge document without live Spotify calls.";

@@ -53,6 +53,33 @@ final class SpotifyAutopilot {
         this.pollMillis = pollMillis;
     }
 
+    /**
+     * A model that reaches for low-level pc__spotify to steer playback (next, pause, volume... or an invented
+     * "transfer") gets the one-call tool with the same meaning, instead of a multi-turn detour or an
+     * "unsupported action" error. Reads, library edits and validated plays of a chosen URI pass unchanged.
+     */
+    static ToolAction redirect(ToolAction action) {
+        if (!"pc".equalsIgnoreCase(action.tool()) || !"SPOTIFY".equalsIgnoreCase(action.operation())) return action;
+        Map<String, Object> args = action.arguments();
+        String sub = Objects.toString(args.get("action"), "").strip().toLowerCase(Locale.ROOT);
+        String target = Objects.toString(args.get("target"), "").strip();
+        Map<String, Object> mapped = new LinkedHashMap<>();
+        String operation;
+        if (java.util.Set.of("transfer", "move").contains(sub) || sub.equals("play") && Boolean.parseBoolean(Objects.toString(args.get("transfer"), ""))) {
+            operation = OPERATION;
+            mapped.put("source", "current");
+            Object device = args.getOrDefault("deviceName", args.get("deviceId"));
+            if (device != null) mapped.put("device", device);
+        } else if (java.util.Set.of("pause", "next", "previous", "volume", "shuffle", "repeat").contains(sub) || sub.equals("play") && target.isBlank()) {
+            operation = CONTROL;
+            mapped.put("action", sub.equals("play") ? "resume" : sub);
+            for (String key : List.of("value", "state")) if (args.get(key) != null) mapped.put(key, args.get(key));
+        } else {
+            return action;
+        }
+        return new ToolAction(action.action(), "pc", operation, mapped, action.reason(), action.answer());
+    }
+
     static boolean handles(ToolAction action) {
         return "pc".equalsIgnoreCase(action.tool())
                 && (OPERATION.equalsIgnoreCase(action.operation()) || CONTROL.equalsIgnoreCase(action.operation()));
@@ -261,9 +288,12 @@ final class SpotifyAutopilot {
     private Map<?, ?> device() {
         String wanted = text("device");
         call("pc", "SPOTIFY", Map.of("action", "devices"));
-        if (!SpotifyPlaybackPolicy.isLocalDeviceWord(wanted)) return SpotifyPlaybackPolicy.requestedDevice(request, steps, wanted);
+        Map<?, ?> local = SpotifyPlaybackPolicy.localDevice(steps);
+        boolean thisPc = SpotifyPlaybackPolicy.isLocalDeviceWord(wanted) || local != null
+                && (wanted.equals(local.get("id")) || wanted.equalsIgnoreCase(String.valueOf(local.get("name"))));
+        if (!thisPc) return SpotifyPlaybackPolicy.requestedDevice(request, steps, wanted);
         // The model left the device out, but the user named one ("na telewizorze"): their words decide.
-        Map<?, ?> asked = SpotifyPlaybackPolicy.userRequestedDevice(request, steps);
+        Map<?, ?> asked = wanted.isBlank() ? SpotifyPlaybackPolicy.userRequestedDevice(request, steps) : null;
         if (asked != null) return asked;
         if (SpotifyPlaybackPolicy.localDevice(steps) == null) {
             ToolAction open = action("pc", "OPEN", Map.of("target", "spotify"));

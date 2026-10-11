@@ -443,6 +443,35 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.finalAnswer()).contains("Added to the queue: Real search title");
     }
 
+    @Test void rawTransferWithTheTvIdBecomesOneVerifiedMoveOfTheCurrentTrack() {
+        userMessage = "oki teraz wrzuć to na telewizor";
+        history = "User: odpal mi coś na spotify";
+        tvVisible = true; opened = true; followPlayDevice = true; actualTitle = "Actual observed title";
+        ToolCallingResult result = run(call("pc__spotify", Map.of("action", "transfer", "deviceId", "tv-id")),
+                answer("Actual observed title gra teraz na telewizorze."));
+        assertThat(executed).endsWith("devices", "current", "play");
+        assertThat(playArguments).containsEntry("deviceId", "tv-id").containsEntry("transfer", "true");
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.finalAnswer()).isEqualTo("Actual observed title gra teraz na telewizorze.");
+    }
+
+    @Test void rawNextOrPauseIsTheOneCallControl() {
+        userMessage = "następna";
+        history = "User: odpal coś na spotify";
+        ToolCallingResult result = run(call("pc__spotify", Map.of("action", "next")), answer("Leci Next title."));
+        assertThat(executed).containsExactly("current", "next");
+        assertThat(result.steps()).anyMatch(s -> s.operation().equals("SPOTIFY_CONTROL"));
+        assertThat(result.finalAnswer()).isEqualTo("Leci Next title.");
+    }
+
+    @Test void fromTheTvBackToThePcKeepsThePc() {
+        userMessage = "przenieś muzykę z telewizora na komputer";
+        history = "User: odpal coś na spotify";
+        tvVisible = true; opened = true; followPlayDevice = true; observedDevice = "tv-id"; actualTitle = "Actual observed title";
+        run(call("pc__spotify_play", Map.of("source", "current", "device", "komputer")), answer("Done"), answer("Done"));
+        assertThat(playArguments).containsEntry("deviceId", "local-id").containsEntry("transfer", "true");
+    }
+
     @Test void currentPlaybackMovesToTheTvWithItsQueueAndPosition() {
         userMessage = "a dasz radę odpalić to na TV na spotify?";
         tvVisible = true; opened = true; followPlayDevice = true; actualTitle = "Actual observed title";

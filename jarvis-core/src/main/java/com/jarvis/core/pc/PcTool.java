@@ -161,7 +161,9 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                         arg("action", true, "play, pause, play_pause, next, previous, stop, status, volume_up, volume_down or mute"),
                         arg("app", false, "App to control, e.g. spotify (recommended - otherwise the current media session)"),
                         intArg("times", "Repeat count, e.g. volume_up 5 times or next 2 times (default 1)")),
-                op("SPOTIFY", "Spotify Web API + Connect for the user's NATIVE Windows Spotify app. Start with status; "
+                op("SPOTIFY", "LOW-LEVEL Spotify API. To play, move to another device (TV) or control playback use "
+                                + "pc__spotify_play / pc__spotify_control instead - one call each. This one is for reading the "
+                                + "library/playlists and editing them. Spotify Web API + Connect for the user's NATIVE Windows Spotify app. Start with status; "
                                 + "connect opens one-time OAuth consent (requires Client ID in Windows config/spotify.json and Premium). "
                                 + "No Web Player. Search returns URIs; pass the chosen URI to play/enqueue/save. Read liked songs and "
                                 + "library with limit/offset; follow nextOffset when hasMore. library defaults to playlists. "

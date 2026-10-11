@@ -288,3 +288,18 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
   modelu i do pętli narzędzi. Log: [KNOWLEDGE_PRELOAD]. W trybie LEGACY nic się nie zmienia.
 - Nowy docs/vault/workflows/Spotify.md (do skopiowania do vault na Ubuntu): tabela „prośba → narzędzie
   → argumenty” oraz tagi i aliasy pod routing (piosenka, kolejka, głośność, telewizor…).
+
+### Przebieg 15:44: „wrzuć to na telewizor”
+
+- Decyzja wstępna wskazała dobrze (source=current, device=telewizor), ale w pętli model użył
+  niskopoziomowego pc__spotify: devices, opis wywołania tekstem (JSON) zamiast tool call, a po „kontynuuj”
+  wymyślona akcja transfer („Unsupported Spotify action”). Na koniec do użytkownika trafiła instrukcja JSON,
+  bo bez wywołania narzędzia złożonego odpowiedź nie była sprawdzana.
+- SpotifyAutopilot.redirect: wywołanie pc__spotify, które steruje odtwarzaniem, Core zamienia na narzędzie
+  o tym samym znaczeniu: next/previous/pause/volume/shuffle/repeat oraz play bez target (wznowienie) idą do
+  pc__spotify_control, a transfer/move albo play z transfer=true do pc__spotify_play source=current z
+  urządzeniem z deviceId/deviceName. Log: [SPOTIFY_REDIRECT].
+- „wrzuć/przenieś/przerzuć/zapuść” rozpoznawane jako prośby o odtwarzanie. requestedDevice dopasowuje też po
+  dokładnym id. Opis pc__spotify w schemacie wskazuje narzędzia złożone.
+- „Z telewizora na komputer”: gdy wiadomość wymienia też ten PC (komputer/pc/laptop/nazwa), Core nie narzuca
+  urządzenia z wiadomości. Nadpisanie działa tylko wtedy, gdy model w ogóle nie podał urządzenia.

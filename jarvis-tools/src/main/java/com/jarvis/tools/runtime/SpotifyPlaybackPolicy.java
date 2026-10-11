@@ -10,7 +10,7 @@ final class SpotifyPlaybackPolicy {
     static final String BLOCKED = "SPOTIFY_PROCEDURE_REQUIRED";
     static final String WORKFLOW = "workflows/Spotify.md";
     private static final java.util.regex.Pattern PLAY =
-            java.util.regex.Pattern.compile("\\b(play|listen)\\b|\\b(odpal|pusc|puszcz|wlacz|zagraj|odtworz)\\w*");
+            java.util.regex.Pattern.compile("\\b(play|listen)\\b|\\b(odpal|pusc|puszcz|wlacz|zagraj|odtworz|wrzuc|przenies|przerzuc|zapusc)\\w*");
     private static final java.util.regex.Pattern NEGATED = java.util.regex.Pattern.compile(
             "nie (uruchamiaj|odtwarzaj|wlaczaj|puszczaj)[^.!?]*|(do not|don't|without) (play|start)[^.!?]*");
     private static final int MAX_OBSERVATIONS = 4; // initial read plus three bounded readiness observations
@@ -305,7 +305,7 @@ final class SpotifyPlaybackPolicy {
     static Map<?, ?> requestedDevice(ToolCallingRequest request, List<ToolRuntimeStep> steps, String wanted) {
         String key = compact(wanted);
         List<Map<?, ?>> matches = latestDevices(steps).stream().filter(d -> remoteRequested(request, d))
-                .filter(d -> key.isEmpty() || compact(String.valueOf(d.get("name"))).contains(key)
+                .filter(d -> key.isEmpty() || wanted.strip().equals(d.get("id")) || compact(String.valueOf(d.get("name"))).contains(key)
                         || key.contains(compact(String.valueOf(d.get("name"))))
                         || kindWords(String.valueOf(d.get("type"))).stream().anyMatch(key::contains))
                 .toList();
@@ -315,6 +315,10 @@ final class SpotifyPlaybackPolicy {
     /** The one non-local device the user's own message asks for (by name or kind), if any. */
     static Map<?, ?> userRequestedDevice(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
         Map<?, ?> local = localDevice(steps);
+        // "Z telewizora na komputer" names both: then the model's own choice stands.
+        List<String> words = List.of(normalize(request.userMessage()).split("[^a-z0-9]+"));
+        if (words.stream().anyMatch(word -> word.startsWith("komputer") || word.equals("pc") || word.startsWith("laptop"))
+                || local != null && compact(request.userMessage()).contains(compact(String.valueOf(local.get("name"))))) return null;
         List<Map<?, ?>> asked = latestDevices(steps).stream()
                 .filter(d -> local == null || !Objects.equals(d.get("id"), local.get("id")))
                 .filter(d -> remoteRequested(request, d)).toList();
