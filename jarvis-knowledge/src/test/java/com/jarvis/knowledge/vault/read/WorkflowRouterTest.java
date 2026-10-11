@@ -40,6 +40,19 @@ class WorkflowRouterTest {
         assertThat(WorkflowRouter.mentions("next", keywords)).isFalse();
     }
 
+    @Test
+    void mailQuestionsRouteToGmailAndNotToSpotify() {
+        StoredDocument gmail = document("Gmail — czytanie poczty", List.of("Gmail", "poczta", "mail", "maile", "mejl", "mejle",
+                "email", "e-mail", "skrzynka", "odebrane", "nieprzeczytane"), List.of("sprawdź pocztę", "co nowego na poczcie"));
+        List<String> keywords = WorkflowRouter.keywords(gmail);
+        assertThat(WorkflowRouter.mentions("co nowego na poczcie?", keywords)).isTrue();
+        assertThat(WorkflowRouter.mentions("mam jakieś nowe maile?", keywords)).isTrue();
+        assertThat(WorkflowRouter.mentions("sprawdź mejle od Anny", keywords)).isTrue();
+        assertThat(WorkflowRouter.mentions("przeczytaj tego maila z banku", keywords)).isTrue();
+        assertThat(WorkflowRouter.mentions("puść muzykę z polubionych", keywords)).isFalse();
+        assertThat(WorkflowRouter.mentions("co nowego na poczcie?", WorkflowRouter.keywords(SPOTIFY))).isFalse();
+    }
+
     private static StoredDocument document(String title, List<String> tags, List<String> aliases) {
         return new StoredDocument("id", "workflows/Spotify.md", title, "workflow", "active", "", tags, aliases, "1", "",
                 "frontmatter", "hash", 1L, 0L, 10, 900, "", StoredDocument.INDEXED, "", List.of(), true);

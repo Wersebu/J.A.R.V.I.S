@@ -148,6 +148,8 @@ public final class ToolOperationClassifier {
             "play", "pause", "next", "previous", "enqueue", "volume", "seek", "shuffle", "repeat", "connect", "disconnect");
     private static final Set<String> SPOTIFY_WRITE_ACTIONS = Set.of("save", "remove", "create_playlist", "add_to_playlist");
 
+    private static final Set<String> GMAIL_READ_ACTIONS = Set.of("status", "profile", "unread", "read", "thread", "labels");
+
     private static ToolOperationRole pcActionRole(String tool, String operation, java.util.Map<String, Object> arguments) {
         if (!tool.equalsIgnoreCase("pc") || arguments == null) {
             return null;
@@ -172,6 +174,15 @@ public final class ToolOperationClassifier {
                 return ToolOperationRole.EXECUTE;
             }
             return null;
+        }
+        if (o.equals("GMAIL")) {
+            if (action.equals("search")) {
+                return ToolOperationRole.SEARCH;
+            }
+            if (GMAIL_READ_ACTIONS.contains(action)) {
+                return ToolOperationRole.READ;
+            }
+            return action.equals("connect") || action.equals("disconnect") ? ToolOperationRole.EXECUTE : null;
         }
         if (o.equals("MEDIA")) {
             return action.equals("status") ? ToolOperationRole.READ : ToolOperationRole.EXECUTE;
