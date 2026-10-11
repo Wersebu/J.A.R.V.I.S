@@ -197,3 +197,22 @@ gdy wybrany URI pochodzi z wyniku liked. Windows startuje wtedy
 spotify:user:<id>:collection z offsetem na ten utwór. Przy błędzie wraca do kontekstu albumu.
 Test na żywo: isPlaying=true z właściwym URI, a kolejka zawiera następne utwory. Przy włączonym
 Smart Shuffle Spotify raportuje kontekst jako swoją playlistę 37i9dQZF1F5….
+
+## Czas odpowiedzi: autopilot dla ogólnych próśb (2026-10-11)
+
+Udane przebiegi trwały ok. 3 minut. Czas szedł na lokalny model, nie na Spotify: osobna decyzja
+wstępna („czy potrzebuję narzędzia”), a potem długie myślenie przed każdym z ok. 8–10 kroków.
+
+- ModelExecutionStage: prośba o odtwarzanie na Spotify (SpotifyPlaybackIntent.isPlaybackRequest,
+  bez załączonych obrazów) idzie od razu do pętli narzędzi jako TOOL_REQUEST, bez wywołania modelu.
+- NativeToolLoopService: prośba ogólna (SpotifyPlaybackIntent.isGeneric, czyli same powitania,
+  czasowniki i wypełniacze: „siemka odpal mi coś na spotify”, „puść coś z polubionych”) jest
+  wykonywana przez SpotifyAutopilot bez modelu. Kolejność: FIND_WORKFLOW → READ_WORKFLOW (wszystkie
+  części) → status → devices → [OPEN spotify → do 3 odczytów devices co 1,5 s] → liked(limit=50) →
+  losowy utwór → play (prepare: lokalne deviceId, context=liked) → do 2 odczytów current.
+  Każde wywołanie przechodzi przez SpotifyPlaybackPolicy.guard, a odpowiedź pochodzi z
+  SpotifyPlaybackPolicy.answer, więc obowiązują te same dowody co w pętli modelu.
+- Brak procedury, brak polubionych albo zablokowane wywołanie: autopilot oddaje prośbę pętli
+  modelu od zera. Brak połączenia albo lokalnego PC kończy się uczciwym komunikatem.
+- Konkretne prośby („puść Matę”, „playlistę do pracy”) nadal prowadzi model, ale bez decyzji wstępnej.
+- Log: [SPOTIFY_AUTOPILOT] requestId=… confirmed=… toolCalls=… elapsedMs=….

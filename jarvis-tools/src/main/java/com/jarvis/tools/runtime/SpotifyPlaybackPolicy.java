@@ -16,10 +16,7 @@ final class SpotifyPlaybackPolicy {
         String text = normalize(request.userMessage());
         String domain = text + " " + normalize(Objects.toString(request.goal(), "")) + " " + normalize(request.conversationContext());
         if (!domain.contains("spotify") || text.contains("web player")) return false;
-        text = text.replaceAll("nie (uruchamiaj|odtwarzaj|wlaczaj|puszczaj)[^.!?]*", "")
-                .replaceAll("(do not|don't|without) (play|start)[^.!?]*", "");
-        return java.util.regex.Pattern.compile("\\b(play|listen)\\b|\\b(odpal|pusc|puszcz|wlacz|zagraj|odtworz)\\w*")
-                .matcher(text).find();
+        return SpotifyPlaybackIntent.playVerb(text);
     }
 
     static String guard(ToolCallingRequest request, ToolAction action, List<ToolRuntimeStep> steps) {
@@ -243,7 +240,7 @@ final class SpotifyPlaybackPolicy {
                 + ". If discovery is unavailable or returns no matching candidate, report the procedure as unavailable.";
     }
 
-    private static Set<String> workflowPaths(List<ToolRuntimeStep> steps) {
+    static Set<String> workflowPaths(List<ToolRuntimeStep> steps) {
         Set<String> paths = new LinkedHashSet<>();
         paths.add(WORKFLOW); // vault-relative routing hint, never an OS path
         for (ToolRuntimeStep step : steps) {
@@ -269,7 +266,7 @@ final class SpotifyPlaybackPolicy {
         return paths;
     }
 
-    private static boolean workflowRead(List<ToolRuntimeStep> steps) {
+    static boolean workflowRead(List<ToolRuntimeStep> steps) {
         Map<String, Set<Integer>> versions = new HashMap<>();
         for (int index = 0; index < steps.size(); index++) {
             ToolRuntimeStep step = steps.get(index);
@@ -291,7 +288,7 @@ final class SpotifyPlaybackPolicy {
         return false;
     }
 
-    private static Map<?, ?> localDevice(List<ToolRuntimeStep> steps) {
+    static Map<?, ?> localDevice(List<ToolRuntimeStep> steps) {
         ToolRuntimeStep read = latest(steps, "devices");
         if (read == null || !read.result().success() || !(read.result().data().get("devices") instanceof List<?> list)) return null;
         // A launch invalidates the old device list until it has actually been read again.
@@ -304,7 +301,7 @@ final class SpotifyPlaybackPolicy {
         return matches.size() == 1 ? matches.getFirst() : null;
     }
 
-    private static Map<String, Map<?, ?>> sourceItems(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
+    static Map<String, Map<?, ?>> sourceItems(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
         Map<String, Map<?, ?>> items = new LinkedHashMap<>();
         // Liked songs are the user's own data, so they also ground a generic "play something".
         for (ToolRuntimeStep step : steps) if (executed(step) && (spotify(step, "liked")
@@ -335,11 +332,11 @@ final class SpotifyPlaybackPolicy {
         return original.contains("polubion") || original.contains("liked") || original.contains("ulubion");
     }
 
-    private static boolean connected(List<ToolRuntimeStep> steps) {
+    static boolean connected(List<ToolRuntimeStep> steps) {
         ToolRuntimeStep step = latest(steps, "status");
         return step != null && step.result().success() && Boolean.TRUE.equals(step.result().data().get("connected"));
     }
-    private static ToolRuntimeStep played(List<ToolRuntimeStep> steps) { return latest(steps, "play"); }
+    static ToolRuntimeStep played(List<ToolRuntimeStep> steps) { return latest(steps, "play"); }
     private static ToolRuntimeStep latest(List<ToolRuntimeStep> steps, String action) {
         for (int i = steps.size() - 1; i >= 0; i--) if (executed(steps.get(i)) && spotify(steps.get(i), action)) return steps.get(i);
         return null;

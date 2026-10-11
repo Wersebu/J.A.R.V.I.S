@@ -38,6 +38,8 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
     private String actualTitle = "";
     private boolean firstLikedUnplayable;
     private Map<String, Object> playArguments = Map.of();
+    private boolean autopilot;
+    private AIProvider provider;
 
 
     @Test void guessedPlayIsBlockedThenProcedureRecoversWithActualSearchAndLocalDevice() {
@@ -309,12 +311,52 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.finalAnswer()).contains("Real liked title");
     }
 
+    @Test void genericRequestRunsOnAutopilotWithoutAnyModelTurn() {
+        autopilot = true;
+        userMessage = "siemka odpal mi coś na spotify";
+        ToolCallingResult result = run();
+        assertThat(executed).containsExactly("knowledge/FIND_WORKFLOW", "knowledge/READ_WORKFLOW", "status", "devices",
+                "open:spotify", "devices", "liked", "play");
+        assertThat(playArguments).containsEntry("target", URI).containsEntry("deviceId", "local-id").containsEntry("context", "liked");
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.finalAnswer()).contains("Potwierdzono odtwarzanie", "Real liked title", "Local desktop");
+        verify(provider, never()).toolChat(any(), anyList(), anyList(), any());
+    }
+
+    @Test void autopilotVerifiesWithCurrentAndReportsUnconfirmedPlaybackHonestly() {
+        autopilot = true; opened = true; observed = false; currentPlaying = false;
+        userMessage = "puść coś z polubionych na spotify";
+        ToolCallingResult result = run();
+        assertThat(executed).endsWith("liked", "play", "current", "current");
+        assertThat(Collections.frequency(executed, "play")).isEqualTo(1);
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(result.finalAnswer()).contains("Zadanie nieukończone");
+    }
+
+    @Test void autopilotHandsOverToModelWhenProcedureCannotBeRead() {
+        autopilot = true; noCandidates = true; workflowMissing = true;
+        ToolCallingResult result = run(answer("Nie mogę."), answer("Nie mogę."));
+        assertThat(executed).doesNotContain("status", "play");
+        assertThat(result.terminationInfo().completed()).isFalse();
+        verify(provider, atLeastOnce()).toolChat(any(), anyList(), anyList(), any());
+    }
+
+    @Test void onlyRequestsNamingNothingSpecificAreGeneric() {
+        assertThat(SpotifyPlaybackIntent.isGeneric("siemka odpal mi coś na spotify")).isTrue();
+        assertThat(SpotifyPlaybackIntent.isGeneric("Odtwórz mi coś z polubionych utworów na Spotify.")).isTrue();
+        assertThat(SpotifyPlaybackIntent.isGeneric("odpalisz mi coś fajnego na spotify?")).isTrue();
+        assertThat(SpotifyPlaybackIntent.isGeneric("puść Matę na spotify")).isFalse();
+        assertThat(SpotifyPlaybackIntent.isGeneric("odpal na spotify playlistę do pracy")).isFalse();
+        assertThat(SpotifyPlaybackIntent.isPlaybackRequest("co teraz gra na spotify?")).isFalse();
+        assertThat(SpotifyPlaybackIntent.isPlaybackRequest("sprawdź spotify, nie odtwarzaj niczego")).isFalse();
+    }
+
     private ModelResponse findWorkflow() { return call("knowledge__find_workflow", Map.of("query", "Spotify")); }
     private ModelResponse readWorkflow(String path) { return call("knowledge__read_workflow", Map.of("path", path)); }
 
     private ToolCallingResult run(ModelResponse... turns) {
         Deque<ModelResponse> script = new ArrayDeque<>(List.of(turns));
-        AIProvider provider = mock(AIProvider.class);
+        provider = mock(AIProvider.class);
         when(provider.provider()).thenReturn("stub");
         when(provider.toolChat(any(), anyList(), anyList(), any())).thenAnswer(inv -> {
             List<NativeToolDefinition> definitions = inv.getArgument(2);
@@ -333,6 +375,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         NativeToolLoopService service = new NativeToolLoopService(List.of(provider), manager, query -> ToolIntent.NO_TOOL,
                 new ToolRuntimeProperties(true, 20, 20, 2, 30, "native"), bus, new ToolRuntimeDebugService(),
                 new ObjectMapper(), new NativeToolSchemaMapper(registry), new StoreAuditDatasetService(bus));
+        service.spotifyAutopilot(autopilot, 0);
         return service.execute(new ToolCallingRequest("spotify-play", "c", userMessage,
                 delegatedGoal, "", Map.of(), "Base", new Brain(BrainType.FAST, "stub", "model", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST, List.of(), history));
     }

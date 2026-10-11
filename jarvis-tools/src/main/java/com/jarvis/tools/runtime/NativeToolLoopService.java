@@ -316,6 +316,10 @@ public class NativeToolLoopService {
      * @return tool-calling result
      */
     public ToolCallingResult execute(ToolCallingRequest request) {
+        if (spotifyAutopilot && SpotifyPlaybackPolicy.applies(request) && SpotifyPlaybackIntent.isGeneric(request.userMessage())) {
+            Optional<ToolCallingResult> fast = runSpotifyAutopilot(request);
+            if (fast.isPresent()) return fast.get();
+        }
         ToolCallingResult result = executeLoop(request);
         if (result.handled() && SpotifyPlaybackPolicy.applies(request)) {
             return new ToolCallingResult(true, SpotifyPlaybackPolicy.answer(request, result.steps()), result.steps(),
@@ -328,6 +332,47 @@ public class NativeToolLoopService {
         // action-specific results. Do not publish model-invented device names or connection actions.
         return new ToolCallingResult(true, SpotifyReadEvidence.answer(result.steps()), result.steps(),
                 result.results(), result.terminationInfo());
+    }
+
+    private boolean spotifyAutopilot = true;
+    private long spotifyPollMillis = 1500;
+
+    /** Tests drive the model-led Spotify procedure step by step; production runs generic requests on autopilot. */
+    void spotifyAutopilot(boolean enabled, long pollMillis) {
+        this.spotifyAutopilot = enabled;
+        this.spotifyPollMillis = pollMillis;
+    }
+
+    /**
+     * A generic Spotify playback request needs no model decisions: Core carries out the known procedure
+     * under the same policy checks. Empty when it cannot, and the model-led loop then starts from scratch.
+     */
+    private Optional<ToolCallingResult> runSpotifyAutopilot(ToolCallingRequest request) {
+        Instant started = Instant.now();
+        LOGGER.info("[SPOTIFY_AUTOPILOT] requestId={} message=\"{}\"", request.requestId(), request.userMessage());
+        Optional<List<ToolRuntimeStep>> executed = SpotifyAutopilot.run(request, (action, step) -> executeAction(request, action, step),
+                millis -> {
+                    try {
+                        Thread.sleep(millis);
+                    } catch (InterruptedException exception) {
+                        Thread.currentThread().interrupt();
+                    }
+                }, spotifyPollMillis);
+        if (executed.isEmpty()) {
+            LOGGER.info("[SPOTIFY_AUTOPILOT] requestId={} handedOverToModelLoop=true", request.requestId());
+            return Optional.empty();
+        }
+        List<ToolRuntimeStep> steps = executed.get();
+        List<ToolResult> results = steps.stream().map(ToolRuntimeStep::result).toList();
+        boolean confirmed = SpotifyPlaybackPolicy.confirmed(request, steps);
+        String answer = SpotifyPlaybackPolicy.answer(request, steps);
+        ToolLoopTerminationInfo info = buildTerminationInfo(confirmed ? ToolLoopTerminationReason.COMPLETED : ToolLoopTerminationReason.INCOMPLETE_GOAL,
+                confirmed, confirmed, started, 0, 0, steps, results, "",
+                confirmed ? "" : SpotifyPlaybackPolicy.nextStep(request, steps), List.of());
+        logTerminationSummary(request, info);
+        LOGGER.info("[SPOTIFY_AUTOPILOT] requestId={} confirmed={} toolCalls={} elapsedMs={}", request.requestId(), confirmed,
+                steps.size(), java.time.Duration.between(started, Instant.now()).toMillis());
+        return Optional.of(new ToolCallingResult(true, answer, steps, results, info));
     }
 
     private ToolCallingResult executeLoop(ToolCallingRequest request) {
