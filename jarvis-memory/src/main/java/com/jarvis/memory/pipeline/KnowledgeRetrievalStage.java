@@ -69,8 +69,14 @@ public class KnowledgeRetrievalStage implements PipelineStage {
         }
         long started = System.nanoTime();
         String query = routingQuery(message, context.conversation());
-        Optional<WorkflowCandidate> workflow = router.route(query);
+        // Only the message itself makes a direct match. A match that needed the previous turns is the conversation's
+        // topic: "teraz git :D" after music talk is chat, and the model must stay free to just answer it.
+        Optional<WorkflowCandidate> workflow = router.route(message);
         String reason = workflow.isPresent() ? "matched" : "none";
+        if (workflow.isEmpty() && !query.equals(message)) {
+            workflow = router.route(query);
+            if (workflow.isPresent()) reason = "topic";
+        }
         String conversation = context.conversationId() == null ? "" : context.conversationId();
         if (workflow.isPresent()) {
             lastRouted.put(conversation, new Routed(workflow.get(), java.time.Instant.now()));

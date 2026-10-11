@@ -605,6 +605,12 @@ public class NativeToolLoopService {
                     + "read action=liked (the user's own liked songs) and play one returned track. Core fills deviceId of the local PC for play; "
                     + "play target may be the exact URI or the exact track name from the result (names are safer to copy than IDs)."));
         }
+        if (request.context().get("workflowTools") instanceof List<?> named && !named.isEmpty()) {
+            // Tool results are written in English for the model; small models then drift into English replies.
+            messages.add(ModelMessage.system("Reply to the user in the language of their message (e.g. Polish), "
+                    + "not in the language of the tool results. If the message is just chat or a reaction (\"ok\", \"teraz git\", "
+                    + "\"co ty robisz?\"), answer it without calling a tool."));
+        }
         messages.add(ModelMessage.user(request.userMessage(), request.images()));
 
         // Coarse workflow label for telemetry only (never used for behavioral branching beyond what

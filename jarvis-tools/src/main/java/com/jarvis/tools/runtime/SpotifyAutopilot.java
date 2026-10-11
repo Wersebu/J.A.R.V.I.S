@@ -213,6 +213,10 @@ final class SpotifyAutopilot {
         if (source.isBlank()) source = text("query").isBlank() ? "liked" : "search";
         if (!SOURCES.contains(source)) return failure("BAD_ARGUMENT", "source must be one of " + SOURCES + ".");
         if (source.equals("search") && text("query").isBlank()) return failure("BAD_ARGUMENT", "source=search needs query.");
+        String command = source.equals("search") ? controlCommandIn(text("query")) : "";
+        if (!command.isEmpty())
+            return failure("NOT_A_TITLE", "\"" + text("query") + "\" is a command for what is already playing, not a song title. "
+                    + "Nothing was searched or played. Call pc__spotify_control " + command + " instead.");
         if (SpotifyPlaybackPolicy.played(steps) != null)
             return failure("ALREADY_PLAYED", "Playback was already sent in this request; do not repeat it. Report the result.");
 
@@ -257,6 +261,25 @@ final class SpotifyAutopilot {
 
         Map<String, Object> playArguments = new LinkedHashMap<>(Map.of("action", "play", "target", chosen, "deviceId", device.get("id")));
         return playAndVerify(new LinkedHashMap<>(SpotifyPlaybackPolicy.prepare(request, action("pc", "SPOTIFY", playArguments), steps).arguments()));
+    }
+
+    /**
+     * Everyday commands a small model sometimes searches as song titles ("gites i przycisz" played a track called
+     * "Nie Interesuje"). Returns the control call they mean, or empty for a real title.
+     */
+    static String controlCommandIn(String query) {
+        String plain = SpotifyPlaybackPolicy.normalize(String.valueOf(query)).replaceAll("[^a-z0-9]+", " ").strip();
+        String text = " " + plain + " ";
+        // Volume phrases are never a title, wherever they appear ("gites i przycisz").
+        if (List.of(" przycisz", " ciszej ", " scisz", " daj sie skupic", " daj pogadac").stream().anyMatch(text::contains))
+            return "action=volume value=25";
+        if (List.of(" glosniej ", " podglos", " daj mu ", " na fulla ", " jebnij basem").stream().anyMatch(text::contains))
+            return "action=volume value=100";
+        // "Stop", "Next"... are also real song titles: only the bare word is treated as the command.
+        if (List.of("pauza", "zatrzymaj", "stop").contains(plain)) return "action=pause";
+        if (List.of("wznow", "graj dalej").contains(plain)) return "action=resume";
+        if (List.of("nastepna", "nastepny", "next", "dalej").contains(plain)) return "action=next";
+        return "";
     }
 
     /** Moves what is playing now to the chosen device: same track, same context (queue), same position. */

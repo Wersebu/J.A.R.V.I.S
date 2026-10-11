@@ -55,7 +55,9 @@ class KnowledgeRetrievalStageTest {
 
         PipelineContext result = stage.execute(context);
 
-        assertThat(queries).containsExactly("odpal coś na spotify next");
+        // The message alone first; the previous turns only give the conversation's topic, never a direct match.
+        assertThat(queries).containsExactly("next", "odpal coś na spotify next");
+        assertThat(result.metadata()).containsEntry("workflowRouting", "topic");
         assertThat(result.retrievalResult().documents()).singleElement()
                 .satisfies(document -> assertThat(document.relativePath()).isEqualTo("workflows/Spotify.md"));
     }

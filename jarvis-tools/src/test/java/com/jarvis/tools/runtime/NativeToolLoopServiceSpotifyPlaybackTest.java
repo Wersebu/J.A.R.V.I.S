@@ -424,6 +424,19 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(fallback.finalAnswer()).isEqualTo("Ustawiono głośność na 100%.");
     }
 
+    @Test void aCommandSearchedAsATitleIsSentBackToTheModelWhichThenTurnsItDown() {
+        userMessage = "gites i przycisz";
+        history = "User: odpal coś na spotify";
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "search", "query", "gites i przycisz")),
+                call("pc__spotify_control", Map.of("action", "volume", "value", "25")), answer("Jasne, przyciszyłem."));
+        assertThat(executed).containsExactly("current", "volume");
+        assertThat(result.steps()).anyMatch(s -> s.operation().equals("SPOTIFY_PLAY") && "NOT_A_TITLE".equals(s.result().errorCode()));
+        assertThat(result.finalAnswer()).isEqualTo("Jasne, przyciszyłem.");
+        assertThat(SpotifyAutopilot.controlCommandIn("Stop")).isEqualTo("action=pause");
+        assertThat(SpotifyAutopilot.controlCommandIn("Stop! In the Name of Love")).isEmpty();
+        assertThat(SpotifyAutopilot.controlCommandIn("spoko daj mu")).isEqualTo("action=volume value=100");
+    }
+
     @Test void searchPlaysTheResultMatchingTheRequestedWordsNotSpotifysFirstHit() {
         userMessage = "a odpal mi piosenke ogorek cypisa";
         opened = true; cypisResults = true;

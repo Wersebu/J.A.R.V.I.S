@@ -377,3 +377,18 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
   odrzucenia, poprawkę i powód jej odrzucenia. Log: [SPOTIFY_ANSWER] firstReplyRejected="…" rewriteRejected="…".
 - Interpretacja modelu: „daj mu!” → action=now zamiast głośności; „dobra daj się skupić” → wyszukanie „focus music”
   zamiast ściszenia; „odpal to proszę” po wyszukaniu „Pan Ogórek” → losowy utwór z polubionych. Do poprawy w Spotify.md.
+
+## Analiza śladu 0f08eef9 (18:25–18:28): Spotify przejmował zwykłą rozmowę
+
+- „teraz git :D” włączyło losowy utwór, „co ty robisz? XD” dostało „Odtwarzam coś na Spotify!”, a „gites i przycisz”
+  wyszukało utwór o tym tytule. Odpowiedzi szły po angielsku („Sure thing! Playing now…”).
+- Przyczyna: krótka wiadomość sklejona z poprzednimi trafiała jako dopasowanie bezpośrednie („matched”), więc decyzja
+  wstępna była pomijana, a model dostawał tylko narzędzia Spotify.
+- KnowledgeRetrievalStage: bezpośrednie dopasowanie liczy się tylko dla samej wiadomości. Dopasowanie dzięki
+  poprzednim wiadomościom albo pamięci tematu to „topic”: decyzja wstępna zostaje (model może odpowiedzieć bez
+  narzędzi), a narzędzia Spotify są zawężane tylko wtedy, gdy cel modelu wskazuje Spotify.
+- pc__spotify_play: wyszukiwanie z komendą zamiast tytułu („przycisz”, „daj mu”, „głośniej”…, a „stop”/„next”/„pauza”
+  tylko jako całe zapytanie) zwraca NOT_A_TITLE ze wskazaniem pc__spotify_control. Nic nie jest odtwarzane, a model
+  poprawia się sam w kolejnej turze.
+- Przy workflowTools pętla dostaje wskazówkę: odpowiadaj w języku użytkownika, a wiadomość, która jest tylko reakcją
+  lub rozmową, obsłuż bez narzędzia.
