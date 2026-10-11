@@ -93,6 +93,9 @@ final class SpotifyPlaybackPolicy {
         // Keep a device the user asked for (by id or name); anything else means this PC.
         Map<?, ?> device = targetDevice(request, steps, args.get("deviceId"));
         if (device == null && !text(args, "deviceName").isBlank()) device = requestedDevice(request, steps, text(args, "deviceName"));
+        // The device the user named ("na telewizorze") beats a model that left it out or fell back to this PC.
+        Map<?, ?> asked = userRequestedDevice(request, steps);
+        if (asked != null && (device == null || device == localDevice(steps))) device = asked;
         if (device == null) device = localDevice(steps);
         if (device != null) {
             args.put("deviceId", device.get("id"));
@@ -225,12 +228,18 @@ final class SpotifyPlaybackPolicy {
         boolean clean = !reply.contains("http") && !reply.contains("spotify:") && !reply.contains("{") && !reply.contains("open.spotify");
         if (!clean) return evidence;
         if (control != null) {
-            if (control.result().success()) return modelAnswer.strip();
+            if (control.result().success()) {
+                Object now = control.result().data().get("title");
+                String title = normalize(Objects.toString(now, "")).split(" - | \\(| \\[")[0].strip();
+                return now == null || title.length() >= 2 && reply.contains(title) ? modelAnswer.strip() : evidence;
+            }
             return ADMITS_FAILURE.matcher(reply).find() && !CLAIMS_PLAYBACK.matcher(reply).find() ? modelAnswer.strip() : evidence;
         }
         if (confirmed(request, steps)) {
             String title = normalize(String.valueOf(playbackFacts(request, steps).get("title"))).split(" - | \\(| \\[")[0].strip();
-            return title.length() >= 2 && reply.contains(title) ? modelAnswer.strip() : evidence;
+            ToolRuntimeStep play = played(steps);
+            Map<?, ?> device = targetDevice(request, steps, play.arguments().get("deviceId"));
+            return title.length() >= 2 && reply.contains(title) && !mentionsOtherDevice(modelAnswer, device, steps) ? modelAnswer.strip() : evidence;
         }
         // Nothing confirmed: the model may explain why in its own words (e.g. the TV is not visible to Spotify),
         // but only an explicit admission passes - never a reply that claims or implies playback.
@@ -301,6 +310,36 @@ final class SpotifyPlaybackPolicy {
                         || kindWords(String.valueOf(d.get("type"))).stream().anyMatch(key::contains))
                 .toList();
         return matches.size() == 1 ? matches.getFirst() : null;
+    }
+
+    /** The one non-local device the user's own message asks for (by name or kind), if any. */
+    static Map<?, ?> userRequestedDevice(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
+        Map<?, ?> local = localDevice(steps);
+        List<Map<?, ?>> asked = latestDevices(steps).stream()
+                .filter(d -> local == null || !Objects.equals(d.get("id"), local.get("id")))
+                .filter(d -> remoteRequested(request, d)).toList();
+        return asked.size() == 1 ? asked.getFirst() : null;
+    }
+
+    /** "Odpal to na TV", "put this on the speaker": the user means what is playing now, not something new. */
+    static boolean refersToCurrent(ToolCallingRequest request) {
+        return java.util.regex.Pattern.compile("\\b(to|tego|ta|te|this|it|przenies\\w*|przerzuc\\w*|move|transfer\\w*)\\b")
+                .matcher(normalize(request.userMessage())).find();
+    }
+
+    /** A reply naming a device other than the one actually playing (e.g. "on your TV" while the PC plays) is false. */
+    private static boolean mentionsOtherDevice(String reply, Map<?, ?> actual, List<ToolRuntimeStep> steps) {
+        if (actual == null) return true;
+        String text = compact(reply);
+        List<String> actualKinds = kindWords(String.valueOf(actual.get("type")));
+        for (Map<?, ?> device : latestDevices(steps)) {
+            if (Objects.equals(device.get("id"), actual.get("id"))) continue;
+            String name = compact(String.valueOf(device.get("name")));
+            if (name.length() >= 3 && text.contains(name)) return true;
+            if (kindWords(String.valueOf(device.get("type"))).stream().filter(word -> !actualKinds.contains(word)).anyMatch(text::contains))
+                return true;
+        }
+        return false;
     }
 
     static boolean isLocalDeviceWord(String device) {

@@ -254,3 +254,17 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
   Parser rzucał wyjątek raportowany jako „Spotify connection failed”, choć komenda się wykonała.
   Teraz odpowiedź niebędąca JSON-em jest traktowana jako sukces bez danych. Test na żywo: next przyjęty,
   zmiana utworu potwierdzona.
+
+### Przebieg 15:11–15:14: urządzenie z wiadomości użytkownika i prawdziwość odpowiedzi
+
+- „A odpal to na telewizorze”: model wywołał pc__spotify_play bez device i z source=liked, więc nowy utwór zagrał
+  na PC. Teraz urządzenie wskazane w wiadomości użytkownika (nazwa albo rodzaj, dokładnie jedno widoczne)
+  wygrywa z brakiem device albo z wyborem tego PC (SpotifyAutopilot.device i prepare). „to/tego/this/it/przenieś”
+  przy innym urządzeniu oznacza przeniesienie bieżącego utworu (source=current).
+- „I włączy to na TV”: grał PC, a odpowiedź twierdziła, że TV. groundedAnswer sprawdzał tylko tytuł.
+  Teraz odrzuca odpowiedź, która wymienia inne widoczne urządzenie (nazwę albo rodzaj) niż faktycznie grające.
+- „next”: wiadomość bez słowa „spotify” omijała sprawdzanie odpowiedzi, a model podał stary tytuł.
+  Odpowiedź jest teraz sprawdzana zawsze, gdy w żądaniu wykonano pc__spotify_play/control. Udany control
+  wymaga, żeby odpowiedź wymieniała nowy tytuł, inaczej trafia wynik narzędzia.
+- Na żywo o 15:2x: API widziało FrytaCraft.pl jako nieaktywne. Transfer na TV dał isPlaying=true na TV,
+  utrzymane przez 9 s.

@@ -317,7 +317,10 @@ public class NativeToolLoopService {
      */
     public ToolCallingResult execute(ToolCallingRequest request) {
         ToolCallingResult result = executeLoop(request);
-        if (result.handled() && SpotifyPlaybackPolicy.applies(request)) {
+        // Ground every Spotify playback/control outcome, also for short follow-ups like "next" that name no app.
+        boolean spotifyComposite = result.steps().stream().anyMatch(step -> "TOOL_CALL".equals(step.action()) && step.result() != null
+                && SpotifyAutopilot.handles(new ToolAction("TOOL_CALL", step.tool(), step.operation(), Map.of(), "", "")));
+        if (result.handled() && (SpotifyPlaybackPolicy.applies(request) || spotifyComposite)) {
             // The model answers in its own words when they match the observed playback; otherwise the evidence speaks.
             // On a blocked ending finalAnswer is Core's generic notice; the model's own last words are kept separately.
             String modelAnswer = result.terminationInfo() != null && result.terminationInfo().completed()

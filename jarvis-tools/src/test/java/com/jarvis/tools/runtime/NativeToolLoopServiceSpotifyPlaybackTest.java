@@ -389,6 +389,34 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.finalAnswer()).isEqualTo(honest);
     }
 
+    @Test void deviceTheUserNamedWinsWhenTheModelLeavesItOutAndToMeansWhatIsPlaying() {
+        userMessage = "A odpal to na telewizorze.";
+        history = "User: odpal coś na spotify";
+        tvVisible = true; opened = true; followPlayDevice = true; actualTitle = "Actual observed title";
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "liked")), answer("Actual observed title gra na telewizorze."));
+        assertThat(executed).endsWith("devices", "current", "play").doesNotContain("liked");
+        assertThat(playArguments).containsEntry("deviceId", "tv-id").containsEntry("transfer", "true");
+        assertThat(result.terminationInfo().completed()).isTrue();
+    }
+
+    @Test void replyClaimingTheTvWhileThePcPlaysIsReplacedByEvidence() {
+        userMessage = "odpal coś na spotify";
+        tvVisible = true; opened = true;
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "liked")),
+                answer("Real liked title gra teraz na Twoim telewizorze FrytaCraft.pl."));
+        assertThat(playArguments).containsEntry("deviceId", "local-id");
+        assertThat(result.finalAnswer()).contains("Potwierdzono odtwarzanie", "Urządzenie lokalnego PC: Local desktop")
+                .doesNotContain("telewizor");
+    }
+
+    @Test void shortFollowUpControlIsGroundedEvenWithoutNamingSpotify() {
+        userMessage = "next";
+        history = "User: odpal coś na spotify";
+        ToolCallingResult result = run(call("pc__spotify_control", Map.of("action", "next")), answer("Leci dalej BROTA NA BASE."));
+        assertThat(executed).containsExactly("current", "next");
+        assertThat(result.finalAnswer()).contains("Next title").doesNotContain("BROTA");
+    }
+
     @Test void currentPlaybackMovesToTheTvWithItsQueueAndPosition() {
         userMessage = "a dasz radę odpalić to na TV na spotify?";
         tvVisible = true; opened = true; followPlayDevice = true; actualTitle = "Actual observed title";

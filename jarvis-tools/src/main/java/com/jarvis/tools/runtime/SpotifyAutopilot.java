@@ -156,6 +156,9 @@ final class SpotifyAutopilot {
 
         Map<?, ?> device = device();
         if (device == null) return failure("NO_DEVICE", deviceProblem());
+        // "Odpal to na telewizorze": the user names another device and points at what is playing - that is a move.
+        if (!source.equals("search") && device != SpotifyPlaybackPolicy.localDevice(steps) && SpotifyPlaybackPolicy.refersToCurrent(request))
+            source = "current";
 
         if (source.equals("current")) return moveCurrent(device);
         ToolResult listed = source.equals("liked")
@@ -203,6 +206,9 @@ final class SpotifyAutopilot {
         String wanted = text("device");
         call("pc", "SPOTIFY", Map.of("action", "devices"));
         if (!SpotifyPlaybackPolicy.isLocalDeviceWord(wanted)) return SpotifyPlaybackPolicy.requestedDevice(request, steps, wanted);
+        // The model left the device out, but the user named one ("na telewizorze"): their words decide.
+        Map<?, ?> asked = SpotifyPlaybackPolicy.userRequestedDevice(request, steps);
+        if (asked != null) return asked;
         if (SpotifyPlaybackPolicy.localDevice(steps) == null) {
             ToolAction open = action("pc", "OPEN", Map.of("target", "spotify"));
             if (SpotifyPlaybackPolicy.guard(request, open, steps).isBlank()) run(open);
