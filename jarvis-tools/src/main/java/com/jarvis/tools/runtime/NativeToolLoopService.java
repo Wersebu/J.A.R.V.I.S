@@ -369,6 +369,8 @@ public class NativeToolLoopService {
     }
 
     private long spotifyPollMillis = 1500;
+    /** Tracks Jarvis played per conversation, so "wróć do poprzedniej" can return across a switch of list. */
+    private final Map<String, java.util.Deque<SpotifyAutopilot.PlayedTrack>> spotifyHistory = new java.util.concurrent.ConcurrentHashMap<>();
     /** With a workflow already preloaded, only these knowledge operations stay on offer next to its own tools. */
     private static final Set<String> WORKFLOW_KNOWLEDGE_TOOLS = Set.of("knowledge__find_workflow", "knowledge__read_workflow",
             "knowledge__read_document", "knowledge__search_content");
@@ -383,6 +385,8 @@ public class NativeToolLoopService {
         Instant started = Instant.now();
         publish(request, CognitiveEventType.TOOL_EXECUTION_STARTED, "EXECUTING", "Tool execution started", targetNode(action), step,
                 actionMetadata(action));
+        java.util.Deque<SpotifyAutopilot.PlayedTrack> history = spotifyHistory.computeIfAbsent(
+                Objects.toString(request.conversationId(), ""), key -> new java.util.concurrent.ConcurrentLinkedDeque<>());
         ToolResult result = SpotifyAutopilot.play(request, action, steps, step, (subAction, number) -> executeAction(request, subAction, number),
                 millis -> {
                     try {
@@ -390,7 +394,7 @@ public class NativeToolLoopService {
                     } catch (InterruptedException exception) {
                         Thread.currentThread().interrupt();
                     }
-                }, spotifyPollMillis);
+                }, spotifyPollMillis, history);
         LOGGER.info("[SPOTIFY_PLAY] requestId={} arguments={} confirmed={} errorCode={} elapsedMs={}", request.requestId(),
                 action.arguments(), result.success(), result.errorCode(), java.time.Duration.between(started, Instant.now()).toMillis());
         publish(request, CognitiveEventType.TOOL_EXECUTION_FINISHED, result.success() ? "FINISHED" : "FAILED",

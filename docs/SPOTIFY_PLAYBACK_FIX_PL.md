@@ -392,3 +392,18 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
   poprawia się sam w kolejnej turze.
 - Przy workflowTools pętla dostaje wskazówkę: odpowiadaj w języku użytkownika, a wiadomość, która jest tylko reakcją
   lub rozmową, obsłuż bez narzędzia.
+
+## Analiza śladu e339de0b (18:36–18:46)
+
+- Rozmowa bez narzędzi 4–7 s, Spotify 5–9 s, dopytania z decyzją wstępną 11–17 s. „co tam u ciebie?” i „kim jesteś?”
+  dostały zwykłą odpowiedź.
+- „teraz odpal wrona kici kici”: Spotify zwrócił „K I C I K I C I” (WRONA) jako pierwszy wynik (sprawdzone na żywo),
+  ale ranking przesunął wyżej „KICI MEOW”. Liczył powtórzone „kici” dwa razy, a tytuł z pojedynczych liter nie dawał
+  punktów. Teraz słowa zapytania są liczone raz, a dopasowanie sprawdzane w zwartym tekście (tylko litery i cyfry)
+  tytułu, wykonawców i albumu. Przy source=search zawsze wygrywa najlepsze dopasowanie, nawet przy pick=random od modelu.
+- „wróć do poprzedniego”: previous ze Spotify cofa tylko w bieżącej liście. Po przełączeniu na polubione cofnął do innego
+  polubionego utworu zamiast do „POLSKA VIXA”. NativeToolLoopService pamięta per rozmowa utwory puszczane przez Jarvisa
+  (SpotifyAutopilot.PlayedTrack, do 20). Jeśli aktualny utwór Jarvis włączył nowym odtwarzaniem, previous wraca do utworu
+  sprzed tego przełączenia (data.via=back) i zdejmuje go z historii. Po next/previous w obrębie listy działa previous
+  ze Spotify. Przeniesienie na inne urządzenie nie jest zapisywane jako nowy utwór.
+- „daj mu!” nadal bywa brane za „odpal coś”. Odłożone na prośbę użytkownika.

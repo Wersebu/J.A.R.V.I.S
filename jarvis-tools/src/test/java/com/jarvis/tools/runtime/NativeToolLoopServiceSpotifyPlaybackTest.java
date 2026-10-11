@@ -41,8 +41,11 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
     private boolean tvVisible;
     private boolean followPlayDevice;
     private boolean transferStartsAnotherTrack;
+    private boolean followPlayTarget;
     private Map<String, Object> requestContext = Map.of();
     private boolean cypisResults;
+    private Deque<ModelResponse> script = new ArrayDeque<>();
+    private NativeToolLoopService service;
     private final List<String> offeredTools = new ArrayList<>();
     private AIProvider provider;
 
@@ -437,10 +440,42 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(SpotifyAutopilot.controlCommandIn("spoko daj mu")).isEqualTo("action=volume value=100");
     }
 
+    @Test void previousRightAfterJarvisSwitchedTracksReturnsToTheTrackFromBefore() {
+        userMessage = "odpal Pan Ogórek na spotify";
+        opened = true; cypisResults = true; followPlayTarget = true;
+        run(call("pc__spotify_play", Map.of("source", "search", "query", "Pan Ogórek")), answer("Gra Pan Ogórek."));
+        assertThat(playArguments).containsEntry("target", INVENTED);
+
+        userMessage = "odpal coś z polubionych na spotify";
+        runAgain(call("pc__spotify_play", Map.of("source", "liked")), answer("Gra Real liked title."));
+        assertThat(playArguments).containsEntry("target", URI);
+
+        userMessage = "wróć do poprzedniej";
+        executed.clear();
+        ToolCallingResult back = runAgain(call("pc__spotify_control", Map.of("action", "previous")), answer("Wróciłem do Pan Ogórek."));
+        assertThat(executed).containsExactly("current", "play");
+        assertThat(playArguments).containsEntry("target", INVENTED);
+        assertThat(back.finalAnswer()).isEqualTo("Wróciłem do Pan Ogórek.");
+    }
+
+    @Test void previousAfterNextUsesSpotifysOwnPrevious() {
+        userMessage = "następna";
+        history = "User: odpal coś na spotify";
+        run(call("pc__spotify_control", Map.of("action", "next")), answer("Leci Next title."));
+        userMessage = "poprzednia";
+        executed.clear();
+        runAgain(call("pc__spotify_control", Map.of("action", "previous")), answer("Leci Liked neighbour."));
+        assertThat(executed).containsExactly("current", "previous");
+    }
+
     @Test void searchPlaysTheResultMatchingTheRequestedWordsNotSpotifysFirstHit() {
         userMessage = "a odpal mi piosenke ogorek cypisa";
         opened = true; cypisResults = true;
         run(call("pc__spotify_play", Map.of("source", "search", "query", "ogorek cypisa")), answer("Done"), answer("Done"));
+        assertThat(playArguments).containsEntry("target", INVENTED);
+
+        executed.clear(); // a model asking pick=random still gets the best match, and spaced titles match too
+        run(call("pc__spotify_play", Map.of("source", "search", "query", "ogorek cypisa", "pick", "random")), answer("Done"), answer("Done"));
         assertThat(playArguments).containsEntry("target", INVENTED);
     }
 
@@ -573,8 +608,15 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
     private ModelResponse findWorkflow() { return call("knowledge__find_workflow", Map.of("query", "Spotify")); }
     private ModelResponse readWorkflow(String path) { return call("knowledge__read_workflow", Map.of("path", path)); }
 
+    /** The same loop instance as the previous run (state kept across requests, e.g. play history). */
+    private ToolCallingResult runAgain(ModelResponse... turns) {
+        script = new ArrayDeque<>(List.of(turns));
+        return service.execute(new ToolCallingRequest("spotify-play-2", "c", userMessage,
+                delegatedGoal, "", requestContext, "Base", new Brain(BrainType.FAST, "stub", "model", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST, List.of(), history));
+    }
+
     private ToolCallingResult run(ModelResponse... turns) {
-        Deque<ModelResponse> script = new ArrayDeque<>(List.of(turns));
+        script = new ArrayDeque<>(List.of(turns));
         provider = mock(AIProvider.class);
         when(provider.provider()).thenReturn("stub");
         when(provider.toolChat(any(), anyList(), anyList(), any())).thenAnswer(inv -> {
@@ -595,7 +637,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                 new ToolDefinition("pc", "desktop", List.of(op("SPOTIFY", "action", "target", "query", "deviceId", "deviceName"), op("SPOTIFY_PLAY", "source", "query", "type", "owner", "pick", "mode", "device"), op("SPOTIFY_CONTROL", "action", "value", "state"), op("OPEN", "target"), op("SHELL", "command"))),
                 new ToolDefinition("knowledge", "vault", List.of(op("READ_WORKFLOW", "path", "part"), op("FIND_WORKFLOW", "query"), op("READ_DOCUMENT", "path"))),
                 new ToolDefinition("browser", "browser", List.of(op("OPEN", "url")))));
-        NativeToolLoopService service = new NativeToolLoopService(List.of(provider), manager, query -> ToolIntent.NO_TOOL,
+        service = new NativeToolLoopService(List.of(provider), manager, query -> ToolIntent.NO_TOOL,
                 new ToolRuntimeProperties(true, 20, 20, 2, 30, "native"), bus, new ToolRuntimeDebugService(),
                 new ObjectMapper(), new NativeToolSchemaMapper(registry), new StoreAuditDatasetService(bus));
         service.spotifyPollMillis(0);
@@ -640,10 +682,17 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                         ? List.of(Map.of("uri", INVENTED, "name", "Region locked", "is_playable", false), Map.of("uri", URI, "name", "Real liked title"))
                         : List.of(Map.of("uri", URI, "name", "Real liked title")));
                 case "play" -> { playArguments = request.arguments();
+                    if (followPlayTarget && request.arguments().get("target") instanceof String target) {
+                        observedUri = target; actualTitle = target.equals(URI) ? "Real liked title" : "Pan Ogórek";
+                    }
                     if (followPlayDevice) observedDevice = String.valueOf(request.arguments().get("deviceId"));
                     if (transferStartsAnotherTrack) { observedUri = "spotify:track:" + "D".repeat(22); actualTitle = "Alien"; } yield Map.of("accepted", true, "observedPlayback", playback(observed)); }
                 case "current" -> Map.of("playback", playback(currentPlaying && currentReads >= currentReadyAfter));
                 case "enqueue", "save", "volume", "pause" -> Map.of("accepted", true, "observedPlayback", playback(true));
+                case "previous" -> {
+                    observedUri = "spotify:track:" + "E".repeat(22); actualTitle = "Liked neighbour";
+                    yield Map.of("accepted", true, "observedPlayback", playback(true));
+                }
                 case "library" -> Map.of("items", List.of(Map.of("uri", "spotify:playlist:" + "P".repeat(22), "name", "Chill"),
                         Map.of("uri", "spotify:playlist:" + "Q".repeat(22), "name", "Siłownia 2024")));
                 case "next" -> {

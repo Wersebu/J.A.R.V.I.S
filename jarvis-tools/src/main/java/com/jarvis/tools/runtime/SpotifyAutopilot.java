@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -41,9 +42,18 @@ final class SpotifyAutopilot {
     private final long pollMillis;
     private final List<ToolRuntimeStep> steps;
     private final int stepNumber;
+    private final java.util.Deque<PlayedTrack> history;
+
+    /**
+     * A track that played in this conversation. {@code switched} = Jarvis started it by a new play (a context
+     * switch), as opposed to skipping within the queue with next/previous.
+     */
+    record PlayedTrack(String uri, String title, boolean switched) {
+    }
 
     private SpotifyAutopilot(ToolCallingRequest request, Map<String, Object> arguments, List<ToolRuntimeStep> steps,
-                             int stepNumber, Executor executor, Pause pause, long pollMillis) {
+                             int stepNumber, Executor executor, Pause pause, long pollMillis, java.util.Deque<PlayedTrack> history) {
+        this.history = history;
         this.request = request;
         this.arguments = arguments;
         this.steps = steps;
@@ -92,8 +102,32 @@ final class SpotifyAutopilot {
      */
     static ToolResult play(ToolCallingRequest request, ToolAction action, List<ToolRuntimeStep> steps, int stepNumber,
                            Executor executor, Pause pause, long pollMillis) {
-        SpotifyAutopilot pilot = new SpotifyAutopilot(request, action.arguments(), steps, stepNumber, executor, pause, pollMillis);
-        return CONTROL.equalsIgnoreCase(action.operation()) ? pilot.control() : pilot.play();
+        return play(request, action, steps, stepNumber, executor, pause, pollMillis, new java.util.ArrayDeque<>());
+    }
+
+    /**
+     * Runs one composite call with the conversation's play history, which it also updates.
+     *
+     * @param history tracks played in this conversation, oldest first
+     */
+    static ToolResult play(ToolCallingRequest request, ToolAction action, List<ToolRuntimeStep> steps, int stepNumber,
+                           Executor executor, Pause pause, long pollMillis, java.util.Deque<PlayedTrack> history) {
+        SpotifyAutopilot pilot = new SpotifyAutopilot(request, action.arguments(), steps, stepNumber, executor, pause, pollMillis, history);
+        ToolResult result = CONTROL.equalsIgnoreCase(action.operation()) ? pilot.control() : pilot.play();
+        pilot.remember(action, result);
+        return result;
+    }
+
+    private void remember(ToolAction action, ToolResult result) {
+        Object uri = result.data().get("uri");
+        if (!result.success() || !(uri instanceof String track) || track.isBlank() || result.data().containsKey("queued")) return;
+        String act = text("action").toLowerCase(Locale.ROOT);
+        boolean control = CONTROL.equalsIgnoreCase(action.operation());
+        if (control && !Set.of("next", "previous").contains(act)) return; // now/volume/pause... do not change the track
+        if (control && "back".equals(result.data().get("via"))) return; // already stepped back in the history
+        if (!control && "current".equalsIgnoreCase(text("source"))) return; // moving to another device is not a new track
+        history.addLast(new PlayedTrack(track, String.valueOf(result.data().getOrDefault("title", "")), !control));
+        while (history.size() > 20) history.removeFirst();
     }
 
     /**
@@ -110,6 +144,10 @@ final class SpotifyAutopilot {
         Map<?, ?> before = playback(call("pc", "SPOTIFY", Map.of("action", "current")));
         if (act.equals("now")) return nowPlaying(before);
         if (act.equals("like")) return like(before);
+        if (act.equals("previous")) {
+            PlayedTrack back = backTarget(before);
+            if (back != null) return playBack(back, before);
+        }
         String deviceId = Objects.toString(before.get("deviceId"), "");
         if (deviceId.isBlank()) {
             if (!act.equals("resume")) return failure(CONTROL, "NOTHING_PLAYING",
@@ -132,6 +170,7 @@ final class SpotifyAutopilot {
         }
         boolean confirmed = changed(act, before, after);
         Map<String, Object> data = new LinkedHashMap<>(Map.of("action", act, "confirmed", confirmed));
+        if (!trackUri(after).isBlank()) data.put("uri", trackUri(after));
         Object item = after.get("item");
         if (item instanceof Map<?, ?> track && track.get("name") instanceof String name && !name.isBlank()) {
             data.put("title", name);
@@ -145,6 +184,44 @@ final class SpotifyAutopilot {
                         ? ". Now: " + data.get("title") + (data.containsKey("artists") ? " — " + data.get("artists") : "") : "") + "."
                 : "Spotify accepted " + act + " but the player did not show the change yet.";
         return result(CONTROL, confirmed, message, data, confirmed ? "" : "CONTROL_NOT_CONFIRMED");
+    }
+
+    /**
+     * "Wróć do poprzedniej" right after Jarvis switched to a new track means the track that played before that switch.
+     * Spotify's own previous only steps back inside the new list (after starting Liked Songs it went to another liked
+     * track instead of the song from before). After next/previous within a list, Spotify's previous is right.
+     */
+    private PlayedTrack backTarget(Map<?, ?> state) {
+        PlayedTrack last = history.peekLast();
+        if (last == null || !last.switched() || !last.uri().equals(trackUri(state))) return null;
+        java.util.Iterator<PlayedTrack> older = history.descendingIterator();
+        older.next();
+        while (older.hasNext()) {
+            PlayedTrack candidate = older.next();
+            if (!candidate.uri().equals(last.uri())) return candidate;
+        }
+        return null;
+    }
+
+    private ToolResult playBack(PlayedTrack back, Map<?, ?> before) {
+        ToolResult sent = run(action("pc", "SPOTIFY", Map.of("action", "play", "target", back.uri(),
+                "deviceId", Objects.toString(before.get("deviceId"), ""))));
+        if (!sent.success()) return failure(CONTROL, "COMMAND_FAILED", "Spotify did not go back to " + back.title() + ": " + sent.message());
+        Map<?, ?> after = playback(sent.data().get("observedPlayback"));
+        for (int check = 0; check < CONTROL_CHECKS && !(Boolean.TRUE.equals(after.get("isPlaying")) && back.uri().equals(trackUri(after))); check++) {
+            pause.pause(Math.max(pollMillis / 2, 0));
+            after = playback(call("pc", "SPOTIFY", Map.of("action", "current")));
+        }
+        boolean confirmed = Boolean.TRUE.equals(after.get("isPlaying")) && back.uri().equals(trackUri(after));
+        if (confirmed) history.removeLast(); // the track Jarvis switched to is undone; previous again goes further back
+        Map<String, Object> data = trackFacts(after);
+        data.put("action", "previous");
+        data.put("via", "back");
+        data.put("confirmed", confirmed);
+        return result(CONTROL, confirmed, confirmed ? "Back to the track that played before: " + data.get("title")
+                + (data.containsKey("artists") ? " — " + data.get("artists") : "") + " on " + data.get("device") + "."
+                : "Spotify accepted going back to " + back.title() + " but the player did not show it yet.", data,
+                confirmed ? "" : "CONTROL_NOT_CONFIRMED");
     }
 
     /** "Co to za piosenka?": a plain read of the live player, no command. */
@@ -254,8 +331,9 @@ final class SpotifyAutopilot {
             case "library" -> "None of the user's playlists matches \"" + text("query") + "\".";
             default -> "Search for \"" + text("query") + "\"" + (text("owner").isBlank() ? "" : " by " + text("owner")) + " returned nothing playable.";
         });
-        boolean first = text("pick").equalsIgnoreCase("first") || !text("pick").equalsIgnoreCase("random")
-                && (source.equals("search") || source.equals("library") && !text("query").isBlank());
+        // A search names what the user wants: the best match wins even if the model asked for pick=random.
+        boolean first = source.equals("search") || text("pick").equalsIgnoreCase("first")
+                || !text("pick").equalsIgnoreCase("random") && source.equals("library") && !text("query").isBlank();
         String chosen = first ? candidates.getFirst() : candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
         if (text("mode").equalsIgnoreCase("queue")) return enqueue(chosen);
 
@@ -363,10 +441,13 @@ final class SpotifyAutopilot {
 
     private static int overlap(List<String> wanted, Map<?, ?> item) {
         List<String> have = words(item.get("name") + " " + item.get("artists") + " " + item.get("album"));
+        // Letters and digits only, so a spaced-out title like "K I C I K I C I" still contains "kici".
+        String compact = SpotifyPlaybackPolicy.normalize(item.get("name") + " " + item.get("artists") + " " + item.get("album"))
+                .replaceAll("[^a-z0-9]", "");
         int score = 0;
-        for (String word : wanted) {
+        for (String word : wanted.stream().distinct().toList()) {
             String stem = word.substring(0, Math.min(5, word.length()));
-            if (have.stream().anyMatch(h -> h.startsWith(stem) || h.length() >= 4 && word.startsWith(h.substring(0, Math.min(5, h.length())))))
+            if (compact.contains(stem) || have.stream().anyMatch(h -> h.length() >= 4 && word.startsWith(h.substring(0, Math.min(5, h.length())))))
                 score++;
         }
         return score;
