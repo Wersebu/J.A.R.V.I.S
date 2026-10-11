@@ -167,3 +167,33 @@ model przepisywał identyfikatory z błędami (URI `…WUoB7…` → `…Wu0B7�
 znaku). Core wpisuje teraz deviceId lokalnego PC sam, a URI różniące się o maks. 3 znaki od
 dokładnie jednego zwróconego wyniku tego samego typu (wyraźnie bliższego niż pozostałe) mapuje na
 ten wynik. Zamiast URI model może podać dokładną nazwę utworu z wyniku.
+
+Czwarty przebieg (13:03, nowy Core): procedura przeszła poprawnie, play z URI z liked na lokalny
+PC został przyjęty, a current pokazał właściwy utwór (progressMs=1694), ale isPlaying=false.
+Spotify Connect po transferze urządzenia czasem ładuje utwór i zostawia go wstrzymanego. Windows:
+jeśli po oczekiwaniu na tym PC jest załadowany dokładnie wybrany URI/kontekst, ale wstrzymany,
+wysyłane jest jedno wznowienie (play bez body na ten deviceId) i stan jest obserwowany ponownie
+(observedPlayback.resumedLoadedItem=true). Nigdy nie wznawia innego utworu ani urządzenia.
+
+## Właściwa przyczyna braku odtwarzania (2026-10-11, test na żywo)
+
+Na komputerze użytkownika (Spotify z Microsoft Store, DESKTOP-LGMV8BS) odtworzono problem
+bezpośrednio przez PcSpotify:
+- PUT me/player/play z {"uris":[track]} zwraca 204, ale aplikacja desktopowa porzuca utwór:
+  item=null, isPlaying=false, actions.disallows resuming/pausing/transferring_playback.
+  Komenda potrafi też „zepsuć” grający odtwarzacz. Transfer z play=true, wznowienie, przycisk
+  play z sesji multimediów Windows i wyłączenie shuffle tego nie naprawiają.
+- Ten sam utwór jako {"context_uri": album, "offset": {"uri": track}} gra natychmiast; album jako
+  context_uri także. Sprawdzone również ze stanu zepsutego przez wcześniejsze „uris”.
+
+Windows: play pojedynczego utworu pobiera teraz album (GET tracks/{id}?market=from_token) i startuje
+utwór w kontekście albumu z offsetem. Jeśli albumu nie da się ustalić, zostaje dotychczasowe „uris”.
+Weryfikacja nadal porównuje item.uri z wybranym utworem. Test na żywo: observedPlayback
+isPlaying=true, właściwy URI i lokalny deviceId po jednym wywołaniu play.
+
+Utwór z polubionych gra teraz w kontekście „Polubionych utworów”, żeby kolejka leciała dalej
+zamiast kończyć się na jednym singlu (kontekst albumu). Core dopisuje context=liked do play,
+gdy wybrany URI pochodzi z wyniku liked. Windows startuje wtedy
+spotify:user:<id>:collection z offsetem na ten utwór. Przy błędzie wraca do kontekstu albumu.
+Test na żywo: isPlaying=true z właściwym URI, a kolejka zawiera następne utwory. Przy włączonym
+Smart Shuffle Spotify raportuje kontekst jako swoją playlistę 37i9dQZF1F5….

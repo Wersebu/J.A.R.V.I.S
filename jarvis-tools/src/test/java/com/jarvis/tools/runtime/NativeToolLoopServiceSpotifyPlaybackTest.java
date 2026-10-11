@@ -37,6 +37,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
     private int currentReadyAfter;
     private String actualTitle = "";
     private boolean firstLikedUnplayable;
+    private Map<String, Object> playArguments = Map.of();
 
 
     @Test void guessedPlayIsBlockedThenProcedureRecoversWithActualSearchAndLocalDevice() {
@@ -254,6 +255,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                 answer("Nie wiem, co lubisz. Co mam włączyć?"), spotify("liked"),
                 call("pc__spotify", Map.of("action", "play", "target", URI, "deviceName", "Local desktop")), answer("Done"));
         assertThat(executed).containsExactly("knowledge/FIND_WORKFLOW", "knowledge/READ_WORKFLOW", "status", "devices", "liked", "play");
+        assertThat(playArguments).containsEntry("context", "liked").containsEntry("deviceId", "local-id");
         assertThat(result.terminationInfo().completed()).isTrue();
         assertThat(result.finalAnswer()).contains("Potwierdzono odtwarzanie", "Real liked title", "Local desktop");
     }
@@ -363,7 +365,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                 case "liked" -> Map.of("items", firstLikedUnplayable
                         ? List.of(Map.of("uri", INVENTED, "name", "Region locked", "is_playable", false), Map.of("uri", URI, "name", "Real liked title"))
                         : List.of(Map.of("uri", URI, "name", "Real liked title")));
-                case "play" -> Map.of("accepted", true, "observedPlayback", playback(observed));
+                case "play" -> { playArguments = request.arguments(); yield Map.of("accepted", true, "observedPlayback", playback(observed)); }
                 case "current" -> Map.of("playback", playback(currentPlaying && currentReads >= currentReadyAfter));
                 default -> throw new AssertionError("Unexpected execution: " + request);
             };

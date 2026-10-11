@@ -177,6 +177,7 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                         arg("type", false, "Search: track (default), album, artist, playlist, show, episode (comma-separated). Library: track, album or playlist."),
                         arg("target", false, "Spotify URI or https://open.spotify.com link from actual results"),
                         arg("deviceId", false, "Desktop device ID returned by devices"),
+                        arg("context", false, "play: liked = start the track inside Liked Songs so the liked queue continues"),
                         arg("deviceName", false, "Exact desktop device name returned by devices"),
                         intArg("limit", "Page size: 1-10 for search, 1-50 for library"),
                         intArg("offset", "Page offset, initially 0; use nextOffset"),

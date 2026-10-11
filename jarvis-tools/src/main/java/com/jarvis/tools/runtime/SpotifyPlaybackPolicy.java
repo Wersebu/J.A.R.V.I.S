@@ -105,6 +105,8 @@ final class SpotifyPlaybackPolicy {
             if (resolved.isEmpty()) resolved = closestUri(target, items.keySet());
             if (items.containsKey(resolved)) args.put("target", resolved);
         }
+        // A track taken from liked songs plays inside Liked Songs, so the queue continues instead of ending after it.
+        if (likedUris(steps).contains(text(args, "target"))) args.put("context", "liked");
         return args.equals(action.arguments()) ? action
                 : new ToolAction(action.action(), action.tool(), action.operation(), args, action.reason(), action.answer());
     }
@@ -309,6 +311,13 @@ final class SpotifyPlaybackPolicy {
                 || !fromLiked(request) && (spotify(step, "search") || spotify(step, "library"))) && step.result().success())
             collect(step.result().data(), items);
         return items;
+    }
+
+    private static Set<String> likedUris(List<ToolRuntimeStep> steps) {
+        Map<String, Map<?, ?>> items = new LinkedHashMap<>();
+        for (ToolRuntimeStep step : steps) if (executed(step) && spotify(step, "liked") && step.result().success())
+            collect(step.result().data(), items);
+        return items.keySet();
     }
 
     private static void collect(Object value, Map<String, Map<?, ?>> items) {
