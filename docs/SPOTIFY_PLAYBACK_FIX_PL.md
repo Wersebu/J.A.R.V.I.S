@@ -303,3 +303,11 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
   dokładnym id. Opis pc__spotify w schemacie wskazuje narzędzia złożone.
 - „Z telewizora na komputer”: gdy wiadomość wymienia też ten PC (komputer/pc/laptop/nazwa), Core nie narzuca
   urządzenia z wiadomości. Nadpisanie działa tylko wtedy, gdy model w ogóle nie podał urządzenia.
+
+### Przebieg 15:56: „wrzuć to na tv” — zagrało, ale „nieukończone”
+
+- Przeniesienie zadziałało, ale przy Smart Shuffle TV zaczął inny utwór z kolejki („Alien” zamiast „Nagano 98”,
+  sprawdzone na żywo). Weryfikacja wymagała tego samego URI, więc uznała przeniesienie za nieudane.
+- Dla transfer=true potwierdzeniem jest teraz isPlaying=true na wybranym urządzeniu. Odpowiedź podaje
+  faktycznie grający utwór: „Przeniesiono odtwarzanie Spotify na <urządzenie>. Gra: <tytuł>”. Klient Windows
+  przy transferze czeka na granie na urządzeniu, a nie na konkretny URI, i raz wznawia, jeśli sesja dotarła na pauzie.

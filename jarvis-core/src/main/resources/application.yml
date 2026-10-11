@@ -47,6 +47,13 @@ jarvis:
     log-full-ai-request: false
     log-tool-calls: false
     log-tool-results: false
+    # Readable per-conversation trace for diagnosis (docs/CONVERSATION_TRACE_PL.md): message, preloaded knowledge,
+    # thinking with durations, tool calls with arguments/results/durations, answer, and where the time went.
+    # Contains tool arguments and results - keep the directory on the server.
+    conversation-trace:
+      enabled: ${JARVIS_CONVERSATION_TRACE_ENABLED:true}
+      directory: ${JARVIS_CONVERSATION_TRACE_DIR:data/traces}
+      max-field-chars: 1500
   tools:
     enabled: true
     runtime: native

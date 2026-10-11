@@ -8,6 +8,7 @@ import com.jarvis.common.event.ChatEventSink;
 import com.jarvis.common.event.CognitiveEvent;
 import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
+import com.jarvis.core.diagnostics.ConversationTraceRecorder;
 import com.jarvis.memory.pipeline.PipelineContext;
 import org.springframework.stereotype.Service;
 
@@ -25,6 +26,7 @@ public class PipelineContextFactory {
 
     private final CognitiveEventBus cognitiveEventBus;
     private final InferenceDiagnosticsService diagnosticsService;
+    private final ConversationTraceRecorder traceRecorder;
 
     /**
      * Creates the context factory.
@@ -33,10 +35,12 @@ public class PipelineContextFactory {
      */
     public PipelineContextFactory(
             CognitiveEventBus cognitiveEventBus,
-            InferenceDiagnosticsService diagnosticsService
+            InferenceDiagnosticsService diagnosticsService,
+            ConversationTraceRecorder traceRecorder
     ) {
         this.cognitiveEventBus = cognitiveEventBus;
         this.diagnosticsService = diagnosticsService;
+        this.traceRecorder = traceRecorder;
     }
 
     /**
@@ -68,6 +72,7 @@ public class PipelineContextFactory {
             diagnostics.setClientToServerMs(Duration.between(request.clientRequestTimestamp(), serverReceivedAt).toMillis());
         }
         InferenceDiagnosticsContext.bind(diagnostics);
+        eventSink = traceRecorder.begin(requestId, conversationId, request.message(), eventSink);
         cognitiveEventBus.startRequest(requestId, conversationId, eventSink);
         cognitiveEventBus.publish(CognitiveEventType.REQUEST_RECEIVED, "RECEIVED", "Incoming request", null, Map.of(
                 "requestId", requestId,
@@ -101,6 +106,7 @@ public class PipelineContextFactory {
      * Finishes the current request context.
      */
     public void finish() {
+        traceRecorder.finish();
         cognitiveEventBus.finishRequest();
         InferenceDiagnosticsContext.clear();
     }

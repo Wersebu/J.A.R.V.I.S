@@ -204,6 +204,8 @@ final class SpotifyPlaybackPolicy {
         if (confirmed(request, steps)) {
             Map<String, Object> facts = playbackFacts(request, steps);
             String performer = facts.containsKey("artists") ? " — " + facts.get("artists") : "";
+            if (Boolean.parseBoolean(text(played(steps).arguments(), "transfer")))
+                return "Przeniesiono odtwarzanie Spotify na " + facts.get("device") + ". Gra: " + facts.get("title") + performer + ".";
             return "Potwierdzono odtwarzanie Spotify: " + facts.get("title") + performer + ". "
                     + (Boolean.TRUE.equals(facts.get("localPc")) ? "Urządzenie lokalnego PC: " : "Urządzenie: ") + facts.get("device") + ".";
         }
@@ -261,6 +263,9 @@ final class SpotifyPlaybackPolicy {
         Map<?, ?> state = observedState(steps, play);
         if (!Boolean.TRUE.equals(state.get("isPlaying"))
                 || !Objects.equals(play.arguments().get("deviceId"), state.get("deviceId"))) return false;
+        // Moving the session is done once it plays on the chosen device: with Smart Shuffle the new device may
+        // continue with another track of the same queue, and the answer reports whatever is observed there.
+        if (Boolean.parseBoolean(text(play.arguments(), "transfer"))) return true;
         Object rawItem = state.get("item");
         String target = text(play.arguments(), "target");
         return target.startsWith("spotify:track:") || target.startsWith("spotify:episode:")

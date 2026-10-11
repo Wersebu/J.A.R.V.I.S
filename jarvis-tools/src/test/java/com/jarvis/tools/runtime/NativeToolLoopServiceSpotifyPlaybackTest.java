@@ -40,6 +40,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
     private Map<String, Object> playArguments = Map.of();
     private boolean tvVisible;
     private boolean followPlayDevice;
+    private boolean transferStartsAnotherTrack;
     private AIProvider provider;
 
 
@@ -455,6 +456,16 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.finalAnswer()).isEqualTo("Actual observed title gra teraz na telewizorze.");
     }
 
+    @Test void movingToTheTvIsConfirmedWhenItPlaysThereEvenIfSmartShuffleStartsAnotherTrack() {
+        userMessage = "wrzuć to na tv";
+        history = "User: odpal coś na spotify";
+        tvVisible = true; opened = true; followPlayDevice = true; transferStartsAnotherTrack = true; actualTitle = "Nagano 98";
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "current", "device", "telewizor")),
+                answer("Nagano 98 gra teraz na telewizorze."));
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.finalAnswer()).contains("Przeniesiono odtwarzanie Spotify na FrytaCraft.pl", "Alien").doesNotContain("Nagano");
+    }
+
     @Test void rawNextOrPauseIsTheOneCallControl() {
         userMessage = "następna";
         history = "User: odpal coś na spotify";
@@ -561,7 +572,8 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                         ? List.of(Map.of("uri", INVENTED, "name", "Region locked", "is_playable", false), Map.of("uri", URI, "name", "Real liked title"))
                         : List.of(Map.of("uri", URI, "name", "Real liked title")));
                 case "play" -> { playArguments = request.arguments();
-                    if (followPlayDevice) observedDevice = String.valueOf(request.arguments().get("deviceId")); yield Map.of("accepted", true, "observedPlayback", playback(observed)); }
+                    if (followPlayDevice) observedDevice = String.valueOf(request.arguments().get("deviceId"));
+                    if (transferStartsAnotherTrack) { observedUri = "spotify:track:" + "D".repeat(22); actualTitle = "Alien"; } yield Map.of("accepted", true, "observedPlayback", playback(observed)); }
                 case "current" -> Map.of("playback", playback(currentPlaying && currentReads >= currentReadyAfter));
                 case "enqueue", "save" -> Map.of("accepted", true);
                 case "library" -> Map.of("items", List.of(Map.of("uri", "spotify:playlist:" + "P".repeat(22), "name", "Chill"),

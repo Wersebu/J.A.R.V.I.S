@@ -348,6 +348,8 @@ public class NativeToolLoopService {
     /** pc__spotify_play: one model decision, the known procedure carried out by Core under the same policy. */
     private ToolResult spotifyPlay(ToolCallingRequest request, ToolAction action, List<ToolRuntimeStep> steps, int step) {
         Instant started = Instant.now();
+        publish(request, CognitiveEventType.TOOL_EXECUTION_STARTED, "EXECUTING", "Tool execution started", targetNode(action), step,
+                actionMetadata(action));
         ToolResult result = SpotifyAutopilot.play(request, action, steps, step, (subAction, number) -> executeAction(request, subAction, number),
                 millis -> {
                     try {
@@ -358,6 +360,8 @@ public class NativeToolLoopService {
                 }, spotifyPollMillis);
         LOGGER.info("[SPOTIFY_PLAY] requestId={} arguments={} confirmed={} errorCode={} elapsedMs={}", request.requestId(),
                 action.arguments(), result.success(), result.errorCode(), java.time.Duration.between(started, Instant.now()).toMillis());
+        publish(request, CognitiveEventType.TOOL_EXECUTION_FINISHED, result.success() ? "FINISHED" : "FAILED",
+                toolExecutionFinishedMessage(result), targetNode(action), step, resultMetadata(result));
         return result;
     }
 
@@ -4273,8 +4277,26 @@ public class NativeToolLoopService {
                 "success", result.success(),
                 "errorCode", result.errorCode(),
                 "message", result.message(),
-                "requiresApproval", result.requiresApproval()
+                "requiresApproval", result.requiresApproval(),
+                // A bounded preview of what the tool returned, so a conversation trace shows results, not only status.
+                "data", dataPreview(result.data())
         );
+    }
+
+    private static final ObjectMapper PREVIEW_JSON = new ObjectMapper();
+    private static final java.util.regex.Pattern SECRET_FIELD = java.util.regex.Pattern.compile(
+            "(?i)(\"[^\"]*(?:token|secret|password|passwd|api[_-]?key|authorization|cookie)[^\"]*\"\\s*:\\s*)\"(?:[^\"\\\\]|\\\\.)*\"");
+
+    private static String dataPreview(Map<String, Object> data) {
+        if (data == null || data.isEmpty()) return "";
+        String text;
+        try {
+            text = PREVIEW_JSON.writeValueAsString(data);
+        } catch (Exception exception) {
+            text = String.valueOf(data);
+        }
+        text = SECRET_FIELD.matcher(text).replaceAll("$1\"[redacted]\"");
+        return text.length() <= 1500 ? text : text.substring(0, 1500) + "…";
     }
 
     /**
