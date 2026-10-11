@@ -36,6 +36,11 @@ class ToolOperationClassifierTest {
         assertThat(ToolOperationClassifier.classify("gmail", "SEARCH")).isEqualTo(ToolOperationRole.SEARCH);
         assertThat(ToolOperationClassifier.classify("gmail", "UNREAD")).isEqualTo(ToolOperationRole.SEARCH);
         assertThat(ToolOperationClassifier.classify("gmail", "CONNECT")).isEqualTo(ToolOperationRole.EXECUTE);
+        assertThat(ToolOperationClassifier.classify("calendar", "EVENTS")).isEqualTo(ToolOperationRole.SEARCH);
+        assertThat(ToolOperationClassifier.classify("calendar", "FREE")).isEqualTo(ToolOperationRole.SEARCH);
+        assertThat(ToolOperationClassifier.classify("calendar", "CALENDARS")).isEqualTo(ToolOperationRole.READ);
+        assertThat(ToolOperationClassifier.classify("calendar", "CREATE")).isEqualTo(ToolOperationRole.WRITE);
+        assertThat(ToolOperationClassifier.classify("calendar", "MOVE")).isEqualTo(ToolOperationRole.WRITE);
         assertThat(ToolOperationClassifier.classify("pc", "MEDIA", java.util.Map.of("action", "status"))).isEqualTo(ToolOperationRole.READ);
         assertThat(ToolOperationClassifier.classify("pc", "MEDIA", java.util.Map.of("action", "play"))).isEqualTo(ToolOperationRole.EXECUTE);
     }

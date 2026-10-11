@@ -1,4 +1,4 @@
-package com.jarvis.core.gmail;
+package com.jarvis.core.google;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,7 +44,8 @@ public class SecretCipher {
         }
     }
 
-    SecretCipher(byte[] key) {
+    /** For tests: a fixed key. */
+    public SecretCipher(byte[] key) {
         this.configuredKey = "";
         this.keyFile = Path.of("unused");
         this.key = key.clone();

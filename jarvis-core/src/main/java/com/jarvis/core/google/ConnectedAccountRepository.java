@@ -1,4 +1,4 @@
-package com.jarvis.core.gmail;
+package com.jarvis.core.google;
 
 import com.jarvis.memory.sqlite.SQLiteConnectionFactory;
 import org.springframework.stereotype.Repository;
@@ -11,7 +11,7 @@ import java.time.Instant;
 import java.util.Optional;
 
 /**
- * Accounts a Jarvis user connected (Gmail now, Spotify later): one row per user and service, with the refresh
+ * Accounts a Jarvis user connected (Gmail, Google Calendar, later Spotify): one row per user and service, with the refresh
  * token encrypted by {@link SecretCipher}. Nothing here is ever shared between users.
  */
 @Repository

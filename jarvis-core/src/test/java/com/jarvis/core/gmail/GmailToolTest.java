@@ -8,6 +8,11 @@ import com.jarvis.common.event.CognitiveEventBus;
 import com.jarvis.common.event.CognitiveEventType;
 import com.jarvis.core.files.SharedFileController;
 import com.jarvis.core.files.SharedFiles;
+import com.jarvis.core.google.ConnectedAccountRepository;
+import com.jarvis.core.google.GoogleOAuth;
+import com.jarvis.core.google.GoogleService;
+import com.jarvis.core.google.SecretCipher;
+import com.jarvis.core.google.UserDevice;
 import com.jarvis.memory.cognitive.MemoryProperties;
 import com.jarvis.memory.sqlite.SQLiteConnectionFactory;
 import com.jarvis.memory.sqlite.SQLiteMemoryInitializer;
@@ -100,7 +105,7 @@ class GmailToolTest {
                 tokenForms.add(form);
                 // Each user's refresh token yields that user's access token, so mailboxes cannot mix.
                 String who = form.containsKey("code") ? "owner" : form.get("refresh_token").replace("refresh-", "");
-                response = "{\"access_token\":\"access-" + who + "\",\"expires_in\":3599,\"scope\":\"" + GoogleOAuth.READ_SCOPE + "\""
+                response = "{\"access_token\":\"access-" + who + "\",\"expires_in\":3599,\"scope\":\"" + GoogleService.GMAIL.scopes().getFirst() + "\""
                         + (form.containsKey("code") ? ",\"refresh_token\":\"refresh-owner\"" : "") + "}";
             } else if (path.equals("/revoke")) {
                 response = "{}";
@@ -163,7 +168,7 @@ class GmailToolTest {
                 if (event == CognitiveEventType.ANSWER_FILES) published.add(metadata);
             }
         };
-        tool = new GmailTool(client, oauth, new WindowsCodingBridgeGateway() {
+        tool = new GmailTool(client, oauth, new UserDevice(new WindowsCodingBridgeGateway() {
             @Override
             public String codingStatus() {
                 return deviceStatus;
@@ -175,7 +180,7 @@ class GmailToolTest {
                 loopbackRequest.set(payload);
                 return Map.of("code", "one-time-code");
             }
-        }, sharedFiles, bus);
+        }, oauth), sharedFiles, bus);
     }
 
     @AfterEach
@@ -335,7 +340,7 @@ class GmailToolTest {
     @Test
     void disconnectRemovesOnlyThisUsersConnection() {
         connectOwner();
-        accounts.save("mom", GoogleOAuth.PROVIDER, "mom@example.com", "{\"clientId\":\"" + CLIENT + "\",\"refreshToken\":\"refresh-mom\"}");
+        accounts.save("mom", GoogleService.GMAIL.provider(), "mom@example.com", "{\"clientId\":\"" + CLIENT + "\",\"refreshToken\":\"refresh-mom\"}");
 
         assertThat(call("owner", "c1", "DISCONNECT").success()).isTrue();
         assertThat(call("owner", "c1", "STATUS").data()).containsEntry("connected", false);
@@ -367,7 +372,7 @@ class GmailToolTest {
         GoogleOAuth unconfigured = new GoogleOAuth(HttpClient.newHttpClient(), accounts, URI.create("http://127.0.0.1/auth"),
                 URI.create("http://127.0.0.1/token"), URI.create("http://127.0.0.1/revoke"), "", "", "", 43822);
         GmailTool bare = new GmailTool(new GmailClient(HttpClient.newHttpClient(), unconfigured, URI.create("http://127.0.0.1/"),
-                ZoneId.of("Europe/Warsaw")), unconfigured, (WindowsCodingBridgeGateway) null);
+                ZoneId.of("Europe/Warsaw")), unconfigured, new UserDevice((WindowsCodingBridgeGateway) null, unconfigured), new SharedFiles(), (CognitiveEventBus) null);
         List<ToolResult> results = new ArrayList<>();
         CurrentUserContext.runAs("owner", () -> results.add(bare.execute(new ToolRequest("gmail", "CONNECT", "c", "r", "", "", Map.of()))));
         assertThat(results.getFirst().success()).isFalse();

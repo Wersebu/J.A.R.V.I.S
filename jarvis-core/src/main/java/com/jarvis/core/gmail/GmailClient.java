@@ -2,6 +2,9 @@ package com.jarvis.core.gmail;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jarvis.core.google.GoogleException;
+import com.jarvis.core.google.GoogleOAuth;
+import com.jarvis.core.google.GoogleService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -103,7 +106,7 @@ public class GmailClient {
         if (text(args, "within").equalsIgnoreCase("previous")) {
             LastList previous = lastLists.get(key);
             if (previous == null) {
-                throw new GmailException("No earlier Gmail search in this conversation. Search without within=previous.");
+                throw new GoogleException("No earlier Gmail search in this conversation. Search without within=previous.");
             }
             query = ("(" + previous.query() + ") " + text(args, "query")).strip();
         }
@@ -132,8 +135,8 @@ public class GmailClient {
                 messages.add(message);
             }
         } catch (CompletionException exception) {
-            if (exception.getCause() instanceof GmailException cause) throw cause;
-            throw new GmailException("Gmail request failed.");
+            if (exception.getCause() instanceof GoogleException cause) throw cause;
+            throw new GoogleException("Gmail request failed.");
         }
         lastLists.put(key, new LastList(query, messages.stream()
                 .map(m -> new Listed(String.valueOf(m.get("id")), String.valueOf(m.get("threadId")))).toList()));
@@ -156,7 +159,7 @@ public class GmailClient {
         String threadId = text(args, "threadId");
         if (threadId.isBlank()) {
             Listed listed = listed(user, conversation, args);
-            if (listed == null) throw new GmailException("Gmail thread needs threadId, or index of a message from the last search.");
+            if (listed == null) throw new GoogleException("Gmail thread needs threadId, or index of a message from the last search.");
             threadId = listed.threadId();
         }
         JsonNode node = get(user, "threads/" + id(threadId) + "?format=full");
@@ -177,36 +180,36 @@ public class GmailClient {
         JsonNode node = get(user, "messages/" + messageId + "?format=full");
         List<JsonNode> parts = new ArrayList<>();
         attachmentParts(node.path("payload"), parts);
-        if (parts.isEmpty()) throw new GmailException("This message has no attachments.");
+        if (parts.isEmpty()) throw new GoogleException("This message has no attachments.");
         String name = text(args, "name");
         JsonNode part;
         if (!name.isBlank()) {
             part = parts.stream().filter(p -> p.path("filename").asText().equalsIgnoreCase(name)).findFirst()
                     .orElseGet(() -> parts.stream().filter(p -> p.path("filename").asText().toLowerCase(Locale.ROOT)
                             .contains(name.toLowerCase(Locale.ROOT))).findFirst().orElse(null));
-            if (part == null) throw new GmailException("No attachment named " + name + ". Attachments: " + names(parts));
+            if (part == null) throw new GoogleException("No attachment named " + name + ". Attachments: " + names(parts));
         } else if (!text(args, "attachment").isBlank()) {
             part = parts.get(number(args, "attachment", 1, 1, parts.size()) - 1);
         } else if (parts.size() == 1) {
             part = parts.getFirst();
         } else {
-            throw new GmailException("The message has " + parts.size() + " attachments: " + names(parts) + ". Pass name or attachment=<number>.");
+            throw new GoogleException("The message has " + parts.size() + " attachments: " + names(parts) + ". Pass name or attachment=<number>.");
         }
         String filename = part.path("filename").asText();
         String mime = part.path("mimeType").asText("").toLowerCase(Locale.ROOT);
         long size = part.path("body").path("size").asLong();
-        if (size > MAX_ATTACHMENT_BYTES) throw new GmailException("Attachment " + filename + " is too large to read (" + size / 1024 / 1024 + " MB).");
+        if (size > MAX_ATTACHMENT_BYTES) throw new GoogleException("Attachment " + filename + " is too large to read (" + size / 1024 / 1024 + " MB).");
         String data = part.path("body").path("data").asText("");
         if (data.isEmpty()) {
             String attachmentId = part.path("body").path("attachmentId").asText("");
-            if (!ATTACHMENT_ID.matcher(attachmentId).matches()) throw new GmailException("Gmail returned no attachment data.");
+            if (!ATTACHMENT_ID.matcher(attachmentId).matches()) throw new GoogleException("Gmail returned no attachment data.");
             data = get(user, "messages/" + messageId + "/attachments/" + attachmentId).path("data").asText("");
         }
         byte[] bytes;
         try {
             bytes = Base64.getUrlDecoder().decode(data.replace("=", ""));
         } catch (IllegalArgumentException exception) {
-            throw new GmailException("Gmail returned unreadable attachment data.");
+            throw new GoogleException("Gmail returned unreadable attachment data.");
         }
         Map<String, Object> result = untrusted();
         // The original bytes, for GmailTool to hand the file to the user; removed before anything reaches the model.
@@ -224,10 +227,10 @@ public class GmailClient {
 
     /** Reads the account address once and remembers it with the connection. */
     String myEmail(String user) {
-        String email = oauth.email(user);
+        String email = oauth.email(user, GoogleService.GMAIL);
         if (email.isBlank()) {
             email = get(user, "profile").path("emailAddress").asText("");
-            oauth.rememberEmail(user, email);
+            oauth.rememberEmail(user, GoogleService.GMAIL, email);
         }
         return email.toLowerCase(Locale.ROOT);
     }
@@ -241,9 +244,9 @@ public class GmailClient {
                 if (text.isBlank()) result.put("problem", "The PDF has no text layer (a scan or image). OCR is not available, so its content cannot be read.");
                 return text;
             } catch (org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException exception) {
-                throw new GmailException("The PDF " + filename + " is password protected; Jarvis cannot read it.");
+                throw new GoogleException("The PDF " + filename + " is password protected; Jarvis cannot read it.");
             } catch (java.io.IOException exception) {
-                throw new GmailException("The PDF " + filename + " could not be read (damaged or unsupported).");
+                throw new GoogleException("The PDF " + filename + " could not be read (damaged or unsupported).");
             }
         }
         if (lower.endsWith(".docx") || mime.equals("application/vnd.openxmlformats-officedocument.wordprocessingml.document")) {
@@ -273,9 +276,9 @@ public class GmailClient {
                 return entities(text);
             }
         } catch (java.io.IOException exception) {
-            throw new GmailException("The document " + filename + " could not be read.");
+            throw new GoogleException("The document " + filename + " could not be read.");
         }
-        throw new GmailException("The document " + filename + " is not a valid .docx file.");
+        throw new GoogleException("The document " + filename + " is not a valid .docx file.");
     }
 
     private Map<String, Object> message(JsonNode node, String me, int maxChars, boolean dropQuoted) {
@@ -450,16 +453,16 @@ public class GmailClient {
     private JsonNode get(String user, String path) {
         long blockedUntil = rateLimitedUntil.getOrDefault(user, 0L);
         if (System.currentTimeMillis() < blockedUntil) {
-            throw new GmailException("Gmail rate limit: retry in " + ((blockedUntil - System.currentTimeMillis()) / 1000 + 1) + " seconds.");
+            throw new GoogleException("Gmail rate limit: retry in " + ((blockedUntil - System.currentTimeMillis()) / 1000 + 1) + " seconds.");
         }
-        String token = oauth.accessToken(user, false);
+        String token = oauth.accessToken(user, GoogleService.GMAIL, false);
         for (int attempt = 0; attempt < 2; attempt++) {
             try {
                 HttpResponse<String> response = http.send(HttpRequest.newBuilder(api.resolve(path)).timeout(Duration.ofSeconds(30))
                         .header("Authorization", "Bearer " + token).GET().build(), HttpResponse.BodyHandlers.ofString());
                 int status = response.statusCode();
                 if (status == 401 && attempt == 0) {
-                    token = oauth.accessToken(user, true);
+                    token = oauth.accessToken(user, GoogleService.GMAIL, true);
                     continue;
                 }
                 if (status == 429) {
@@ -471,22 +474,22 @@ public class GmailClient {
                     }
                     seconds = Math.max(1, Math.min(seconds, 3600));
                     rateLimitedUntil.put(user, System.currentTimeMillis() + seconds * 1000);
-                    throw new GmailException("Gmail rate limit. Retry after " + seconds + " seconds; do not loop.");
+                    throw new GoogleException("Gmail rate limit. Retry after " + seconds + " seconds; do not loop.");
                 }
-                if (status == 401) throw new GmailException("Gmail permission expired or revoked. Connect Gmail again.");
-                if (status == 403) throw new GmailException("Gmail denied this request (403). The Gmail API must be enabled in the Google Cloud "
+                if (status == 401) throw new GoogleException("Gmail permission expired or revoked. Connect Gmail again.");
+                if (status == 403) throw new GoogleException("Gmail denied this request (403). The Gmail API must be enabled in the Google Cloud "
                         + "project of the OAuth client and read permission granted; then connect again.");
-                if (status == 404) throw new GmailException("Gmail message or thread not found (404). Use an id or index from search results.");
-                if (status < 200 || status >= 300) throw new GmailException("Gmail API rejected the request (HTTP " + status + ").");
+                if (status == 404) throw new GoogleException("Gmail message or thread not found (404). Use an id or index from search results.");
+                if (status < 200 || status >= 300) throw new GoogleException("Gmail API rejected the request (HTTP " + status + ").");
                 return response.body().isBlank() ? JSON.createObjectNode() : JSON.readTree(response.body());
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                throw new GmailException("Gmail request interrupted.");
+                throw new GoogleException("Gmail request interrupted.");
             } catch (java.io.IOException exception) {
-                throw new GmailException("Gmail connection failed. Check the server's internet connection.");
+                throw new GoogleException("Gmail connection failed. Check the server's internet connection.");
             }
         }
-        throw new GmailException("Gmail authorization failed. Connect Gmail again.");
+        throw new GoogleException("Gmail authorization failed. Connect Gmail again.");
     }
 
     private static Map<String, Object> untrusted() {
@@ -500,19 +503,19 @@ public class GmailClient {
     private String messageId(String user, String conversation, Map<String, Object> args) {
         if (!text(args, "id").isBlank()) return text(args, "id");
         Listed listed = listed(user, conversation, args);
-        if (listed == null) throw new GmailException("Gmail needs id, or index of a message from the last search in this conversation.");
+        if (listed == null) throw new GoogleException("Gmail needs id, or index of a message from the last search in this conversation.");
         return listed.id();
     }
 
     private Listed listed(String user, String conversation, Map<String, Object> args) {
         if (text(args, "index").isBlank()) return null;
         LastList last = lastLists.get(user + "|" + conversation);
-        if (last == null || last.messages().isEmpty()) throw new GmailException("No earlier Gmail list in this conversation; search first.");
+        if (last == null || last.messages().isEmpty()) throw new GoogleException("No earlier Gmail list in this conversation; search first.");
         return last.messages().get(number(args, "index", 1, 1, last.messages().size()) - 1);
     }
 
     private static String id(String value) {
-        if (!ID.matcher(value).matches()) throw new GmailException("Use a Gmail message/thread id or index returned by search.");
+        if (!ID.matcher(value).matches()) throw new GoogleException("Use a Gmail message/thread id or index returned by search.");
         return value;
     }
 
@@ -527,7 +530,7 @@ public class GmailClient {
         } catch (NumberFormatException ignored) {
             // Reported below.
         }
-        throw new GmailException(key + " must be an integer in " + min + ".." + max);
+        throw new GoogleException(key + " must be an integer in " + min + ".." + max);
     }
 
     private static String encode(String value) {

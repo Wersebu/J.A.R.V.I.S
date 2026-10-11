@@ -64,7 +64,7 @@ class ConversationTraceRecorderTest {
         recorder.finish();
 
         String trace = Files.readString(directory.resolve("conv_2.md"));
-        assertThat(trace).contains("gmail.UNREAD", "1 message(s)", "[treść poczty pominięta]")
+        assertThat(trace).contains("gmail.UNREAD", "1 message(s)", "[treść prywatna pominięta]")
                 .doesNotContain("Wyniki badan").doesNotContain("Prywatna tresc");
     }
 

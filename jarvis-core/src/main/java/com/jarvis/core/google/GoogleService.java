@@ -1,0 +1,41 @@
+package com.jarvis.core.google;
+
+import java.util.List;
+
+/**
+ * Google services a Jarvis user can connect. Each one is its own consent and its own encrypted token, so the user
+ * grants exactly what a feature needs and can disconnect one without touching the other.
+ */
+public enum GoogleService {
+
+    /** Read-only mail. */
+    GMAIL("gmail", "Gmail", List.of("https://www.googleapis.com/auth/gmail.readonly")),
+    /** Calendars (read) and events (read, add, move). Deleting is not offered by Jarvis. */
+    CALENDAR("calendar", "Google Calendar", List.of(
+            "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/calendar.events"));
+
+    private final String provider;
+    private final String label;
+    private final List<String> scopes;
+
+    GoogleService(String provider, String label, List<String> scopes) {
+        this.provider = provider;
+        this.label = label;
+        this.scopes = scopes;
+    }
+
+    /** Key of the stored connection. */
+    public String provider() {
+        return provider;
+    }
+
+    /** Name used in messages. */
+    public String label() {
+        return label;
+    }
+
+    public List<String> scopes() {
+        return scopes;
+    }
+}

@@ -121,6 +121,14 @@ public final class ToolOperationClassifier {
         if (t.equals("output")) {
             return ToolOperationRole.READ;
         }
+        if (t.equals("calendar")) {
+            return switch (o) {
+                case "EVENTS", "FREE" -> ToolOperationRole.SEARCH;
+                case "CREATE", "MOVE" -> ToolOperationRole.WRITE;
+                case "CONNECT", "DISCONNECT" -> ToolOperationRole.EXECUTE;
+                default -> ToolOperationRole.READ;
+            };
+        }
         if (t.equals("gmail")) {
             return switch (o) {
                 case "SEARCH", "UNREAD" -> ToolOperationRole.SEARCH;

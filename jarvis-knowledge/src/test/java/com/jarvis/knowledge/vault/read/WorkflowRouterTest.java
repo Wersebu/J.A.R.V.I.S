@@ -53,6 +53,22 @@ class WorkflowRouterTest {
         assertThat(WorkflowRouter.mentions("co nowego na poczcie?", WorkflowRouter.keywords(SPOTIFY))).isFalse();
     }
 
+    @Test
+    void planQuestionsRouteToTheCalendarAndNotToMailOrMusic() {
+        StoredDocument calendar = document("Kalendarz Google — plan, wolne terminy, wydarzenia", List.of("kalendarz", "Google Calendar",
+                "plan", "terminarz", "wydarzenie", "wydarzenia", "spotkanie", "spotkania", "wizyta", "przypomnienie"),
+                List.of("co mam dzisiaj", "co mam jutro", "kiedy mam wolne", "dodaj do kalendarza", "przesuń spotkanie"));
+        List<String> keywords = WorkflowRouter.keywords(calendar);
+        List<String> aliases = List.of("co mam dzisiaj", "co mam jutro", "kiedy mam wolne", "dodaj do kalendarza", "przesuń spotkanie");
+        assertThat(WorkflowRouter.saysAlias("co mam jutro?", aliases)).isTrue();
+        assertThat(WorkflowRouter.saysAlias("Kiedy mam wolne w piątek?", aliases)).isTrue();
+        assertThat(WorkflowRouter.mentions("dodaj wizytę u dentysty w piątek o 14", keywords)).isTrue();
+        assertThat(WorkflowRouter.mentions("przełóż spotkanie z Anną na 16", keywords)).isTrue();
+        assertThat(WorkflowRouter.mentions("co jest w moim kalendarzu?", keywords)).isTrue();
+        assertThat(WorkflowRouter.mentions("puść muzykę z polubionych", keywords)).isFalse();
+        assertThat(WorkflowRouter.mentions("co mam jutro?", WorkflowRouter.keywords(SPOTIFY))).isFalse();
+    }
+
     private static StoredDocument document(String title, List<String> tags, List<String> aliases) {
         return new StoredDocument("id", "workflows/Spotify.md", title, "workflow", "active", "", tags, aliases, "1", "",
                 "frontmatter", "hash", 1L, 0L, 10, 900, "", StoredDocument.INDEXED, "", List.of(), true);
