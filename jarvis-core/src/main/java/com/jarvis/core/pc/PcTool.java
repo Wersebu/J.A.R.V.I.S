@@ -187,6 +187,15 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                         arg("description", false, "New playlist description"),
                         boolArg("public", "Create a public playlist (default false)"),
                         arg("playlist", false, "Playlist URI/URL for add_to_playlist; target is the track to add")),
+                op("SPOTIFY_PLAY", "Start Spotify playback in ONE call: Core reads the Spotify procedure, checks connection and devices, "
+                                + "opens the desktop app if needed, picks a track from the chosen source, plays it and verifies playback. "
+                                + "You decide only the arguments. Returns title, artists, device and confirmed=true, or the exact problem.",
+                        ToolSafetyLevel.WRITE, false,
+                        arg("source", false, "liked = the user's liked songs (right for 'play something'); search = find query"),
+                        arg("query", false, "What to search for when source=search (artist, track, album, playlist)"),
+                        arg("type", false, "Search type: track (default), album, artist or playlist"),
+                        arg("pick", false, "random (default for liked) or first (default for search: best match)"),
+                        arg("device", false, "Empty = this PC. Otherwise the device the user asked for, e.g. TV or speaker")),
                 op("CHANGES", "List files changed by pc__write/edit/patch/delete in this conversation (newest first).",
                         ToolSafetyLevel.READ, false),
                 op("UNDO", "Undo the last file changes made in this conversation (restores previous content, removes created "
@@ -211,6 +220,10 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
         if (!workingDirectory.isBlank()) {
             // Windows resolves relative paths and new terminal sessions against the conversation folder.
             arguments.put("baseDir", workingDirectory);
+        }
+        if ("SPOTIFY_PLAY".equals(operation)) {
+            // A composite of pc SPOTIFY/OPEN calls that only the native tool loop can carry out and verify.
+            return failure(request, operation, "LOOP_ONLY", "pc__spotify_play is carried out by the Core tool loop, not sent to the PC.");
         }
         if ("PROJECT_INSTRUCTIONS".equals(operation)) {
             // Internal (not offered to the model): loaded once per turn into the loop's system prompt.

@@ -316,14 +316,11 @@ public class NativeToolLoopService {
      * @return tool-calling result
      */
     public ToolCallingResult execute(ToolCallingRequest request) {
-        if (spotifyAutopilot && SpotifyPlaybackPolicy.applies(request) && SpotifyPlaybackIntent.isGeneric(request.userMessage())) {
-            Optional<ToolCallingResult> fast = runSpotifyAutopilot(request);
-            if (fast.isPresent()) return fast.get();
-        }
         ToolCallingResult result = executeLoop(request);
         if (result.handled() && SpotifyPlaybackPolicy.applies(request)) {
-            return new ToolCallingResult(true, SpotifyPlaybackPolicy.answer(request, result.steps()), result.steps(),
-                    result.results(), result.terminationInfo());
+            // The model answers in its own words when they match the observed playback; otherwise the evidence speaks.
+            String answer = SpotifyPlaybackPolicy.groundedAnswer(request, result.steps(), result.finalAnswer());
+            return new ToolCallingResult(true, answer, result.steps(), result.results(), result.terminationInfo());
         }
         if (!result.handled() || !SpotifyReadEvidence.applies(request)) {
             return result;
@@ -334,23 +331,17 @@ public class NativeToolLoopService {
                 result.results(), result.terminationInfo());
     }
 
-    private boolean spotifyAutopilot = true;
     private long spotifyPollMillis = 1500;
 
-    /** Tests drive the model-led Spotify procedure step by step; production runs generic requests on autopilot. */
-    void spotifyAutopilot(boolean enabled, long pollMillis) {
-        this.spotifyAutopilot = enabled;
+    /** Tests shorten the pause pc__spotify_play takes while a just-opened app registers in Spotify Connect. */
+    void spotifyPollMillis(long pollMillis) {
         this.spotifyPollMillis = pollMillis;
     }
 
-    /**
-     * A generic Spotify playback request needs no model decisions: Core carries out the known procedure
-     * under the same policy checks. Empty when it cannot, and the model-led loop then starts from scratch.
-     */
-    private Optional<ToolCallingResult> runSpotifyAutopilot(ToolCallingRequest request) {
+    /** pc__spotify_play: one model decision, the known procedure carried out by Core under the same policy. */
+    private ToolResult spotifyPlay(ToolCallingRequest request, ToolAction action, List<ToolRuntimeStep> steps, int step) {
         Instant started = Instant.now();
-        LOGGER.info("[SPOTIFY_AUTOPILOT] requestId={} message=\"{}\"", request.requestId(), request.userMessage());
-        Optional<List<ToolRuntimeStep>> executed = SpotifyAutopilot.run(request, (action, step) -> executeAction(request, action, step),
+        ToolResult result = SpotifyAutopilot.play(request, action, steps, step, (subAction, number) -> executeAction(request, subAction, number),
                 millis -> {
                     try {
                         Thread.sleep(millis);
@@ -358,21 +349,9 @@ public class NativeToolLoopService {
                         Thread.currentThread().interrupt();
                     }
                 }, spotifyPollMillis);
-        if (executed.isEmpty()) {
-            LOGGER.info("[SPOTIFY_AUTOPILOT] requestId={} handedOverToModelLoop=true", request.requestId());
-            return Optional.empty();
-        }
-        List<ToolRuntimeStep> steps = executed.get();
-        List<ToolResult> results = steps.stream().map(ToolRuntimeStep::result).toList();
-        boolean confirmed = SpotifyPlaybackPolicy.confirmed(request, steps);
-        String answer = SpotifyPlaybackPolicy.answer(request, steps);
-        ToolLoopTerminationInfo info = buildTerminationInfo(confirmed ? ToolLoopTerminationReason.COMPLETED : ToolLoopTerminationReason.INCOMPLETE_GOAL,
-                confirmed, confirmed, started, 0, 0, steps, results, "",
-                confirmed ? "" : SpotifyPlaybackPolicy.nextStep(request, steps), List.of());
-        logTerminationSummary(request, info);
-        LOGGER.info("[SPOTIFY_AUTOPILOT] requestId={} confirmed={} toolCalls={} elapsedMs={}", request.requestId(), confirmed,
-                steps.size(), java.time.Duration.between(started, Instant.now()).toMillis());
-        return Optional.of(new ToolCallingResult(true, answer, steps, results, info));
+        LOGGER.info("[SPOTIFY_PLAY] requestId={} arguments={} confirmed={} errorCode={} elapsedMs={}", request.requestId(),
+                action.arguments(), result.success(), result.errorCode(), java.time.Duration.between(started, Instant.now()).toMillis());
+        return result;
     }
 
     private ToolCallingResult executeLoop(ToolCallingRequest request) {
@@ -550,13 +529,20 @@ public class NativeToolLoopService {
             LOGGER.info("[SPOTIFY_WORKFLOW_DISCOVERY] requestId={} findWorkflowAvailable={} readWorkflowAvailable={}",
                     request.requestId(), definitions.stream().anyMatch(d -> d.name().equals("knowledge__find_workflow")),
                     definitions.stream().anyMatch(d -> d.name().equals("knowledge__read_workflow")));
-            messages.add(ModelMessage.system("Find the Spotify procedure using knowledge__find_workflow(query=Spotify), then copy the returned path exactly into READ_WORKFLOW. "
+            messages.add(ModelMessage.system("To start playback call pc__spotify_play ONCE. It reads the Spotify procedure, checks the connection and "
+                    + "devices, opens the desktop app when needed, picks a track, plays it and verifies playback, so you only decide its arguments: "
+                    + "source=liked (the user's liked songs: right for 'play something' or 'from my liked') or source=search with query "
+                    + "(+ type track|album|artist|playlist) when the user names something; pick=random|first; device empty for this PC, "
+                    + "or the device the user asked for (e.g. TV, speaker). Then answer the user briefly in their language from its result "
+                    + "(title, artist, device). If it reports a problem, explain it plainly; never repeat the same call. "
+                    + "Use pc__spotify step by step only when pc__spotify_play cannot express the request. "
+                    + "Step-by-step rules: find the Spotify procedure using knowledge__find_workflow(query=Spotify), then copy the returned path exactly into READ_WORKFLOW. "
                     + "The routing hint is workflows/Spotify.md; never prepend spotify/ or any other directory. After a missing document, use FIND_WORKFLOW, not guessed paths. "
                     + "Polubione means liked songs (action=liked), never favorite playlists. Read the complete procedure with "
                     + "knowledge__read_workflow (or read_document). Then status, devices, optional pc__open(target=spotify) "
                     + "and devices again, search (or liked for liked songs), play with the returned URI and local=true deviceId, then verify observedPlayback/current. "
                     + "Readiness observations after OPEN/play are bounded but are not automatically duplicate-blocked. No browser fallback. "
-                    + "If the user named nothing specific (\"play something\", \"odpal coś\"), do not ask and do not stop after devices: "
+                    + "If the user named nothing specific (\"play something\", \"odpal coś\"), do not ask: "
                     + "read action=liked (the user's own liked songs) and play one returned track. Core fills deviceId of the local PC for play; "
                     + "play target may be the exact URI or the exact track name from the result (names are safer to copy than IDs)."));
         }
@@ -923,7 +909,9 @@ public class NativeToolLoopService {
                                 request.requestId(), marketplaceRequirements.productQuery());
                     }
                     Optional<Integer> datasetStoresBeforeCall = datasetStoresBefore(action);
-                    ToolResult result = executeAction(request, action, step);
+                    ToolResult result = SpotifyAutopilot.handles(action)
+                            ? spotifyPlay(request, action, steps, step)
+                            : executeAction(request, action, step);
                     result = enrichIfNeeded(request, action, result, step);
                     Optional<RecoveryOutcome> recovered = tryRecoverToolAction(
                             request, action, result, runtimeState, failureClassifier, recoveryAttempts, step);

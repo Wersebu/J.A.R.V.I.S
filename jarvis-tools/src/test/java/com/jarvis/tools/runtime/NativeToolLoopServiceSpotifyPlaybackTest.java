@@ -38,7 +38,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
     private String actualTitle = "";
     private boolean firstLikedUnplayable;
     private Map<String, Object> playArguments = Map.of();
-    private boolean autopilot;
+    private boolean tvVisible;
     private AIProvider provider;
 
 
@@ -311,42 +311,65 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.finalAnswer()).contains("Real liked title");
     }
 
-    @Test void genericRequestRunsOnAutopilotWithoutAnyModelTurn() {
-        autopilot = true;
+    @Test void modelDecidesOnceThenSpotifyPlayRunsProcedureAndModelAnswersInItsOwnWords() {
         userMessage = "siemka odpal mi coś na spotify";
-        ToolCallingResult result = run();
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "liked")),
+                answer("Leci Real liked title na Twoim komputerze."));
         assertThat(executed).containsExactly("knowledge/FIND_WORKFLOW", "knowledge/READ_WORKFLOW", "status", "devices",
                 "open:spotify", "devices", "liked", "play");
         assertThat(playArguments).containsEntry("target", URI).containsEntry("deviceId", "local-id").containsEntry("context", "liked");
         assertThat(result.terminationInfo().completed()).isTrue();
-        assertThat(result.finalAnswer()).contains("Potwierdzono odtwarzanie", "Real liked title", "Local desktop");
-        verify(provider, never()).toolChat(any(), anyList(), anyList(), any());
+        assertThat(result.finalAnswer()).isEqualTo("Leci Real liked title na Twoim komputerze.");
+        verify(provider, times(2)).toolChat(any(), anyList(), anyList(), any());
     }
 
-    @Test void autopilotVerifiesWithCurrentAndReportsUnconfirmedPlaybackHonestly() {
-        autopilot = true; opened = true; observed = false; currentPlaying = false;
+    @Test void modelReplyNotNamingTheObservedTrackIsReplacedByEvidence() {
+        userMessage = "odpal coś na spotify";
+        opened = true;
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of()), answer("Gotowe, gra muzyka z https://open.spotify.com/x"));
+        assertThat(result.finalAnswer()).contains("Potwierdzono odtwarzanie", "Real liked title", "Local desktop");
+    }
+
+    @Test void spotifyPlayVerifiesWithCurrentAndNeverClaimsUnobservedPlayback() {
         userMessage = "puść coś z polubionych na spotify";
-        ToolCallingResult result = run();
+        opened = true; observed = false; currentPlaying = false;
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "liked")),
+                call("pc__spotify_play", Map.of("source", "liked")), answer("Gra Real liked title!"), answer("Gra Real liked title!"));
         assertThat(executed).endsWith("liked", "play", "current", "current");
         assertThat(Collections.frequency(executed, "play")).isEqualTo(1);
         assertThat(result.terminationInfo().completed()).isFalse();
         assertThat(result.finalAnswer()).contains("Zadanie nieukończone");
     }
 
-    @Test void autopilotHandsOverToModelWhenProcedureCannotBeRead() {
-        autopilot = true; noCandidates = true; workflowMissing = true;
-        ToolCallingResult result = run(answer("Nie mogę."), answer("Nie mogę."));
-        assertThat(executed).doesNotContain("status", "play");
-        assertThat(result.terminationInfo().completed()).isFalse();
-        verify(provider, atLeastOnce()).toolChat(any(), anyList(), anyList(), any());
+    @Test void spotifyPlaySearchPlaysBestMatch() {
+        userMessage = "puść Uptown Funk na spotify";
+        opened = true;
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "search", "query", "Uptown Funk")), answer("Done"));
+        assertThat(executed).endsWith("devices", "search", "play");
+        assertThat(playArguments).containsEntry("target", URI).doesNotContainKey("context");
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.finalAnswer()).contains("Real search title");
     }
 
-    @Test void onlyRequestsNamingNothingSpecificAreGeneric() {
-        assertThat(SpotifyPlaybackIntent.isGeneric("siemka odpal mi coś na spotify")).isTrue();
-        assertThat(SpotifyPlaybackIntent.isGeneric("Odtwórz mi coś z polubionych utworów na Spotify.")).isTrue();
-        assertThat(SpotifyPlaybackIntent.isGeneric("odpalisz mi coś fajnego na spotify?")).isTrue();
-        assertThat(SpotifyPlaybackIntent.isGeneric("puść Matę na spotify")).isFalse();
-        assertThat(SpotifyPlaybackIntent.isGeneric("odpal na spotify playlistę do pracy")).isFalse();
+    @Test void anotherDevicePlaysOnlyWhenTheUserAskedForIt() {
+        userMessage = "odpal coś ze spotify na telewizorze";
+        tvVisible = true; observedDevice = "tv-id";
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "liked", "device", "telewizor")), answer("Done"));
+        assertThat(playArguments).containsEntry("deviceId", "tv-id");
+        assertThat(executed).doesNotContain("open:spotify");
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.finalAnswer()).contains("Urządzenie: FrytaCraft.pl");
+
+        executed.clear(); playArguments = Map.of();
+        userMessage = "odpal coś na spotify";
+        result = run(call("pc__spotify_play", Map.of("source", "liked", "device", "FrytaCraft.pl")), answer("Gra na TV"), answer("Gra na TV"));
+        assertThat(executed).doesNotContain("play");
+        assertThat(result.terminationInfo().completed()).isFalse();
+    }
+
+    @Test void playbackIntentIsRecognizedFromTheUsersOwnWords() {
+        assertThat(SpotifyPlaybackIntent.isPlaybackRequest("siemka odpal mi coś na spotify")).isTrue();
+        assertThat(SpotifyPlaybackIntent.isPlaybackRequest("puść Matę na spotify")).isTrue();
         assertThat(SpotifyPlaybackIntent.isPlaybackRequest("co teraz gra na spotify?")).isFalse();
         assertThat(SpotifyPlaybackIntent.isPlaybackRequest("sprawdź spotify, nie odtwarzaj niczego")).isFalse();
     }
@@ -369,13 +392,13 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         CognitiveEventBus bus = mock(CognitiveEventBus.class);
         ToolRegistry registry = mock(ToolRegistry.class);
         when(registry.definitions()).thenReturn(List.of(
-                new ToolDefinition("pc", "desktop", List.of(op("SPOTIFY", "action", "target", "query", "deviceId", "deviceName"), op("OPEN", "target"), op("SHELL", "command"))),
+                new ToolDefinition("pc", "desktop", List.of(op("SPOTIFY", "action", "target", "query", "deviceId", "deviceName"), op("SPOTIFY_PLAY", "source", "query", "type", "pick", "device"), op("OPEN", "target"), op("SHELL", "command"))),
                 new ToolDefinition("knowledge", "vault", List.of(op("READ_WORKFLOW", "path", "part"), op("FIND_WORKFLOW", "query"), op("READ_DOCUMENT", "path"))),
                 new ToolDefinition("browser", "browser", List.of(op("OPEN", "url")))));
         NativeToolLoopService service = new NativeToolLoopService(List.of(provider), manager, query -> ToolIntent.NO_TOOL,
                 new ToolRuntimeProperties(true, 20, 20, 2, 30, "native"), bus, new ToolRuntimeDebugService(),
                 new ObjectMapper(), new NativeToolSchemaMapper(registry), new StoreAuditDatasetService(bus));
-        service.spotifyAutopilot(autopilot, 0);
+        service.spotifyPollMillis(0);
         return service.execute(new ToolCallingRequest("spotify-play", "c", userMessage,
                 delegatedGoal, "", Map.of(), "Base", new Brain(BrainType.FAST, "stub", "model", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST, List.of(), history));
     }
@@ -402,8 +425,13 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
             if (action.equals("current")) currentReads++;
             data = switch (action) {
                 case "status" -> Map.of("connected", true);
-                case "devices" -> Map.of("devices", opened && availableAfterOpen && deviceReads >= readinessReads ? List.of(Map.of("id", "local-id", "name", "Local desktop",
-                        "type", "Computer", "local", true, "restricted", false)) : List.of());
+                case "devices" -> {
+                    List<Map<String, Object>> devices = new ArrayList<>();
+                    if (opened && availableAfterOpen && deviceReads >= readinessReads) devices.add(Map.of("id", "local-id", "name", "Local desktop",
+                            "type", "Computer", "local", true, "restricted", false));
+                    if (tvVisible) devices.add(Map.of("id", "tv-id", "name", "FrytaCraft.pl", "type", "TV", "local", false, "restricted", false));
+                    yield Map.of("devices", devices);
+                }
                 case "search" -> Map.of("tracks", Map.of("items", List.of(Map.of("uri", URI, "name", "Real search title"))));
                 case "liked" -> Map.of("items", firstLikedUnplayable
                         ? List.of(Map.of("uri", INVENTED, "name", "Region locked", "is_playable", false), Map.of("uri", URI, "name", "Real liked title"))

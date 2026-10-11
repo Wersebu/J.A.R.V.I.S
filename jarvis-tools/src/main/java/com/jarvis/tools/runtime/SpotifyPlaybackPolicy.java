@@ -36,6 +36,8 @@ final class SpotifyPlaybackPolicy {
             if (Set.of("SEARCH_CONTENT", "SEARCH_DOCUMENT", "LIST_TREE", "LIST_FOLDER").contains(op)) return "";
         }
         if (tool.equals("plan") || tool.equals("system") && op.equals("NOTIFY_USER")) return "";
+        // The composite tool reads the procedure itself and applies this policy to each of its sub-calls.
+        if (tool.equals("pc") && op.equals(SpotifyAutopilot.OPERATION)) return "";
         if (!workflowRead(steps)) return workflowGuidance(steps);
         if (!tool.equals("pc")) return "Use desktop pc__spotify; do not switch to browser/Web Player or other execution tools.";
         if (op.equals("OPEN")) {
@@ -60,16 +62,18 @@ final class SpotifyPlaybackPolicy {
         // Reading a source does not touch any device; only play needs the identified local PC.
         if (Set.of("devices", "liked", "library", "search").contains(sub)) return "";
         if (sub.equals("current")) return played(steps) == null ? "Issue a validated play before verifying it with current." : "";
-        Map<?, ?> device = localDevice(steps);
-        if (device == null) return "Read devices and identify exactly one local=true Computer. If absent, open the desktop app once, "
-                + "then read devices again. Do not select another computer, phone or Web Player. A Windows client with local-device metadata is required.";
+        Map<?, ?> device = targetDevice(request, steps, action.arguments().get("deviceId"));
+        if (device == null && localDevice(steps) == null && latestDevices(steps).stream().noneMatch(d -> remoteRequested(request, d)))
+            return "Read devices and identify exactly one local=true Computer. If absent, open the desktop app once, "
+                + "then read devices again. Do not select another computer, phone or Web Player unless the user asked for that device. "
+                + "A Windows client with local-device metadata is required.";
         if (played(steps) != null) return "A play was already attempted. Do not duplicate a possibly accepted mutation; verify with current or report partial completion.";
         String uri = text(action.arguments(), "target");
         if (!sourceItems(request, steps).containsKey(uri)) return "Play target must be an exact URI from " + (fromLiked(request) ? "liked" : "search/library/liked") + " in this request. "
                 + "Read that source and select a real result; never use a URI from model memory or an earlier assistant message. "
                 + "Invalid URI is not an authentication failure: do not connect.";
-        if (!Objects.equals(device.get("id"), action.arguments().get("deviceId")))
-            return "Specify deviceId of the local=true Computer from the latest devices result.";
+        if (device == null)
+            return "Specify deviceId of the local=true Computer from the latest devices result, or of the device the user explicitly asked for.";
         return "";
     }
 
@@ -82,7 +86,10 @@ final class SpotifyPlaybackPolicy {
         if (!"pc".equalsIgnoreCase(action.tool()) || !"SPOTIFY".equalsIgnoreCase(action.operation())
                 || !"play".equalsIgnoreCase(text(action.arguments(), "action"))) return action;
         Map<String, Object> args = new LinkedHashMap<>(action.arguments());
-        Map<?, ?> device = localDevice(steps);
+        // Keep a device the user asked for (by id or name); anything else means this PC.
+        Map<?, ?> device = targetDevice(request, steps, args.get("deviceId"));
+        if (device == null && !text(args, "deviceName").isBlank()) device = requestedDevice(request, steps, text(args, "deviceName"));
+        if (device == null) device = localDevice(steps);
         if (device != null) {
             args.put("deviceId", device.get("id"));
             args.remove("deviceName");
@@ -186,31 +193,38 @@ final class SpotifyPlaybackPolicy {
 
     static String answer(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
         if (confirmed(request, steps)) {
-            ToolRuntimeStep play = played(steps);
-            Map<?, ?> item = sourceItems(request, steps).get(text(play.arguments(), "target"));
-            Map<?, ?> state = observedState(steps, play);
-            Object observedItem = state.get("item");
-            String title = observedItem instanceof Map<?, ?> track && track.get("name") instanceof String name && !name.isBlank()
-                    ? name : String.valueOf(item.get("name"));
-            Object artists = observedItem instanceof Map<?, ?> track ? track.get("artists") : null;
-            String performer = artists instanceof List<?> names && !names.isEmpty()
-                    ? " — " + String.join(", ", names.stream().map(String::valueOf).toList()) : "";
-            return "Potwierdzono odtwarzanie Spotify: " + title + performer + ". Urządzenie lokalnego PC: "
-                    + localDevice(steps).get("name") + ".";
+            Map<String, Object> facts = playbackFacts(request, steps);
+            String performer = facts.containsKey("artists") ? " — " + facts.get("artists") : "";
+            return "Potwierdzono odtwarzanie Spotify: " + facts.get("title") + performer + ". "
+                    + (Boolean.TRUE.equals(facts.get("localPc")) ? "Urządzenie lokalnego PC: " : "Urządzenie: ") + facts.get("device") + ".";
         }
         String detail = !workflowRead(steps) ? "Nie odczytano kompletnej procedury Spotify."
                 : !connected(steps) ? "Nie potwierdzono połączenia konta Spotify."
-                : localDevice(steps) == null ? "Nie ustalono dostępnego urządzenia lokalnego PC."
+                : played(steps) == null && localDevice(steps) == null ? "Nie ustalono dostępnego urządzenia do odtwarzania."
                 : played(steps) == null ? "Nie wykonano odtwarzania z potwierdzonym URI i urządzeniem."
                 : "Komenda odtwarzania nie została potwierdzona przez obserwowany stan Spotify.";
         return "Zadanie nieukończone — nie potwierdzono odtwarzania. " + detail;
     }
 
+    /**
+     * The model's own reply when playback is confirmed and the reply names the track actually playing, with no
+     * links, URIs or raw structures; otherwise the evidence-based {@link #answer}. Lets Jarvis speak in its own
+     * voice without ever publishing a claim the observed Spotify state does not support.
+     */
+    static String groundedAnswer(ToolCallingRequest request, List<ToolRuntimeStep> steps, String modelAnswer) {
+        String evidence = answer(request, steps);
+        if (!confirmed(request, steps) || modelAnswer == null || modelAnswer.isBlank() || modelAnswer.length() > 800) return evidence;
+        String reply = normalize(modelAnswer);
+        String title = normalize(String.valueOf(playbackFacts(request, steps).get("title"))).split(" - | \\(| \\[")[0].strip();
+        boolean namesTrack = title.length() >= 2 && reply.contains(title);
+        boolean clean = !reply.contains("http") && !reply.contains("spotify:") && !reply.contains("{") && !reply.contains("open.spotify");
+        return namesTrack && clean ? modelAnswer.strip() : evidence;
+    }
+
     static boolean confirmed(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
         ToolRuntimeStep play = played(steps);
-        Map<?, ?> local = localDevice(steps);
         if (play == null || !play.result().success() || !Boolean.TRUE.equals(play.result().data().get("accepted"))
-                || local == null || !Objects.equals(local.get("id"), play.arguments().get("deviceId"))
+                || targetDevice(request, steps, play.arguments().get("deviceId")) == null
                 || !sourceItems(request, steps).containsKey(text(play.arguments(), "target"))) return false;
         Map<?, ?> state = observedState(steps, play);
         if (!Boolean.TRUE.equals(state.get("isPlaying"))
@@ -220,6 +234,97 @@ final class SpotifyPlaybackPolicy {
         return target.startsWith("spotify:track:") || target.startsWith("spotify:episode:")
                 ? rawItem instanceof Map<?, ?> item && Objects.equals(target, item.get("uri"))
                 : Objects.equals(target, state.get("contextUri"));
+    }
+
+    /** Facts of the confirmed (or attempted) playback, for the composite tool's result and the final answer. */
+    static Map<String, Object> playbackFacts(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
+        Map<String, Object> facts = new LinkedHashMap<>();
+        ToolRuntimeStep play = played(steps);
+        if (play == null) return facts;
+        String target = text(play.arguments(), "target");
+        Map<?, ?> item = sourceItems(request, steps).getOrDefault(target, Map.of());
+        Object observedItem = observedState(steps, play).get("item");
+        String title = observedItem instanceof Map<?, ?> track && track.get("name") instanceof String name && !name.isBlank()
+                ? name : String.valueOf(item.get("name"));
+        Object artists = observedItem instanceof Map<?, ?> track && track.get("artists") != null ? track.get("artists") : item.get("artists");
+        facts.put("title", title);
+        if (artists instanceof List<?> names && !names.isEmpty())
+            facts.put("artists", String.join(", ", names.stream().map(String::valueOf).toList()));
+        facts.put("uri", target);
+        Map<?, ?> device = targetDevice(request, steps, play.arguments().get("deviceId"));
+        if (device != null) {
+            facts.put("device", device.get("name"));
+            facts.put("localPc", device == localDevice(steps));
+        }
+        if ("liked".equals(play.arguments().get("context"))) facts.put("context", "Liked Songs (queue continues)");
+        return facts;
+    }
+
+    /** The play target device: the identified local PC, or a device the user explicitly asked for. */
+    static Map<?, ?> targetDevice(ToolCallingRequest request, List<ToolRuntimeStep> steps, Object deviceId) {
+        if (deviceId == null) return null;
+        Map<?, ?> local = localDevice(steps);
+        if (local != null && Objects.equals(local.get("id"), deviceId)) return local;
+        return latestDevices(steps).stream().filter(d -> Objects.equals(d.get("id"), deviceId) && remoteRequested(request, d))
+                .findFirst().orElse(null);
+    }
+
+    /** A non-local device named by the model, accepted only when the user's own message asks for it. */
+    static Map<?, ?> requestedDevice(ToolCallingRequest request, List<ToolRuntimeStep> steps, String wanted) {
+        String key = compact(wanted);
+        List<Map<?, ?>> matches = latestDevices(steps).stream().filter(d -> remoteRequested(request, d))
+                .filter(d -> key.isEmpty() || compact(String.valueOf(d.get("name"))).contains(key)
+                        || key.contains(compact(String.valueOf(d.get("name"))))
+                        || kindWords(String.valueOf(d.get("type"))).stream().anyMatch(key::contains))
+                .toList();
+        return matches.size() == 1 ? matches.getFirst() : null;
+    }
+
+    static boolean isLocalDeviceWord(String device) {
+        return Set.of("", "local", "localpc", "pc", "thispc", "thiscomputer", "computer", "komputer", "tenkomputer", "tenpc", "desktop")
+                .contains(compact(device));
+    }
+
+    static List<String> visibleDeviceNames(List<ToolRuntimeStep> steps) {
+        return latestDevices(steps).stream().map(d -> d.get("name") + " (" + d.get("type") + ")").toList();
+    }
+
+    private static List<Map<?, ?>> latestDevices(List<ToolRuntimeStep> steps) {
+        ToolRuntimeStep read = latest(steps, "devices");
+        if (read == null || !read.result().success() || !(read.result().data().get("devices") instanceof List<?> list)) return List.of();
+        List<Map<?, ?>> devices = new ArrayList<>();
+        for (Object raw : list) if (raw instanceof Map<?, ?> d && d.get("id") instanceof String id && !id.isBlank()) devices.add(d);
+        return devices;
+    }
+
+    /**
+     * Playing anywhere but this PC needs the user's own words: the device name or its kind (TV, speaker...).
+     * The model's arguments alone never authorize another device, so it cannot drift to a phone or another PC.
+     */
+    private static boolean remoteRequested(ToolCallingRequest request, Map<?, ?> device) {
+        if (Boolean.TRUE.equals(device.get("restricted")) || String.valueOf(device.get("name")).toLowerCase(Locale.ROOT).contains("web player"))
+            return false;
+        String message = compact(request.userMessage());
+        String name = compact(String.valueOf(device.get("name")));
+        if (name.length() >= 3 && message.contains(name)) return true;
+        String type = String.valueOf(device.get("type"));
+        return !"Computer".equalsIgnoreCase(type) && kindWords(type).stream().anyMatch(message::contains);
+    }
+
+    private static List<String> kindWords(String type) {
+        return switch (type.toLowerCase(Locale.ROOT)) {
+            case "tv", "castvideo", "stb" -> List.of("telewizor", "tv", "telewizja");
+            case "speaker", "avr", "castaudio", "audiodongle" -> List.of("glosnik", "soundbar", "speaker", "kolumn", "wiez");
+            case "smartphone" -> List.of("telefon", "phone", "komork");
+            case "tablet" -> List.of("tablet");
+            case "gameconsole" -> List.of("konsol", "console", "xbox", "playstation");
+            case "automobile" -> List.of("samochod", "car");
+            default -> List.of();
+        };
+    }
+
+    private static String compact(String text) {
+        return normalize(Objects.toString(text, "")).replaceAll("[^a-z0-9]", "");
     }
 
     private static Map<?, ?> observedState(List<ToolRuntimeStep> steps, ToolRuntimeStep play) {
@@ -317,7 +422,7 @@ final class SpotifyPlaybackPolicy {
         return items.keySet();
     }
 
-    private static void collect(Object value, Map<String, Map<?, ?>> items) {
+    static void collect(Object value, Map<String, Map<?, ?>> items) {
         if (value instanceof Map<?, ?> map) {
             if (map.get("uri") instanceof String uri && uri.matches("spotify:(track|episode|album|artist|playlist):[A-Za-z0-9]{22}")
                     && map.get("name") instanceof String name && !name.isBlank()
