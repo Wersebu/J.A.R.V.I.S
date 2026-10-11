@@ -251,7 +251,9 @@ final class SpotifyPlaybackPolicy {
             String title = normalize(String.valueOf(playbackFacts(request, steps).get("title"))).split(" - | \\(| \\[")[0].strip();
             ToolRuntimeStep play = played(steps);
             Map<?, ?> device = targetDevice(request, steps, play.arguments().get("deviceId"));
-            return title.length() >= 2 && reply.contains(title) && !mentionsOtherDevice(modelAnswer, device, steps);
+            // It IS playing: a reply that says it could not, or that it has no information, misreports the result.
+            return title.length() >= 2 && reply.contains(title) && !mentionsOtherDevice(modelAnswer, device, steps)
+                    && !ADMITS_FAILURE.matcher(reply).find();
         }
         // Nothing confirmed: the model may explain why in its own words (e.g. the TV is not visible to Spotify),
         // but only an explicit admission passes - never a reply that claims or implies playback.
@@ -259,7 +261,7 @@ final class SpotifyPlaybackPolicy {
     }
 
     private static final java.util.regex.Pattern ADMITS_FAILURE = java.util.regex.Pattern.compile(
-            "\\bnie (widze|moge|udalo|znalazl|znajduje|ma |jest dostep|potwierdz|da sie)|niedostep|\\bbrak\\b|\\bnie wykryl"
+            "\\bnie (widze|moge|udalo|znalazl|znajduje|ma |mam |jest dostep|potwierdz|da sie)|niedostep|\\bbrak\\b|\\bnie wykryl"
                     + "|can't|cannot|unable|not available|not visible|not found|don't see|couldn't|could not");
     private static final java.util.regex.Pattern CLAIMS_PLAYBACK = java.util.regex.Pattern.compile(
             "\\b(odtwarzam|wlaczylem|wlaczylam|wlaczam|puscilem|puscilam|puszczam|uruchomilem|odpalilem|odpalam|leci|gra juz|juz gra"

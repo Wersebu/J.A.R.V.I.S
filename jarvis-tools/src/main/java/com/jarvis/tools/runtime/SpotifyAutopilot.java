@@ -324,11 +324,34 @@ final class SpotifyAutopilot {
         SpotifyPlaybackPolicy.collect(listed.data(), found);
         String owner = SpotifyPlaybackPolicy.normalize(text("owner"));
         String name = text("source").equalsIgnoreCase("library") ? SpotifyPlaybackPolicy.normalize(text("query")) : "";
-        return found.entrySet().stream()
+        List<Map.Entry<String, Map<?, ?>>> matching = found.entrySet().stream()
                 .filter(e -> allowed.containsKey(e.getKey()) && e.getKey().startsWith("spotify:" + type + ":"))
                 .filter(e -> owner.isBlank() || SpotifyPlaybackPolicy.normalize(Objects.toString(e.getValue().get("owner"), "")).contains(owner))
                 .filter(e -> name.isBlank() || SpotifyPlaybackPolicy.normalize(Objects.toString(e.getValue().get("name"), "")).contains(name))
+                .toList();
+        if (!text("source").equalsIgnoreCase("search") || text("query").isBlank()) return matching.stream().map(Map.Entry::getKey).toList();
+        // Spotify's first hit is often the artist's popular track, not the one asked for ("ogórek cypisa" gave
+        // "Niegrzeczna Studentka"): prefer results whose title/artists/album carry the most words of the request.
+        List<String> wanted = words(text("query"));
+        return matching.stream()
+                .sorted(java.util.Comparator.comparingInt((Map.Entry<String, Map<?, ?>> e) -> -overlap(wanted, e.getValue())))
                 .map(Map.Entry::getKey).toList();
+    }
+
+    private static int overlap(List<String> wanted, Map<?, ?> item) {
+        List<String> have = words(item.get("name") + " " + item.get("artists") + " " + item.get("album"));
+        int score = 0;
+        for (String word : wanted) {
+            String stem = word.substring(0, Math.min(5, word.length()));
+            if (have.stream().anyMatch(h -> h.startsWith(stem) || h.length() >= 4 && word.startsWith(h.substring(0, Math.min(5, h.length())))))
+                score++;
+        }
+        return score;
+    }
+
+    private static List<String> words(String text) {
+        return java.util.Arrays.stream(SpotifyPlaybackPolicy.normalize(String.valueOf(text)).split("[^a-z0-9]+"))
+                .filter(word -> word.length() >= 3).toList();
     }
 
     /** mode=queue: adds the chosen track after the current one instead of interrupting playback. */

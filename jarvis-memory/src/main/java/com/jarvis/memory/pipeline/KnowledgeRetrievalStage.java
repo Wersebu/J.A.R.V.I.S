@@ -34,6 +34,7 @@ public class KnowledgeRetrievalStage implements PipelineStage {
     private static final int PREVIOUS_TURNS = 2;
     /** A short follow-up that names nothing itself ("wznów", "zatrzymaj") stays on the workflow routed this recently. */
     private static final java.time.Duration TOPIC_MEMORY = java.time.Duration.ofMinutes(10);
+    private static final int TOPIC_FOLLOW_UP_WORDS = 10;
 
     private record Routed(WorkflowCandidate workflow, java.time.Instant at) {
     }
@@ -73,7 +74,7 @@ public class KnowledgeRetrievalStage implements PipelineStage {
         String conversation = context.conversationId() == null ? "" : context.conversationId();
         if (workflow.isPresent()) {
             lastRouted.put(conversation, new Routed(workflow.get(), java.time.Instant.now()));
-        } else if (message.split("\\s+").length <= SHORT_FOLLOW_UP_WORDS && lastRouted.get(conversation) instanceof Routed last
+        } else if (message.split("\\s+").length <= TOPIC_FOLLOW_UP_WORDS && lastRouted.get(conversation) instanceof Routed last
                 && last.at().isAfter(java.time.Instant.now().minus(TOPIC_MEMORY))) {
             workflow = Optional.of(last.workflow());
             reason = "topic";
@@ -84,7 +85,9 @@ public class KnowledgeRetrievalStage implements PipelineStage {
                 workflow.map(WorkflowCandidate::path).orElse("-"), reason, elapsedMs);
         List<RetrievalDocument> documents = workflow.map(candidate -> List.of(new RetrievalDocument(
                 documentId(candidate), candidate.title(), "workflow", candidate.path(), 1, ""))).orElse(List.of());
-        return context.withRetrievalResult(new RetrievalResult(query, elapsedMs, documents.size(), documents));
+        // "topic" means the message itself named nothing: later stages keep the model's own routing decision.
+        return context.withRetrievalResult(new RetrievalResult(query, elapsedMs, documents.size(), documents))
+                .withMetadata("workflowRouting", reason);
     }
 
     private static String routingQuery(String message, List<ConversationMessage> conversation) {

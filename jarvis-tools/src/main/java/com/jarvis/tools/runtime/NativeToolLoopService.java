@@ -350,8 +350,10 @@ public class NativeToolLoopService {
     private String rewriteFromFacts(ToolCallingRequest request, String facts) {
         List<ModelMessage> messages = List.of(
                 ModelMessage.system("You are J.A.R.V.I.S. Reply to the user in their language, briefly (one or two sentences), "
-                        + "in your own words. Use ONLY these facts reported by the tools; do not add tracks, devices, links "
-                        + "or claims that are not in them. If they say something failed, say so plainly.\nFacts: " + facts),
+                        + "in your own words. The facts below describe what the tools ALREADY DID - e.g. the track that is "
+                        + "playing NOW. Report that result; if it differs from what the user asked for, say what is playing "
+                        + "instead. Use ONLY these facts; do not add tracks, devices, links or claims that are not in them. "
+                        + "If they say something failed, say so plainly.\nFacts: " + facts),
                 ModelMessage.user(request.userMessage()));
         try {
             return selectProvider(request).toolChat(request.brain(), messages, List.of(), AIJobType.MAIN_MODEL).content();

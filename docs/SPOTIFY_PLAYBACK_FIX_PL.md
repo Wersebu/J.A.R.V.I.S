@@ -347,3 +347,18 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
 - Odpowiedź: gdy pierwsza odpowiedź modelu nie zgadza się z obserwowanym stanem (tytuł, urządzenie, sukces lub
   porażka), model dostaje fakty z narzędzia i pisze odpowiedź ponownie, własnymi słowami (jedno krótkie wywołanie
   bez narzędzi). Tekst z faktów jest używany tylko wtedy, gdy także ta odpowiedź jest niezgodna. Log: [SPOTIFY_ANSWER].
+
+## Analiza śladu 3abc7765 (18:00–18:04)
+
+- Typowe zapytania 7–10 s (bez decyzji wstępnej, 8 narzędzi, 1. token po 2,9–4,2 s).
+- „odpal mi piosenkę ogórek cypisa” 14,7 s: wyszukiwanie wybrało pierwszy wynik Spotify („Niegrzeczna Studentka”
+  Cypisa). Poprawiona odpowiedź brzmiała „nie mam informacji… można odtworzyć”, choć utwór już grał. Teraz wyniki
+  wyszukiwania są sortowane według liczby słów z prośby obecnych w tytule, wykonawcach i albumie (5-literowy rdzeń).
+  Przy potwierdzonym odtwarzaniu odpowiedź przyznająca porażkę jest odrzucana. Prompt poprawki mówi wprost, że fakty
+  opisują to, co już się stało.
+- „yhm xD dobra te też jest spoko daj mu!” 20,4 s: model zinterpretował to jako tytuł („Yhmm”) zamiast głośności.
+  To błąd interpretacji modelu. Pomoże wyraźniejszy opis w Spotify.md.
+- „nie no chciałem kici kici wrona” 42,3 s: 5 słów, więc bez pamięci tematu, 125 narzędzi i niskopoziomowe pc__spotify.
+  Pamięć tematu działa teraz do 10 słów, ale oznacza routing jako „topic”. Wtedy decyzja wstępna zostaje, a narzędzia
+  są zawężane tylko wtedy, gdy cel modelu z tej decyzji zawiera słowo z tytułu workflow (np. „Spotify”). Bezpośrednie
+  dopasowanie („matched”) nadal pomija decyzję wstępną.

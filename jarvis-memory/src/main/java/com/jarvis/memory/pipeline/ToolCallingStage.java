@@ -196,6 +196,11 @@ public class ToolCallingStage implements PipelineStage {
             merged.put("voiceMode", true);
         }
         List<String> workflowTools = workflowTools(context.knowledgeContext());
+        if ("topic".equals(String.valueOf(context.metadata().get("workflowRouting")))
+                && !goalNamesWorkflow(toolGoal(context, recoveredAction), context.knowledgeContext())) {
+            // Kept only from the conversation's topic: narrow the tools only when the model's own goal is that topic.
+            workflowTools = List.of();
+        }
         if (!workflowTools.isEmpty()) {
             merged.put("workflowTools", workflowTools);
         }
@@ -209,6 +214,20 @@ public class ToolCallingStage implements PipelineStage {
      * The tool loop offers only these plus the knowledge tools: every tool definition costs prompt-evaluation time
      * on a local model (125 definitions took ~16 s before the first token of every request).
      */
+    static boolean goalNamesWorkflow(String goal, com.jarvis.common.context.KnowledgeContext knowledge) {
+        if (goal == null || knowledge == null || knowledge.sources() == null) return false;
+        String text = normalized(goal);
+        return knowledge.sources().stream().filter(source -> "workflow".equalsIgnoreCase(source.category()))
+                .flatMap(source -> java.util.Arrays.stream(normalized(source.title()).split("[^a-z0-9]+")))
+                .filter(word -> word.length() >= 4)
+                .anyMatch(text::contains);
+    }
+
+    private static String normalized(String text) {
+        return java.text.Normalizer.normalize(String.valueOf(text).toLowerCase(java.util.Locale.ROOT), java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "").replace('ł', 'l');
+    }
+
     static List<String> workflowTools(com.jarvis.common.context.KnowledgeContext knowledge) {
         if (knowledge == null || knowledge.context() == null || knowledge.sources() == null
                 || knowledge.sources().stream().noneMatch(source -> "workflow".equalsIgnoreCase(source.category()))) {

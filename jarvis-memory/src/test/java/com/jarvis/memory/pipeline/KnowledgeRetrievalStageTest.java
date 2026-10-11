@@ -74,7 +74,10 @@ class KnowledgeRetrievalStageTest {
         assertThat(paths(stage.execute(context("odpal coś na spotify")))).containsExactly("workflows/Spotify.md");
         assertThat(paths(stage.execute(context("wznów")))).containsExactly("workflows/Spotify.md");
         assertThat(paths(stage.execute(context("jebnij basem!")))).containsExactly("workflows/Spotify.md");
-        assertThat(paths(stage.execute(context("napisz mi maila do szefa o urlopie w przyszłym tygodniu")))).isEmpty();
+        assertThat(paths(stage.execute(context("nie no chciałem kici kici wrona")))).containsExactly("workflows/Spotify.md");
+        assertThat(stage.execute(context("nie no chciałem kici kici wrona")).metadata()).containsEntry("workflowRouting", "topic");
+        assertThat(paths(stage.execute(context("napisz mi proszę maila do szefa o urlopie w przyszłym tygodniu od poniedziałku"))))
+                .isEmpty();
     }
 
     private static PipelineContext context(String message) {

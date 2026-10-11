@@ -42,6 +42,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
     private boolean followPlayDevice;
     private boolean transferStartsAnotherTrack;
     private Map<String, Object> requestContext = Map.of();
+    private boolean cypisResults;
     private final List<String> offeredTools = new ArrayList<>();
     private AIProvider provider;
 
@@ -402,6 +403,13 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.terminationInfo().completed()).isTrue();
     }
 
+    @Test void searchPlaysTheResultMatchingTheRequestedWordsNotSpotifysFirstHit() {
+        userMessage = "a odpal mi piosenke ogorek cypisa";
+        opened = true; cypisResults = true;
+        run(call("pc__spotify_play", Map.of("source", "search", "query", "ogorek cypisa")), answer("Done"), answer("Done"));
+        assertThat(playArguments).containsEntry("target", INVENTED);
+    }
+
     @Test void wrongReplyIsRewrittenByTheModelFromTheFactsNotReplacedByATemplate() {
         userMessage = "odpal coś na spotify";
         opened = true;
@@ -590,7 +598,10 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                     if (tvVisible) devices.add(Map.of("id", "tv-id", "name", "FrytaCraft.pl", "type", "TV", "local", false, "restricted", false));
                     yield Map.of("devices", devices);
                 }
-                case "search" -> Map.of("tracks", Map.of("items", List.of(Map.of("uri", URI, "name", "Real search title"))));
+                case "search" -> Map.of("tracks", Map.of("items", cypisResults
+                        ? List.of(Map.of("uri", URI, "name", "Niegrzeczna Studentka", "artists", List.of("Cypis")),
+                                Map.of("uri", INVENTED, "name", "Pan Ogórek", "artists", List.of("Cypis")))
+                        : List.of(Map.of("uri", URI, "name", "Real search title"))));
                 case "liked" -> Map.of("items", firstLikedUnplayable
                         ? List.of(Map.of("uri", INVENTED, "name", "Region locked", "is_playable", false), Map.of("uri", URI, "name", "Real liked title"))
                         : List.of(Map.of("uri", URI, "name", "Real liked title")));

@@ -201,7 +201,9 @@ public class ModelExecutionStage implements PipelineStage {
      * @return updated pipeline context
      */
     private static boolean routedWorkflow(PipelineContext context) {
-        return context.knowledgeContext() != null && context.knowledgeContext().sources() != null
+        // Only a direct match skips the decision; a workflow kept from the conversation's topic leaves it to the model.
+        return !"topic".equals(String.valueOf(context.metadata().get("workflowRouting")))
+                && context.knowledgeContext() != null && context.knowledgeContext().sources() != null
                 && context.knowledgeContext().sources().stream().anyMatch(source -> "workflow".equalsIgnoreCase(source.category()));
     }
 
