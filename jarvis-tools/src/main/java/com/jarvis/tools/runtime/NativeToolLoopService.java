@@ -510,7 +510,10 @@ public class NativeToolLoopService {
                     + "Polubione means liked songs (action=liked), never favorite playlists. Read the complete procedure with "
                     + "knowledge__read_workflow (or read_document). Then status, devices, optional pc__open(target=spotify) "
                     + "and devices again, search (or liked for liked songs), play with the returned URI and local=true deviceId, then verify observedPlayback/current. "
-                    + "Readiness observations after OPEN/play are bounded but are not automatically duplicate-blocked. No browser fallback."));
+                    + "Readiness observations after OPEN/play are bounded but are not automatically duplicate-blocked. No browser fallback. "
+                    + "If the user named nothing specific (\"play something\", \"odpal coś\"), do not ask and do not stop after devices: "
+                    + "read action=liked (the user's own liked songs) and play one returned track. Core fills deviceId of the local PC for play; "
+                    + "play target may be the exact URI or the exact track name from the result (names are safer to copy than IDs)."));
         }
         messages.add(ModelMessage.user(request.userMessage(), request.images()));
 
@@ -682,7 +685,9 @@ public class NativeToolLoopService {
                         continue;
                     }
                     if (SpotifyPlaybackPolicy.applies(request)) {
+                        action = SpotifyPlaybackPolicy.prepare(request, action, steps);
                         String blockedReason = SpotifyPlaybackPolicy.guard(request, action, steps);
+                        if (!blockedReason.isBlank()) blockedReason += " " + SpotifyPlaybackPolicy.nextStep(request, steps);
                         if (!blockedReason.isBlank()) {
                             ToolResult blocked = new ToolResult(false, action.tool(), action.operation(), request.requestId(),
                                     request.conversationId(), false, List.of(), blockedReason, Map.of(),

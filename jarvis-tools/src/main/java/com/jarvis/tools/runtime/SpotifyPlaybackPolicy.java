@@ -30,6 +30,8 @@ final class SpotifyPlaybackPolicy {
             if (Set.of("READ_WORKFLOW", "READ_DOCUMENT").contains(op)) {
                 String path = text(action.arguments(), "path");
                 if (workflowPaths(steps).contains(path)) return "";
+                // Once the procedure is read, other vault notes (e.g. music preferences) are ordinary reads.
+                if (op.equals("READ_DOCUMENT") && workflowRead(steps)) return "";
                 return "Use knowledge__find_workflow(query=Spotify), then READ_WORKFLOW with the exact returned candidate path. "
                         + "Do not prefix directories or invent filenames. Routed path: " + WORKFLOW;
             }
@@ -47,6 +49,9 @@ final class SpotifyPlaybackPolicy {
             if (localDevice(steps) != null) return "The local PC is already available. Use search and play; opening again is not needed.";
             return "";
         }
+        if (op.equals("READ") || op.equals("LIST") || op.equals("FIND"))
+            return "PC files are not part of playback. Notes such as preferences live in the knowledge vault (knowledge__read_document); "
+                    + "if they do not exist, do not search further: use pc__spotify(action=liked).";
         if (!op.equals("SPOTIFY")) return "Use pc__spotify, not MEDIA, shell, browser, or URL-based playback.";
         String sub = text(action.arguments(), "action").toLowerCase(Locale.ROOT);
         if (!Set.of("status", "devices", "search", "liked", "library", "play", "current").contains(sub))
@@ -55,20 +60,110 @@ final class SpotifyPlaybackPolicy {
             return "Spotify observation budget exhausted. Report playback as unconfirmed; do not loop.";
         if (sub.equals("status")) return "";
         if (!connected(steps)) return "Read status first. If connected=false, report that login is required; do not automatically connect.";
-        if (sub.equals("devices") || sub.equals("liked") || sub.equals("library")) return "";
+        // Reading a source does not touch any device; only play needs the identified local PC.
+        if (Set.of("devices", "liked", "library", "search").contains(sub)) return "";
         if (sub.equals("current")) return played(steps) == null ? "Issue a validated play before verifying it with current." : "";
         Map<?, ?> device = localDevice(steps);
         if (device == null) return "Read devices and identify exactly one local=true Computer. If absent, open the desktop app once, "
                 + "then read devices again. Do not select another computer, phone or Web Player. A Windows client with local-device metadata is required.";
-        if (sub.equals("search")) return "";
         if (played(steps) != null) return "A play was already attempted. Do not duplicate a possibly accepted mutation; verify with current or report partial completion.";
         String uri = text(action.arguments(), "target");
-        if (!sourceItems(request, steps).containsKey(uri)) return "Play target must be an exact URI from " + (fromLiked(request) ? "liked" : "search/library") + " in this request. "
+        if (!sourceItems(request, steps).containsKey(uri)) return "Play target must be an exact URI from " + (fromLiked(request) ? "liked" : "search/library/liked") + " in this request. "
                 + "Read that source and select a real result; never use a URI from model memory or an earlier assistant message. "
                 + "Invalid URI is not an authentication failure: do not connect.";
         if (!Objects.equals(device.get("id"), action.arguments().get("deviceId")))
             return "Specify deviceId of the local=true Computer from the latest devices result.";
         return "";
+    }
+
+    /**
+     * Fills in what Core already knows, so weak models do not fail on bookkeeping: play always targets the
+     * identified local PC, and a returned open.spotify.com link or exact result name maps to its URI.
+     * Never invents a target: anything not traceable to a source result in this request stays as given.
+     */
+    static ToolAction prepare(ToolCallingRequest request, ToolAction action, List<ToolRuntimeStep> steps) {
+        if (!"pc".equalsIgnoreCase(action.tool()) || !"SPOTIFY".equalsIgnoreCase(action.operation())
+                || !"play".equalsIgnoreCase(text(action.arguments(), "action"))) return action;
+        Map<String, Object> args = new LinkedHashMap<>(action.arguments());
+        Map<?, ?> device = localDevice(steps);
+        if (device != null) {
+            args.put("deviceId", device.get("id"));
+            args.remove("deviceName");
+        }
+        Map<String, Map<?, ?>> items = sourceItems(request, steps);
+        String target = text(args, "target");
+        if (!target.isBlank() && !items.containsKey(target)) {
+            java.util.regex.Matcher link = java.util.regex.Pattern
+                    .compile("open\\.spotify\\.com/(?:intl-[a-z]+/)?(track|episode|album|artist|playlist)/([A-Za-z0-9]{22})").matcher(target);
+            String resolved = link.find() ? "spotify:" + link.group(1) + ":" + link.group(2) : "";
+            if (resolved.isEmpty()) {
+                List<String> byName = items.entrySet().stream()
+                        .filter(e -> normalize(String.valueOf(e.getValue().get("name"))).equals(normalize(target)))
+                        .map(Map.Entry::getKey).toList();
+                if (byName.size() == 1) resolved = byName.getFirst();
+            }
+            if (resolved.isEmpty()) resolved = closestUri(target, items.keySet());
+            if (items.containsKey(resolved)) args.put("target", resolved);
+        }
+        return args.equals(action.arguments()) ? action
+                : new ToolAction(action.action(), action.tool(), action.operation(), args, action.reason(), action.answer());
+    }
+
+    /**
+     * Small models often miscopy base62 IDs (U/u, o/0, a dropped character). A target within three edits of
+     * exactly one returned URI of the same type, and clearly closer than any other, is that result.
+     */
+    private static String closestUri(String target, Set<String> uris) {
+        java.util.regex.Matcher typed = java.util.regex.Pattern.compile("spotify:(track|episode|album|artist|playlist):([A-Za-z0-9]{18,26})").matcher(target.strip());
+        if (!typed.matches()) return "";
+        String best = "";
+        int bestDistance = Integer.MAX_VALUE, second = Integer.MAX_VALUE;
+        for (String uri : uris) {
+            if (!uri.startsWith("spotify:" + typed.group(1) + ":")) continue;
+            int distance = editDistance(typed.group(2), uri.substring(uri.lastIndexOf(':') + 1));
+            if (distance < bestDistance) { second = bestDistance; bestDistance = distance; best = uri; }
+            else if (distance < second) second = distance;
+        }
+        return bestDistance <= 3 && second - bestDistance >= 4 ? best : "";
+    }
+
+    private static int editDistance(String a, String b) {
+        int[] previous = new int[b.length() + 1], current = new int[b.length() + 1];
+        for (int j = 0; j <= b.length(); j++) previous[j] = j;
+        for (int i = 1; i <= a.length(); i++) {
+            current[0] = i;
+            for (int j = 1; j <= b.length(); j++) current[j] = Math.min(Math.min(current[j - 1], previous[j]) + 1,
+                    previous[j - 1] + (a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1));
+            int[] swap = previous; previous = current; current = swap;
+        }
+        return previous[b.length()];
+    }
+
+    /** The single next call the procedure needs, stated concretely for models that stop or wander mid-way. */
+    static String nextStep(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
+        if (!workflowRead(steps)) return workflowGuidance(steps);
+        if (latest(steps, "status") == null) return "Next call: pc__spotify(action=status).";
+        if (!connected(steps)) return "Spotify is not connected. Report that the user must connect Spotify; do not connect automatically.";
+        Map<?, ?> device = localDevice(steps);
+        if (device == null) {
+            ToolRuntimeStep devices = latest(steps, "devices");
+            boolean openedAfter = steps.stream().anyMatch(s -> executed(s) && desktopOpen(s) && s.result().success()
+                    && (devices == null || steps.indexOf(s) > steps.indexOf(devices)));
+            if (devices == null || openedAfter) return "Next call: pc__spotify(action=devices).";
+            if (steps.stream().noneMatch(s -> executed(s) && desktopOpen(s)))
+                return "No local=true Computer in devices. Next call: pc__open(target=spotify), then pc__spotify(action=devices).";
+            return "The desktop app is still not visible as local=true Computer. Read devices once more if the budget allows; otherwise report that "
+                    + "this PC is not visible in Spotify Connect (deviceName in Windows config/spotify.json must match the Spotify device name).";
+        }
+        if (played(steps) != null) return "Play was already sent. Next call: pc__spotify(action=current) to verify; do not repeat play.";
+        Map<String, Map<?, ?>> items = sourceItems(request, steps);
+        if (items.isEmpty()) return fromLiked(request) ? "Next call: pc__spotify(action=liked)."
+                : "Next call: pc__spotify(action=search, query=<what the user asked for>, type=track). If the user named nothing specific "
+                + "(e.g. 'play something'), do not ask and do not stop: call pc__spotify(action=liked) and play one returned track.";
+        Map.Entry<String, Map<?, ?>> first = items.entrySet().iterator().next();
+        return "Next call: pc__spotify(action=play, target=" + first.getKey() + ") - or another URI returned in this request. "
+                + "target may also be the exact result name (\"" + first.getValue().get("name") + "\"); Core resolves it and fills the local deviceId. "
+                + "Do not stop before play.";
     }
 
     /** Only observations get a new identity after a relevant state change, with a total cap. */
@@ -84,9 +179,9 @@ final class SpotifyPlaybackPolicy {
 
     static CompletionAssessment assess(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
         if (!workflowRead(steps)) return missing(workflowGuidance(steps));
-        if (!confirmed(request, steps)) return missing("Playback is not confirmed. Complete status -> devices -> optional desktop OPEN -> devices "
-                + "-> " + (fromLiked(request) ? "liked" : "search/library") + " -> play on the local device. After accepted play, read current (bounded) unless observedPlayback "
-                + "already proves isPlaying=true on the selected device with the selected URI. Do not repeat the mutation or use Web Player.");
+        if (!confirmed(request, steps)) return missing("Playback is not confirmed. " + nextStep(request, steps)
+                + " Procedure: status -> devices -> optional desktop OPEN -> devices -> " + (fromLiked(request) ? "liked" : "search/library/liked")
+                + " -> play on the local device -> verify observedPlayback or current. Do not repeat the mutation or use Web Player.");
         return CompletionAssessment.ok();
     }
 
@@ -209,8 +304,9 @@ final class SpotifyPlaybackPolicy {
 
     private static Map<String, Map<?, ?>> sourceItems(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
         Map<String, Map<?, ?>> items = new LinkedHashMap<>();
-        for (ToolRuntimeStep step : steps) if (executed(step) && (fromLiked(request) ? spotify(step, "liked")
-                : spotify(step, "search") || spotify(step, "library")) && step.result().success())
+        // Liked songs are the user's own data, so they also ground a generic "play something".
+        for (ToolRuntimeStep step : steps) if (executed(step) && (spotify(step, "liked")
+                || !fromLiked(request) && (spotify(step, "search") || spotify(step, "library"))) && step.result().success())
             collect(step.result().data(), items);
         return items;
     }
@@ -218,7 +314,9 @@ final class SpotifyPlaybackPolicy {
     private static void collect(Object value, Map<String, Map<?, ?>> items) {
         if (value instanceof Map<?, ?> map) {
             if (map.get("uri") instanceof String uri && uri.matches("spotify:(track|episode|album|artist|playlist):[A-Za-z0-9]{22}")
-                    && map.get("name") instanceof String name && !name.isBlank()) items.put(uri, map);
+                    && map.get("name") instanceof String name && !name.isBlank()
+                    // Spotify marks tracks unavailable in the user's market; playing them silently does nothing.
+                    && !Boolean.FALSE.equals(map.get("is_playable")) && !Boolean.TRUE.equals(map.get("is_local"))) items.put(uri, map);
             map.values().forEach(child -> collect(child, items));
         } else if (value instanceof List<?> list) list.forEach(child -> collect(child, items));
     }

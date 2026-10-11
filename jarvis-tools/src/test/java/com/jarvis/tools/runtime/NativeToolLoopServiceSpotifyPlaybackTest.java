@@ -36,6 +36,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
     private int currentReads;
     private int currentReadyAfter;
     private String actualTitle = "";
+    private boolean firstLikedUnplayable;
 
 
     @Test void guessedPlayIsBlockedThenProcedureRecoversWithActualSearchAndLocalDevice() {
@@ -246,6 +247,66 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(Collections.frequency(executed, "knowledge/READ_WORKFLOW")).isEqualTo(2);
     }
 
+    @Test void genericRequestStoppingAfterDevicesIsSteeredToLikedAndPlaysOnLocalPc() {
+        userMessage = "siemanko odpal mi coś na spotify";
+        opened = true;
+        ToolCallingResult result = run(findWorkflow(), readWorkflow(candidatePath), spotify("status"), spotify("devices"),
+                answer("Nie wiem, co lubisz. Co mam włączyć?"), spotify("liked"),
+                call("pc__spotify", Map.of("action", "play", "target", URI, "deviceName", "Local desktop")), answer("Done"));
+        assertThat(executed).containsExactly("knowledge/FIND_WORKFLOW", "knowledge/READ_WORKFLOW", "status", "devices", "liked", "play");
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.finalAnswer()).contains("Potwierdzono odtwarzanie", "Real liked title", "Local desktop");
+    }
+
+    @Test void searchBeforeDevicesAndMissingOrWrongDeviceIdAreHandledByCore() {
+        opened = true;
+        ToolCallingResult result = run(workflow(), spotify("status"), search(), spotify("devices"),
+                call("pc__spotify", Map.of("action", "play", "target", URI, "deviceId", "hallucinated-id")), answer("Done"));
+        assertThat(executed).containsExactly("knowledge/READ_WORKFLOW", "status", "search", "devices", "play");
+        assertThat(result.steps()).noneMatch(s -> s.action().equals("SPOTIFY_POLICY_BLOCKED"));
+        assertThat(result.terminationInfo().completed()).isTrue();
+    }
+
+    @Test void returnedLinkOrResultNameMapsToItsUriButUnknownTargetStaysBlocked() {
+        for (String target : List.of("https://open.spotify.com/intl-pl/track/" + "A".repeat(22) + "?si=x", "real search TITLE")) {
+            executed.clear(); opened = true;
+            ToolCallingResult result = run(workflow(), spotify("status"), spotify("devices"), search(),
+                    call("pc__spotify", Map.of("action", "play", "target", target)), answer("Done"));
+            assertThat(executed).endsWith("search", "play");
+            assertThat(result.terminationInfo().completed()).isTrue();
+        }
+        executed.clear(); opened = true;
+        ToolCallingResult result = run(workflow(), spotify("status"), spotify("devices"), search(),
+                call("pc__spotify", Map.of("action", "play", "target", "https://open.spotify.com/track/" + "B".repeat(22))),
+                answer("Gra"), answer("Gra"));
+        assertThat(executed).doesNotContain("play");
+        assertThat(result.terminationInfo().completed()).isFalse();
+    }
+
+    @Test void miscopiedUriAndTruncatedDeviceIdFromSmallModelResolveToReturnedResults() {
+        userMessage = "odpal mi coś na spotify";
+        opened = true;
+        String typo = "spotify:track:" + "A".repeat(10) + "a" + "A".repeat(10); // one case slip + one dropped char
+        ToolCallingResult result = run(workflow(), spotify("status"), spotify("devices"), spotify("liked"),
+                call("pc__spotify", Map.of("action", "play", "target", typo, "deviceId", "local-i")), answer("Done"));
+        assertThat(executed).endsWith("liked", "play");
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.finalAnswer()).contains("Real liked title");
+    }
+
+    @Test void preferencesReadAfterProcedureIsAllowedAndUnplayableLikedTrackIsSkipped() {
+        userMessage = "odpal mi coś na spotify";
+        opened = true; firstLikedUnplayable = true;
+        ToolCallingResult result = run(findWorkflow(), readWorkflow(candidatePath),
+                call("knowledge__read_document", Map.of("path", "preferences/Music.md")),
+                call("pc__read", Map.of("path", "preferences/Music.md")),
+                spotify("status"), spotify("devices"), spotify("liked"), play(INVENTED), play(URI), answer("Done"));
+        assertThat(executed).containsExactly("knowledge/FIND_WORKFLOW", "knowledge/READ_WORKFLOW", "knowledge/READ_DOCUMENT",
+                "status", "devices", "liked", "play");
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.finalAnswer()).contains("Real liked title");
+    }
+
     private ModelResponse findWorkflow() { return call("knowledge__find_workflow", Map.of("query", "Spotify")); }
     private ModelResponse readWorkflow(String path) { return call("knowledge__read_workflow", Map.of("path", path)); }
 
@@ -264,8 +325,8 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         CognitiveEventBus bus = mock(CognitiveEventBus.class);
         ToolRegistry registry = mock(ToolRegistry.class);
         when(registry.definitions()).thenReturn(List.of(
-                new ToolDefinition("pc", "desktop", List.of(op("SPOTIFY", "action", "target", "query", "deviceId"), op("OPEN", "target"), op("SHELL", "command"))),
-                new ToolDefinition("knowledge", "vault", List.of(op("READ_WORKFLOW", "path", "part"), op("FIND_WORKFLOW", "query"))),
+                new ToolDefinition("pc", "desktop", List.of(op("SPOTIFY", "action", "target", "query", "deviceId", "deviceName"), op("OPEN", "target"), op("SHELL", "command"))),
+                new ToolDefinition("knowledge", "vault", List.of(op("READ_WORKFLOW", "path", "part"), op("FIND_WORKFLOW", "query"), op("READ_DOCUMENT", "path"))),
                 new ToolDefinition("browser", "browser", List.of(op("OPEN", "url")))));
         NativeToolLoopService service = new NativeToolLoopService(List.of(provider), manager, query -> ToolIntent.NO_TOOL,
                 new ToolRuntimeProperties(true, 20, 20, 2, 30, "native"), bus, new ToolRuntimeDebugService(),
@@ -299,7 +360,9 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                 case "devices" -> Map.of("devices", opened && availableAfterOpen && deviceReads >= readinessReads ? List.of(Map.of("id", "local-id", "name", "Local desktop",
                         "type", "Computer", "local", true, "restricted", false)) : List.of());
                 case "search" -> Map.of("tracks", Map.of("items", List.of(Map.of("uri", URI, "name", "Real search title"))));
-                case "liked" -> Map.of("items", List.of(Map.of("uri", URI, "name", "Real liked title")));
+                case "liked" -> Map.of("items", firstLikedUnplayable
+                        ? List.of(Map.of("uri", INVENTED, "name", "Region locked", "is_playable", false), Map.of("uri", URI, "name", "Real liked title"))
+                        : List.of(Map.of("uri", URI, "name", "Real liked title")));
                 case "play" -> Map.of("accepted", true, "observedPlayback", playback(observed));
                 case "current" -> Map.of("playback", playback(currentPlaying && currentReads >= currentReadyAfter));
                 default -> throw new AssertionError("Unexpected execution: " + request);

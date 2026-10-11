@@ -127,3 +127,43 @@ jednoznaczne action=liked; błędny cel favorite playlists go nie zastępuje.
 Regresje obejmują discovery → odczyt → status → liked → devices → play →
 observedPlayback, odczyt wieloczęściowy, brak kandydatów, błędne prefiksy,
 Document not found → discovery oraz zapowiedź search bez tool call.
+
+
+## „Odpal coś” i lokalny komputer na słabszych modelach (2026-10-11)
+
+Przebieg „siemanko odpal mi coś na spotify”: FIND_WORKFLOW → READ_WORKFLOW → status → devices
+(lokalny PC znaleziony), po czym model zakończył tekstem bez search/play. Spotify.md każe przy
+niejednoznaczności „zapytać krótko” i nie wymyślać gustu, a Core zamieniał taką odpowiedź na
+„Zadanie nieukończone”. Wskazówka bramki ukończenia była ogólna (cała procedura), więc słaby model
+nie wiedział, jakie konkretne wywołanie wykonać.
+
+- Przy ogólnej prośbie źródłem może być action=liked (rzeczywiste dane konta użytkownika, nie
+  wymyślony gust). Prośba „z polubionych” nadal wymaga wyłącznie liked.
+- nextStep podaje jedno konkretne następne wywołanie (status/devices/open/search lub liked/play
+  z gotowym URI i deviceId/current). Trafia do bramki ukończenia i do każdej blokady polityki.
+- search nie wymaga już listy urządzeń; urządzenie jest potrzebne tylko dla play.
+- prepare: dla play Core sam wpisuje deviceId lokalnego PC (z ostatniego devices), zastępując
+  brak, deviceName lub zmyślone ID. Link open.spotify.com albo dokładna nazwa wyniku z bieżącego
+  requestu zamienia się na jego URI. Cel spoza wyników nadal jest blokowany.
+- Wcześniej słabe modele często dostawały blokadę „local=true Computer” za search przed devices
+  albo play bez/ze złym deviceId; po kilku takich blokadach limit sześciu naruszeń kończył request.
+
+Windows nadal oznacza local=true tylko gdy nazwa urządzenia w Spotify Connect jest równa
+deviceName z config/spotify.json lub COMPUTERNAME. Gdy się różnią, trzeba ustawić deviceName.
+
+Drugi przebieg (12:37) działał jeszcze na starym Core: komunikat „exact URI from search/library”
+odrzucił URI z liked, czego nowa polityka już nie robi. Dodatkowo:
+- pc__read preferences/Music.md dostawał mylący komunikat o MEDIA/browser; teraz Core wskazuje
+  vault i każe przejść do liked, gdy notatki nie ma. knowledge__read_document innych notatek jest
+  dozwolony po odczycie procedury.
+- Windows: search i liked/library tracks pytają z market=from_token, więc Spotify zwraca
+  is_playable; Core nie dopuszcza utworów is_playable=false ani lokalnych plików jako celu play.
+- Windows: po play observedPlayback jest odczytywany do 6 razy co 500 ms, aż odtwarzacz pokaże
+  isPlaying=true z wybranym URI na lokalnym PC. Pojedynczy natychmiastowy odczyt pokazywał stary,
+  zatrzymany utwór („FART PHONK”, isPlaying=false).
+
+Trzeci przebieg (12:55) ujawnił główną przyczynę „błędu lokalnego komputera” na słabych modelach:
+model przepisywał identyfikatory z błędami (URI `…WUoB7…` → `…Wu0B7…`, deviceId bez ostatniego
+znaku). Core wpisuje teraz deviceId lokalnego PC sam, a URI różniące się o maks. 3 znaki od
+dokładnie jednego zwróconego wyniku tego samego typu (wyraźnie bliższego niż pozostałe) mapuje na
+ten wynik. Zamiast URI model może podać dokładną nazwę utworu z wyniku.
