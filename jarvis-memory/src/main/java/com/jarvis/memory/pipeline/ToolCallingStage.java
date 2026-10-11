@@ -195,7 +195,31 @@ public class ToolCallingStage implements PipelineStage {
         if (context.request().voiceMode()) {
             merged.put("voiceMode", true);
         }
+        List<String> workflowTools = workflowTools(context.knowledgeContext());
+        if (!workflowTools.isEmpty()) {
+            merged.put("workflowTools", workflowTools);
+        }
         return Map.copyOf(merged);
+    }
+
+    private static final java.util.regex.Pattern TOOL_NAME = java.util.regex.Pattern.compile("\\b([a-z][a-z0-9]*__[a-z0-9_]+)\\b");
+
+    /**
+     * Tools named by the workflow Core preloaded for this message (e.g. pc__spotify_play in workflows/Spotify.md).
+     * The tool loop offers only these plus the knowledge tools: every tool definition costs prompt-evaluation time
+     * on a local model (125 definitions took ~16 s before the first token of every request).
+     */
+    static List<String> workflowTools(com.jarvis.common.context.KnowledgeContext knowledge) {
+        if (knowledge == null || knowledge.context() == null || knowledge.sources() == null
+                || knowledge.sources().stream().noneMatch(source -> "workflow".equalsIgnoreCase(source.category()))) {
+            return List.of();
+        }
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        java.util.regex.Matcher matcher = TOOL_NAME.matcher(knowledge.context());
+        while (matcher.find()) {
+            names.add(matcher.group(1));
+        }
+        return List.copyOf(names);
     }
 
     /**

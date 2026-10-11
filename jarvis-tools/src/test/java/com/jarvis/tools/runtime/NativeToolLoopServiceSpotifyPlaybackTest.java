@@ -41,6 +41,8 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
     private boolean tvVisible;
     private boolean followPlayDevice;
     private boolean transferStartsAnotherTrack;
+    private Map<String, Object> requestContext = Map.of();
+    private final List<String> offeredTools = new ArrayList<>();
     private AIProvider provider;
 
 
@@ -466,6 +468,14 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.finalAnswer()).contains("Przeniesiono odtwarzanie Spotify na FrytaCraft.pl", "Alien").doesNotContain("Nagano");
     }
 
+    @Test void preloadedWorkflowLimitsTheOfferedToolsToTheOnesItNames() {
+        userMessage = "odpal coś na spotify";
+        requestContext = Map.of("workflowTools", List.of("pc__spotify_play", "pc__spotify_control", "pc__spotify"));
+        run(call("pc__spotify_play", Map.of("source", "liked")), answer("Done"));
+        assertThat(offeredTools).contains("pc__spotify_play", "pc__spotify", "knowledge__find_workflow", "knowledge__read_workflow")
+                .doesNotContain("pc__open", "pc__shell", "browser__open");
+    }
+
     @Test void rawNextOrPauseIsTheOneCallControl() {
         userMessage = "następna";
         history = "User: odpal coś na spotify";
@@ -518,6 +528,8 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         when(provider.provider()).thenReturn("stub");
         when(provider.toolChat(any(), anyList(), anyList(), any())).thenAnswer(inv -> {
             List<NativeToolDefinition> definitions = inv.getArgument(2);
+            offeredTools.clear();
+            definitions.forEach(definition -> offeredTools.add(definition.name()));
             assertThat(definitions).extracting(NativeToolDefinition::name).contains("knowledge__find_workflow", "knowledge__read_workflow");
             return script.isEmpty() ? answer("") : script.removeFirst();
         });
@@ -535,7 +547,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                 new ObjectMapper(), new NativeToolSchemaMapper(registry), new StoreAuditDatasetService(bus));
         service.spotifyPollMillis(0);
         return service.execute(new ToolCallingRequest("spotify-play", "c", userMessage,
-                delegatedGoal, "", Map.of(), "Base", new Brain(BrainType.FAST, "stub", "model", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST, List.of(), history));
+                delegatedGoal, "", requestContext, "Base", new Brain(BrainType.FAST, "stub", "model", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST, List.of(), history));
     }
 
     private ToolResult execute(ToolRequest request) {

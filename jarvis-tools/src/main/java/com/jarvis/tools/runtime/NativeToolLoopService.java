@@ -398,6 +398,18 @@ public class NativeToolLoopService {
             // workspace pinned in the "Kod" tab and would only fail and confuse the model here.
             definitions = definitions.stream().filter(definition -> !definition.name().startsWith("coding__")).toList();
         }
+        if (request.context().get("workflowTools") instanceof List<?> named && !named.isEmpty()) {
+            // The preloaded workflow names the tools its job needs; offering only those (plus knowledge) keeps the
+            // prompt small - each definition is prompt-evaluation time on a local model.
+            List<NativeToolDefinition> scoped = definitions.stream()
+                    .filter(definition -> named.contains(definition.name()) || definition.name().startsWith("knowledge__"))
+                    .toList();
+            if (scoped.stream().anyMatch(definition -> named.contains(definition.name()))) {
+                LOGGER.info("[NATIVE_TOOL_SCHEMA] requestId={} workflowScoped=true from={} to={}", request.requestId(),
+                        definitions.size(), scoped.size());
+                definitions = scoped;
+            }
+        }
         if (definitions.isEmpty()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
         }

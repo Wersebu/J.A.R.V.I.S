@@ -311,3 +311,17 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
 - Dla transfer=true potwierdzeniem jest teraz isPlaying=true na wybranym urządzeniu. Odpowiedź podaje
   faktycznie grający utwór: „Przeniesiono odtwarzanie Spotify na <urządzenie>. Gra: <tytuł>”. Klient Windows
   przy transferze czeka na granie na urządzeniu, a nie na konkretny URI, i raz wznawia, jeśli sesja dotarła na pauzie.
+
+## Analiza śladu rozmowy 88d0c119 (17:22–17:30)
+
+- W każdym zapytaniu z narzędziem pierwsza tura pętli czekała 16,3–17,5 s na pierwszy token
+  (toolDefinitions=125). Kolejne tury trwały 0,6–2,4 s (prompt w cache Ollamy). Decyzja wstępna to 4,7–6,6 s
+  (promptEvalCount ~5000), myślenie modelu łącznie 1–5 s, narzędzia Spotify 0,1–3 s. Prompt pętli jest inny niż
+  prompt decyzji wstępnej, więc cache nie przetrwa między wiadomościami i 125 definicji liczy się od zera.
+- Zmiana: ToolCallingStage przekazuje w kontekście listę narzędzi wymienionych w workflow załadowanym przez
+  router (workflowTools, wyciągane z treści wiedzy wzorcem nazwa__operacja). NativeToolLoopService oferuje wtedy
+  tylko te narzędzia oraz knowledge__*. Log: [NATIVE_TOOL_SCHEMA] workflowScoped=true from=125 to=N.
+  Workflow, który nie wymienia narzędzi, niczego nie ogranicza.
+- „daj się skupić”, „daj pogadać”, „dobra daj się skupić xD”: workflow nie został załadowany (knowledgeContextChars=82),
+  bo tych fraz nie ma w aliases/tags, tylko w tabeli. Model odpowiedział bez narzędzia. Router dopasowuje wyłącznie
+  frontmatter (aliasy jako całe frazy), więc nowe frazy z tabeli trzeba też dopisać do aliases.
