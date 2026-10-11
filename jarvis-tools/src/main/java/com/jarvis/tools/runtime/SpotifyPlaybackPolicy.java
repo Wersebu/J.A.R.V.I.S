@@ -424,10 +424,16 @@ final class SpotifyPlaybackPolicy {
 
     static Map<String, Map<?, ?>> sourceItems(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
         Map<String, Map<?, ?>> items = new LinkedHashMap<>();
-        // Liked songs are the user's own data, so they also ground a generic "play something".
-        for (ToolRuntimeStep step : steps) if (executed(step) && (spotify(step, "liked")
-                || !fromLiked(request) && (spotify(step, "search") || spotify(step, "library"))) && step.result().success())
-            collect(step.result().data(), items);
+        // Liked songs are the user's own data, so they also ground a generic "play something". What was playing
+        // before any play in this request grounds moving it to another device.
+        boolean playedYet = false;
+        for (ToolRuntimeStep step : steps) {
+            if (executed(step) && step.result().success() && (spotify(step, "liked")
+                    || !fromLiked(request) && (spotify(step, "search") || spotify(step, "library"))
+                    || !playedYet && spotify(step, "current")))
+                collect(step.result().data(), items);
+            playedYet |= executed(step) && spotify(step, "play");
+        }
         return items;
     }
 

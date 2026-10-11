@@ -39,6 +39,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
     private boolean firstLikedUnplayable;
     private Map<String, Object> playArguments = Map.of();
     private boolean tvVisible;
+    private boolean followPlayDevice;
     private AIProvider provider;
 
 
@@ -368,6 +369,16 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.finalAnswer()).contains("Zadanie nieukończone");
     }
 
+    @Test void currentPlaybackMovesToTheTvWithItsQueueAndPosition() {
+        userMessage = "a dasz radę odpalić to na TV na spotify?";
+        tvVisible = true; opened = true; followPlayDevice = true; actualTitle = "Actual observed title";
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "current", "device", "TV")),
+                answer("Przeniosłem Actual observed title na telewizor."));
+        assertThat(executed).endsWith("devices", "current", "play");
+        assertThat(playArguments).containsEntry("target", URI).containsEntry("deviceId", "tv-id").containsEntry("transfer", "true");
+        assertThat(result.terminationInfo().completed()).isTrue();
+    }
+
     @Test void anotherDevicePlaysOnlyWhenTheUserAskedForIt() {
         userMessage = "odpal coś ze spotify na telewizorze";
         tvVisible = true; observedDevice = "tv-id";
@@ -446,7 +457,8 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                 case "liked" -> Map.of("items", firstLikedUnplayable
                         ? List.of(Map.of("uri", INVENTED, "name", "Region locked", "is_playable", false), Map.of("uri", URI, "name", "Real liked title"))
                         : List.of(Map.of("uri", URI, "name", "Real liked title")));
-                case "play" -> { playArguments = request.arguments(); yield Map.of("accepted", true, "observedPlayback", playback(observed)); }
+                case "play" -> { playArguments = request.arguments();
+                    if (followPlayDevice) observedDevice = String.valueOf(request.arguments().get("deviceId")); yield Map.of("accepted", true, "observedPlayback", playback(observed)); }
                 case "current" -> Map.of("playback", playback(currentPlaying && currentReads >= currentReadyAfter));
                 default -> throw new AssertionError("Unexpected execution: " + request);
             };
@@ -454,7 +466,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         return new ToolResult(success, request.toolName(), request.operation(), "r", "c", false, List.of(), "result", data,
                 success ? "" : "MISSING", "", false, "");
     }
-    private Map<String, Object> playback(boolean playing) { return Map.of("isPlaying", playing, "deviceId", observedDevice, "item", Map.of("uri", observedUri, "name", actualTitle, "artists", List.of("Observed artist"))); }
+    private Map<String, Object> playback(boolean playing) { return Map.of("isPlaying", playing, "deviceId", observedDevice, "progressMs", 42000, "item", Map.of("uri", observedUri, "name", actualTitle, "artists", List.of("Observed artist"))); }
     private static ToolOperationDefinition op(String name, String... args) {
         return new ToolOperationDefinition(name, name, Arrays.stream(args).map(a -> new ToolArgumentDefinition(a, "string", false, a)).toList(), true, ToolSafetyLevel.WRITE);
     }

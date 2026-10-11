@@ -191,7 +191,8 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                                 + "opens the desktop app if needed, picks a track from the chosen source, plays it and verifies playback. "
                                 + "You decide only the arguments. Returns title, artists, device and confirmed=true, or the exact problem.",
                         ToolSafetyLevel.WRITE, false,
-                        arg("source", false, "liked = the user's liked songs (right for 'play something'); search = find query"),
+                        arg("source", false, "liked = the user's liked songs (right for 'play something'); search = find query; "
+                                + "current = move what is playing now to the device (same track, queue and position)"),
                         arg("query", false, "What to search for when source=search (artist, track, album, playlist)"),
                         arg("type", false, "Search type: track (default), album, artist or playlist"),
                         arg("pick", false, "random (default for liked) or first (default for search: best match)"),

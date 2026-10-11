@@ -226,3 +226,16 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
   w sieci lokalnej (np. Cast) API widzi dopiero, gdy są aktywne na koncie. Wtedy narzędzie
   zwraca NO_DEVICE z listą widocznych urządzeń zamiast zgadywać.
 - Log: [SPOTIFY_PLAY] requestId=… arguments=… confirmed=… errorCode=… elapsedMs=….
+
+### Telewizor i przenoszenie odtwarzania (test na żywo)
+
+- TV „FrytaCraft.pl” nie jest zalogowany na koncie. Aplikacja na PC/telefonie wykrywa go w sieci
+  lokalnej. Do Web API trafia dopiero po wybraniu go raz w aplikacji Spotify w trybie Spotify Connect.
+  Potem był widoczny jako typ TV także wtedy, gdy grał komputer. Nie wiadomo, jak długo zostaje na liście.
+- Odtwarzanie na TV przez play z jawnym deviceId działa (isPlaying=true na FrytaCraft.pl).
+- source=current przenosi to, co gra: Windows play z transfer=true wysyła PUT me/player
+  {device_ids, play:true}, czyli natywny transfer Spotify z tym samym utworem, pozycją, kolejką i Smart
+  Shuffle. Target służy tylko do weryfikacji. Testy TV→PC i PC→TV: ten sam URI, ciągła pozycja.
+  Wcześniejsza próba „kontekst + offset” zawodziła przy Smart Shuffle (polecany utwór nie należy do
+  polubionych), dlatego jej nie użyto.
+- Polityka uznaje utwór z odczytu current wykonanego przed play za rzeczywiste źródło.

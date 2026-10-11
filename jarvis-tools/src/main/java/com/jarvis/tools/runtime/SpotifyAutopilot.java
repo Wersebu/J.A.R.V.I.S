@@ -65,7 +65,8 @@ final class SpotifyAutopilot {
     private ToolResult play() {
         String source = text("source").toLowerCase(Locale.ROOT);
         if (source.isBlank()) source = text("query").isBlank() ? "liked" : "search";
-        if (!source.equals("liked") && !source.equals("search")) return failure("BAD_ARGUMENT", "source must be liked or search.");
+        if (!java.util.Set.of("liked", "search", "current").contains(source))
+            return failure("BAD_ARGUMENT", "source must be liked, search or current.");
         if (source.equals("search") && text("query").isBlank()) return failure("BAD_ARGUMENT", "source=search needs query.");
         if (SpotifyPlaybackPolicy.played(steps) != null)
             return failure("ALREADY_PLAYED", "Playback was already sent in this request; do not repeat it. Report the result.");
@@ -79,6 +80,7 @@ final class SpotifyAutopilot {
         Map<?, ?> device = device();
         if (device == null) return failure("NO_DEVICE", deviceProblem());
 
+        if (source.equals("current")) return moveCurrent(device);
         ToolResult listed = source.equals("liked")
                 ? call("pc", "SPOTIFY", Map.of("action", "liked", "limit", 50))
                 : call("pc", "SPOTIFY", Map.of("action", "search", "query", text("query"),
@@ -91,7 +93,24 @@ final class SpotifyAutopilot {
                 ? candidates.getFirst() : candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
 
         Map<String, Object> playArguments = new LinkedHashMap<>(Map.of("action", "play", "target", chosen, "deviceId", device.get("id")));
-        ToolAction play = SpotifyPlaybackPolicy.prepare(request, action("pc", "SPOTIFY", playArguments), steps);
+        return playAndVerify(new LinkedHashMap<>(SpotifyPlaybackPolicy.prepare(request, action("pc", "SPOTIFY", playArguments), steps).arguments()));
+    }
+
+    /** Moves what is playing now to the chosen device: same track, same context (queue), same position. */
+    private ToolResult moveCurrent(Map<?, ?> device) {
+        ToolResult now = call("pc", "SPOTIFY", Map.of("action", "current"));
+        Object playback = now.success() ? now.data().get("playback") : null;
+        Map<?, ?> state = playback instanceof Map<?, ?> map ? map : Map.of();
+        String uri = state.get("item") instanceof Map<?, ?> item ? Objects.toString(item.get("uri"), "") : "";
+        if (!uri.startsWith("spotify:track:") && !uri.startsWith("spotify:episode:"))
+            return failure("NOTHING_PLAYING", "Nothing is playing on Spotify right now, so there is nothing to move. Use source=liked or search.");
+        // Spotify's transfer carries the exact session over (track, position, queue, smart shuffle); the current
+        // track is passed only so the move is verified against what was actually playing.
+        return playAndVerify(new LinkedHashMap<>(Map.of("action", "play", "target", uri, "deviceId", device.get("id"), "transfer", "true")));
+    }
+
+    private ToolResult playAndVerify(Map<String, Object> playArguments) {
+        ToolAction play = action("pc", "SPOTIFY", playArguments);
         String blocked = SpotifyPlaybackPolicy.guard(request, play, steps);
         if (!blocked.isBlank()) return failure("BLOCKED", blocked);
         run(play);
