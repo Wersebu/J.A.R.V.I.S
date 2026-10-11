@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.api.service.WindowsCodingBridgeGateway;
+import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.tools.mcp.McpAccessLevel;
 import com.jarvis.tools.mcp.McpCallResult;
 import com.jarvis.tools.mcp.McpContentItem;
@@ -33,6 +34,11 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Core-side gateway that forwards MCP operations to the connected Windows client.
+ *
+ * <p>Every user has their own bridge: a Windows app registers under the account it logged in with, and a
+ * request goes only to the PC of the user the calling thread runs as ({@link CurrentUserContext}, set for
+ * every chat and coding task). One person's conversation can never reach another person's files, shell
+ * or screen, and a response from one PC can never complete a request sent to another.</p>
  */
 @Service
 public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway, WindowsCodingBridgeGateway {
@@ -56,9 +62,8 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
     private static final Duration BRIDGE_RESPONSE_SLACK = Duration.ofSeconds(5);
 
     private final ObjectMapper objectMapper;
-    private final AtomicReference<WebSocketSession> bridgeSession = new AtomicReference<>();
-    private final java.util.Set<WebSocketSession> bridgeSessions = ConcurrentHashMap.newKeySet();
-    private final Map<String, CompletableFuture<JsonNode>> pending = new ConcurrentHashMap<>();
+    private final Map<String, Bridge> bridges = new ConcurrentHashMap<>();
+    private final Map<String, Pending> pending = new ConcurrentHashMap<>();
     /**
      * How long in-flight bridge requests survive a dropped Windows socket. The same Windows app
      * instance usually reconnects within seconds and then delivers the result of a long command on
@@ -71,8 +76,17 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
                 thread.setDaemon(true);
                 return thread;
             });
-    private volatile String bridgeInstanceId = "";
-    private volatile java.util.concurrent.ScheduledFuture<?> graceFailure;
+
+    /** One user's Windows app: its current socket, every open socket and the reconnect state. */
+    private static final class Bridge {
+        private final AtomicReference<WebSocketSession> session = new AtomicReference<>();
+        private final java.util.Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
+        private volatile String instanceId = "";
+        private volatile java.util.concurrent.ScheduledFuture<?> graceFailure;
+    }
+
+    private record Pending(String owner, CompletableFuture<JsonNode> future) {
+    }
 
     /**
      * Creates the gateway.
@@ -85,7 +99,7 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
 
     @Override
     public boolean isBridgeConnected() {
-        WebSocketSession session = bridgeSession.get();
+        WebSocketSession session = bridge(caller()).session.get();
         return session != null && session.isOpen();
     }
 
@@ -188,7 +202,7 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
 
     @Override
     public String codingStatus() {
-        long openSessions = openBridgeSessions();
+        long openSessions = openBridgeSessions(bridge(caller()));
         if (openSessions == 0) {
             return "WINDOWS_BRIDGE_UNAVAILABLE";
         }
@@ -200,7 +214,7 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
 
     @Override
     public Map<String, Object> codingRequest(String operation, Map<String, Object> payload, Duration timeout) {
-        long openSessions = openBridgeSessions();
+        long openSessions = openBridgeSessions(bridge(caller()));
         if (openSessions == 0) {
             throw new McpException("Windows Coding Executor is unavailable: no Windows Bridge session is connected.");
         }
@@ -232,20 +246,22 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
      * @param instanceId id of the Windows app instance, blank when unknown
      */
     public synchronized void register(WebSocketSession session, String instanceId) {
+        String owner = owner(session);
+        Bridge bridge = bridges.computeIfAbsent(owner, ignored -> new Bridge());
         String newInstance = instanceId == null ? "" : instanceId;
-        boolean sameInstance = !newInstance.isBlank() && newInstance.equals(bridgeInstanceId);
-        cancelGraceFailure();
-        bridgeSessions.add(session);
-        WebSocketSession previous = bridgeSession.getAndSet(session);
+        boolean sameInstance = !newInstance.isBlank() && newInstance.equals(bridge.instanceId);
+        cancelGraceFailure(bridge);
+        bridge.sessions.add(session);
+        WebSocketSession previous = bridge.session.getAndSet(session);
         if (previous != null && previous != session && sameInstance) {
-            bridgeSessions.remove(previous);
+            bridge.sessions.remove(previous);
         }
-        if (!sameInstance && (previous != null && previous != session || !bridgeInstanceId.isBlank())) {
-            completeAllExceptionally("Windows MCP bridge session was replaced.");
+        if (!sameInstance && (previous != null && previous != session || !bridge.instanceId.isBlank())) {
+            completeAllExceptionally(owner, "Windows MCP bridge session was replaced.");
         }
-        bridgeInstanceId = newInstance;
-        LOGGER.info("[MCP_BRIDGE] Windows bridge registered session={} sameInstance={} keptPending={}",
-                session.getId(), sameInstance, sameInstance ? pending.size() : 0);
+        bridge.instanceId = newInstance;
+        LOGGER.info("[MCP_BRIDGE] Windows bridge registered session={} user={} sameInstance={} keptPending={}",
+                session.getId(), owner, sameInstance, sameInstance ? pendingCount(owner) : 0);
     }
 
     /**
@@ -254,12 +270,31 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
      * @param message JSON message
      */
     public void handleResponse(JsonNode message) {
+        handleResponse(null, message);
+    }
+
+    /**
+     * Handles a response sent by a Windows MCP bridge. It is accepted only from a PC of the user the
+     * request was sent for.
+     *
+     * @param session socket the response arrived on, null when the caller already verified it
+     * @param message JSON message
+     */
+    public void handleResponse(WebSocketSession session, JsonNode message) {
         String requestId = message.path("requestId").asText("");
-        CompletableFuture<JsonNode> future = pending.remove(requestId);
-        if (future == null) {
+        Pending entry = pending.get(requestId);
+        if (entry == null) {
             LOGGER.debug("[MCP_BRIDGE] stale response requestId={}", requestId);
             return;
         }
+        if (session != null && !entry.owner().equals(owner(session))) {
+            LOGGER.warn("[MCP_BRIDGE] ignored response from another user's bridge requestId={} session={}", requestId, session.getId());
+            return;
+        }
+        if (!pending.remove(requestId, entry)) {
+            return;
+        }
+        CompletableFuture<JsonNode> future = entry.future();
         if (!message.path("success").asBoolean(false)) {
             String errorCode = message.path("errorCode").asText("MCP_BRIDGE_ERROR");
             String errorMessage = message.path("errorMessage").asText("Windows MCP bridge request failed.");
@@ -275,46 +310,73 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
      * @param session closed session
      */
     public synchronized boolean detach(WebSocketSession session) {
-        bridgeSessions.remove(session);
-        if (bridgeSession.compareAndSet(session, null)) {
-            if (pending.isEmpty() || bridgeInstanceId.isBlank()) {
-                completeAllExceptionally("Windows MCP bridge disconnected.");
+        String owner = owner(session);
+        Bridge bridge = bridges.get(owner);
+        if (bridge == null) {
+            return false;
+        }
+        bridge.sessions.remove(session);
+        if (bridge.session.compareAndSet(session, null)) {
+            if (pendingCount(owner) == 0 || bridge.instanceId.isBlank()) {
+                completeAllExceptionally(owner, "Windows MCP bridge disconnected.");
             } else {
-                cancelGraceFailure();
-                graceFailure = GRACE_SCHEDULER.schedule(() -> {
-                    if (bridgeSession.get() == null) {
-                        completeAllExceptionally("Windows MCP bridge disconnected and did not reconnect in time.");
+                cancelGraceFailure(bridge);
+                bridge.graceFailure = GRACE_SCHEDULER.schedule(() -> {
+                    if (bridge.session.get() == null) {
+                        completeAllExceptionally(owner, "Windows MCP bridge disconnected and did not reconnect in time.");
                     }
                 }, RECONNECT_GRACE.toMillis(), TimeUnit.MILLISECONDS);
             }
-            LOGGER.info("[MCP_BRIDGE] Windows bridge disconnected session={} pendingKeptForGrace={}",
-                    session.getId(), pending.size());
+            LOGGER.info("[MCP_BRIDGE] Windows bridge disconnected session={} user={} pendingKeptForGrace={}",
+                    session.getId(), owner, pendingCount(owner));
             return true;
         }
         return false;
     }
 
-    private void cancelGraceFailure() {
-        java.util.concurrent.ScheduledFuture<?> scheduled = graceFailure;
+    private void cancelGraceFailure(Bridge bridge) {
+        java.util.concurrent.ScheduledFuture<?> scheduled = bridge.graceFailure;
         if (scheduled != null) {
             scheduled.cancel(false);
-            graceFailure = null;
+            bridge.graceFailure = null;
         }
     }
 
-    private long openBridgeSessions() {
-        bridgeSessions.removeIf(session -> session == null || !session.isOpen());
-        return bridgeSessions.size();
+    private long openBridgeSessions(Bridge bridge) {
+        bridge.sessions.removeIf(session -> session == null || !session.isOpen());
+        return bridge.sessions.size();
+    }
+
+    /** The user the calling thread works for; without one only an unauthenticated local bridge could match. */
+    private static String caller() {
+        return CurrentUserContext.requiredUserId();
+    }
+
+    private static String owner(WebSocketSession session) {
+        Object owner = session.getAttributes().get("jarvis.userId");
+        return owner == null || String.valueOf(owner).isBlank() ? CurrentUserContext.LOCAL_USER_ID : String.valueOf(owner);
+    }
+
+    /** Never null: a user without a registered PC gets an empty bridge, so every request fails as "not connected". */
+    private Bridge bridge(String owner) {
+        Bridge bridge = bridges.get(owner);
+        return bridge == null ? new Bridge() : bridge;
+    }
+
+    private long pendingCount(String owner) {
+        return pending.values().stream().filter(entry -> entry.owner().equals(owner)).count();
     }
 
     private JsonNode request(String type, String serverId, Map<String, Object> payload, Duration timeout) {
-        WebSocketSession session = bridgeSession.get();
+        String owner = caller();
+        WebSocketSession session = bridge(owner).session.get();
         if (session == null || !session.isOpen()) {
-            throw new McpException("Windows MCP bridge is not connected.");
+            throw new McpException("Windows MCP bridge is not connected" + (CurrentUserContext.LOCAL_USER_ID.equals(owner)
+                    ? "." : " for this user: the Jarvis Windows app must be running and logged in to this account."));
         }
         String requestId = UUID.randomUUID().toString();
         CompletableFuture<JsonNode> future = new CompletableFuture<>();
-        pending.put(requestId, future);
+        pending.put(requestId, new Pending(owner, future));
         Map<String, Object> message = new LinkedHashMap<>();
         message.put("type", type);
         message.put("requestId", requestId);
@@ -412,9 +474,12 @@ public class WebSocketWindowsMcpBridgeGateway implements WindowsMcpBridgeGateway
         return message.isBlank() ? "MCP tool returned isError=true" : message;
     }
 
-    private void completeAllExceptionally(String reason) {
+    private void completeAllExceptionally(String owner, String reason) {
         McpException exception = new McpException(reason);
-        pending.forEach((requestId, future) -> future.completeExceptionally(exception));
-        pending.clear();
+        pending.forEach((requestId, entry) -> {
+            if (entry.owner().equals(owner) && pending.remove(requestId, entry)) {
+                entry.future().completeExceptionally(exception);
+            }
+        });
     }
 }

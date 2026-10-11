@@ -30,12 +30,12 @@ class ToolOperationClassifierTest {
         }
         assertThat(ToolOperationClassifier.classify("pc", "SPOTIFY")).isEqualTo(ToolOperationRole.UNKNOWN);
         assertThat(ToolOperationClassifier.classify("pc", "SPOTIFY", java.util.Map.of("action", "future_action"))).isEqualTo(ToolOperationRole.UNKNOWN);
-        for (String action : new String[] {"status", "profile", "unread", "read", "thread", "labels"}) {
-            assertThat(ToolOperationClassifier.classify("pc", "GMAIL", java.util.Map.of("action", action)))
-                    .isEqualTo(ToolOperationRole.READ);
+        for (String operation : new String[] {"STATUS", "READ", "THREAD", "ATTACHMENT"}) {
+            assertThat(ToolOperationClassifier.classify("gmail", operation)).isEqualTo(ToolOperationRole.READ);
         }
-        assertThat(ToolOperationClassifier.classify("pc", "GMAIL", java.util.Map.of("action", "search"))).isEqualTo(ToolOperationRole.SEARCH);
-        assertThat(ToolOperationClassifier.classify("pc", "GMAIL", java.util.Map.of("action", "connect"))).isEqualTo(ToolOperationRole.EXECUTE);
+        assertThat(ToolOperationClassifier.classify("gmail", "SEARCH")).isEqualTo(ToolOperationRole.SEARCH);
+        assertThat(ToolOperationClassifier.classify("gmail", "UNREAD")).isEqualTo(ToolOperationRole.SEARCH);
+        assertThat(ToolOperationClassifier.classify("gmail", "CONNECT")).isEqualTo(ToolOperationRole.EXECUTE);
         assertThat(ToolOperationClassifier.classify("pc", "MEDIA", java.util.Map.of("action", "status"))).isEqualTo(ToolOperationRole.READ);
         assertThat(ToolOperationClassifier.classify("pc", "MEDIA", java.util.Map.of("action", "play"))).isEqualTo(ToolOperationRole.EXECUTE);
     }

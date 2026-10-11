@@ -42,4 +42,27 @@ class JarvisAuthServiceTest {
         service.logout("Bearer " + login.token());
         assertThat(service.authenticateBearer("Bearer " + login.token())).isEmpty();
     }
+
+    @Test
+    void onlyAnAdministratorCreatesAccountsAndTheyAreNeverAdmins() {
+        SQLiteConnectionFactory connectionFactory = new SQLiteConnectionFactory(
+                new MemoryProperties(tempDir.resolve("users-test.db").toString(), 3, null, null, null, null));
+        new SQLiteMemoryInitializer(connectionFactory).afterPropertiesSet();
+        JarvisAuthService service = new JarvisAuthService(new SQLiteJarvisAuthRepository(connectionFactory));
+        UserAccount admin = service.bootstrap("admin@example.com", "very-secret", "Admin").user();
+
+        UserAccount mom = service.createUser(admin, "Mama@Example.com", "mom-secret-1", "Mama");
+        assertThat(mom.role()).isEqualTo("USER");
+        assertThat(mom.id()).isNotEqualTo(admin.id());
+        assertThat(service.login("mama@example.com", "mom-secret-1").user().id()).isEqualTo(mom.id());
+
+        assertThatThrownBy(() -> service.createUser(mom, "other@example.com", "other-secret", "Other"))
+                .isInstanceOf(SecurityException.class);
+        assertThatThrownBy(() -> service.createUser(null, "other@example.com", "other-secret", "Other"))
+                .isInstanceOf(SecurityException.class);
+        assertThatThrownBy(() -> service.createUser(admin, "mama@example.com", "again-secret", "Mama"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("already exists");
+        assertThatThrownBy(() -> service.createUser(admin, "short@example.com", "short", "Short"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }

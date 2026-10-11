@@ -275,11 +275,13 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
         if ("MCP_BRIDGE_REGISTER".equals(messageType)) {
             windowsMcpBridgeGateway.register(session, root.path("instanceId").asText(""));
             send(session, new WebSocketStatus("MCP_BRIDGE_CONNECTED", "Windows MCP bridge connected"));
-            CompletableFuture.runAsync(() -> activateWindowsBridgeServers(session));
+            // Discovery runs on another thread: it must still talk to the PC of the user who registered it.
+            String owner = userId(session);
+            CompletableFuture.runAsync(() -> CurrentUserContext.runAs(owner, () -> activateWindowsBridgeServers(session)));
             return true;
         }
         if ("MCP_BRIDGE_RESPONSE".equals(messageType)) {
-            windowsMcpBridgeGateway.handleResponse(root);
+            windowsMcpBridgeGateway.handleResponse(session, root);
             return true;
         }
         return false;

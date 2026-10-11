@@ -14,3 +14,8 @@ data/
 **/temp-workspaces/
 knowledge/.drafts/
 knowledge/.history/
+
+# Secrets of connected accounts (Gmail OAuth client, token encryption key) - never in git.
+secrets.key
+config/gmail-client.json
+*client_secret*.json

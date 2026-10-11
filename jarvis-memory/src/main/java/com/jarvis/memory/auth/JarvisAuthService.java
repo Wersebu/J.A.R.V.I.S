@@ -36,6 +36,29 @@ public class JarvisAuthService {
         return issueSession(user);
     }
 
+    /**
+     * Lets an administrator add another person (e.g. a family member) with their own conversations,
+     * PC bridge and connected accounts. New accounts are never administrators.
+     *
+     * @param admin the logged-in user creating the account
+     * @param email new user's e-mail (login)
+     * @param password initial password, at least 8 characters
+     * @param displayName name shown in the apps
+     * @return the created account
+     */
+    public UserAccount createUser(UserAccount admin, String email, String password, String displayName) {
+        if (admin == null || !"ADMIN".equals(admin.role())) {
+            throw new SecurityException("Only an administrator can create accounts.");
+        }
+        validateCredentials(email, password);
+        String normalized = email.strip();
+        if (repository.findUserByEmail(normalized).isPresent()) {
+            throw new IllegalArgumentException("An account with this e-mail already exists.");
+        }
+        String name = displayName == null || displayName.isBlank() ? normalized : displayName.strip();
+        return repository.createUser(normalized, PasswordHasher.hash(password), name, "USER", Instant.now());
+    }
+
     public AuthenticatedSession login(String email, String password) {
         UserAccount user = repository.findUserByEmail(email)
                 .orElseThrow(() -> new IllegalArgumentException("Invalid email or password."));

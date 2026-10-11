@@ -46,6 +46,9 @@ public class ConversationTraceRecorder {
             CognitiveEventType.WAITING_FIRST_TOKEN, CognitiveEventType.THINKING_STARTED, CognitiveEventType.THINKING_FINISHED,
             CognitiveEventType.ANSWER_STARTED, CognitiveEventType.ANSWER_FINISHED, CognitiveEventType.STREAMING_FINISHED);
 
+    /** Tools whose results are the user's private content (mail), kept out of trace files. */
+    private static final Set<String> PRIVATE_TOOLS = Set.of("gmail");
+
     private final boolean enabled;
     private final Path directory;
     private final int maxFieldChars;
@@ -229,9 +232,11 @@ public class ConversationTraceRecorder {
                     Entry tool = runningTools.isEmpty() ? new Entry("NARZĘDZIE", at, String.valueOf(metadata.get("tool"))) : runningTools.pop();
                     if (!entries.contains(tool)) entries.add(tool);
                     tool.end = at;
+                    // A user's mail (and attachments) never goes into diagnostic files; the status line is enough to diagnose.
+                    boolean privateData = PRIVATE_TOOLS.contains(String.valueOf(metadata.get("tool")));
                     tool.text += "\n→ " + (Boolean.TRUE.equals(metadata.get("success")) ? "OK" : "BŁĄD " + metadata.getOrDefault("errorCode", ""))
                             + ": " + oneLine(String.valueOf(metadata.getOrDefault("message", "")), maxFieldChars)
-                            + (metadata.containsKey("data") ? "\n" + compact(metadata.get("data")) : "");
+                            + (metadata.containsKey("data") ? "\n" + (privateData ? "[treść poczty pominięta]" : compact(metadata.get("data"))) : "");
                 }
                 default -> {
                     Map<String, Object> details = new LinkedHashMap<>(metadata);

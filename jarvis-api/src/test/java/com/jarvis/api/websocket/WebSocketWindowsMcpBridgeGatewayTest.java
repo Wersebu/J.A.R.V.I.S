@@ -236,6 +236,79 @@ class WebSocketWindowsMcpBridgeGatewayTest {
         assertThatThrownBy(() -> result.get(2, TimeUnit.SECONDS)).hasMessageContaining("replaced");
     }
 
+    @Test
+    void eachUserReachesOnlyTheirOwnPc() {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        TestWebSocketSession ownerPc = userSession("pc-owner", "owner");
+        gateway.register(ownerPc, "instance-owner");
+        respondImmediately(gateway, ownerPc, "{\"requestId\":\"%s\",\"success\":true,\"payload\":{\"pc\":\"owner\"}}");
+
+        java.util.concurrent.atomic.AtomicReference<Map<String, Object>> ownerResult = new java.util.concurrent.atomic.AtomicReference<>();
+        com.jarvis.common.auth.CurrentUserContext.runAs("owner", () ->
+                ownerResult.set(gateway.codingRequest("pc_info", Map.of(), Duration.ofSeconds(1))));
+        assertThat(ownerResult.get()).containsEntry("pc", "owner");
+
+        // Another account without a PC must never be routed to the owner's machine.
+        com.jarvis.common.auth.CurrentUserContext.runAs("mom", () -> {
+            assertThat(gateway.codingStatus()).isEqualTo("WINDOWS_BRIDGE_UNAVAILABLE");
+            assertThat(gateway.isBridgeConnected()).isFalse();
+            assertThatThrownBy(() -> gateway.codingRequest("pc_read", Map.of("path", "C:\secret.txt"), Duration.ofMillis(50)))
+                    .isInstanceOf(McpException.class).hasMessageContaining("no Windows Bridge session");
+            assertThatThrownBy(() -> gateway.callTool("roblox", "search_game_tree", Map.of(), Duration.ofMillis(50)))
+                    .isInstanceOf(McpException.class).hasMessageContaining("for this user");
+        });
+        assertThat(ownerPc.sentMessages()).hasSize(1);
+    }
+
+    @Test
+    void twoUsersWithTheirOwnPcsAreNotMistakenForMultipleSessions() {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        TestWebSocketSession ownerPc = userSession("pc-owner", "owner");
+        TestWebSocketSession momPc = userSession("pc-mom", "mom");
+        gateway.register(ownerPc, "instance-owner");
+        gateway.register(momPc, "instance-mom");
+        respondImmediately(gateway, momPc, "{\"requestId\":\"%s\",\"success\":true,\"payload\":{\"pc\":\"mom\"}}");
+
+        com.jarvis.common.auth.CurrentUserContext.runAs("mom", () ->
+                assertThat(gateway.codingRequest("pc_info", Map.of(), Duration.ofSeconds(1))).containsEntry("pc", "mom"));
+        assertThat(ownerPc.sentMessages()).isEmpty();
+        // The owner's PC disconnecting does not touch the other user's bridge.
+        ownerPc.close();
+        gateway.detach(ownerPc);
+        com.jarvis.common.auth.CurrentUserContext.runAs("mom", () -> assertThat(gateway.codingStatus()).isEqualTo("CONNECTED"));
+    }
+
+    @Test
+    void aResponseFromAnotherUsersPcCannotCompleteTheRequest() throws Exception {
+        WebSocketWindowsMcpBridgeGateway gateway = new WebSocketWindowsMcpBridgeGateway(objectMapper);
+        TestWebSocketSession ownerPc = userSession("pc-owner", "owner");
+        TestWebSocketSession otherPc = userSession("pc-other", "other");
+        gateway.register(ownerPc, "instance-owner");
+        gateway.register(otherPc, "instance-other");
+        ownerPc.onSend(sentMessage -> {
+            try {
+                String requestId = objectMapper.readTree(((TextMessage) sentMessage).getPayload()).path("requestId").asText();
+                // A forged answer from the other user's PC is ignored; the real one from the owner's PC wins.
+                gateway.handleResponse(otherPc, objectMapper.readTree("{\"requestId\":\"" + requestId
+                        + "\",\"success\":true,\"payload\":{\"content\":\"forged\"}}"));
+                gateway.handleResponse(ownerPc, objectMapper.readTree("{\"requestId\":\"" + requestId
+                        + "\",\"success\":true,\"payload\":{\"content\":\"real\"}}"));
+            } catch (Exception exception) {
+                throw new AssertionError(exception);
+            }
+        });
+        java.util.concurrent.atomic.AtomicReference<Map<String, Object>> result = new java.util.concurrent.atomic.AtomicReference<>();
+        com.jarvis.common.auth.CurrentUserContext.runAs("owner", () ->
+                result.set(gateway.codingRequest("pc_read", Map.of(), Duration.ofSeconds(1))));
+        assertThat(result.get()).containsEntry("content", "real");
+    }
+
+    private TestWebSocketSession userSession(String id, String userId) {
+        TestWebSocketSession session = fakeOpenSession(id);
+        session.getAttributes().put("jarvis.userId", userId);
+        return session;
+    }
+
     private void respondImmediately(WebSocketWindowsMcpBridgeGateway gateway, TestWebSocketSession session, String payloadTemplate) {
         session.onSend(sentMessage -> {
             TextMessage message = (TextMessage) sentMessage;

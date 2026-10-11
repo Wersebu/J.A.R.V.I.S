@@ -52,6 +52,23 @@ class ConversationTraceRecorderTest {
     }
 
     @Test
+    void mailContentNeverReachesTheTraceFile() throws Exception {
+        ConversationTraceRecorder recorder = new ConversationTraceRecorder(true, directory.toString(), 1500);
+        Consumer<CognitiveEvent> sink = recorder.begin("req-1", "conv/2", "co nowego na poczcie?", event -> { });
+        Instant t = Instant.now();
+        sink.accept(event(t, CognitiveEventType.TOOL_EXECUTION_STARTED, "start",
+                Map.of("tool", "gmail", "operation", "UNREAD", "arguments", Map.of())));
+        sink.accept(event(t.plusMillis(300), CognitiveEventType.TOOL_EXECUTION_FINISHED, "done",
+                Map.of("tool", "gmail", "operation", "UNREAD", "success", true, "message", "Gmail unread read: 1 message(s).",
+                        "data", "{\"messages\":[{\"subject\":\"Wyniki badan\",\"body\":\"Prywatna tresc\"}]}")));
+        recorder.finish();
+
+        String trace = Files.readString(directory.resolve("conv_2.md"));
+        assertThat(trace).contains("gmail.UNREAD", "1 message(s)", "[treść poczty pominięta]")
+                .doesNotContain("Wyniki badan").doesNotContain("Prywatna tresc");
+    }
+
+    @Test
     void disabledRecorderPassesTheSinkThroughAndWritesNothing() throws Exception {
         ConversationTraceRecorder recorder = new ConversationTraceRecorder(false, directory.toString(), 1500);
         Consumer<CognitiveEvent> sink = event -> { };

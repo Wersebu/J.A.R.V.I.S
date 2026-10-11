@@ -52,6 +52,19 @@ public class AuthController {
         authService.logout(authorization);
     }
 
+    @PostMapping("/users")
+    public UserResponse createUser(HttpServletRequest request, @RequestBody AuthRequest body) {
+        Object admin = request.getAttribute("jarvis.user");
+        try {
+            return UserResponse.from(authService.createUser(admin instanceof UserAccount account ? account : null,
+                    body.email(), body.password(), body.displayName()));
+        } catch (SecurityException exception) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, exception.getMessage(), exception);
+        } catch (IllegalArgumentException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, exception.getMessage(), exception);
+        }
+    }
+
     @GetMapping("/me")
     public UserResponse me(HttpServletRequest request) {
         Object user = request.getAttribute("jarvis.user");
