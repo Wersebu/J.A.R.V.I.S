@@ -402,6 +402,15 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.terminationInfo().completed()).isTrue();
     }
 
+    @Test void wrongReplyIsRewrittenByTheModelFromTheFactsNotReplacedByATemplate() {
+        userMessage = "odpal coś na spotify";
+        opened = true;
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "liked")),
+                answer("Leci Uptown Funk na telewizorze."), answer("Gra Real liked title na Twoim komputerze, miłego słuchania!"));
+        assertThat(result.finalAnswer()).isEqualTo("Gra Real liked title na Twoim komputerze, miłego słuchania!");
+        verify(provider, times(3)).toolChat(any(), anyList(), anyList(), any());
+    }
+
     @Test void replyClaimingTheTvWhileThePcPlaysIsReplacedByEvidence() {
         userMessage = "odpal coś na spotify";
         tvVisible = true; opened = true;
@@ -528,9 +537,11 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         when(provider.provider()).thenReturn("stub");
         when(provider.toolChat(any(), anyList(), anyList(), any())).thenAnswer(inv -> {
             List<NativeToolDefinition> definitions = inv.getArgument(2);
-            offeredTools.clear();
-            definitions.forEach(definition -> offeredTools.add(definition.name()));
-            assertThat(definitions).extracting(NativeToolDefinition::name).contains("knowledge__find_workflow", "knowledge__read_workflow");
+            if (!definitions.isEmpty()) {
+                offeredTools.clear();
+                definitions.forEach(definition -> offeredTools.add(definition.name()));
+            }
+            if (!definitions.isEmpty()) assertThat(definitions).extracting(NativeToolDefinition::name).contains("knowledge__find_workflow", "knowledge__read_workflow");
             return script.isEmpty() ? answer("") : script.removeFirst();
         });
         ToolManager manager = mock(ToolManager.class);

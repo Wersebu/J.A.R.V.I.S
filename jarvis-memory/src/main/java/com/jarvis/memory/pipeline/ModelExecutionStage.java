@@ -102,6 +102,21 @@ public class ModelExecutionStage implements PipelineStage {
         }
 
         boolean hasImages = !context.images().isEmpty();
+        if (!hasImages && routedWorkflow(context)) {
+            // Core already matched this message to a workflow (e.g. Spotify) and loaded it: the model's first thought
+            // happens in the tool loop, which can also answer without tools. A separate "do I need a tool?" call
+            // would only re-read the whole prompt (~5 s on a local model).
+            TELEMETRY_LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} initialModelDecision=TOOL_REQUEST toolRequestedByModel=false "
+                    + "autoTriggered=true reason=ROUTED_WORKFLOW modelCalls=0", context.requestId());
+            cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "TOOL_REQUEST",
+                    "Workflow preloaded; the model decides inside the tool loop", null, Map.of("reason", "ROUTED_WORKFLOW"));
+            return context
+                    .withMetadata("mainModelAction", MainModelActionType.TOOL_REQUEST.name())
+                    .withMetadata("toolGoal", context.request().message())
+                    .withMetadata("toolReason", "Workflow preloaded for this message")
+                    .withMetadata("toolContext", Map.of())
+                    .withMetadata("mainModelDurationMs", 0L);
+        }
         TELEMETRY_LOGGER.info("[ATTACHMENT_ROUTING] requestId={} currentMessageImages={} forwardedToMainModel={}",
                 context.requestId(), context.images().size(), hasImages);
 
@@ -185,6 +200,11 @@ public class ModelExecutionStage implements PipelineStage {
      * @param outcome the decision outcome to finalize
      * @return updated pipeline context
      */
+    private static boolean routedWorkflow(PipelineContext context) {
+        return context.knowledgeContext() != null && context.knowledgeContext().sources() != null
+                && context.knowledgeContext().sources().stream().anyMatch(source -> "workflow".equalsIgnoreCase(source.category()));
+    }
+
     private PipelineContext finalizeDecision(PipelineContext context, DecisionOutcome outcome) {
         MainModelAction action = outcome.action();
         publishMainModelAction(context, action, outcome.durationMs());

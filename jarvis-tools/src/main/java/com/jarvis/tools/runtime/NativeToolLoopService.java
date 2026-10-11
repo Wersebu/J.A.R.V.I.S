@@ -326,7 +326,16 @@ public class NativeToolLoopService {
             String modelAnswer = result.terminationInfo() != null && result.terminationInfo().completed()
                     ? result.finalAnswer()
                     : result.terminationInfo() == null ? "" : result.terminationInfo().lastModelContent();
-            String answer = SpotifyPlaybackPolicy.groundedAnswer(request, result.steps(), modelAnswer);
+            String answer = modelAnswer == null ? "" : modelAnswer.strip();
+            if (!SpotifyPlaybackPolicy.acceptable(request, result.steps(), modelAnswer)) {
+                // The reply disagreed with what Spotify shows: the model writes it again from the facts, in its own
+                // words. The plain facts are used only if that rewrite is still wrong.
+                String facts = SpotifyPlaybackPolicy.evidence(request, result.steps());
+                String rewritten = rewriteFromFacts(request, facts);
+                boolean accepted = SpotifyPlaybackPolicy.acceptable(request, result.steps(), rewritten);
+                LOGGER.info("[SPOTIFY_ANSWER] requestId={} firstReplyRejected=true rewriteAccepted={}", request.requestId(), accepted);
+                answer = accepted ? rewritten.strip() : facts;
+            }
             return new ToolCallingResult(true, answer, result.steps(), result.results(), result.terminationInfo());
         }
         if (!result.handled() || !SpotifyReadEvidence.applies(request)) {
@@ -338,7 +347,24 @@ public class NativeToolLoopService {
                 result.results(), result.terminationInfo());
     }
 
+    private String rewriteFromFacts(ToolCallingRequest request, String facts) {
+        List<ModelMessage> messages = List.of(
+                ModelMessage.system("You are J.A.R.V.I.S. Reply to the user in their language, briefly (one or two sentences), "
+                        + "in your own words. Use ONLY these facts reported by the tools; do not add tracks, devices, links "
+                        + "or claims that are not in them. If they say something failed, say so plainly.\nFacts: " + facts),
+                ModelMessage.user(request.userMessage()));
+        try {
+            return selectProvider(request).toolChat(request.brain(), messages, List.of(), AIJobType.MAIN_MODEL).content();
+        } catch (RuntimeException exception) {
+            LOGGER.warn("[SPOTIFY_ANSWER] requestId={} rewrite failed: {}", request.requestId(), exception.getMessage());
+            return "";
+        }
+    }
+
     private long spotifyPollMillis = 1500;
+    /** With a workflow already preloaded, only these knowledge operations stay on offer next to its own tools. */
+    private static final Set<String> WORKFLOW_KNOWLEDGE_TOOLS = Set.of("knowledge__find_workflow", "knowledge__read_workflow",
+            "knowledge__read_document", "knowledge__search_content");
 
     /** Tests shorten the pause pc__spotify_play takes while a just-opened app registers in Spotify Connect. */
     void spotifyPollMillis(long pollMillis) {
@@ -402,7 +428,7 @@ public class NativeToolLoopService {
             // The preloaded workflow names the tools its job needs; offering only those (plus knowledge) keeps the
             // prompt small - each definition is prompt-evaluation time on a local model.
             List<NativeToolDefinition> scoped = definitions.stream()
-                    .filter(definition -> named.contains(definition.name()) || definition.name().startsWith("knowledge__"))
+                    .filter(definition -> named.contains(definition.name()) || WORKFLOW_KNOWLEDGE_TOOLS.contains(definition.name()))
                     .toList();
             if (scoped.stream().anyMatch(definition -> named.contains(definition.name()))) {
                 LOGGER.info("[NATIVE_TOOL_SCHEMA] requestId={} workflowScoped=true from={} to={}", request.requestId(),

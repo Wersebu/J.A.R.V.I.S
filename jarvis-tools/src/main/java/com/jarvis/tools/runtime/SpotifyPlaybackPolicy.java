@@ -223,29 +223,39 @@ final class SpotifyPlaybackPolicy {
      * voice without ever publishing a claim the observed Spotify state does not support.
      */
     static String groundedAnswer(ToolCallingRequest request, List<ToolRuntimeStep> steps, String modelAnswer) {
+        return acceptable(request, steps, modelAnswer) ? modelAnswer.strip() : evidence(request, steps);
+    }
+
+    /** What the tools established, in plain words: the facts a model reply has to agree with. */
+    static String evidence(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
         ToolRuntimeStep control = control(steps);
-        String evidence = control != null ? control.result().message() : answer(request, steps);
-        if (modelAnswer == null || modelAnswer.isBlank() || modelAnswer.length() > 800) return evidence;
+        return control != null ? control.result().message() : answer(request, steps);
+    }
+
+    /** Whether a model reply agrees with the observed Spotify state (track, device, success or failure). */
+    static boolean acceptable(ToolCallingRequest request, List<ToolRuntimeStep> steps, String modelAnswer) {
+        if (modelAnswer == null || modelAnswer.isBlank() || modelAnswer.length() > 800) return false;
         String reply = normalize(modelAnswer);
         boolean clean = !reply.contains("http") && !reply.contains("spotify:") && !reply.contains("{") && !reply.contains("open.spotify");
-        if (!clean) return evidence;
+        if (!clean) return false;
+        ToolRuntimeStep control = control(steps);
         if (control != null) {
             if (control.result().success()) {
                 Object now = control.result().data().get("title");
                 String title = normalize(Objects.toString(now, "")).split(" - | \\(| \\[")[0].strip();
-                return now == null || title.length() >= 2 && reply.contains(title) ? modelAnswer.strip() : evidence;
+                return now == null || title.length() >= 2 && reply.contains(title);
             }
-            return ADMITS_FAILURE.matcher(reply).find() && !CLAIMS_PLAYBACK.matcher(reply).find() ? modelAnswer.strip() : evidence;
+            return ADMITS_FAILURE.matcher(reply).find() && !CLAIMS_PLAYBACK.matcher(reply).find();
         }
         if (confirmed(request, steps)) {
             String title = normalize(String.valueOf(playbackFacts(request, steps).get("title"))).split(" - | \\(| \\[")[0].strip();
             ToolRuntimeStep play = played(steps);
             Map<?, ?> device = targetDevice(request, steps, play.arguments().get("deviceId"));
-            return title.length() >= 2 && reply.contains(title) && !mentionsOtherDevice(modelAnswer, device, steps) ? modelAnswer.strip() : evidence;
+            return title.length() >= 2 && reply.contains(title) && !mentionsOtherDevice(modelAnswer, device, steps);
         }
         // Nothing confirmed: the model may explain why in its own words (e.g. the TV is not visible to Spotify),
         // but only an explicit admission passes - never a reply that claims or implies playback.
-        return ADMITS_FAILURE.matcher(reply).find() && !CLAIMS_PLAYBACK.matcher(reply).find() ? modelAnswer.strip() : evidence;
+        return ADMITS_FAILURE.matcher(reply).find() && !CLAIMS_PLAYBACK.matcher(reply).find();
     }
 
     private static final java.util.regex.Pattern ADMITS_FAILURE = java.util.regex.Pattern.compile(

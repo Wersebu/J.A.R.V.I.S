@@ -325,3 +325,25 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
 - „daj się skupić”, „daj pogadać”, „dobra daj się skupić xD”: workflow nie został załadowany (knowledgeContextChars=82),
   bo tych fraz nie ma w aliases/tags, tylko w tabeli. Model odpowiedział bez narzędzia. Router dopasowuje wyłącznie
   frontmatter (aliasy jako całe frazy), więc nowe frazy z tabeli trzeba też dopisać do aliases.
+
+## Analiza śladu 536dee94 (17:38–17:44)
+
+- Zapytania z załadowanym Spotify.md: 11–15 s (było ~27 s). 1. tura pętli czekała 3,2 s na pierwszy token przy
+  21 narzędziach (było 16,5 s przy 125). Rozkład typowego zapytania: decyzja wstępna ~5 s (promptEval ~3,2 s dla
+  ~5200 tokenów), 1. tura ~3,2 s + ~1 s myślenia, narzędzie 0,2–2,7 s, tura odpowiedzi ~1,5–2 s.
+- „dobra zatrzymaj” 26 s i „wznów” 31 s: router nie dopasował, więc pętla dostała 125 narzędzi, a model użył
+  niskopoziomowego pc__spotify (pause; play z pustymi polami, przekierowane). „jebnij basem!” poszło bez narzędzia.
+- Pamięć tematu (KnowledgeRetrievalStage): wiadomość do 4 słów, która nic nie dopasowała, dziedziczy workflow z
+  ostatniego dopasowania w tej rozmowie, jeśli było w ciągu 10 minut (log reason=topic).
+- Przy workflowScoped pętla oferuje obok narzędzi z workflow tylko knowledge__find_workflow/read_workflow/
+  read_document/search_content zamiast wszystkich knowledge__*.
+
+### Bez decyzji wstępnej przy załadowanym workflow; odpowiedź zawsze od modelu
+
+- ModelExecutionStage: gdy KnowledgeRetrievalStage załadował workflow (źródło z kategorią workflow) i nie ma
+  obrazów, osobne wywołanie „czy potrzebuję narzędzia?” jest pomijane (ok. 5 s). Pierwsza myśl modelu powstaje
+  w pętli narzędzi, która może też odpowiedzieć bez narzędzia. Log: initialModelDecision=TOOL_REQUEST
+  reason=ROUTED_WORKFLOW modelCalls=0.
+- Odpowiedź: gdy pierwsza odpowiedź modelu nie zgadza się z obserwowanym stanem (tytuł, urządzenie, sukces lub
+  porażka), model dostaje fakty z narzędzia i pisze odpowiedź ponownie, własnymi słowami (jedno krótkie wywołanie
+  bez narzędzi). Tekst z faktów jest używany tylko wtedy, gdy także ta odpowiedź jest niezgodna. Log: [SPOTIFY_ANSWER].

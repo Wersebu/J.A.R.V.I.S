@@ -61,6 +61,32 @@ class KnowledgeRetrievalStageTest {
     }
 
     @Test
+    void shortFollowUpKeepsTheConversationsRecentWorkflowButALongerOtherTopicDoesNot() {
+        WorkflowRouter router = new WorkflowRouter(null) {
+            @Override
+            public Optional<WorkflowCandidate> route(String query) {
+                return query.contains("spotify") ? Optional.of(new WorkflowCandidate("id", "workflows/Spotify.md",
+                        "Spotify", "active", "1", "", 900, 1, 0.03, List.of())) : Optional.empty();
+            }
+        };
+        KnowledgeRetrievalStage stage = new KnowledgeRetrievalStage(router);
+
+        assertThat(paths(stage.execute(context("odpal coś na spotify")))).containsExactly("workflows/Spotify.md");
+        assertThat(paths(stage.execute(context("wznów")))).containsExactly("workflows/Spotify.md");
+        assertThat(paths(stage.execute(context("jebnij basem!")))).containsExactly("workflows/Spotify.md");
+        assertThat(paths(stage.execute(context("napisz mi maila do szefa o urlopie w przyszłym tygodniu")))).isEmpty();
+    }
+
+    private static PipelineContext context(String message) {
+        return PipelineContext.initial("conversation", "request", new ChatRequest("conversation", message, Instant.now()),
+                event -> { }, event -> { });
+    }
+
+    private static List<String> paths(PipelineContext context) {
+        return context.retrievalResult().documents().stream().map(document -> document.relativePath()).toList();
+    }
+
+    @Test
     void neverRetrievesForSimpleConversation() {
         KnowledgeRetrievalStage stage = new KnowledgeRetrievalStage();
         ChatRequest request = new ChatRequest("conversation", "Opowiedz krotka bajke o smoku.", Instant.now());
