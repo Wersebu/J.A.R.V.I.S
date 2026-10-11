@@ -239,3 +239,18 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
   Wcześniejsza próba „kontekst + offset” zawodziła przy Smart Shuffle (polecany utwór nie należy do
   polubionych), dlatego jej nie użyto.
 - Polityka uznaje utwór z odczytu current wykonanego przed play za rzeczywiste źródło.
+
+### pc__spotify_control: szybkie sterowanie bieżącym odtwarzaniem
+
+- „Następna” trwała 50 s, bo szła starą drogą krok po kroku. Polityka odtwarzania traktowała
+  „puść następną” jak nowe odtwarzanie i nie dopuszczała next.
+- Nowe narzędzie pc__spotify_control (PcTool SPOTIFY_CONTROL, wykonywane w pętli przez SpotifyAutopilot):
+  action=next|previous|pause|resume|volume|shuffle|repeat (+value/state). Core czyta current, wysyła
+  komendę na urządzenie, które właśnie gra (PC albo TV), i do 3 razy sprawdza, czy odtwarzacz się zmienił
+  (inny utwór, pauza, wznowienie). Nie czyta workflow ani listy urządzeń.
+- Polityka: udane pc__spotify_control kończy prośbę (assess ok). Odpowiedź modelu przechodzi, a przy
+  niepowodzeniu tylko jako jawne przyznanie problemu.
+- Błąd klienta Windows: next/shuffle odpowiadają 200 z gołym tekstem (identyfikator kolejki) zamiast JSON.
+  Parser rzucał wyjątek raportowany jako „Spotify connection failed”, choć komenda się wykonała.
+  Teraz odpowiedź niebędąca JSON-em jest traktowana jako sukces bez danych. Test na żywo: next przyjęty,
+  zmiana utworu potwierdzona.

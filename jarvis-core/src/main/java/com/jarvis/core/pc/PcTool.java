@@ -197,6 +197,13 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                         arg("type", false, "Search type: track (default), album, artist or playlist"),
                         arg("pick", false, "random (default for liked) or first (default for search: best match)"),
                         arg("device", false, "Empty = this PC. Otherwise the device the user asked for, e.g. TV or speaker")),
+                op("SPOTIFY_CONTROL", "Control what Spotify is playing right now in ONE call, on whichever device plays it "
+                                + "(this PC or e.g. the TV): next, previous, pause, resume, volume, shuffle, repeat. Core checks that the "
+                                + "player changed and returns the now-playing title, artists and device.",
+                        ToolSafetyLevel.WRITE, false,
+                        arg("action", true, "next | previous | pause | resume | volume | shuffle | repeat"),
+                        intArg("value", "volume: 0-100"),
+                        arg("state", false, "shuffle: true/false; repeat: off/track/context")),
                 op("CHANGES", "List files changed by pc__write/edit/patch/delete in this conversation (newest first).",
                         ToolSafetyLevel.READ, false),
                 op("UNDO", "Undo the last file changes made in this conversation (restores previous content, removes created "
@@ -222,9 +229,9 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
             // Windows resolves relative paths and new terminal sessions against the conversation folder.
             arguments.put("baseDir", workingDirectory);
         }
-        if ("SPOTIFY_PLAY".equals(operation)) {
+        if ("SPOTIFY_PLAY".equals(operation) || "SPOTIFY_CONTROL".equals(operation)) {
             // A composite of pc SPOTIFY/OPEN calls that only the native tool loop can carry out and verify.
-            return failure(request, operation, "LOOP_ONLY", "pc__spotify_play is carried out by the Core tool loop, not sent to the PC.");
+            return failure(request, operation, "LOOP_ONLY", "pc__" + operation.toLowerCase(Locale.ROOT) + " is carried out by the Core tool loop, not sent to the PC.");
         }
         if ("PROJECT_INSTRUCTIONS".equals(operation)) {
             // Internal (not offered to the model): loaded once per turn into the loop's system prompt.

@@ -18,6 +18,9 @@ import java.util.concurrent.ThreadLocalRandom;
  */
 final class SpotifyAutopilot {
     static final String OPERATION = "SPOTIFY_PLAY";
+    static final String CONTROL = "SPOTIFY_CONTROL";
+    private static final java.util.Set<String> CONTROLS = java.util.Set.of("next", "previous", "pause", "resume", "volume", "shuffle", "repeat");
+    private static final int CONTROL_CHECKS = 3;
     private static final int READINESS_READS = 3; // devices after OPEN; the policy allows four reads in total
     private static final int VERIFY_READS = 2;
 
@@ -49,7 +52,8 @@ final class SpotifyAutopilot {
     }
 
     static boolean handles(ToolAction action) {
-        return "pc".equalsIgnoreCase(action.tool()) && OPERATION.equalsIgnoreCase(action.operation());
+        return "pc".equalsIgnoreCase(action.tool())
+                && (OPERATION.equalsIgnoreCase(action.operation()) || CONTROL.equalsIgnoreCase(action.operation()));
     }
 
     /**
@@ -59,7 +63,80 @@ final class SpotifyAutopilot {
      */
     static ToolResult play(ToolCallingRequest request, ToolAction action, List<ToolRuntimeStep> steps, int stepNumber,
                            Executor executor, Pause pause, long pollMillis) {
-        return new SpotifyAutopilot(request, action.arguments(), steps, stepNumber, executor, pause, pollMillis).play();
+        SpotifyAutopilot pilot = new SpotifyAutopilot(request, action.arguments(), steps, stepNumber, executor, pause, pollMillis);
+        return CONTROL.equalsIgnoreCase(action.operation()) ? pilot.control() : pilot.play();
+    }
+
+    /**
+     * pc__spotify_control: next/previous/pause/resume/volume/shuffle/repeat on whichever device is playing now
+     * (the PC, or e.g. the TV the user moved it to), then a short check that the player actually changed.
+     * No workflow read and no device discovery: it acts on the live session the user already has.
+     */
+    private ToolResult control() {
+        String act = text("action").toLowerCase(Locale.ROOT);
+        if (!CONTROLS.contains(act)) return failure(CONTROL, "BAD_ARGUMENT", "action must be one of " + CONTROLS + ".");
+        if (act.equals("volume") && text("value").isBlank()) return failure(CONTROL, "BAD_ARGUMENT", "volume needs value 0-100.");
+        if ((act.equals("shuffle") || act.equals("repeat")) && text("state").isBlank())
+            return failure(CONTROL, "BAD_ARGUMENT", act + " needs state (shuffle: true/false; repeat: off/track/context).");
+        Map<?, ?> before = playback(call("pc", "SPOTIFY", Map.of("action", "current")));
+        String deviceId = Objects.toString(before.get("deviceId"), "");
+        if (deviceId.isBlank()) {
+            if (!act.equals("resume")) return failure(CONTROL, "NOTHING_PLAYING",
+                    "No active Spotify session to control. Start something with pc__spotify_play first.");
+            call("pc", "SPOTIFY", Map.of("action", "devices"));
+            Map<?, ?> local = SpotifyPlaybackPolicy.localDevice(steps);
+            if (local == null) return failure(CONTROL, "NO_DEVICE", "Nothing to resume and this PC is not visible in Spotify Connect.");
+            deviceId = String.valueOf(local.get("id"));
+        }
+        Map<String, Object> command = new LinkedHashMap<>(Map.of("action", act.equals("resume") ? "play" : act, "deviceId", deviceId));
+        if (!text("value").isBlank()) command.put("value", text("value"));
+        if (!text("state").isBlank()) command.put("state", text("state"));
+        ToolResult sent = run(action("pc", "SPOTIFY", command));
+        if (!sent.success()) return failure(CONTROL, "COMMAND_FAILED", "Spotify rejected " + act + ": " + sent.message());
+
+        Map<?, ?> after = playback(sent.data().get("observedPlayback"));
+        for (int check = 0; check < CONTROL_CHECKS && !changed(act, before, after); check++) {
+            pause.pause(Math.max(pollMillis / 2, 0)); // the player updates asynchronously
+            after = playback(call("pc", "SPOTIFY", Map.of("action", "current")));
+        }
+        boolean confirmed = changed(act, before, after);
+        Map<String, Object> data = new LinkedHashMap<>(Map.of("action", act, "confirmed", confirmed));
+        Object item = after.get("item");
+        if (item instanceof Map<?, ?> track && track.get("name") instanceof String name && !name.isBlank()) {
+            data.put("title", name);
+            if (track.get("artists") instanceof List<?> artists && !artists.isEmpty())
+                data.put("artists", String.join(", ", artists.stream().map(String::valueOf).toList()));
+        }
+        data.put("isPlaying", Boolean.TRUE.equals(after.get("isPlaying")));
+        data.put("device", Objects.toString(after.get("deviceName"), Objects.toString(before.get("deviceName"), "")));
+        String message = confirmed
+                ? "Spotify " + act + " done on " + data.get("device") + (data.containsKey("title")
+                        ? ". Now: " + data.get("title") + (data.containsKey("artists") ? " — " + data.get("artists") : "") : "") + "."
+                : "Spotify accepted " + act + " but the player did not show the change yet.";
+        return result(CONTROL, confirmed, message, data, confirmed ? "" : "CONTROL_NOT_CONFIRMED");
+    }
+
+    /** Whether the observed player reflects the command; settings commands are confirmed by their acceptance. */
+    private static boolean changed(String act, Map<?, ?> before, Map<?, ?> after) {
+        Object playing = after.get("isPlaying");
+        return switch (act) {
+            case "pause" -> Boolean.FALSE.equals(playing);
+            case "resume" -> Boolean.TRUE.equals(playing);
+            case "next" -> Boolean.TRUE.equals(playing) && !Objects.equals(trackUri(before), trackUri(after)) && !trackUri(after).isBlank();
+            case "previous" -> Boolean.TRUE.equals(playing) && (!Objects.equals(trackUri(before), trackUri(after))
+                    || after.get("progressMs") instanceof Number now && before.get("progressMs") instanceof Number then
+                    && now.longValue() < then.longValue());
+            default -> true;
+        };
+    }
+
+    private static String trackUri(Map<?, ?> state) {
+        return state.get("item") instanceof Map<?, ?> item ? Objects.toString(item.get("uri"), "") : "";
+    }
+
+    private static Map<?, ?> playback(Object value) {
+        if (value instanceof ToolResult result) value = result.success() ? result.data().get("playback") : null;
+        return value instanceof Map<?, ?> map ? map : Map.of();
     }
 
     private ToolResult play() {
@@ -193,13 +270,21 @@ final class SpotifyAutopilot {
     }
 
     private ToolResult failure(String code, String message) {
+        return failure(OPERATION, code, message);
+    }
+
+    private ToolResult failure(String operation, String code, String message) {
         Map<String, Object> data = new LinkedHashMap<>(Map.of("confirmed", false));
         data.put("visibleDevices", SpotifyPlaybackPolicy.visibleDeviceNames(steps));
-        return result(false, message, data, code);
+        return result(operation, false, message, data, code);
     }
 
     private ToolResult result(boolean success, String message, Map<String, Object> data, String code) {
-        return new ToolResult(success, "pc", OPERATION, request.requestId(), request.conversationId(), success, List.of(), message,
+        return result(OPERATION, success, message, data, code);
+    }
+
+    private ToolResult result(String operation, boolean success, String message, Map<String, Object> data, String code) {
+        return new ToolResult(success, "pc", operation, request.requestId(), request.conversationId(), success, List.of(), message,
                 data, code, success ? "" : message, false, "");
     }
 

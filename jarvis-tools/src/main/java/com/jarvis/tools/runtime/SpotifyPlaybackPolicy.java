@@ -41,7 +41,7 @@ final class SpotifyPlaybackPolicy {
         }
         if (tool.equals("plan") || tool.equals("system") && op.equals("NOTIFY_USER")) return "";
         // The composite tool reads the procedure itself and applies this policy to each of its sub-calls.
-        if (tool.equals("pc") && op.equals(SpotifyAutopilot.OPERATION)) return "";
+        if (tool.equals("pc") && (op.equals(SpotifyAutopilot.OPERATION) || op.equals(SpotifyAutopilot.CONTROL))) return "";
         if (!workflowRead(steps)) return workflowGuidance(steps);
         if (!tool.equals("pc")) return "Use desktop pc__spotify; do not switch to browser/Web Player or other execution tools.";
         if (op.equals("OPEN")) {
@@ -188,6 +188,8 @@ final class SpotifyPlaybackPolicy {
     }
 
     static CompletionAssessment assess(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
+        // "Next one", "pause", "louder": a control of the live session is the whole request, not a new playback.
+        if (control(steps) != null) return CompletionAssessment.ok();
         if (!workflowRead(steps)) return missing(workflowGuidance(steps));
         if (!confirmed(request, steps)) return missing("Playback is not confirmed. " + nextStep(request, steps)
                 + " Procedure: status -> devices -> optional desktop OPEN -> devices -> " + (fromLiked(request) ? "liked" : "search/library/liked")
@@ -216,11 +218,16 @@ final class SpotifyPlaybackPolicy {
      * voice without ever publishing a claim the observed Spotify state does not support.
      */
     static String groundedAnswer(ToolCallingRequest request, List<ToolRuntimeStep> steps, String modelAnswer) {
-        String evidence = answer(request, steps);
+        ToolRuntimeStep control = control(steps);
+        String evidence = control != null ? control.result().message() : answer(request, steps);
         if (modelAnswer == null || modelAnswer.isBlank() || modelAnswer.length() > 800) return evidence;
         String reply = normalize(modelAnswer);
         boolean clean = !reply.contains("http") && !reply.contains("spotify:") && !reply.contains("{") && !reply.contains("open.spotify");
         if (!clean) return evidence;
+        if (control != null) {
+            if (control.result().success()) return modelAnswer.strip();
+            return ADMITS_FAILURE.matcher(reply).find() && !CLAIMS_PLAYBACK.matcher(reply).find() ? modelAnswer.strip() : evidence;
+        }
         if (confirmed(request, steps)) {
             String title = normalize(String.valueOf(playbackFacts(request, steps).get("title"))).split(" - | \\(| \\[")[0].strip();
             return title.length() >= 2 && reply.contains(title) ? modelAnswer.strip() : evidence;
@@ -463,6 +470,15 @@ final class SpotifyPlaybackPolicy {
         ToolRuntimeStep step = latest(steps, "status");
         return step != null && step.result().success() && Boolean.TRUE.equals(step.result().data().get("connected"));
     }
+    /** The latest pc__spotify_control call, if the request was a control of the live session. */
+    static ToolRuntimeStep control(List<ToolRuntimeStep> steps) {
+        for (int i = steps.size() - 1; i >= 0; i--) {
+            ToolRuntimeStep step = steps.get(i);
+            if (executed(step) && "pc".equalsIgnoreCase(step.tool()) && SpotifyAutopilot.CONTROL.equalsIgnoreCase(step.operation())) return step;
+        }
+        return null;
+    }
+
     static ToolRuntimeStep played(List<ToolRuntimeStep> steps) { return latest(steps, "play"); }
     private static ToolRuntimeStep latest(List<ToolRuntimeStep> steps, String action) {
         for (int i = steps.size() - 1; i >= 0; i--) if (executed(steps.get(i)) && spotify(steps.get(i), action)) return steps.get(i);

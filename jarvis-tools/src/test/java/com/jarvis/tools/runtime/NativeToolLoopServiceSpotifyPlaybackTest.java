@@ -369,6 +369,26 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.finalAnswer()).contains("Zadanie nieukończone");
     }
 
+    @Test void nextTrackOnTheTvIsOneCallWithoutProcedureOrDeviceDiscovery() {
+        userMessage = "puść następną piosenkę na spotify";
+        observedDevice = "tv-id";
+        ToolCallingResult result = run(call("pc__spotify_control", Map.of("action", "next")), answer("Leci teraz Next title."));
+        assertThat(executed).containsExactly("current", "next");
+        assertThat(result.terminationInfo().completed()).isTrue();
+        assertThat(result.finalAnswer()).isEqualTo("Leci teraz Next title.");
+        assertThat(result.steps()).anyMatch(s -> s.operation().equals("SPOTIFY_CONTROL") && s.result().success()
+                && "Next title".equals(s.result().data().get("title")));
+    }
+
+    @Test void controlWithNothingPlayingIsReportedHonestly() {
+        userMessage = "puść następną na spotify";
+        observedDevice = "";
+        String honest = "Nie mogę przełączyć, bo na Spotify nic teraz nie gra.";
+        ToolCallingResult result = run(call("pc__spotify_control", Map.of("action", "next")), answer(honest));
+        assertThat(executed).containsExactly("current");
+        assertThat(result.finalAnswer()).isEqualTo(honest);
+    }
+
     @Test void currentPlaybackMovesToTheTvWithItsQueueAndPosition() {
         userMessage = "a dasz radę odpalić to na TV na spotify?";
         tvVisible = true; opened = true; followPlayDevice = true; actualTitle = "Actual observed title";
@@ -413,7 +433,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         CognitiveEventBus bus = mock(CognitiveEventBus.class);
         ToolRegistry registry = mock(ToolRegistry.class);
         when(registry.definitions()).thenReturn(List.of(
-                new ToolDefinition("pc", "desktop", List.of(op("SPOTIFY", "action", "target", "query", "deviceId", "deviceName"), op("SPOTIFY_PLAY", "source", "query", "type", "pick", "device"), op("OPEN", "target"), op("SHELL", "command"))),
+                new ToolDefinition("pc", "desktop", List.of(op("SPOTIFY", "action", "target", "query", "deviceId", "deviceName"), op("SPOTIFY_PLAY", "source", "query", "type", "pick", "device"), op("SPOTIFY_CONTROL", "action", "value", "state"), op("OPEN", "target"), op("SHELL", "command"))),
                 new ToolDefinition("knowledge", "vault", List.of(op("READ_WORKFLOW", "path", "part"), op("FIND_WORKFLOW", "query"), op("READ_DOCUMENT", "path"))),
                 new ToolDefinition("browser", "browser", List.of(op("OPEN", "url")))));
         NativeToolLoopService service = new NativeToolLoopService(List.of(provider), manager, query -> ToolIntent.NO_TOOL,
@@ -460,6 +480,10 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                 case "play" -> { playArguments = request.arguments();
                     if (followPlayDevice) observedDevice = String.valueOf(request.arguments().get("deviceId")); yield Map.of("accepted", true, "observedPlayback", playback(observed)); }
                 case "current" -> Map.of("playback", playback(currentPlaying && currentReads >= currentReadyAfter));
+                case "next" -> {
+                    observedUri = "spotify:track:" + "C".repeat(22); actualTitle = "Next title";
+                    yield Map.of("accepted", true, "observedPlayback", playback(true));
+                }
                 default -> throw new AssertionError("Unexpected execution: " + request);
             };
         }
