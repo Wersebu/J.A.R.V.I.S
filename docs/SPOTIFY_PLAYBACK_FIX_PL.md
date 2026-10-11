@@ -362,3 +362,18 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
   Pamięć tematu działa teraz do 10 słów, ale oznacza routing jako „topic”. Wtedy decyzja wstępna zostaje, a narzędzia
   są zawężane tylko wtedy, gdy cel modelu z tej decyzji zawiera słowo z tytułu workflow (np. „Spotify”). Bezpośrednie
   dopasowanie („matched”) nadal pomija decyzję wstępną.
+
+## Analiza śladu d8ab94c4 (18:13–18:16)
+
+- Wszystkie zapytania 8–13 s. Część odpowiedzi była jednak tekstem awaryjnym („Potwierdzono odtwarzanie…”,
+  „Spotify volume done on…”, „Now playing…”), a nie słowami modelu. Przyczyny:
+  - gpt-oss pisze niełamliwe spacje i myślniki (U+00A0, U+2011), więc porównanie tytułu po znakach odrzucało dobre
+    odpowiedzi. Tytuł jest teraz porównywany wyłącznie po literach i cyfrach;
+  - przy volume/pause/like/shuffle/repeat wymagałem tytułu utworu. Teraz tytuł jest wymagany tylko przy
+    now/next/previous/resume i przy odtwarzaniu;
+  - wzorzec „przyznaje porażkę” łapał „nie ma problemu”, teraz jest zawężony do konkretnych zwrotów.
+- Tekst awaryjny dla sterowania jest po polsku (np. „Ustawiono głośność na 100%.”).
+- Diagnostyka: zdarzenie RESPONSE_GROUNDING/SPOTIFY_ANSWER_CHECK w śladzie zawiera pierwszą odpowiedź, powód
+  odrzucenia, poprawkę i powód jej odrzucenia. Log: [SPOTIFY_ANSWER] firstReplyRejected="…" rewriteRejected="…".
+- Interpretacja modelu: „daj mu!” → action=now zamiast głośności; „dobra daj się skupić” → wyszukanie „focus music”
+  zamiast ściszenia; „odpal to proszę” po wyszukaniu „Pan Ogórek” → losowy utwór z polubionych. Do poprawy w Spotify.md.

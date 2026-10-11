@@ -229,39 +229,81 @@ final class SpotifyPlaybackPolicy {
     /** What the tools established, in plain words: the facts a model reply has to agree with. */
     static String evidence(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
         ToolRuntimeStep control = control(steps);
-        return control != null ? control.result().message() : answer(request, steps);
+        return control != null ? controlSummary(control) : answer(request, steps);
+    }
+
+    /** The user-facing fallback for a control or queue call, in Polish (tool messages are written for the model). */
+    private static String controlSummary(ToolRuntimeStep control) {
+        Map<String, Object> data = control.result().data();
+        if (!control.result().success()) return "Nie udało się: " + control.result().message();
+        String track = data.get("title") == null ? "" : data.get("title") + (data.get("artists") == null ? "" : " — " + data.get("artists"));
+        if (data.containsKey("queued")) return "Dodano do kolejki: " + track + ".";
+        return switch (text(control.arguments(), "action").toLowerCase(Locale.ROOT)) {
+            case "now" -> track.isBlank() ? "Na Spotify nic teraz nie gra."
+                    : (Boolean.TRUE.equals(data.get("isPlaying")) ? "Teraz gra: " : "Wstrzymane: ") + track + " (" + data.get("device") + ").";
+            case "next", "previous" -> "Przełączono. Teraz gra: " + track + ".";
+            case "pause" -> "Wstrzymano odtwarzanie.";
+            case "resume" -> "Wznowiono odtwarzanie" + (track.isBlank() ? "." : ": " + track + ".");
+            case "volume" -> "Ustawiono głośność na " + text(control.arguments(), "value") + "%.";
+            case "like" -> "Dodano do polubionych: " + track + ".";
+            case "shuffle" -> "Zmieniono losowe odtwarzanie.";
+            case "repeat" -> "Zmieniono powtarzanie.";
+            default -> "Gotowe.";
+        };
     }
 
     /** Whether a model reply agrees with the observed Spotify state (track, device, success or failure). */
     static boolean acceptable(ToolCallingRequest request, List<ToolRuntimeStep> steps, String modelAnswer) {
-        if (modelAnswer == null || modelAnswer.isBlank() || modelAnswer.length() > 800) return false;
-        String reply = normalize(modelAnswer);
-        boolean clean = !reply.contains("http") && !reply.contains("spotify:") && !reply.contains("{") && !reply.contains("open.spotify");
-        if (!clean) return false;
+        return rejection(request, steps, modelAnswer).isEmpty();
+    }
+
+    /** Why a model reply disagrees with the observed Spotify state; empty when it agrees. */
+    static String rejection(ToolCallingRequest request, List<ToolRuntimeStep> steps, String modelAnswer) {
+        if (modelAnswer == null || modelAnswer.isBlank()) return "empty reply";
+        if (modelAnswer.length() > 800) return "reply too long";
+        // gpt-oss writes non-breaking spaces and hyphens (U+00A0, U+2011): compare words, not code points.
+        String reply = normalize(modelAnswer).replaceAll("[\\p{Z}\\s]+", " ").replaceAll("\\p{Pd}", "-");
+        if (reply.contains("http") || reply.contains("spotify:") || reply.contains("{") || reply.contains("open.spotify"))
+            return "contains a link, URI or raw data";
         ToolRuntimeStep control = control(steps);
         if (control != null) {
-            if (control.result().success()) {
-                Object now = control.result().data().get("title");
-                String title = normalize(Objects.toString(now, "")).split(" - | \\(| \\[")[0].strip();
-                return now == null || title.length() >= 2 && reply.contains(title);
-            }
-            return ADMITS_FAILURE.matcher(reply).find() && !CLAIMS_PLAYBACK.matcher(reply).find();
+            if (!control.result().success())
+                return admitsFailure(reply) ? "" : "the command failed but the reply does not say so";
+            if (ADMITS_FAILURE.matcher(reply).find()) return "the command succeeded but the reply says it failed";
+            // The track matters when the request was about the track; volume, pause, like... need not name it.
+            String act = text(control.arguments(), "action").toLowerCase(Locale.ROOT);
+            Object now = control.result().data().get("title");
+            boolean trackMatters = Set.of("now", "next", "previous", "resume").contains(act) || control.arguments().containsKey("source");
+            return !trackMatters || now == null || namesTitle(modelAnswer, String.valueOf(now)) ? "" : "does not name the track " + now;
         }
         if (confirmed(request, steps)) {
-            String title = normalize(String.valueOf(playbackFacts(request, steps).get("title"))).split(" - | \\(| \\[")[0].strip();
+            Object title = playbackFacts(request, steps).get("title");
             ToolRuntimeStep play = played(steps);
             Map<?, ?> device = targetDevice(request, steps, play.arguments().get("deviceId"));
+            if (!namesTitle(modelAnswer, String.valueOf(title))) return "does not name the playing track " + title;
+            if (mentionsOtherDevice(modelAnswer, device, steps)) return "names a device other than " + device.get("name");
             // It IS playing: a reply that says it could not, or that it has no information, misreports the result.
-            return title.length() >= 2 && reply.contains(title) && !mentionsOtherDevice(modelAnswer, device, steps)
-                    && !ADMITS_FAILURE.matcher(reply).find();
+            return ADMITS_FAILURE.matcher(reply).find() ? "playback is confirmed but the reply says it failed" : "";
         }
         // Nothing confirmed: the model may explain why in its own words (e.g. the TV is not visible to Spotify),
         // but only an explicit admission passes - never a reply that claims or implies playback.
+        return admitsFailure(reply) ? "" : "playback is not confirmed but the reply does not say so";
+    }
+
+    private static boolean admitsFailure(String reply) {
         return ADMITS_FAILURE.matcher(reply).find() && !CLAIMS_PLAYBACK.matcher(reply).find();
     }
 
+    /** Title match on letters and digits only, up to the first " - " or bracket ("X - Super Slowed", "X (feat. Y)"). */
+    private static boolean namesTitle(String reply, String title) {
+        String core = normalize(title).replaceAll("\\p{Pd}", "-").split(" - | \\(| \\[")[0];
+        String wanted = compact(core);
+        return wanted.length() >= 2 && compact(reply).contains(wanted);
+    }
+
     private static final java.util.regex.Pattern ADMITS_FAILURE = java.util.regex.Pattern.compile(
-            "\\bnie (widze|moge|udalo|znalazl|znajduje|ma |mam |jest dostep|potwierdz|da sie)|niedostep|\\bbrak\\b|\\bnie wykryl"
+            "\\bnie (widze|moge|udalo|znalazl|znajduje|potwierdz|da sie|jest dostep|mam (informacji|dostepu)"
+                    + "|ma (dostepu|takiego|tego utworu|urzadzen|polaczenia))|niedostep|\\bbrak (dostepu|urzadzen|polaczenia)|\\bnie wykryl"
                     + "|can't|cannot|unable|not available|not visible|not found|don't see|couldn't|could not");
     private static final java.util.regex.Pattern CLAIMS_PLAYBACK = java.util.regex.Pattern.compile(
             "\\b(odtwarzam|wlaczylem|wlaczylam|wlaczam|puscilem|puscilam|puszczam|uruchomilem|odpalilem|odpalam|leci|gra juz|juz gra"

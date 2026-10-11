@@ -327,14 +327,19 @@ public class NativeToolLoopService {
                     ? result.finalAnswer()
                     : result.terminationInfo() == null ? "" : result.terminationInfo().lastModelContent();
             String answer = modelAnswer == null ? "" : modelAnswer.strip();
-            if (!SpotifyPlaybackPolicy.acceptable(request, result.steps(), modelAnswer)) {
+            String rejected = SpotifyPlaybackPolicy.rejection(request, result.steps(), modelAnswer);
+            if (!rejected.isEmpty()) {
                 // The reply disagreed with what Spotify shows: the model writes it again from the facts, in its own
                 // words. The plain facts are used only if that rewrite is still wrong.
                 String facts = SpotifyPlaybackPolicy.evidence(request, result.steps());
                 String rewritten = rewriteFromFacts(request, facts);
-                boolean accepted = SpotifyPlaybackPolicy.acceptable(request, result.steps(), rewritten);
-                LOGGER.info("[SPOTIFY_ANSWER] requestId={} firstReplyRejected=true rewriteAccepted={}", request.requestId(), accepted);
-                answer = accepted ? rewritten.strip() : facts;
+                String rewriteRejected = SpotifyPlaybackPolicy.rejection(request, result.steps(), rewritten);
+                LOGGER.info("[SPOTIFY_ANSWER] requestId={} firstReplyRejected=\"{}\" rewriteRejected=\"{}\"", request.requestId(),
+                        rejected, rewriteRejected);
+                publish(request, CognitiveEventType.RESPONSE_GROUNDING, "SPOTIFY_ANSWER_CHECK", "Model reply checked against Spotify state",
+                        null, 0, Map.of("firstReply", Objects.toString(modelAnswer, ""), "firstReplyRejected", rejected,
+                                "rewrite", Objects.toString(rewritten, ""), "rewriteRejected", rewriteRejected));
+                answer = rewriteRejected.isEmpty() ? rewritten.strip() : facts;
             }
             return new ToolCallingResult(true, answer, result.steps(), result.results(), result.terminationInfo());
         }

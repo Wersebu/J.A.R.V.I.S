@@ -403,6 +403,27 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.terminationInfo().completed()).isTrue();
     }
 
+    @Test void modelRepliesWithNonBreakingSpacesAndHyphensAreAcceptedAsTheyAre() {
+        userMessage = "odpal coś na spotify";
+        opened = true;
+        String reply = "🎶 Gra „Real liked‑title” na DESKTOP‑PC. Miłego słuchania!";
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "liked")), answer(reply));
+        assertThat(result.finalAnswer()).isEqualTo(reply);
+        verify(provider, times(2)).toolChat(any(), anyList(), anyList(), any());
+    }
+
+    @Test void volumeReplyNeedNotNameTheTrackAndFallbackIsPolish() {
+        userMessage = "głośniej!";
+        history = "User: odpal coś na spotify";
+        ToolCallingResult ok = run(call("pc__spotify_control", Map.of("action", "volume", "value", "100")),
+                answer("Nie ma problemu, podkręciłem na maksa!"));
+        assertThat(ok.finalAnswer()).isEqualTo("Nie ma problemu, podkręciłem na maksa!");
+
+        ToolCallingResult fallback = run(call("pc__spotify_control", Map.of("action", "volume", "value", "100")),
+                answer("Nie udało się zmienić głośności."));
+        assertThat(fallback.finalAnswer()).isEqualTo("Ustawiono głośność na 100%.");
+    }
+
     @Test void searchPlaysTheResultMatchingTheRequestedWordsNotSpotifysFirstHit() {
         userMessage = "a odpal mi piosenke ogorek cypisa";
         opened = true; cypisResults = true;
@@ -460,7 +481,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "search", "query", "Uptown Funk", "mode", "queue")),
                 answer("Dodane."));
         assertThat(executed).endsWith("search", "current", "enqueue").doesNotContain("play");
-        assertThat(result.finalAnswer()).contains("Added to the queue: Real search title");
+        assertThat(result.finalAnswer()).contains("Dodano do kolejki: Real search title");
     }
 
     @Test void rawTransferWithTheTvIdBecomesOneVerifiedMoveOfTheCurrentTrack() {
@@ -609,7 +630,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                     if (followPlayDevice) observedDevice = String.valueOf(request.arguments().get("deviceId"));
                     if (transferStartsAnotherTrack) { observedUri = "spotify:track:" + "D".repeat(22); actualTitle = "Alien"; } yield Map.of("accepted", true, "observedPlayback", playback(observed)); }
                 case "current" -> Map.of("playback", playback(currentPlaying && currentReads >= currentReadyAfter));
-                case "enqueue", "save" -> Map.of("accepted", true);
+                case "enqueue", "save", "volume", "pause" -> Map.of("accepted", true, "observedPlayback", playback(true));
                 case "library" -> Map.of("items", List.of(Map.of("uri", "spotify:playlist:" + "P".repeat(22), "name", "Chill"),
                         Map.of("uri", "spotify:playlist:" + "Q".repeat(22), "name", "Siłownia 2024")));
                 case "next" -> {
