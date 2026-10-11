@@ -209,6 +209,8 @@ public class GmailClient {
             throw new GmailException("Gmail returned unreadable attachment data.");
         }
         Map<String, Object> result = untrusted();
+        // The original bytes, for GmailTool to hand the file to the user; removed before anything reaches the model.
+        result.put("_bytes", bytes);
         result.put("messageId", messageId);
         result.put("filename", filename);
         result.put("mimeType", mime);

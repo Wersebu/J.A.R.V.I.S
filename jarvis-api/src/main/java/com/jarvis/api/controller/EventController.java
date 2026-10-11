@@ -71,6 +71,7 @@ public class EventController {
                 schema(CognitiveEventType.ANSWER_TOKEN, "Final answer fragment.", "text", "index"),
                 schema(CognitiveEventType.ANSWER_FINISHED, "Final answer finished.", "durationMs", "characters", "tokens"),
                 schema(CognitiveEventType.ANSWER_SOURCES, "Trusted answer sources collected from executed tools.", "sources", "count", "source"),
+                schema(CognitiveEventType.ANSWER_FILES, "Files shared with the user next to the answer; download from /api/v1/files/{id}.", "files"),
                 schema(CognitiveEventType.RESPONSE_GROUNDING, "Response grounding diagnostics.", "personalQuery", "grounded", "memorySourcesUsed", "knowledgeSourcesUsed", "toolSourcesUsed", "unsupportedClaimDetected", "regenerated"),
                 schema(CognitiveEventType.STREAMING_STARTED, "Streaming started.", "model"),
                 schema(CognitiveEventType.TOKEN, "Generated token.", "text", "index"),

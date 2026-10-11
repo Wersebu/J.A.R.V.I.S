@@ -153,6 +153,8 @@ Wyniki zawierają nadawcę, temat i datę w polskim czasie (np. „sobota, 10 pa
 
 **Załączniki:** Jarvis czyta tekst z PDF, DOCX, HTML, TXT i CSV, w pamięci, bez zapisywania na dysk. Skanów i zdjęć nie odczyta, bo nie ma OCR, i powie to wprost. Limit to 15 MB.
 
+**Oryginał pod odpowiedzią:** każdy załącznik, który Jarvis przeczytał, pojawia się pod jego odpowiedzią jako karta „📎 polisa.pdf (34 KB)”. Kliknięcie otwiera plik w domyślnej aplikacji (np. przeglądarce PDF), więc kwotę, numer konta czy termin sprawdzisz w samym dokumencie, bez otwierania poczty. Plik leży tylko w pamięci serwera, przez 12 godzin, i pobrać go może wyłącznie osoba, dla której Jarvis go przeczytał. Po tym czasie (albo po restarcie Jarvisa) karta zgłosi, że pliku już nie ma. Wtedy wystarczy zapytać ponownie.
+
 **Własne skróty** (jak PMT czy OC) dopisuje się w `workflows/Gmail.md` w sekcji „Moje skróty”. Ten plik jest ładowany automatycznie przy każdym pytaniu o pocztę.
 
 ## Bezpieczeństwo

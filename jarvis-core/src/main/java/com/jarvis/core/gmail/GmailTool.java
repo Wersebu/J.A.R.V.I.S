@@ -2,6 +2,9 @@ package com.jarvis.core.gmail;
 
 import com.jarvis.api.service.WindowsCodingBridgeGateway;
 import com.jarvis.common.auth.CurrentUserContext;
+import com.jarvis.common.event.CognitiveEventBus;
+import com.jarvis.common.event.CognitiveEventType;
+import com.jarvis.core.files.SharedFiles;
 import com.jarvis.tools.JarvisTool;
 import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
@@ -39,16 +42,26 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
     private final GmailClient client;
     private final GoogleOAuth oauth;
     private final WindowsCodingBridgeGateway devices;
+    private final SharedFiles sharedFiles;
+    private final CognitiveEventBus events;
 
     @Autowired
-    public GmailTool(GmailClient client, GoogleOAuth oauth, ObjectProvider<WindowsCodingBridgeGateway> devices) {
-        this(client, oauth, devices.getIfAvailable());
+    public GmailTool(GmailClient client, GoogleOAuth oauth, ObjectProvider<WindowsCodingBridgeGateway> devices,
+                     SharedFiles sharedFiles, ObjectProvider<CognitiveEventBus> events) {
+        this(client, oauth, devices.getIfAvailable(), sharedFiles, events.getIfAvailable());
     }
 
     GmailTool(GmailClient client, GoogleOAuth oauth, WindowsCodingBridgeGateway devices) {
+        this(client, oauth, devices, new SharedFiles(), null);
+    }
+
+    GmailTool(GmailClient client, GoogleOAuth oauth, WindowsCodingBridgeGateway devices, SharedFiles sharedFiles,
+              CognitiveEventBus events) {
         this.client = client;
         this.oauth = oauth;
         this.devices = devices;
+        this.sharedFiles = sharedFiles;
+        this.events = events;
     }
 
     @Override
@@ -119,7 +132,7 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
                                 ? "in:inbox" : GmailClient.text(args, "query"), args);
                 case "READ" -> client.read(user, conversation, args);
                 case "THREAD" -> client.thread(user, conversation, args);
-                case "ATTACHMENT" -> client.attachment(user, conversation, args);
+                case "ATTACHMENT" -> shareWithUser(user, client.attachment(user, conversation, args));
                 default -> throw new GmailException("Unknown Gmail operation " + operation + ". Sending mail is not available.");
             };
             return new ToolResult(true, TOOL_NAME, operation, request.requestId(), request.conversationId(),
@@ -159,6 +172,26 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
         return Map.of("connected", true, "email", email, "access", "read-only");
     }
 
+    /**
+     * Puts the original attachment under the answer, so the user can check amounts, account numbers and dates in the
+     * document itself instead of trusting the summary. Only this user can download it, for a few hours.
+     */
+    private Map<String, Object> shareWithUser(String user, Map<String, Object> data) {
+        Object bytes = data.remove("_bytes");
+        if (!(bytes instanceof byte[] content) || content.length == 0) {
+            return data;
+        }
+        SharedFiles.SharedFile file = sharedFiles.share(user, String.valueOf(data.get("filename")), String.valueOf(data.get("mimeType")), content);
+        if (events != null) {
+            events.publish(CognitiveEventType.ANSWER_FILES, "READY", "Mail attachment shared with the user", null, Map.of(
+                    "files", List.of(Map.of("id", file.id(), "filename", file.filename(), "mimeType", file.mimeType(),
+                            "size", content.length, "source", "gmail")),
+                    "ownerUserId", user));
+        }
+        data.put("sharedWithUser", true);
+        return data;
+    }
+
     /** States what a call returned, and repeats on every result with mail text that it is data, not instructions. */
     static String message(String operation, Map<String, Object> data) {
         if (operation.equals("STATUS")) {
@@ -182,7 +215,11 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
                     + (data.containsKey("nextPageToken") ? ", more available." : ".");
             return found + " " + UNTRUSTED_MAIL;
         }
-        return "Gmail " + operation.toLowerCase(Locale.ROOT) + " read. " + UNTRUSTED_MAIL;
+        String shared = Boolean.TRUE.equals(data.get("sharedWithUser"))
+                ? " The original file " + data.getOrDefault("filename", "") + " is shown to the user under your answer: tell them they "
+                + "can open it to check the details (amounts, account numbers, dates)."
+                : "";
+        return "Gmail " + operation.toLowerCase(Locale.ROOT) + " read." + shared + " " + UNTRUSTED_MAIL;
     }
 
     private ToolResult failure(ToolRequest request, String operation, String code, String message) {

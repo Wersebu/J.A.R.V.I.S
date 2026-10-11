@@ -2,6 +2,12 @@ package com.jarvis.core.gmail;
 
 import com.jarvis.api.service.WindowsCodingBridgeGateway;
 import com.jarvis.common.auth.CurrentUserContext;
+import com.jarvis.common.ai.BrainType;
+import com.jarvis.common.event.CognitiveEvent;
+import com.jarvis.common.event.CognitiveEventBus;
+import com.jarvis.common.event.CognitiveEventType;
+import com.jarvis.core.files.SharedFileController;
+import com.jarvis.core.files.SharedFiles;
 import com.jarvis.memory.cognitive.MemoryProperties;
 import com.jarvis.memory.sqlite.SQLiteConnectionFactory;
 import com.jarvis.memory.sqlite.SQLiteMemoryInitializer;
@@ -59,6 +65,8 @@ class GmailToolTest {
     private final List<Map<String, String>> tokenForms = new CopyOnWriteArrayList<>();
     private final AtomicReference<Map<String, Object>> loopbackRequest = new AtomicReference<>();
     private volatile String deviceStatus = "CONNECTED";
+    private final SharedFiles sharedFiles = new SharedFiles();
+    private final List<Map<String, Object>> published = new CopyOnWriteArrayList<>();
 
     @BeforeAll
     static void pdf() throws Exception {
@@ -137,6 +145,24 @@ class GmailToolTest {
         oauth = new GoogleOAuth(http, accounts, base.resolve("auth"), base.resolve("token"), base.resolve("revoke"),
                 clientFile.toString(), "", "", 43822);
         GmailClient client = new GmailClient(http, oauth, base.resolve("gmail/"), ZoneId.of("Europe/Warsaw"));
+        CognitiveEventBus bus = new CognitiveEventBus() {
+            @Override
+            public void startRequest(String requestId, String conversationId, java.util.function.Consumer<CognitiveEvent> sink) {
+            }
+
+            @Override
+            public void finishRequest() {
+            }
+
+            @Override
+            public void updateBrain(BrainType brain, String model) {
+            }
+
+            @Override
+            public void publish(CognitiveEventType event, String status, String message, String nodeId, Map<String, Object> metadata) {
+                if (event == CognitiveEventType.ANSWER_FILES) published.add(metadata);
+            }
+        };
         tool = new GmailTool(client, oauth, new WindowsCodingBridgeGateway() {
             @Override
             public String codingStatus() {
@@ -149,7 +175,7 @@ class GmailToolTest {
                 loopbackRequest.set(payload);
                 return Map.of("code", "one-time-code");
             }
-        });
+        }, sharedFiles, bus);
     }
 
     @AfterEach
@@ -284,6 +310,26 @@ class GmailToolTest {
         assertThat(attachment.success()).as(attachment.message()).isTrue();
         assertThat(String.valueOf(attachment.data().get("text"))).contains("termin platnosci: 25.10.2026");
         assertThat(attachment.data()).containsEntry("untrustedContent", true).containsEntry("pages", 1);
+
+        // The original PDF goes under the answer for the user to check; the model never gets the bytes.
+        assertThat(attachment.data()).doesNotContainKey("_bytes").containsEntry("sharedWithUser", true);
+        assertThat(attachment.message()).contains("polisa.pdf", "open it to check");
+        assertThat(published).hasSize(1);
+        Map<?, ?> card = (Map<?, ?>) ((List<?>) published.getFirst().get("files")).getFirst();
+        assertThat(card.get("filename")).isEqualTo("polisa.pdf");
+        assertThat(card.get("mimeType")).isEqualTo("application/pdf");
+        assertThat(published.getFirst().get("ownerUserId")).isEqualTo("owner");
+        String id = String.valueOf(card.get("id"));
+        SharedFileController controller = new SharedFileController(sharedFiles);
+        List<org.springframework.http.ResponseEntity<byte[]>> downloads = new ArrayList<>();
+        CurrentUserContext.runAs("owner", () -> downloads.add(controller.download(id)));
+        CurrentUserContext.runAs("mom", () -> downloads.add(controller.download(id)));
+        assertThat(downloads.get(0).getStatusCode().value()).isEqualTo(200);
+        assertThat(downloads.get(0).getBody()).isEqualTo(pdf);
+        assertThat(downloads.get(0).getHeaders().getFirst("Content-Disposition")).contains("polisa.pdf");
+        // Another user, even with the exact id, gets the same answer as for a file that never existed.
+        assertThat(downloads.get(1).getStatusCode().value()).isEqualTo(404);
+        assertThat(controller.download(id).getStatusCode().value()).isEqualTo(401);
     }
 
     @Test

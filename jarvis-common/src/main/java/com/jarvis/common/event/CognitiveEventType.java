@@ -187,6 +187,8 @@ public enum CognitiveEventType {
     ANSWER_FINISHED,
     /** Trusted answer sources are available for the current answer. */
     ANSWER_SOURCES,
+    /** Files shared with the user next to the current answer (e.g. a mail attachment Jarvis read). */
+    ANSWER_FILES,
     /** Grounding diagnostics for the final response. */
     RESPONSE_GROUNDING,
     /** Streaming started. */
