@@ -268,3 +268,23 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
   wymaga, żeby odpowiedź wymieniała nowy tytuł, inaczej trafia wynik narzędzia.
 - Na żywo o 15:2x: API widziało FrytaCraft.pl jako nieaktywne. Transfer na TV dał isPlaying=true na TV,
   utrzymane przez 9 s.
+
+## Komplet narzędzi i automatyczne ładowanie Spotify.md (2026-10-11)
+
+- pc__spotify_play: source=liked|search|random|library|current, query, type, owner (autor playlisty),
+  pick, mode=play|queue, device. random to wyszukiwanie losowej litery na losowej głębokości katalogu
+  (Spotify nie ma endpointu „losowy utwór”). library to playlisty użytkownika dopasowane po nazwie.
+  mode=queue dodaje utwór do kolejki urządzenia, które gra.
+- pc__spotify_control: now (co gra, tylko odczyt), like (zapis bieżącego utworu do polubionych), next,
+  previous, pause, resume, volume, shuffle, repeat.
+- Błąd klienta Windows: market=from_token przy search dawał 403 „Insufficient client scope” (wymaga
+  user-read-private), więc każde wyszukiwanie z poprzedniej poprawki zawodziło. market zostaje tylko
+  przy polubionych/bibliotece, gdzie działa. Na żywo: wyszukiwanie playlist z autorami i utworów działa.
+- KnowledgeRetrievalStage + WorkflowRouter (jarvis-knowledge): przed pierwszym wywołaniem modelu Core
+  wybiera jeden workflow. findWorkflows (hybryda BM25 + embeddingi) daje kolejność, a bramka wymaga,
+  żeby wiadomość zawierała tag, alias albo słowo z tytułu dokumentu (5-literowy rdzeń na polską odmianę).
+  Krótkie dopytania (≤4 słowa: „next”, „co to za piosenka?”) są łączone z dwiema poprzednimi wiadomościami
+  użytkownika. Dokument trafia w całości do kontekstu przez istniejący DefaultContextBuilder: do decyzji
+  modelu i do pętli narzędzi. Log: [KNOWLEDGE_PRELOAD]. W trybie LEGACY nic się nie zmienia.
+- Nowy docs/vault/workflows/Spotify.md (do skopiowania do vault na Ubuntu): tabela „prośba → narzędzie
+  → argumenty” oraz tagi i aliasy pod routing (piosenka, kolejka, głośność, telewizor…).

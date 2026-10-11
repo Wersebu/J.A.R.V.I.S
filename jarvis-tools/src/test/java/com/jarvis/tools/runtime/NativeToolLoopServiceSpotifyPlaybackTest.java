@@ -417,6 +417,32 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.finalAnswer()).contains("Next title").doesNotContain("BROTA");
     }
 
+    @Test void whatIsPlayingIsOneReadAndTheReplyMustNameTheTrack() {
+        userMessage = "co to za piosenka?";
+        history = "User: odpal coś na spotify";
+        actualTitle = "Actual observed title";
+        ToolCallingResult result = run(call("pc__spotify_control", Map.of("action", "now")), answer("To Inny tytuł."));
+        assertThat(executed).containsExactly("current");
+        assertThat(result.finalAnswer()).contains("Actual observed title", "Observed artist").doesNotContain("Inny tytuł");
+    }
+
+    @Test void ownPlaylistIsFoundByNameInTheLibrary() {
+        userMessage = "puść moją playlistę siłownia na spotify";
+        opened = true;
+        run(call("pc__spotify_play", Map.of("source", "library", "query", "siłownia")), answer("Done"), answer("Done"));
+        assertThat(executed).contains("library", "play");
+        assertThat(playArguments).containsEntry("target", "spotify:playlist:" + "Q".repeat(22));
+    }
+
+    @Test void queueModeAddsAfterTheCurrentTrackWithoutInterruptingIt() {
+        userMessage = "dodaj Uptown Funk do kolejki na spotify";
+        opened = true;
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "search", "query", "Uptown Funk", "mode", "queue")),
+                answer("Dodane."));
+        assertThat(executed).endsWith("search", "current", "enqueue").doesNotContain("play");
+        assertThat(result.finalAnswer()).contains("Added to the queue: Real search title");
+    }
+
     @Test void currentPlaybackMovesToTheTvWithItsQueueAndPosition() {
         userMessage = "a dasz radę odpalić to na TV na spotify?";
         tvVisible = true; opened = true; followPlayDevice = true; actualTitle = "Actual observed title";
@@ -461,7 +487,7 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         CognitiveEventBus bus = mock(CognitiveEventBus.class);
         ToolRegistry registry = mock(ToolRegistry.class);
         when(registry.definitions()).thenReturn(List.of(
-                new ToolDefinition("pc", "desktop", List.of(op("SPOTIFY", "action", "target", "query", "deviceId", "deviceName"), op("SPOTIFY_PLAY", "source", "query", "type", "pick", "device"), op("SPOTIFY_CONTROL", "action", "value", "state"), op("OPEN", "target"), op("SHELL", "command"))),
+                new ToolDefinition("pc", "desktop", List.of(op("SPOTIFY", "action", "target", "query", "deviceId", "deviceName"), op("SPOTIFY_PLAY", "source", "query", "type", "owner", "pick", "mode", "device"), op("SPOTIFY_CONTROL", "action", "value", "state"), op("OPEN", "target"), op("SHELL", "command"))),
                 new ToolDefinition("knowledge", "vault", List.of(op("READ_WORKFLOW", "path", "part"), op("FIND_WORKFLOW", "query"), op("READ_DOCUMENT", "path"))),
                 new ToolDefinition("browser", "browser", List.of(op("OPEN", "url")))));
         NativeToolLoopService service = new NativeToolLoopService(List.of(provider), manager, query -> ToolIntent.NO_TOOL,
@@ -508,6 +534,9 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
                 case "play" -> { playArguments = request.arguments();
                     if (followPlayDevice) observedDevice = String.valueOf(request.arguments().get("deviceId")); yield Map.of("accepted", true, "observedPlayback", playback(observed)); }
                 case "current" -> Map.of("playback", playback(currentPlaying && currentReads >= currentReadyAfter));
+                case "enqueue", "save" -> Map.of("accepted", true);
+                case "library" -> Map.of("items", List.of(Map.of("uri", "spotify:playlist:" + "P".repeat(22), "name", "Chill"),
+                        Map.of("uri", "spotify:playlist:" + "Q".repeat(22), "name", "Siłownia 2024")));
                 case "next" -> {
                     observedUri = "spotify:track:" + "C".repeat(22); actualTitle = "Next title";
                     yield Map.of("accepted", true, "observedPlayback", playback(true));

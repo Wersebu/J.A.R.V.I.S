@@ -543,7 +543,7 @@ public class NativeToolLoopService {
                     + "(e.g. 'put this on the TV'); pick=random|first; device empty for this PC, "
                     + "or the device the user asked for (e.g. TV, speaker). Then answer the user briefly in their language from its result "
                     + "(title, artist, device). If it reports a problem, explain it plainly; never repeat the same call. "
-                    + "For next/previous/pause/resume/volume/shuffle/repeat of what is already playing call pc__spotify_control ONCE "
+                    + "For what is playing (now), like, next/previous/pause/resume/volume/shuffle/repeat call pc__spotify_control ONCE "
                     + "(it acts on whichever device is playing, e.g. the TV) - do not read the procedure or devices for that. "
                     + "Use pc__spotify step by step only when these two tools cannot express the request. "
                     + "Step-by-step rules: find the Spotify procedure using knowledge__find_workflow(query=Spotify), then copy the returned path exactly into READ_WORKFLOW. "

@@ -19,7 +19,9 @@ import java.util.concurrent.ThreadLocalRandom;
 final class SpotifyAutopilot {
     static final String OPERATION = "SPOTIFY_PLAY";
     static final String CONTROL = "SPOTIFY_CONTROL";
-    private static final java.util.Set<String> CONTROLS = java.util.Set.of("next", "previous", "pause", "resume", "volume", "shuffle", "repeat");
+    private static final java.util.Set<String> CONTROLS =
+            java.util.Set.of("now", "like", "next", "previous", "pause", "resume", "volume", "shuffle", "repeat");
+    private static final java.util.Set<String> SOURCES = java.util.Set.of("liked", "search", "current", "random", "library");
     private static final int CONTROL_CHECKS = 3;
     private static final int READINESS_READS = 3; // devices after OPEN; the policy allows four reads in total
     private static final int VERIFY_READS = 2;
@@ -79,6 +81,8 @@ final class SpotifyAutopilot {
         if ((act.equals("shuffle") || act.equals("repeat")) && text("state").isBlank())
             return failure(CONTROL, "BAD_ARGUMENT", act + " needs state (shuffle: true/false; repeat: off/track/context).");
         Map<?, ?> before = playback(call("pc", "SPOTIFY", Map.of("action", "current")));
+        if (act.equals("now")) return nowPlaying(before);
+        if (act.equals("like")) return like(before);
         String deviceId = Objects.toString(before.get("deviceId"), "");
         if (deviceId.isBlank()) {
             if (!act.equals("resume")) return failure(CONTROL, "NOTHING_PLAYING",
@@ -116,6 +120,44 @@ final class SpotifyAutopilot {
         return result(CONTROL, confirmed, message, data, confirmed ? "" : "CONTROL_NOT_CONFIRMED");
     }
 
+    /** "Co to za piosenka?": a plain read of the live player, no command. */
+    private ToolResult nowPlaying(Map<?, ?> state) {
+        Map<String, Object> data = trackFacts(state);
+        if (!data.containsKey("title")) {
+            data.put("isPlaying", false);
+            return result(CONTROL, true, "Nothing is playing on Spotify right now.", data, "");
+        }
+        return result(CONTROL, true, (Boolean.TRUE.equals(data.get("isPlaying")) ? "Now playing: " : "Paused: ") + data.get("title")
+                + (data.containsKey("artists") ? " — " + data.get("artists") : "") + " on " + data.get("device") + ".", data, "");
+    }
+
+    /** "Polub to": saves the track that is playing now to Liked Songs. */
+    private ToolResult like(Map<?, ?> state) {
+        String uri = trackUri(state);
+        if (!uri.startsWith("spotify:track:") && !uri.startsWith("spotify:episode:"))
+            return failure(CONTROL, "NOTHING_PLAYING", "Nothing is playing, so there is no track to like.");
+        ToolResult saved = run(action("pc", "SPOTIFY", Map.of("action", "save", "target", uri)));
+        Map<String, Object> data = trackFacts(state);
+        data.put("liked", saved.success());
+        return saved.success()
+                ? result(CONTROL, true, "Saved to Liked Songs: " + data.get("title") + ".", data, "")
+                : failure(CONTROL, "COMMAND_FAILED", "Spotify did not save the track: " + saved.message());
+    }
+
+    private static Map<String, Object> trackFacts(Map<?, ?> state) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        if (state.get("item") instanceof Map<?, ?> track && track.get("name") instanceof String name && !name.isBlank()) {
+            data.put("title", name);
+            if (track.get("artists") instanceof List<?> artists && !artists.isEmpty())
+                data.put("artists", String.join(", ", artists.stream().map(String::valueOf).toList()));
+            if (track.get("album") != null) data.put("album", String.valueOf(track.get("album")));
+            data.put("uri", Objects.toString(track.get("uri"), ""));
+        }
+        data.put("isPlaying", Boolean.TRUE.equals(state.get("isPlaying")));
+        data.put("device", Objects.toString(state.get("deviceName"), ""));
+        return data;
+    }
+
     /** Whether the observed player reflects the command; settings commands are confirmed by their acceptance. */
     private static boolean changed(String act, Map<?, ?> before, Map<?, ?> after) {
         Object playing = after.get("isPlaying");
@@ -142,8 +184,7 @@ final class SpotifyAutopilot {
     private ToolResult play() {
         String source = text("source").toLowerCase(Locale.ROOT);
         if (source.isBlank()) source = text("query").isBlank() ? "liked" : "search";
-        if (!java.util.Set.of("liked", "search", "current").contains(source))
-            return failure("BAD_ARGUMENT", "source must be liked, search or current.");
+        if (!SOURCES.contains(source)) return failure("BAD_ARGUMENT", "source must be one of " + SOURCES + ".");
         if (source.equals("search") && text("query").isBlank()) return failure("BAD_ARGUMENT", "source=search needs query.");
         if (SpotifyPlaybackPolicy.played(steps) != null)
             return failure("ALREADY_PLAYED", "Playback was already sent in this request; do not repeat it. Report the result.");
@@ -157,20 +198,35 @@ final class SpotifyAutopilot {
         Map<?, ?> device = device();
         if (device == null) return failure("NO_DEVICE", deviceProblem());
         // "Odpal to na telewizorze": the user names another device and points at what is playing - that is a move.
-        if (!source.equals("search") && device != SpotifyPlaybackPolicy.localDevice(steps) && SpotifyPlaybackPolicy.refersToCurrent(request))
+        if (source.equals("liked") && device != SpotifyPlaybackPolicy.localDevice(steps) && SpotifyPlaybackPolicy.refersToCurrent(request))
             source = "current";
 
         if (source.equals("current")) return moveCurrent(device);
-        ToolResult listed = source.equals("liked")
-                ? call("pc", "SPOTIFY", Map.of("action", "liked", "limit", 50))
-                : call("pc", "SPOTIFY", Map.of("action", "search", "query", text("query"),
-                        "type", text("type").isBlank() ? "track" : text("type"), "limit", 10));
+        String type = switch (source) {
+            case "search" -> text("type").isBlank() ? "track" : text("type").split(",")[0].strip().toLowerCase(Locale.ROOT);
+            case "library" -> "playlist";
+            default -> "track";
+        };
+        ToolResult listed = switch (source) {
+            case "liked" -> call("pc", "SPOTIFY", Map.of("action", "liked", "limit", 50));
+            case "library" -> call("pc", "SPOTIFY", Map.of("action", "library", "type", "playlist", "limit", 50));
+            // Spotify has no "random track" endpoint: a random letter at a random depth of the catalogue.
+            case "random" -> call("pc", "SPOTIFY", Map.of("action", "search", "type", "track", "limit", 10,
+                    "query", String.valueOf((char) ('a' + ThreadLocalRandom.current().nextInt(26))),
+                    "offset", ThreadLocalRandom.current().nextInt(0, 500)));
+            default -> call("pc", "SPOTIFY", Map.of("action", "search", "query", text("query"), "type", type, "limit", 10));
+        };
         if (!listed.success()) return failure("SOURCE_FAILED", "Reading " + source + " failed: " + listed.message());
-        List<String> candidates = candidates(listed);
-        if (candidates.isEmpty()) return failure("NOTHING_FOUND", source.equals("liked")
-                ? "No playable liked songs." : "Search for \"" + text("query") + "\" returned nothing playable.");
-        String chosen = text("pick").equalsIgnoreCase("first") || (source.equals("search") && !text("pick").equalsIgnoreCase("random"))
-                ? candidates.getFirst() : candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
+        List<String> candidates = candidates(listed, type);
+        if (candidates.isEmpty()) return failure("NOTHING_FOUND", switch (source) {
+            case "liked" -> "No playable liked songs.";
+            case "library" -> "None of the user's playlists matches \"" + text("query") + "\".";
+            default -> "Search for \"" + text("query") + "\"" + (text("owner").isBlank() ? "" : " by " + text("owner")) + " returned nothing playable.";
+        });
+        boolean first = text("pick").equalsIgnoreCase("first") || !text("pick").equalsIgnoreCase("random")
+                && (source.equals("search") || source.equals("library") && !text("query").isBlank());
+        String chosen = first ? candidates.getFirst() : candidates.get(ThreadLocalRandom.current().nextInt(candidates.size()));
+        if (text("mode").equalsIgnoreCase("queue")) return enqueue(chosen);
 
         Map<String, Object> playArguments = new LinkedHashMap<>(Map.of("action", "play", "target", chosen, "deviceId", device.get("id")));
         return playAndVerify(new LinkedHashMap<>(SpotifyPlaybackPolicy.prepare(request, action("pc", "SPOTIFY", playArguments), steps).arguments()));
@@ -231,13 +287,34 @@ final class SpotifyAutopilot {
                 + "active on them; the user can select it once in the Spotify app.";
     }
 
-    private List<String> candidates(ToolResult listed) {
-        String type = text("source").equalsIgnoreCase("search") || !text("query").isBlank()
-                ? (text("type").isBlank() ? "track" : text("type").split(",")[0].strip()) : "track";
+    /** Real results of the read just made, of the wanted type, narrowed by playlist owner or (library) name. */
+    private List<String> candidates(ToolResult listed, String type) {
         Map<String, Map<?, ?>> allowed = SpotifyPlaybackPolicy.sourceItems(request, steps);
         Map<String, Map<?, ?>> found = new LinkedHashMap<>();
         SpotifyPlaybackPolicy.collect(listed.data(), found);
-        return found.keySet().stream().filter(allowed::containsKey).filter(uri -> uri.startsWith("spotify:" + type + ":")).toList();
+        String owner = SpotifyPlaybackPolicy.normalize(text("owner"));
+        String name = text("source").equalsIgnoreCase("library") ? SpotifyPlaybackPolicy.normalize(text("query")) : "";
+        return found.entrySet().stream()
+                .filter(e -> allowed.containsKey(e.getKey()) && e.getKey().startsWith("spotify:" + type + ":"))
+                .filter(e -> owner.isBlank() || SpotifyPlaybackPolicy.normalize(Objects.toString(e.getValue().get("owner"), "")).contains(owner))
+                .filter(e -> name.isBlank() || SpotifyPlaybackPolicy.normalize(Objects.toString(e.getValue().get("name"), "")).contains(name))
+                .map(Map.Entry::getKey).toList();
+    }
+
+    /** mode=queue: adds the chosen track after the current one instead of interrupting playback. */
+    private ToolResult enqueue(String uri) {
+        if (!uri.startsWith("spotify:track:") && !uri.startsWith("spotify:episode:"))
+            return failure("BAD_ARGUMENT", "Only tracks or episodes can be added to the queue; use type=track.");
+        Map<?, ?> state = playback(call("pc", "SPOTIFY", Map.of("action", "current")));
+        String deviceId = Objects.toString(state.get("deviceId"), "");
+        if (deviceId.isBlank()) return failure("NOTHING_PLAYING", "Nothing is playing, so there is no queue to add to. Play it instead.");
+        ToolResult queued = run(action("pc", "SPOTIFY", Map.of("action", "enqueue", "target", uri, "deviceId", deviceId)));
+        Map<?, ?> item = SpotifyPlaybackPolicy.sourceItems(request, steps).getOrDefault(uri, Map.of());
+        Map<String, Object> data = new LinkedHashMap<>(Map.of("queued", queued.success(), "uri", uri,
+                "title", Objects.toString(item.get("name"), ""), "device", Objects.toString(state.get("deviceName"), "")));
+        return queued.success()
+                ? result(true, "Added to the queue: " + data.get("title") + ".", data, "")
+                : failure("COMMAND_FAILED", "Spotify did not add it to the queue: " + queued.message());
     }
 
     private ToolResult summary() {

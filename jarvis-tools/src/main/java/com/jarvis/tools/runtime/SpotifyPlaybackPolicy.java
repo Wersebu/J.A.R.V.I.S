@@ -509,11 +509,16 @@ final class SpotifyPlaybackPolicy {
         ToolRuntimeStep step = latest(steps, "status");
         return step != null && step.result().success() && Boolean.TRUE.equals(step.result().data().get("connected"));
     }
-    /** The latest pc__spotify_control call, if the request was a control of the live session. */
+    /**
+     * The latest call that completes the request without new playback: pc__spotify_control (next, pause, now,
+     * like...) or pc__spotify_play with mode=queue that queued a track.
+     */
     static ToolRuntimeStep control(List<ToolRuntimeStep> steps) {
         for (int i = steps.size() - 1; i >= 0; i--) {
             ToolRuntimeStep step = steps.get(i);
-            if (executed(step) && "pc".equalsIgnoreCase(step.tool()) && SpotifyAutopilot.CONTROL.equalsIgnoreCase(step.operation())) return step;
+            if (!executed(step) || !"pc".equalsIgnoreCase(step.tool())) continue;
+            if (SpotifyAutopilot.CONTROL.equalsIgnoreCase(step.operation())) return step;
+            if (SpotifyAutopilot.OPERATION.equalsIgnoreCase(step.operation()) && step.result().data().containsKey("queued")) return step;
         }
         return null;
     }
@@ -531,5 +536,5 @@ final class SpotifyPlaybackPolicy {
     private static boolean desktopOpen(ToolRuntimeStep s) { return "pc".equalsIgnoreCase(s.tool()) && "OPEN".equalsIgnoreCase(s.operation()) && "spotify".equalsIgnoreCase(text(s.arguments(), "target")); }
     private static CompletionAssessment missing(String guidance) { return new CompletionAssessment(false, BLOCKED, guidance); }
     private static String text(Map<String, Object> data, String key) { return Objects.toString(data.get(key), "").strip(); }
-    private static String normalize(String text) { return Normalizer.normalize(text.toLowerCase(Locale.ROOT), Normalizer.Form.NFD).replaceAll("\\p{M}", "").replace('ł', 'l'); }
+    static String normalize(String text) { return Normalizer.normalize(text.toLowerCase(Locale.ROOT), Normalizer.Form.NFD).replaceAll("\\p{M}", "").replace('ł', 'l'); }
 }

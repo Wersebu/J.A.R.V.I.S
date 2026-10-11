@@ -192,16 +192,20 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                                 + "You decide only the arguments. Returns title, artists, device and confirmed=true, or the exact problem.",
                         ToolSafetyLevel.WRITE, false,
                         arg("source", false, "liked = the user's liked songs (right for 'play something'); search = find query; "
+                                + "random = any random track from the catalogue; library = the user's own playlists (query = name); "
                                 + "current = move what is playing now to the device (same track, queue and position)"),
-                        arg("query", false, "What to search for when source=search (artist, track, album, playlist)"),
+                        arg("query", false, "What to search for (title, artist, album, playlist name); for library the playlist name"),
                         arg("type", false, "Search type: track (default), album, artist or playlist"),
-                        arg("pick", false, "random (default for liked) or first (default for search: best match)"),
+                        arg("owner", false, "Playlist search only: who created the playlist"),
+                        arg("pick", false, "random (default for liked/random) or first (default for search: best match)"),
+                        arg("mode", false, "play (default) or queue = add the track after the current one"),
                         arg("device", false, "Empty = this PC. Otherwise the device the user asked for, e.g. TV or speaker")),
-                op("SPOTIFY_CONTROL", "Control what Spotify is playing right now in ONE call, on whichever device plays it "
-                                + "(this PC or e.g. the TV): next, previous, pause, resume, volume, shuffle, repeat. Core checks that the "
-                                + "player changed and returns the now-playing title, artists and device.",
+                op("SPOTIFY_CONTROL", "What Spotify is playing right now, in ONE call, on whichever device plays it "
+                                + "(this PC or e.g. the TV): now = what song is this; like = save it to Liked Songs; next, previous, "
+                                + "pause, resume, volume, shuffle, repeat. Core checks that the player changed and returns the "
+                                + "now-playing title, artists and device.",
                         ToolSafetyLevel.WRITE, false,
-                        arg("action", true, "next | previous | pause | resume | volume | shuffle | repeat"),
+                        arg("action", true, "now | like | next | previous | pause | resume | volume | shuffle | repeat"),
                         intArg("value", "volume: 0-100"),
                         arg("state", false, "shuffle: true/false; repeat: off/track/context")),
                 op("CHANGES", "List files changed by pc__write/edit/patch/delete in this conversation (newest first).",
