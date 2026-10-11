@@ -102,19 +102,6 @@ public class ModelExecutionStage implements PipelineStage {
         }
 
         boolean hasImages = !context.images().isEmpty();
-        if (!hasImages && com.jarvis.tools.runtime.SpotifyPlaybackIntent.isPlaybackRequest(context.request().message())) {
-            // "Play ... on Spotify" always needs the Spotify tools; a deliberating decision call only adds latency.
-            TELEMETRY_LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} initialModelDecision=TOOL_REQUEST toolRequestedByModel=false "
-                    + "autoTriggered=true reason=SPOTIFY_PLAYBACK modelCalls=0", context.requestId());
-            cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "TOOL_REQUEST",
-                    "Spotify playback request routed directly to the Spotify procedure", null, Map.of("reason", "SPOTIFY_PLAYBACK"));
-            return context
-                    .withMetadata("mainModelAction", MainModelActionType.TOOL_REQUEST.name())
-                    .withMetadata("toolGoal", context.request().message())
-                    .withMetadata("toolReason", "Spotify playback request")
-                    .withMetadata("toolContext", Map.of())
-                    .withMetadata("mainModelDurationMs", 0L);
-        }
         TELEMETRY_LOGGER.info("[ATTACHMENT_ROUTING] requestId={} currentMessageImages={} forwardedToMainModel={}",
                 context.requestId(), context.images().size(), hasImages);
 

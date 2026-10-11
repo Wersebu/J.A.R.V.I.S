@@ -351,6 +351,23 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         assertThat(result.finalAnswer()).contains("Real search title");
     }
 
+    @Test void honestExplanationOfAMissingTvReachesTheUserButAPlaybackClaimNeverDoes() {
+        userMessage = "a dasz radę odpalić to na telewizorze na spotify?";
+        opened = true;
+        String honest = "Nie widzę telewizora w urządzeniach Spotify — dostępny jest tylko Local desktop.";
+        ToolCallingResult result = run(call("pc__spotify_play", Map.of("source", "liked", "device", "telewizor")),
+                answer(honest), answer(honest), answer(honest));
+        assertThat(executed).doesNotContain("play");
+        assertThat(result.steps()).anyMatch(s -> s.operation().equals("SPOTIFY_PLAY")
+                && s.result().errorCode().equals("NO_DEVICE") && s.result().data().get("visibleDevices").toString().contains("Local desktop"));
+        assertThat(result.finalAnswer()).isEqualTo(honest);
+
+        executed.clear();
+        result = run(call("pc__spotify_play", Map.of("source", "liked", "device", "telewizor")),
+                answer("Nie widzę TV, więc włączyłem na komputerze — już gra."), answer("Nie widzę TV, więc włączyłem na komputerze — już gra."));
+        assertThat(result.finalAnswer()).contains("Zadanie nieukończone");
+    }
+
     @Test void anotherDevicePlaysOnlyWhenTheUserAskedForIt() {
         userMessage = "odpal coś ze spotify na telewizorze";
         tvVisible = true; observedDevice = "tv-id";
@@ -365,13 +382,6 @@ class NativeToolLoopServiceSpotifyPlaybackTest {
         result = run(call("pc__spotify_play", Map.of("source", "liked", "device", "FrytaCraft.pl")), answer("Gra na TV"), answer("Gra na TV"));
         assertThat(executed).doesNotContain("play");
         assertThat(result.terminationInfo().completed()).isFalse();
-    }
-
-    @Test void playbackIntentIsRecognizedFromTheUsersOwnWords() {
-        assertThat(SpotifyPlaybackIntent.isPlaybackRequest("siemka odpal mi coś na spotify")).isTrue();
-        assertThat(SpotifyPlaybackIntent.isPlaybackRequest("puść Matę na spotify")).isTrue();
-        assertThat(SpotifyPlaybackIntent.isPlaybackRequest("co teraz gra na spotify?")).isFalse();
-        assertThat(SpotifyPlaybackIntent.isPlaybackRequest("sprawdź spotify, nie odtwarzaj niczego")).isFalse();
     }
 
     private ModelResponse findWorkflow() { return call("knowledge__find_workflow", Map.of("query", "Spotify")); }

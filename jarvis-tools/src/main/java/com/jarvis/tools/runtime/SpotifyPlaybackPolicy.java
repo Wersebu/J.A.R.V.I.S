@@ -9,6 +9,10 @@ import java.util.*;
 final class SpotifyPlaybackPolicy {
     static final String BLOCKED = "SPOTIFY_PROCEDURE_REQUIRED";
     static final String WORKFLOW = "workflows/Spotify.md";
+    private static final java.util.regex.Pattern PLAY =
+            java.util.regex.Pattern.compile("\\b(play|listen)\\b|\\b(odpal|pusc|puszcz|wlacz|zagraj|odtworz)\\w*");
+    private static final java.util.regex.Pattern NEGATED = java.util.regex.Pattern.compile(
+            "nie (uruchamiaj|odtwarzaj|wlaczaj|puszczaj)[^.!?]*|(do not|don't|without) (play|start)[^.!?]*");
     private static final int MAX_OBSERVATIONS = 4; // initial read plus three bounded readiness observations
 
     static boolean applies(ToolCallingRequest request) {
@@ -16,7 +20,7 @@ final class SpotifyPlaybackPolicy {
         String text = normalize(request.userMessage());
         String domain = text + " " + normalize(Objects.toString(request.goal(), "")) + " " + normalize(request.conversationContext());
         if (!domain.contains("spotify") || text.contains("web player")) return false;
-        return SpotifyPlaybackIntent.playVerb(text);
+        return PLAY.matcher(NEGATED.matcher(text).replaceAll("")).find();
     }
 
     static String guard(ToolCallingRequest request, ToolAction action, List<ToolRuntimeStep> steps) {
@@ -213,13 +217,25 @@ final class SpotifyPlaybackPolicy {
      */
     static String groundedAnswer(ToolCallingRequest request, List<ToolRuntimeStep> steps, String modelAnswer) {
         String evidence = answer(request, steps);
-        if (!confirmed(request, steps) || modelAnswer == null || modelAnswer.isBlank() || modelAnswer.length() > 800) return evidence;
+        if (modelAnswer == null || modelAnswer.isBlank() || modelAnswer.length() > 800) return evidence;
         String reply = normalize(modelAnswer);
-        String title = normalize(String.valueOf(playbackFacts(request, steps).get("title"))).split(" - | \\(| \\[")[0].strip();
-        boolean namesTrack = title.length() >= 2 && reply.contains(title);
         boolean clean = !reply.contains("http") && !reply.contains("spotify:") && !reply.contains("{") && !reply.contains("open.spotify");
-        return namesTrack && clean ? modelAnswer.strip() : evidence;
+        if (!clean) return evidence;
+        if (confirmed(request, steps)) {
+            String title = normalize(String.valueOf(playbackFacts(request, steps).get("title"))).split(" - | \\(| \\[")[0].strip();
+            return title.length() >= 2 && reply.contains(title) ? modelAnswer.strip() : evidence;
+        }
+        // Nothing confirmed: the model may explain why in its own words (e.g. the TV is not visible to Spotify),
+        // but only an explicit admission passes - never a reply that claims or implies playback.
+        return ADMITS_FAILURE.matcher(reply).find() && !CLAIMS_PLAYBACK.matcher(reply).find() ? modelAnswer.strip() : evidence;
     }
+
+    private static final java.util.regex.Pattern ADMITS_FAILURE = java.util.regex.Pattern.compile(
+            "\\bnie (widze|moge|udalo|znalazl|znajduje|ma |jest dostep|potwierdz|da sie)|niedostep|\\bbrak\\b|\\bnie wykryl"
+                    + "|can't|cannot|unable|not available|not visible|not found|don't see|couldn't|could not");
+    private static final java.util.regex.Pattern CLAIMS_PLAYBACK = java.util.regex.Pattern.compile(
+            "\\b(odtwarzam|wlaczylem|wlaczylam|wlaczam|puscilem|puscilam|puszczam|uruchomilem|odpalilem|odpalam|leci|gra juz|juz gra"
+                    + "|gotowe|zrobione|now playing|is playing|started playing|done)\\b");
 
     static boolean confirmed(ToolCallingRequest request, List<ToolRuntimeStep> steps) {
         ToolRuntimeStep play = played(steps);

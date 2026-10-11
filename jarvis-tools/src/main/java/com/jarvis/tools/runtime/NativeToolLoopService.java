@@ -319,7 +319,11 @@ public class NativeToolLoopService {
         ToolCallingResult result = executeLoop(request);
         if (result.handled() && SpotifyPlaybackPolicy.applies(request)) {
             // The model answers in its own words when they match the observed playback; otherwise the evidence speaks.
-            String answer = SpotifyPlaybackPolicy.groundedAnswer(request, result.steps(), result.finalAnswer());
+            // On a blocked ending finalAnswer is Core's generic notice; the model's own last words are kept separately.
+            String modelAnswer = result.terminationInfo() != null && result.terminationInfo().completed()
+                    ? result.finalAnswer()
+                    : result.terminationInfo() == null ? "" : result.terminationInfo().lastModelContent();
+            String answer = SpotifyPlaybackPolicy.groundedAnswer(request, result.steps(), modelAnswer);
             return new ToolCallingResult(true, answer, result.steps(), result.results(), result.terminationInfo());
         }
         if (!result.handled() || !SpotifyReadEvidence.applies(request)) {

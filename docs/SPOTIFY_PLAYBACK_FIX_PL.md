@@ -205,8 +205,6 @@ wstępna („czy potrzebuję narzędzia”), a potem długie myślenie przed ka�
 Próbna wersja, w której Core wykonywał ogólne prośby bez modelu, trwała 8 s, ale omijała AI.
 Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
 
-- ModelExecutionStage: prośba o odtwarzanie na Spotify (SpotifyPlaybackIntent.isPlaybackRequest,
-  bez obrazów) trafia od razu do pętli narzędzi. Pomija tylko decyzję wstępną, a w pętli dalej decyduje model.
 - pc__spotify_play (PcTool SPOTIFY_PLAY, wykonywane wyłącznie przez NativeToolLoopService/SpotifyAutopilot):
   model wybiera source=liked|search, query, type, pick=random|first oraz device (puste = ten PC).
   Core wykonuje procedurę jako zwykłe wywołania pc SPOTIFY/OPEN zapisane w krokach pętli:
@@ -217,6 +215,9 @@ Zastąpiło ją narzędzie, w którym AI decyduje, a Core tylko wykonuje.
 - Odpowiedź: model odpowiada własnymi słowami (SpotifyPlaybackPolicy.groundedAnswer), jeśli
   odtwarzanie jest potwierdzone, odpowiedź wymienia grający tytuł i nie zawiera linków ani URI.
   W przeciwnym razie trafia odpowiedź oparta na dowodach.
+  Gdy nic nie gra, przechodzi ostatnia własna wypowiedź modelu (lastModelContent, nie ogólny
+  komunikat Core), ale tylko jeśli wprost przyznaje niepowodzenie („nie widzę telewizora”) i nie
+  zawiera twierdzeń o odtwarzaniu ani linków. Decyzja wstępna modelu zostaje: najpierw AI, potem narzędzia.
 - Inne urządzenia: dozwolone tylko wtedy, gdy wiadomość użytkownika je wskazuje nazwą albo rodzajem
   (telewizor/tv, głośnik/soundbar, telefon…). Same argumenty modelu nigdy tego nie autoryzują.
   Windows przyjmuje takie urządzenie wyłącznie po dokładnym deviceId i nigdy, gdy to inny komputer.
