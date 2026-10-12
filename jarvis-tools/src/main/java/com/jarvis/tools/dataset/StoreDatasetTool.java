@@ -381,6 +381,20 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     public ToolResult execute(ToolRequest request) {
         StoreDatasetOperation operation = operation(request);
         LOGGER.info("[STORE_AUDIT] requestId={} storeDataset operation={}", request.requestId(), operation);
+        ToolResult result = dispatch(request, operation);
+        if (!result.success() && "STORE_DATASET_NOT_FOUND".equals(result.errorCode())
+                && datasetService.findLatestForConversation(request.conversationId()).isEmpty()) {
+            // The usual cause: the stores were only listed in a chat reply, never saved. Say what to do instead of an empty id.
+            String message = "There is no Store Audit dataset in this conversation yet - the stores were never saved. Save them first "
+                    + "with storeDataset.CREATE_DATASET (or START_DATASET + APPEND_RECORDS + FINALIZE_DATASET), using the store rows "
+                    + "you read, then continue with " + operation + ". Do not tell the user anything was saved.";
+            return new ToolResult(false, TOOL_NAME, operation.name(), request.requestId(), request.conversationId(), false, List.of(),
+                    message, Map.of("error", message), "STORE_DATASET_NOT_FOUND", message, false, "");
+        }
+        return result;
+    }
+
+    private ToolResult dispatch(ToolRequest request, StoreDatasetOperation operation) {
         return switch (operation) {
             case CREATE_DATASET -> create(request);
             case START_DATASET -> start(request);

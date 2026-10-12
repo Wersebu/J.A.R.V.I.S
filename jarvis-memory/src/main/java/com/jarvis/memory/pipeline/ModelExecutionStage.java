@@ -102,10 +102,12 @@ public class ModelExecutionStage implements PipelineStage {
         }
 
         boolean hasImages = !context.images().isEmpty();
-        if (!hasImages && routedWorkflow(context)) {
+        if (routedWorkflow(context)) {
             // Core already matched this message to a workflow (e.g. Spotify) and loaded it: the model's first thought
             // happens in the tool loop, which can also answer without tools. A separate "do I need a tool?" call
-            // would only re-read the whole prompt (~5 s on a local model).
+            // would only re-read the whole prompt (~5 s on a local model, minutes for a thinking model with images).
+            // Images go along: the tool loop passes them to the model, and a workflow such as the store audit must
+            // save what it reads from them (storeDataset.CREATE_DATASET) in this very turn.
             TELEMETRY_LOGGER.info("[JARVIS_TOOL_DECISION] requestId={} initialModelDecision=TOOL_REQUEST toolRequestedByModel=false "
                     + "autoTriggered=true reason=ROUTED_WORKFLOW modelCalls=0", context.requestId());
             cognitiveEventBus.publish(CognitiveEventType.MAIN_MODEL_ACTION, "TOOL_REQUEST",

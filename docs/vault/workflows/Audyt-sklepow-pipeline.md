@@ -3,8 +3,9 @@ id: jarvis-store-audit-pipeline-v1
 type: workflow
 title: Audyt sklepów — pipeline danych
 status: active
-version: 2
-tags: [audyt, grafik, sklepy, Biedronka, planowanie]
+version: 3
+tags: [audyt, grafik, sklepy, Biedronka, Stokrotka, Żabka, planowanie]
+aliases: [przygotuj grafik, zrób grafik, ułóż grafik, grafik na, grafik audytów, plan audytów, zaplanuj audyty, rozpisz audyty]
 ---
 
 # Audyt sklepów — pipeline danych
@@ -12,6 +13,17 @@ tags: [audyt, grafik, sklepy, Biedronka, planowanie]
 Przed wykonaniem zadania odczytaj ten dokument w całości, wszystkie części. Zawartość sekcji 15–28 poniżej została przeniesiona dosłownie z dostarczonego promptu. Nazwy operacji w procedurze są logiczne; używaj rzeczywistych schematów narzędzi Core.
 
 Dokument zależny: Work/Scheduling/StoreAuditScheduleWorkflow.md. Odczytaj go w całości na etapie LOAD PLANNING KNOWLEDGE, przed geokodowaniem i planowaniem. Nie używaj przykładów z procedur jako danych użytkownika. W razie konfliktu reguł zatrzymaj zależny etap i wyjaśnij konkretną sprzeczność.
+
+## Narzędzia Core dla audytu
+
+Te narzędzia są potrzebne w tym procesie (Core udostępnia je modelowi, gdy ten dokument jest wczytany):
+storedataset__create_dataset, storedataset__start_dataset, storedataset__append_records, storedataset__finalize_dataset,
+storedataset__verify_dataset, storedataset__get_dataset, storedataset__set_preferences, storedataset__request_user_input,
+location__geocode_dataset, storedataset__plan_schedule, storedataset__adjust_plan, storedataset__accept_plan,
+calendar__export_schedule.
+
+Gdy wiadomość ma zdjęcia z listą sklepów, zapisz je w TEJ turze (storedataset__create_dataset z sourceAttachmentIndex) -
+dopiero potem pytaj o cokolwiek. Lista sklepów wypisana tylko w czacie nie jest zapisana i w kolejnej turze jej nie ma.
 
 # ============================================================
 

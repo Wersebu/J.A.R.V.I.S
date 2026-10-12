@@ -346,6 +346,19 @@ public class NativeToolSchemaMapper {
         return value instanceof String text && text.isBlank();
     }
 
+    /**
+     * Whether an operation saves or changes something (its definition is marked write, or it deletes).
+     *
+     * @param toolName tool name
+     * @param operationName operation name
+     * @return true for a state-changing operation
+     */
+    public boolean changesState(String toolName, String operationName) {
+        return findOperation(toolName, operationName)
+                .map(operation -> operation.write() || operation.safetyLevel() == com.jarvis.tools.schema.ToolSafetyLevel.DELETE)
+                .orElse(false);
+    }
+
     private Optional<ToolOperationDefinition> findOperation(String toolName, String operationName) {
         for (ToolDefinition definition : toolRegistry.definitions()) {
             if (!definition.name().equalsIgnoreCase(toolName)) {

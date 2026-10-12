@@ -568,6 +568,8 @@ public class NativeToolLoopService {
         int liveEvidenceRecoveryAttempts = 0;
         // A reply promising work "in the background" is rejected once: nothing runs after the loop ends.
         boolean backgroundPromiseRejected = false;
+        // A reply that ignores the failure of the last tool call is rejected once.
+        boolean silentFailureRejected = false;
         // Definitions offered to the model; grows when the model calls a real tool a workflow scope left out.
         List<NativeToolDefinition> offered = new ArrayList<>(definitions);
         messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions, existingDataset)));
@@ -1310,6 +1312,27 @@ public class NativeToolLoopService {
                             + "\"wrócę z wynikiem\"...). That is impossible: nothing runs after you answer, and the user has NOT seen "
                             + "that reply. Either do the work now by calling the tools, or answer honestly what is missing or what "
                             + "failed (including tool errors) and what the user should do."));
+                    if (step >= maxCalls) {
+                        maxCalls = step + 2;
+                    }
+                    continue;
+                }
+
+                ToolResult lastResult = results.isEmpty() ? null : results.getLast();
+                if (!silentFailureRejected && lastResult != null && !lastResult.success() && claimsSuccess(content)
+                        && !acknowledgesProblem(content) && schemaMapper.changesState(lastResult.tool(), lastResult.operation())) {
+                    // The model's own "done, saved" after a failed save is the most misleading answer there is. Failed reads
+                    // (e.g. one Core blocked on purpose) do not count: the answer may rightly rest on other evidence.
+                    silentFailureRejected = true;
+                    LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} rejected answer ignoring failed {}.{} ({})", request.requestId(), step,
+                            lastResult.tool(), lastResult.operation(), lastResult.errorCode());
+                    publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
+                            "Reply ignored a failed tool call, continuing", null, step, Map.of("reason", "FAILED_TOOL_IGNORED"));
+                    messages.add(ModelMessage.assistant(content, List.of()));
+                    messages.add(ModelMessage.system("Your last tool call FAILED: " + lastResult.tool() + "." + lastResult.operation() + " -> "
+                            + (lastResult.errorCode() == null ? "" : lastResult.errorCode() + ": ") + lastResult.errorMessage()
+                            + "\nNothing was saved or done by it, and the user has NOT seen your reply. Fix the cause and call the "
+                            + "tools again, or tell the user plainly what failed and what is needed. Never say it worked."));
                     if (step >= maxCalls) {
                         maxCalls = step + 2;
                     }
@@ -4055,6 +4078,24 @@ public class NativeToolLoopService {
             "(?iu)(\\bw tle\\b|w tej chwili przetwarzam|teraz przetwarzam|trwa przetwarzanie|przetwarzam (teraz |właśnie )?dane"
                     + "|wrócę (do ciebie )?z (wynikiem|wynikami|gotowym)|odezwę się,? (gdy|jak|kiedy)|gdy (tylko )?skończę"
                     + "|in the background|i('| a)m (now )?processing|i will get back to you|i'll get back to you)");
+
+    private static final java.util.regex.Pattern ACKNOWLEDGES_PROBLEM = java.util.regex.Pattern.compile(
+            "(?iu)(nie uda|nie mog|nie moż|nie zosta|błąd|blad|problem|brak|brakuje|nie istnieje|nie znalaz|odmów|odrzuc"
+                    + "|error|fail|could not|couldn't|cannot|can't|unable|not found|missing|declin)");
+
+    private static final java.util.regex.Pattern CLAIMS_SUCCESS = java.util.regex.Pattern.compile(
+            "(?iu)(zapisa|zapisuj|zapisan|utworzy|utworzon|dodał|dodan|ustawił|ustawion|zrobion|gotowe|zaktualizow"
+                    + "|\\bsaved\\b|\\bcreated\\b|\\badded\\b|\\bstored\\b|\\bupdated\\b|\\bdone\\b)");
+
+    /** Whether a reply announces that something was saved or done. */
+    static boolean claimsSuccess(String content) {
+        return content != null && CLAIMS_SUCCESS.matcher(content).find();
+    }
+
+    /** Whether a reply admits that something did not work (so it does not hide a failed tool call). */
+    static boolean acknowledgesProblem(String content) {
+        return content != null && ACKNOWLEDGES_PROBLEM.matcher(content).find();
+    }
 
     /** A reply that claims work is still going on after the turn ends. */
     static boolean promisesBackgroundWork(String content) {

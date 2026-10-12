@@ -50,6 +50,7 @@ class NativeToolLoopServiceWorkflowScopeTest {
     private final List<List<String>> offeredPerTurn = new CopyOnWriteArrayList<>();
     private final List<List<ModelMessage>> messagesPerTurn = new CopyOnWriteArrayList<>();
     private final List<ToolRequest> executed = new CopyOnWriteArrayList<>();
+    private volatile boolean addFails;
 
     @Test
     void aRealToolOutsideTheWorkflowScopeRunsAndItsFamilyIsOfferedFromThenOn() {
@@ -80,6 +81,22 @@ class NativeToolLoopServiceWorkflowScopeTest {
         assertThat(result.finalAnswer()).doesNotContain("przetwarzam", "odezwę się");
         assertThat(messagesPerTurn).hasSizeGreaterThanOrEqualTo(3);
         assertThat(messagesPerTurn.get(2)).anySatisfy(message -> assertThat(message.content()).contains("nothing runs after you answer"));
+    }
+
+    @Test
+    void claimingASaveThatFailedIsSentBackOnce() {
+        addFails = true;
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCall("notes__add", Map.of("text", "preferencje: wtorki i środy")));
+        turns.add(answer("Zapisałem Twoje preferencje na listopad."));
+        turns.add(answer("Nie udało się zapisać preferencji: brak zbioru danych. Najpierw muszę zapisać listę sklepów."));
+
+        ToolCallingResult result = run(turns, Map.of());
+
+        assertThat(result.finalAnswer()).doesNotContain("Zapisałem");
+        assertThat(messagesPerTurn.get(2)).anySatisfy(message -> assertThat(message.content()).contains("Your last tool call FAILED", "notes.ADD"));
+        assertThat(NativeToolLoopService.claimsSuccess("Zapisuję Twoje preferencje.")).isTrue();
+        assertThat(NativeToolLoopService.acknowledgesProblem("Nie udało się zapisać.")).isTrue();
     }
 
     @Test
@@ -191,6 +208,10 @@ class NativeToolLoopServiceWorkflowScopeTest {
         @Override
         public ToolResult execute(ToolRequest request) {
             executed.add(request);
+            if (addFails && "ADD".equals(request.operation())) {
+                return new ToolResult(false, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
+                        false, List.of(), "No dataset", Map.of(), "STORE_DATASET_NOT_FOUND", "No dataset in this conversation", false, "");
+            }
             return new ToolResult(true, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
                     "ADD".equals(request.operation()), List.of(), "Notes " + request.operation() + " done",
                     Map.of("notes", new ArrayList<>(List.of("Baniocha 05-532"))), "", "", false, "");

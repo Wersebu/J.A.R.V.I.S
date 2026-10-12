@@ -110,6 +110,23 @@ class ModelExecutionStageAttachmentRoutingTest {
         assertThat(result.metadata()).containsEntry("toolGoal", BAD_GOAL);
     }
 
+    @Test
+    void imagesWithARoutedWorkflowGoStraightToTheToolLoop() {
+        // The store audit: the stores in the images must be saved (CREATE_DATASET) in this very turn, so the
+        // separate "do I need a tool?" call (211 s for a thinking model with images) must not answer in chat instead.
+        ScriptedProvider provider = new ScriptedProvider(List.of(
+                finalAnswerFrom("{\"type\":\"FINAL_ANSWER\",\"answer\":\"Widze 18 sklepow, sprawdz liste.\"}")));
+        ModelExecutionStage stage = stage(provider);
+        PipelineContext context = contextWithImage().withKnowledgeContext(new com.jarvis.common.context.KnowledgeContext(
+                "workflow text", List.of(new com.jarvis.common.context.KnowledgeSource(java.util.UUID.randomUUID(),
+                "Audyt sklepów — pipeline danych", "workflows/Audyt-sklepow-pipeline.md", "workflow", 100)), 1, 100, 25, false, 0));
+
+        PipelineContext result = stage.execute(context);
+
+        assertThat(provider.callCount()).isZero();
+        assertThat(result.metadata()).containsEntry("mainModelAction", "TOOL_REQUEST");
+    }
+
     private static String toolRequestJson(String goal, String reason) {
         return "{\"type\":\"TOOL_REQUEST\",\"goal\":\"" + goal.replace("\"", "\\\"") + "\","
                 + "\"reason\":\"" + reason.replace("\"", "\\\"") + "\",\"context\":{}}";

@@ -8,6 +8,17 @@
 > Core: `jarvis.audit.start-address`, `jarvis.audit.biedronka-minutes`, `jarvis.audit.short-minutes`,
 > `jarvis.audit.biedronka-per-day`, `jarvis.audit.short-per-day`.
 
+## Narzędzia Core dla audytu
+
+Te narzędzia są potrzebne w tym procesie (Core udostępnia je modelowi, gdy ten dokument jest wczytany):
+storedataset__create_dataset, storedataset__start_dataset, storedataset__append_records, storedataset__finalize_dataset,
+storedataset__verify_dataset, storedataset__get_dataset, storedataset__set_preferences, storedataset__request_user_input,
+location__geocode_dataset, storedataset__plan_schedule, storedataset__adjust_plan, storedataset__accept_plan,
+calendar__export_schedule.
+
+Gdy wiadomość ma zdjęcia z listą sklepów, zapisz je w TEJ turze (storedataset__create_dataset z sourceAttachmentIndex) -
+dopiero potem pytaj o cokolwiek. Lista sklepów wypisana tylko w czacie nie jest zapisana i w kolejnej turze jej nie ma.
+
 ## 1. CEL
 
 Ta procedura określa sposób tworzenia miesięcznego grafiku wizyt/audytów
