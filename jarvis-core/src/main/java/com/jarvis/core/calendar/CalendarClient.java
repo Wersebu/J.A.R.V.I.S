@@ -37,6 +37,11 @@ public class CalendarClient {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final Pattern EVENT_ID = Pattern.compile("[A-Za-z0-9_-]{3,1024}");
+    /**
+     * Google requires RFC 3339 with seconds; OffsetDateTime.toString() drops ":00" seconds ("2026-10-12T00:00+02:00")
+     * and Google answers 400 to that.
+     */
+    private static final DateTimeFormatter RFC3339 = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssXXX");
 
     /** One calendar of the user. */
     public record CalendarInfo(String id, String name, boolean primary, boolean selected, String accessRole) {
@@ -94,8 +99,8 @@ public class CalendarClient {
         List<CalendarEvent> events = new ArrayList<>();
         for (CalendarInfo info : chosen) {
             StringBuilder path = new StringBuilder("calendars/").append(encode(info.id())).append("/events?singleEvents=true&orderBy=startTime")
-                    .append("&maxResults=250&timeMin=").append(encode(from.toOffsetDateTime().toString()))
-                    .append("&timeMax=").append(encode(to.toOffsetDateTime().toString()));
+                    .append("&maxResults=250&timeMin=").append(encode(RFC3339.format(from)))
+                    .append("&timeMax=").append(encode(RFC3339.format(to)));
             if (query != null && !query.isBlank()) path.append("&q=").append(encode(query.strip()));
             request(user, "GET", path.toString(), null).path("items").forEach(item -> {
                 if (!item.path("status").asText("").equals("cancelled")) events.add(event(info, item));
@@ -189,7 +194,13 @@ public class CalendarClient {
                         + "enabled in the Google Cloud project, or this calendar is read-only for the user.");
                 if (status == 404) throw new GoogleException("Calendar or event not found (404). Use an index from the last list.");
                 if (status == 429) throw new GoogleException("Google Calendar rate limit. Try again in a minute; do not loop.");
-                if (status < 200 || status >= 300) throw new GoogleException("Google Calendar rejected the request (HTTP " + status + ").");
+                if (status < 200 || status >= 300) {
+                    // Google's own reason ("Bad Request", "Invalid time range"...) keeps the model from guessing a cause.
+                    String reason = "";
+                    try { reason = JSON.readTree(response.body()).path("error").path("message").asText(""); } catch (Exception ignored) { }
+                    throw new GoogleException("Google Calendar rejected the request (HTTP " + status + (reason.isBlank() ? "" : ": " + reason)
+                            + "). This is not a login problem; tell the user the exact error and do not invent a cause.");
+                }
                 return response.body().isBlank() ? JSON.createObjectNode() : JSON.readTree(response.body());
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
@@ -204,7 +215,7 @@ public class CalendarClient {
     /** Google time for a body: {"dateTime": "...+02:00", "timeZone": "Europe/Warsaw"} or {"date": "2026-10-15"}. */
     Map<String, Object> googleTime(ZonedDateTime time, boolean allDay) {
         return allDay ? Map.of("date", time.toLocalDate().toString())
-                : Map.of("dateTime", time.toOffsetDateTime().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), "timeZone", zone.getId());
+                : Map.of("dateTime", RFC3339.format(time), "timeZone", zone.getId());
     }
 
     private static String eventId(String id) {

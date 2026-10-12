@@ -71,9 +71,14 @@ class CalendarToolTest {
             } else {
                 calls.add(method + " " + path);
                 if (!body.isBlank()) bodies.add(JSON.readTree(body));
+                String query = exchange.getRequestURI().getQuery() == null ? "" : exchange.getRequestURI().getQuery();
                 if (!"Bearer access-owner".equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
                     status = 401;
                     response = "{}";
+                } else if (query.contains("timeMin") && !query.matches(".*timeMin=\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}[+-]\\d{2}:\\d{2}&.*")) {
+                    // Like Google: RFC 3339 with seconds, or 400.
+                    status = 400;
+                    response = "{\"error\":{\"code\":400,\"message\":\"Bad Request\"}}";
                 } else if (path.equals("/cal/users/me/calendarList")) {
                     response = "{\"items\":["
                             + "{\"id\":\"" + PRIMARY + "\",\"summary\":\"Owner\",\"primary\":true,\"selected\":true,\"accessRole\":\"owner\"},"
