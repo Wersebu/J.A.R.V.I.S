@@ -21,5 +21,11 @@ public enum StoreDatasetOperation {
     /** Marks the dataset as legitimately paused awaiting a real decision from the user right now. */
     REQUEST_USER_INPUT,
     /** Submits a day-by-day schedule for count-invariant validation against the locked dataset. */
-    SUBMIT_SCHEDULE
+    SUBMIT_SCHEDULE,
+    /** Core builds the preliminary day plan itself (AuditPlanner). */
+    PLAN_SCHEDULE,
+    /** Changes the preliminary plan as the user asks. */
+    ADJUST_PLAN,
+    /** Saves the accepted plan as the schedule. */
+    ACCEPT_PLAN
 }

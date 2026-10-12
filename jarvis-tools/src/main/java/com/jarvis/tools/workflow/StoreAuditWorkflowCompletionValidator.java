@@ -117,8 +117,8 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
                     ? "Call location.GEOCODE_DATASET for the verified records, then storeDataset.SUBMIT_SCHEDULE."
                     : "Ask the user about scheduling preferences (days, distribution across the month), then call "
                             + "storeDataset.SET_PREFERENCES with their answer.";
-            case GEOLOCATED -> "Call storeDataset.SUBMIT_SCHEDULE with a day-by-day grouping covering every "
-                    + "record exactly once.";
+            case GEOLOCATED -> "Call storeDataset.PLAN_SCHEDULE: Core groups the stores into days by the workflow rules. "
+                    + "Show the preliminary plan, and after the user accepts it call storeDataset.ACCEPT_PLAN.";
             case SCHEDULED -> "";
         };
     }
@@ -147,7 +147,7 @@ public class StoreAuditWorkflowCompletionValidator implements WorkflowCompletion
             case EXTRACTED -> "VERIFY_DATASET";
             case LOCKED -> !preferencesSet ? "SET_PREFERENCES"
                     : requiredDocumentLoaded ? "GEOCODE_DATASET" : "READ_REQUIRED_WORKFLOW_DOCUMENT";
-            case GEOLOCATED -> "SUBMIT_SCHEDULE";
+            case GEOLOCATED -> "PLAN_SCHEDULE";
             case SCHEDULED -> "";
         };
     }

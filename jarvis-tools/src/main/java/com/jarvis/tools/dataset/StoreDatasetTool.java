@@ -153,14 +153,27 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
     }
 
     private final StoreAuditDatasetService datasetService;
+    private final AuditPlanner planner;
+
+    /**
+     * Creates the store dataset tool without the Core day planner (tests of the dataset stages).
+     *
+     * @param datasetService canonical dataset store
+     */
+    public StoreDatasetTool(StoreAuditDatasetService datasetService) {
+        this(datasetService, (AuditPlanner) null);
+    }
 
     /**
      * Creates the store dataset tool.
      *
      * @param datasetService canonical dataset store
+     * @param planner Core day planner (PLAN_SCHEDULE, ADJUST_PLAN, ACCEPT_PLAN)
      */
-    public StoreDatasetTool(StoreAuditDatasetService datasetService) {
+    @org.springframework.beans.factory.annotation.Autowired
+    public StoreDatasetTool(StoreAuditDatasetService datasetService, AuditPlanner planner) {
         this.datasetService = datasetService;
+        this.planner = planner;
     }
 
     @Override
@@ -325,7 +338,42 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
                                 + "that every store was scheduled exactly once.",
                         true, ToolSafetyLevel.WRITE,
                         arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION),
-                        arg("days", true, DAYS_SCHEMA))
+                        arg("days", true, DAYS_SCHEMA)),
+                operation("PLAN_SCHEDULE",
+                        "Core builds the day-by-day plan itself (after GEOCODE_DATASET and SET_PREFERENCES), following "
+                                + "StoreAuditScheduleWorkflow.md: closed trips from the start point, farthest region first, "
+                                + "daily limits, real dates from the preferences, optimized visit order, Google Maps route links. "
+                                + "Returns a PRELIMINARY plan (nothing saved): show it to the user day by day (date, stores, "
+                                + "audit/travel/work time, km, route link, region) with its decisions (A/B questions) and warnings, "
+                                + "then wait for the user. Use this instead of grouping stores yourself.",
+                        true, ToolSafetyLevel.WRITE,
+                        arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION),
+                        arg("biedronkaPerDay", "number", false, "Daily Biedronka limit for this plan (default 4)"),
+                        arg("shortPerDay", "number", false, "Daily limit for short audits like Żabka/Stokrotka (default 7)")),
+                operation("ADJUST_PLAN",
+                        "Changes the preliminary plan the way the user asks, then re-routes it. One change per call: "
+                                + "moveStoreIndex + toDay (move a store; toDay = number of days + 1 opens a new day), "
+                                + "mergeDays [a, b], splitDay, day + date (YYYY-MM-DD), acceptDecision (option A of a decision) or "
+                                + "dismissDecision (option B), or biedronkaPerDay / shortPerDay for more or less work per day "
+                                + "(re-plans everything). Show the updated plan.",
+                        true, ToolSafetyLevel.WRITE,
+                        arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION),
+                        arg("moveStoreIndex", "number", false, "Store number (storeIndex) to move"),
+                        arg("toDay", "number", false, "Target day for moveStoreIndex"),
+                        arg("mergeDays", "array", false, "Day numbers to merge into the first one, e.g. [2, 5]"),
+                        arg("splitDay", "number", false, "Day to split into two"),
+                        arg("day", "number", false, "Day whose date changes (with date)"),
+                        arg("date", "string", false, "New date YYYY-MM-DD for day"),
+                        arg("acceptDecision", "number", false, "Decision id to apply (option A)"),
+                        arg("dismissDecision", "number", false, "Decision id to drop (option B)"),
+                        arg("biedronkaPerDay", "number", false, "New daily Biedronka limit"),
+                        arg("shortPerDay", "number", false, "New daily limit for short audits")),
+                operation("ACCEPT_PLAN",
+                        "Saves the current plan as the schedule once the user accepted it (Core submits it itself, exactly "
+                                + "as shown). Open decisions count as option B. After this the plan can be exported with "
+                                + "calendar__export_schedule if the user wants it in Google Tasks.",
+                        true, ToolSafetyLevel.WRITE,
+                        arg("datasetId", "string", false, DATASET_ID_ARG_DESCRIPTION))
         ));
     }
 
@@ -343,7 +391,108 @@ public class StoreDatasetTool implements JarvisTool, ToolSchemaProvider {
             case SET_PREFERENCES -> setPreferences(request);
             case REQUEST_USER_INPUT -> requestUserInput(request);
             case SUBMIT_SCHEDULE -> submitSchedule(request);
+            case PLAN_SCHEDULE, ADJUST_PLAN, ACCEPT_PLAN -> planning(request, operation);
         };
+    }
+
+    /** PLAN_SCHEDULE / ADJUST_PLAN / ACCEPT_PLAN: the Core day planner, see {@link AuditPlanner}. */
+    private ToolResult planning(ToolRequest request, StoreDatasetOperation operation) {
+        String name = operation.name();
+        if (planner == null) {
+            return planningFailure(request, name, "STORE_AUDIT_PLANNER_UNAVAILABLE", "The Core day planner is not available.");
+        }
+        String datasetId = arg(request, "datasetId");
+        Optional<StoreAuditDataset> dataset = datasetId.isBlank()
+                ? datasetService.findLatestForConversation(request.conversationId()) : datasetService.getDataset(datasetId);
+        if (dataset.isEmpty()) {
+            return planningFailure(request, name, "STORE_DATASET_NOT_FOUND", "No Store Audit dataset in this conversation (or it expired).");
+        }
+        StoreAuditDataset value = dataset.get();
+        Optional<ToolResult> stageError = validateStage(request, name, value, Set.of(DatasetStage.GEOLOCATED, DatasetStage.SCHEDULED));
+        if (stageError.isPresent()) {
+            return stageError.get();
+        }
+        try {
+            AuditPlanner.AuditPlan plan;
+            String message;
+            switch (operation) {
+                case PLAN_SCHEDULE -> {
+                    Integer biedronka = optionalInt(request, "biedronkaPerDay");
+                    Integer shortOnes = optionalInt(request, "shortPerDay");
+                    plan = planner.plan(value, biedronka == null && shortOnes == null ? null : new AuditPlanner.PlannerLimits(
+                            biedronka == null ? 4 : biedronka, shortOnes == null ? 7 : shortOnes));
+                    message = preliminaryMessage(plan);
+                }
+                case ADJUST_PLAN -> {
+                    String date = arg(request, "date");
+                    plan = planner.adjust(value.datasetId(), new AuditPlanner.Adjustment(optionalInt(request, "moveStoreIndex"),
+                            optionalInt(request, "toDay"), intListArg(request, "mergeDays"), optionalInt(request, "splitDay"), optionalInt(request, "day"),
+                            date.isBlank() ? null : LocalDate.parse(date), optionalInt(request, "acceptDecision"),
+                            optionalInt(request, "dismissDecision"), optionalInt(request, "biedronkaPerDay"), optionalInt(request, "shortPerDay")));
+                    message = "Plan changed. " + preliminaryMessage(plan);
+                }
+                default -> {
+                    AuditPlanner.AuditPlan current = planner.current(value.datasetId())
+                            .orElseThrow(() -> new IllegalStateException("There is no plan yet: call storeDataset.PLAN_SCHEDULE first."));
+                    ScheduleSubmitOutcome outcome = datasetService.submitSchedule(value.datasetId(), planner.toSchedule(current));
+                    if (!outcome.success()) {
+                        return planningFailure(request, name, "STORE_DATASET_INVARIANT_VIOLATION", outcome.message());
+                    }
+                    plan = planner.markAccepted(value.datasetId(), request.conversationId());
+                    message = "Plan accepted and saved as the schedule (" + plan.days().size() + " day(s)). Present the final table "
+                            + "(Data | Dzień tygodnia | Sieć | Adres) and the summary. Offer to put it into Google Tasks "
+                            + "(calendar__export_schedule) - only if the user wants it.";
+                }
+            }
+            if (operation != StoreDatasetOperation.ACCEPT_PLAN) {
+                // The plan waits for the user: a legitimate pause, not an unfinished task.
+                datasetService.requestUserInput(value.datasetId(), WorkflowPause.AWAITING_DECISION, "Preliminary plan awaiting the user's acceptance");
+            }
+            Map<String, Object> data = new LinkedHashMap<>(AuditPlanner.describe(plan));
+            data.put("datasetId", value.datasetId());
+            return new ToolResult(true, TOOL_NAME, name, request.requestId(), request.conversationId(), true,
+                    List.of(value.datasetId()), message, data, "", "", false, "");
+        } catch (IllegalArgumentException | IllegalStateException | java.time.format.DateTimeParseException exception) {
+            return planningFailure(request, name, "STORE_AUDIT_PLAN_FAILED", exception.getMessage());
+        }
+    }
+
+    private static String preliminaryMessage(AuditPlanner.AuditPlan plan) {
+        return "PRELIMINARY plan, not saved: " + plan.days().size() + " day(s). Show every day to the user (date, region, stores in "
+                + "order with network and address, audit/travel/work time, km, the Google Maps route link)"
+                + (plan.decisions().isEmpty() ? "" : ", then ask each decision (A/B) exactly as given")
+                + (plan.warnings().isEmpty() ? "" : ", and say the warnings")
+                + ". Ask whether to accept it or what to change. Call ACCEPT_PLAN only after the user accepts.";
+    }
+
+    private ToolResult planningFailure(ToolRequest request, String name, String code, String message) {
+        return new ToolResult(false, TOOL_NAME, name, request.requestId(), request.conversationId(), false, List.of(),
+                message, Map.of("error", message), code, message, false, "");
+    }
+
+    private static Integer optionalInt(ToolRequest request, String name) {
+        Object value = request.arguments().get(name);
+        if (value == null || String.valueOf(value).isBlank()) return null;
+        if (value instanceof Number number) return number.intValue();
+        try {
+            return (int) Double.parseDouble(String.valueOf(value).strip());
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException(name + " must be a number.");
+        }
+    }
+
+    private static List<Integer> intListArg(ToolRequest request, String name) {
+        Object value = request.arguments().get(name);
+        if (value == null) return null;
+        List<Integer> result = new ArrayList<>();
+        if (value instanceof List<?> list) {
+            for (Object item : list) result.add(item instanceof Number n ? n.intValue() : Integer.parseInt(String.valueOf(item).strip()));
+        } else {
+            for (String part : String.valueOf(value).replaceAll("[\\[\\]]", "").split("[,; ]+")) {
+                if (!part.isBlank()) result.add(Integer.parseInt(part.strip()));
+            }
+        }
+        return result;
     }
 
     private ToolResult create(ToolRequest request) {

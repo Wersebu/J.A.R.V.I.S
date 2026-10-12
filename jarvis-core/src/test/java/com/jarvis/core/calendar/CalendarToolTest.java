@@ -57,6 +57,8 @@ class CalendarToolTest {
     private volatile boolean approve = true;
     private volatile String deviceStatus = "CONNECTED";
     private volatile boolean tasksScopeMissing;
+    private final List<String> exportedTasks = new CopyOnWriteArrayList<>();
+    private com.jarvis.tools.dataset.AuditPlanner planner;
 
     @BeforeEach
     void setup() throws Exception {
@@ -83,6 +85,13 @@ class CalendarToolTest {
                 } else if (path.startsWith("/tasks/") && tasksScopeMissing) {
                     status = 403;
                     response = "{\"error\":{\"code\":403,\"message\":\"Request had insufficient authentication scopes.\"}}";
+                } else if (path.equals("/tasks/users/@me/lists") && method.equals("POST")) {
+                    response = "{\"id\":\"auditlist\",\"title\":" + JSON.readTree(body).path("title") + "}";
+                } else if (path.equals("/tasks/lists/auditlist/tasks") && method.equals("POST")) {
+                    String previous = exchange.getRequestURI().getQuery() == null ? "" : exchange.getRequestURI().getQuery();
+                    exportedTasks.add(previous + " | " + JSON.readTree(body).path("title").asText() + " | " + JSON.readTree(body).path("due").asText()
+                            + " | " + JSON.readTree(body).path("notes").asText().replace("\n", " / "));
+                    response = "{\"id\":\"task" + exportedTasks.size() + "\",\"title\":" + JSON.readTree(body).path("title") + "}";
                 } else if (path.equals("/tasks/users/@me/lists")) {
                     response = "{\"items\":[{\"id\":\"list1\",\"title\":\"Moje zadania\"}]}";
                 } else if (path.equals("/tasks/lists/list1/tasks") && method.equals("GET")) {
@@ -155,8 +164,33 @@ class CalendarToolTest {
                 return Map.of("approved", approve);
             }
         }, oauth);
+        com.jarvis.tools.location.RoutingClient roads = new com.jarvis.tools.location.RoutingClient() {
+            @Override
+            public com.jarvis.tools.location.RouteResult route(com.jarvis.tools.location.GeoPoint from, com.jarvis.tools.location.GeoPoint to) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public com.jarvis.tools.location.RouteMatrixResult table(List<com.jarvis.tools.location.GeoPoint> points) {
+                int n = points.size();
+                Double[][] meters = new Double[n][n];
+                Double[][] seconds = new Double[n][n];
+                for (int a = 0; a < n; a++) {
+                    for (int b = 0; b < n; b++) {
+                        double km = Math.abs(points.get(a).latitude() - points.get(b).latitude()) * 111
+                                + Math.abs(points.get(a).longitude() - points.get(b).longitude()) * 68;
+                        meters[a][b] = km * 1000;
+                        seconds[a][b] = km / 60 * 3600;
+                    }
+                }
+                return com.jarvis.tools.location.RouteMatrixResult.resolved(meters, seconds);
+            }
+        };
+        planner = new com.jarvis.tools.dataset.AuditPlanner(query -> com.jarvis.tools.location.GeocodeResult.resolved(query, 52.0, 21.0, query),
+                roads, Clock.fixed(NOW, ZoneId.of("UTC")), "Nowa Wola, 05-500, Polska", 105, 8,
+                new com.jarvis.tools.dataset.AuditPlanner.PlannerLimits(4, 7), 15, 35, 40);
         tool = new CalendarTool(new CalendarClient(http, oauth, base.resolve("cal/"), ZoneId.of("Europe/Warsaw")),
-                new TasksClient(http, oauth, base.resolve("tasks/")), oauth, device, Clock.fixed(NOW, ZoneId.of("UTC")));
+                new TasksClient(http, oauth, base.resolve("tasks/")), oauth, device, Clock.fixed(NOW, ZoneId.of("UTC")), planner);
     }
 
     @AfterEach
@@ -333,6 +367,69 @@ class CalendarToolTest {
         ToolResult tasks = call("owner", "TASKS");
         assertThat(tasks.success()).isFalse();
         assertThat(tasks.message()).contains("ticks the Tasks permission");
+    }
+
+    /** A plan accepted in conversation c1: two Biedronki near Nowa Wola and one Żabka. */
+    private void acceptedAuditPlan() {
+        var service = new com.jarvis.tools.dataset.StoreAuditDatasetService(new com.jarvis.common.event.CognitiveEventBus() {
+            public void startRequest(String requestId, String conversationId, java.util.function.Consumer<com.jarvis.common.event.CognitiveEvent> sink) { }
+            public void finishRequest() { }
+            public void updateBrain(com.jarvis.common.ai.BrainType brain, String model) { }
+            public void publish(com.jarvis.common.event.CognitiveEventType event, String status, String message, String nodeId, Map<String, Object> metadata) { }
+        }, Clock.fixed(NOW, ZoneId.of("UTC")));
+        var stores = new com.jarvis.tools.dataset.StoreDatasetTool(service, planner);
+        java.util.function.BiFunction<String, Map<String, Object>, ToolResult> run = (operation, args) ->
+                stores.execute(new ToolRequest("storeDataset", operation, "c1", "r", "", "", args));
+        ToolResult created = run.apply("CREATE_DATASET", Map.of("sourceImageCount", 1, "sourceAttachmentIds", List.of("att-1"), "records", List.of(
+                Map.of("network", "Biedronka", "city", "Piaseczno", "fullAddress", "Puławska 1, 05-500 Piaseczno", "sourceAttachmentId", "att-1", "sourceRow", 1),
+                Map.of("network", "Biedronka", "city", "Piaseczno", "fullAddress", "Kościuszki 2, 05-500 Piaseczno", "sourceAttachmentId", "att-1", "sourceRow", 2),
+                Map.of("network", "Żabka", "city", "Piaseczno", "fullAddress", "Sienkiewicza 3, 05-500 Piaseczno", "sourceAttachmentId", "att-1", "sourceRow", 3))));
+        String dataset = String.valueOf(created.data().get("datasetId"));
+        assertThat(run.apply("VERIFY_DATASET", Map.of("datasetId", dataset, "verifyAll", true)).success()).isTrue();
+        assertThat(run.apply("SET_PREFERENCES", Map.of("datasetId", dataset, "year", 2026, "month", 11,
+                "preferredDaysOfWeek", List.of("TUESDAY", "WEDNESDAY"))).success()).isTrue();
+        var records = service.getDataset(dataset).orElseThrow().stores();
+        service.updateGeolocation(dataset, List.of(
+                new com.jarvis.tools.dataset.GeolocationEntry(records.get(0).id(), com.jarvis.tools.dataset.GeolocationStatus.RESOLVED, 52.07, 21.02),
+                new com.jarvis.tools.dataset.GeolocationEntry(records.get(1).id(), com.jarvis.tools.dataset.GeolocationStatus.RESOLVED, 52.08, 21.03),
+                new com.jarvis.tools.dataset.GeolocationEntry(records.get(2).id(), com.jarvis.tools.dataset.GeolocationStatus.RESOLVED, 52.075, 21.025)));
+        assertThat(run.apply("PLAN_SCHEDULE", Map.of("datasetId", dataset)).success()).isTrue();
+        assertThat(run.apply("ACCEPT_PLAN", Map.of("datasetId", dataset)).success()).isTrue();
+    }
+
+    @Test
+    void acceptedAuditPlanGoesToGoogleTasksAfterOneApproval() {
+        ToolResult none = call("owner", "EXPORT_SCHEDULE");
+        assertThat(none.success()).isFalse();
+        assertThat(none.message()).contains("no accepted audit plan");
+
+        acceptedAuditPlan();
+        ToolResult exported = call("owner", "EXPORT_SCHEDULE");
+
+        assertThat(exported.success()).as(exported.message()).isTrue();
+        assertThat(approvals).hasSize(1);
+        assertThat(approvals.getFirst()).contains("Jarvis chce dodać plan audytów do Google Tasks", "Lista zadań: Audyty – listopad 2026 (nowa)",
+                "Zadań: 3 w 1 dniach", "• Biedronka, Puławska 1, 05-500 Piaseczno", "• Żabka, Sienkiewicza 3, 05-500 Piaseczno");
+        assertThat(calls).contains("POST /tasks/users/@me/lists");
+        assertThat(exportedTasks).hasSize(3);
+        // Route order kept: every task after the first goes right after the previous one.
+        assertThat(exportedTasks.get(0)).startsWith(" | Audyt ");
+        assertThat(exportedTasks.get(1)).startsWith("previous=task1 | ");
+        assertThat(exportedTasks.get(2)).startsWith("previous=task2 | ");
+        assertThat(exportedTasks.getFirst()).contains("2026-11-", "T00:00:00.000Z", "1/3", "Trasa dnia (Google Maps)",
+                "https://www.google.com/maps/dir/?api=1", "origin=Nowa+Wola");
+        assertThat(exportedTasks.get(1)).doesNotContain("google.com/maps");
+        assertThat(exported.message()).contains("3 task(s) in 1 day(s)", "Audyty – listopad 2026");
+    }
+
+    @Test
+    void declinedExportAddsNothing() {
+        acceptedAuditPlan();
+        approve = false;
+        ToolResult result = call("owner", "EXPORT_SCHEDULE");
+        assertThat(result.errorCode()).isEqualTo("DECLINED");
+        assertThat(exportedTasks).isEmpty();
+        assertThat(calls).doesNotContain("POST /tasks/users/@me/lists");
     }
 
     @Test

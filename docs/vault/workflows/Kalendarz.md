@@ -3,7 +3,7 @@ id: jarvis-calendar-workflow-v1
 type: workflow
 title: Kalendarz Google — plan, wolne terminy, wydarzenia, zadania
 status: active
-version: 2
+version: 3
 tags: [kalendarz, Google Calendar, plan, terminarz, wydarzenie, wydarzenia, spotkanie, spotkania, wizyta, przypomnienie, zadanie, zadania, Google Tasks]
 aliases: [co mam dzisiaj, co mam jutro, co mam w planie, mój plan dnia, plan na jutro, plan na dziś, plan na tydzień, co mam w tym tygodniu, kiedy mam wolne, wolne terminy, znajdź wolny termin, dodaj do kalendarza, wpisz do kalendarza, zapisz w kalendarzu, umów spotkanie, przesuń spotkanie, przełóż spotkanie, przenieś wydarzenie, połącz kalendarz, co mam do zrobienia, moje zadania, lista zadań, dodaj zadanie, odhacz zadanie, zrobione]
 ---
@@ -30,6 +30,7 @@ powiedz, żeby użytkownik usunął je sam w Google Calendar.
 | „jakie zadania mam na ten tydzień?” | calendar__tasks, day=today, days=7 (plus zaległe) |
 | „dodaj zadanie: zadzwonić do PMT jutro” | calendar__add_task, title=Zadzwonić do PMT, due=tomorrow |
 | „odhacz OC”, „zrobione: raport” | najpierw calendar__tasks, potem calendar__complete_task, taskIndex=<numer> |
+| „wrzuć grafik audytów do zadań”, „dodaj plan audytów do kalendarza” | calendar__export_schedule (zaakceptowany plan z tej rozmowy; jedno okno zgody) |
 | „jakie mam kalendarze?” | calendar__calendars |
 | „czy kalendarz jest połączony?” | calendar__status |
 | „połącz mój kalendarz” | calendar__connect (tylko na wyraźną prośbę; otwiera stronę Google na PC) |

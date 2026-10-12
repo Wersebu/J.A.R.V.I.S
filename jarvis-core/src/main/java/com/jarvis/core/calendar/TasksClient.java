@@ -78,12 +78,33 @@ public class TasksClient {
     }
 
     public Task insert(String user, TaskList list, String title, String notes, LocalDate due) {
+        return insert(user, list, title, notes, due, null);
+    }
+
+    /** Adds a task right after {@code previousTaskId} (null = at the top), so a day's tasks keep the route order. */
+    public Task insert(String user, TaskList list, String title, String notes, LocalDate due, String previousTaskId) {
         Map<String, Object> body = new java.util.LinkedHashMap<>();
         body.put("title", title);
         if (notes != null && !notes.isBlank()) body.put("notes", notes);
         // The API stores only the date; Google expects it as midnight UTC.
         if (due != null) body.put("due", due + "T00:00:00.000Z");
-        return task(list, request(user, "POST", "lists/" + id(list.id()) + "/tasks", body));
+        String path = "lists/" + id(list.id()) + "/tasks" + (previousTaskId == null ? "" : "?previous=" + id(previousTaskId));
+        return task(list, request(user, "POST", path, body));
+    }
+
+    /** The task list with exactly this title, created when missing. */
+    public TaskList ensureList(String user, String title) {
+        for (TaskList list : lists(user)) {
+            if (list.title().equalsIgnoreCase(title.strip())) return list;
+        }
+        JsonNode created = request(user, "POST", "users/@me/lists", Map.of("title", title.strip()));
+        return new TaskList(created.path("id").asText(), created.path("title").asText(title));
+    }
+
+    /** Number of open tasks in a list (to warn before adding a plan twice). */
+    public int openCount(String user, TaskList list) {
+        return request(user, "GET", "lists/" + id(list.id()) + "/tasks?showCompleted=false&showHidden=false&maxResults=100", null)
+                .path("items").size();
     }
 
     public Task complete(String user, TaskList list, String taskId) {

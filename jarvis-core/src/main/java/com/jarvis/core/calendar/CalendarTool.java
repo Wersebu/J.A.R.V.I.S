@@ -5,6 +5,7 @@ import com.jarvis.core.google.GoogleException;
 import com.jarvis.core.google.GoogleOAuth;
 import com.jarvis.core.google.GoogleService;
 import com.jarvis.core.google.UserDevice;
+import com.jarvis.tools.dataset.AuditPlanner;
 import com.jarvis.tools.JarvisTool;
 import com.jarvis.tools.ToolRequest;
 import com.jarvis.tools.ToolResult;
@@ -60,6 +61,7 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
 
     private final CalendarClient client;
     private final TasksClient tasks;
+    private final AuditPlanner planner;
     private final GoogleOAuth oauth;
     private final UserDevice device;
     private final Clock clock;
@@ -77,13 +79,19 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
     });
 
     @Autowired
-    public CalendarTool(CalendarClient client, TasksClient tasks, GoogleOAuth oauth, UserDevice device) {
-        this(client, tasks, oauth, device, Clock.systemUTC());
+    public CalendarTool(CalendarClient client, TasksClient tasks, GoogleOAuth oauth, UserDevice device,
+                        org.springframework.beans.factory.ObjectProvider<AuditPlanner> planner) {
+        this(client, tasks, oauth, device, Clock.systemUTC(), planner.getIfAvailable());
     }
 
     CalendarTool(CalendarClient client, TasksClient tasks, GoogleOAuth oauth, UserDevice device, Clock clock) {
+        this(client, tasks, oauth, device, clock, null);
+    }
+
+    CalendarTool(CalendarClient client, TasksClient tasks, GoogleOAuth oauth, UserDevice device, Clock clock, AuditPlanner planner) {
         this.client = client;
         this.tasks = tasks;
+        this.planner = planner;
         this.oauth = oauth;
         this.device = device;
         this.clock = clock;
@@ -141,7 +149,11 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
                         ToolSafetyLevel.WRITE, false, required("title", "Task"), arg("due", "Due date: today, tomorrow or 2026-10-15 (optional)"),
                         arg("notes", "Notes"), arg("list", "Task list name; empty = the default list")),
                 op("COMPLETE_TASK", "Mark a task from the last task list (taskIndex) as done. The user must approve it on their PC.",
-                        ToolSafetyLevel.WRITE, false, intArg("taskIndex", "Task number from the last TASKS or EVENTS list"))
+                        ToolSafetyLevel.WRITE, false, intArg("taskIndex", "Task number from the last TASKS or EVENTS list")),
+                op("EXPORT_SCHEDULE", "Put the ACCEPTED store audit plan of this conversation (storeDataset.ACCEPT_PLAN) into Google "
+                        + "Tasks: one task per store on its day, in route order, with the Google Maps route link in the first "
+                        + "task of each day. ONE approval window on the user's PC shows everything before anything is added.",
+                        ToolSafetyLevel.WRITE, false, arg("list", "Task list name (default: Audyty – <month>)"))
         ));
     }
 
@@ -172,6 +184,7 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
                 case "TASKS" -> tasks(user, listKey, args);
                 case "ADD_TASK" -> addTask(user, args);
                 case "COMPLETE_TASK" -> completeTask(user, listKey, args);
+                case "EXPORT_SCHEDULE" -> exportSchedule(user, request.conversationId(), args);
                 default -> throw new GoogleException("Unknown calendar operation " + operation + ". Deleting events is not available.");
             };
             if (Boolean.TRUE.equals(data.get("declined"))) {
@@ -288,6 +301,65 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
         result.put("due", created.due() == null ? "bez terminu" : DAY.format(created.due()));
         result.put("list", list.title());
         result.put("added", true);
+        result.put("changed", true);
+        return result;
+    }
+
+    /**
+     * The whole accepted audit plan into Google Tasks after ONE approval: the window lists every day and its stores,
+     * then all tasks are added (route order kept with "previous"), the route link in each day's first task.
+     */
+    private Map<String, Object> exportSchedule(String user, String conversationId, Map<String, Object> args) {
+        if (planner == null) throw new GoogleException("The store audit planner is not available in this Core.");
+        AuditPlanner.AuditPlan plan = planner.accepted(conversationId).orElseThrow(() -> new GoogleException(
+                "There is no accepted audit plan in this conversation: plan it (storeDataset.PLAN_SCHEDULE) and accept it "
+                        + "(storeDataset.ACCEPT_PLAN) first."));
+        String listName = text(args, "list").isBlank() ? "Audyty – " + java.time.format.DateTimeFormatter.ofPattern("LLLL yyyy", POLISH)
+                .format(plan.month()) : text(args, "list");
+        int total = plan.days().stream().mapToInt(day -> day.stops().size()).sum();
+        java.util.Optional<TasksClient.TaskList> existing = tasks.lists(user).stream()
+                .filter(list -> list.title().equalsIgnoreCase(listName)).findFirst();
+        int alreadyOpen = existing.map(list -> tasks.openCount(user, list)).orElse(0);
+
+        StringBuilder detail = new StringBuilder("Lista zadań: ").append(listName).append(existing.isEmpty() ? " (nowa)" : "")
+                .append("\nZadań: ").append(total).append(" w ").append(plan.days().size()).append(" dniach");
+        if (alreadyOpen > 0) detail.append("\nUwaga: na tej liście jest już ").append(alreadyOpen).append(" otwartych zadań - nowe zostaną dopisane.");
+        for (AuditPlanner.PlannedDay day : plan.days()) {
+            detail.append("\n\n").append(DAY.format(day.date())).append(" (").append(day.stops().size()).append("):");
+            for (AuditPlanner.PlannedStop stop : day.stops()) detail.append("\n• ").append(stop.network()).append(", ").append(stop.address());
+        }
+        String shown = detail.length() > 2900 ? detail.substring(0, 2900) + "\n…" : detail.toString();
+        if (!device.approve("Jarvis chce dodać plan audytów do Google Tasks", shown)) {
+            return Map.of("declined", true);
+        }
+
+        TasksClient.TaskList list = existing.orElseGet(() -> tasks.ensureList(user, listName));
+        int added = 0;
+        for (AuditPlanner.PlannedDay day : plan.days()) {
+            String previous = null;
+            for (int i = 0; i < day.stops().size(); i++) {
+                AuditPlanner.PlannedStop stop = day.stops().get(i);
+                StringBuilder notes = new StringBuilder("Dzień ").append(day.day()).append(" · ").append(DAY.format(day.date()))
+                        .append(" · ").append(i + 1).append("/").append(day.stops().size())
+                        .append("\n").append(stop.network()).append(", ok. ").append(stop.auditMinutes()).append(" min");
+                if (i == 0) {
+                    notes.append("\n\nTrasa dnia (Google Maps):");
+                    for (String link : day.mapsLinks()) notes.append("\n").append(link);
+                    if (day.distanceMeters() >= 0) {
+                        notes.append("\nRazem ok. ").append(Math.round(day.distanceMeters() / 1000)).append(" km, praca z dojazdami ok. ")
+                                .append(Math.round(day.workSeconds() / 3600.0 * 10) / 10.0).append(" h");
+                    }
+                }
+                TasksClient.Task task = tasks.insert(user, list, "Audyt " + stop.network() + " – " + stop.address(), notes.toString(),
+                        day.date(), previous);
+                previous = task.id();
+                added++;
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("list", list.title());
+        result.put("tasksAdded", added);
+        result.put("days", plan.days().size());
         result.put("changed", true);
         return result;
     }
@@ -555,6 +627,9 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
             }
             case "ADD_TASK" -> "Task added after the user approved it: " + data.get("title") + ", due " + data.get("due") + ".";
             case "COMPLETE_TASK" -> "Task marked as done after the user approved it: " + data.get("title") + ".";
+            case "EXPORT_SCHEDULE" -> "Audit plan added to Google Tasks after the user approved it: " + data.get("tasksAdded")
+                    + " task(s) in " + data.get("days") + " day(s), list " + data.get("list") + ". Each day's first task has the "
+                    + "Google Maps route; the tasks show in Google Calendar on their days.";
             case "CREATE" -> "Event added after the user approved it: " + data.get("title") + ", " + data.get("when") + "."
                     + (data.containsKey("conflicts") ? " It overlaps other events; mention it." : "");
             case "MOVE" -> "Event changed after the user approved it: " + data.get("title") + ", " + data.get("when") + "."

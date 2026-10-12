@@ -1,6 +1,13 @@
 # J.A.R.V.I.S. — PROCEDURA PLANOWANIA GRAFIKU AUDYTÓW SKLEPÓW
 
 
+> **Kto planuje:** reguły z sekcji 6–12, 17–18 i 20 stosuje Core w `storeDataset.PLAN_SCHEDULE`
+> (grupowanie, limity, przypadki graniczne, daty, trasy). Model nie grupuje sklepów sam - pokazuje plan wstępny
+> z wyniku narzędzia, zmienia go przez `storeDataset.ADJUST_PLAN` i zapisuje przez `storeDataset.ACCEPT_PLAN`
+> dopiero po akceptacji użytkownika. Wartości liczbowe (punkt startowy, czasy wizyt, limity dzienne) są ustawieniami
+> Core: `jarvis.audit.start-address`, `jarvis.audit.biedronka-minutes`, `jarvis.audit.short-minutes`,
+> `jarvis.audit.biedronka-per-day`, `jarvis.audit.short-per-day`.
+
 ## 1. CEL
 
 Ta procedura określa sposób tworzenia miesięcznego grafiku wizyt/audytów
@@ -285,6 +292,9 @@ Powód takiego grupowania:
 krótkie wyjaśnienie.
 
 
+Plan wstępny zwraca `storeDataset.PLAN_SCHEDULE` - przedstaw go dzień po dniu z pól wyniku (data, region, sklepy w kolejności,
+czasy, kilometry, link do trasy w Google Maps), zadaj pytania z `decisions` dokładnie tak, jak są zapisane, i wymień `warnings`.
+
 ## 14. POTWIERDZENIE UŻYTKOWNIKA
 
 Po przedstawieniu planu wstępnego poczekaj na akceptację użytkownika.
@@ -299,8 +309,17 @@ Użytkownik może:
 - zaakceptować przekroczenie limitu,
 - zażądać ponownej optymalizacji.
 
-Dopiero po zaakceptowaniu struktury grafiku przejdź do dalszych działań,
-np. tworzenia finalnego pliku lub późniejszego zapisu do kalendarza.
+Każdą zmianę wykonuj przez `storeDataset.ADJUST_PLAN` (jedna zmiana na wywołanie) i pokaż zaktualizowany plan:
+
+- przenieść sklep: `moveStoreIndex` + `toDay`,
+- połączyć dni: `mergeDays`, rozdzielić dzień: `splitDay`,
+- zmienić datę: `day` + `date`,
+- przypadek graniczny: `acceptDecision` (opcja A) albo `dismissDecision` (opcja B),
+- „więcej / mniej pracy dziennie”: `biedronkaPerDay` / `shortPerDay` (przelicza cały plan).
+
+Dopiero po zaakceptowaniu struktury grafiku wywołaj `storeDataset.ACCEPT_PLAN` (Core sam zapisuje grafik,
+dokładnie taki, jak pokazany). Zapis do Google Tasks (`calendar.EXPORT_SCHEDULE`) tylko na prośbę użytkownika -
+pokazuje jedno okno zgody z całym planem.
 
 
 ## 15. ZASADY BEZPIECZEŃSTWA DANYCH
