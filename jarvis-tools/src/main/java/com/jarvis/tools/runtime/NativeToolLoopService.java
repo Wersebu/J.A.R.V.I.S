@@ -566,6 +566,10 @@ public class NativeToolLoopService {
         // consecutiveNoToolProgress above so this one reason is bounded on its own even before the
         // general backstop would trip.
         int liveEvidenceRecoveryAttempts = 0;
+        // A reply promising work "in the background" is rejected once: nothing runs after the loop ends.
+        boolean backgroundPromiseRejected = false;
+        // Definitions offered to the model; grows when the model calls a real tool a workflow scope left out.
+        List<NativeToolDefinition> offered = new ArrayList<>(definitions);
         messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions, existingDataset)));
         if (!request.conversationContext().isBlank()) {
             // Multi-turn data-loss fix (round 3 of the reported production bug): this loop previously
@@ -704,7 +708,7 @@ public class NativeToolLoopService {
                         request.requestId(), step, elided, historyCharBudget);
             }
             try {
-                response = selectProvider(request).toolChat(request.brain(), messages, definitions, AIJobType.MAIN_MODEL);
+                response = selectProvider(request).toolChat(request.brain(), messages, List.copyOf(offered), AIJobType.MAIN_MODEL);
             } catch (AIProviderException exception) {
                 if (isRecoverableProviderToolCallFailure(exception)
                         && providerToolCallRepairAttempts < MAX_PROVIDER_TOOL_CALL_REPAIR_ATTEMPTS
@@ -758,6 +762,10 @@ public class NativeToolLoopService {
                     try {
                         action = schemaMapper.toAction(call.name(), call.arguments(), "Native model tool call");
                         validate(action);
+                        if (offerToolFamily(request, step, offered, action.tool())) {
+                            messages.add(ModelMessage.system("Core added the " + action.tool() + " tools you just used to your tool "
+                                    + "list; their exact names and arguments are available from now on."));
+                        }
                     } catch (RuntimeException exception) {
                         LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} step={} invalid native tool call name={} arguments={} error={}",
                                 request.requestId(), step, call.name(), call.arguments(), exception.getMessage());
@@ -1287,6 +1295,24 @@ public class NativeToolLoopService {
                             + "IMPORTANT: the user has NOT seen your message above - it was held back. Either continue the "
                             + "remaining steps with tools, or, if they are already done or not needed, mark them with "
                             + "plan__update_step (done/skipped) and then write your COMPLETE final answer again."));
+                    continue;
+                }
+
+                if (!backgroundPromiseRejected && promisesBackgroundWork(content)) {
+                    // Nothing runs after this loop ends, so "I'm processing it now / will get back to you" can never be
+                    // kept. Give the model one chance to actually do the work, or to say honestly what it needs.
+                    backgroundPromiseRejected = true;
+                    LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} rejected background-work promise", request.requestId(), step);
+                    publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
+                            "Reply promised background work, continuing", null, step, Map.of("reason", "BACKGROUND_PROMISE"));
+                    messages.add(ModelMessage.assistant(content, List.of()));
+                    messages.add(ModelMessage.system("Your reply says work is going on now or later (\"przetwarzam\", \"w tle\", "
+                            + "\"wrócę z wynikiem\"...). That is impossible: nothing runs after you answer, and the user has NOT seen "
+                            + "that reply. Either do the work now by calling the tools, or answer honestly what is missing or what "
+                            + "failed (including tool errors) and what the user should do."));
+                    if (step >= maxCalls) {
+                        maxCalls = step + 2;
+                    }
                     continue;
                 }
 
@@ -4024,6 +4050,42 @@ public class NativeToolLoopService {
      * as-is rather than nagging forever - the outer step/timeout budget is the hard backstop.
      */
     private static final int MAX_COMPLETION_GATE_ATTEMPTS = 3;
+
+    private static final java.util.regex.Pattern BACKGROUND_PROMISE = java.util.regex.Pattern.compile(
+            "(?iu)(\\bw tle\\b|w tej chwili przetwarzam|teraz przetwarzam|trwa przetwarzanie|przetwarzam (teraz |właśnie )?dane"
+                    + "|wrócę (do ciebie )?z (wynikiem|wynikami|gotowym)|odezwę się,? (gdy|jak|kiedy)|gdy (tylko )?skończę"
+                    + "|in the background|i('| a)m (now )?processing|i will get back to you|i'll get back to you)");
+
+    /** A reply that claims work is still going on after the turn ends. */
+    static boolean promisesBackgroundWork(String content) {
+        return content != null && BACKGROUND_PROMISE.matcher(content).find();
+    }
+
+    /**
+     * When a workflow scope offered only some tools and the model called a real tool outside them, offer that whole tool
+     * family from now on (e.g. storeDataset__* while the calendar workflow was preloaded by mistake) instead of
+     * leaving the model to guess the other operations' arguments.
+     *
+     * @return true when tools were added
+     */
+    private boolean offerToolFamily(ToolCallingRequest request, int step, List<NativeToolDefinition> offered, String tool) {
+        if (tool == null || tool.isBlank()) {
+            return false;
+        }
+        String prefix = tool.toLowerCase(Locale.ROOT) + "__";
+        if (offered.stream().anyMatch(definition -> definition.name().toLowerCase(Locale.ROOT).startsWith(prefix))) {
+            return false;
+        }
+        List<NativeToolDefinition> family = schemaMapper.definitions(ToolIntent.NO_TOOL).stream()
+                .filter(definition -> definition.name().toLowerCase(Locale.ROOT).startsWith(prefix))
+                .toList();
+        if (family.isEmpty()) {
+            return false;
+        }
+        offered.addAll(family);
+        LOGGER.info("[NATIVE_TOOL_SCHEMA] requestId={} step={} offeredFamily={} added={}", request.requestId(), step, tool, family.size());
+        return true;
+    }
 
     private static final int MAX_SAME_ACTION_RECOVERY_ATTEMPTS = 2;
 

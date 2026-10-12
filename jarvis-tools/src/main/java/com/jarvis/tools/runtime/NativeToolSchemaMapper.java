@@ -255,7 +255,10 @@ public class NativeToolSchemaMapper {
     }
 
     private String normalizeFunctionName(String functionName) {
-        String normalized = functionName == null ? "" : functionName.trim().toLowerCase(Locale.ROOT);
+        String lowered = functionName == null ? "" : functionName.trim().toLowerCase(Locale.ROOT);
+        // Workflow documents write operations as "storeDataset.CREATE_DATASET"; models copy that spelling.
+        String normalized = !lowered.contains("__") && lowered.matches("[a-z][a-z0-9_]*\\.[a-z0-9_]+")
+                ? lowered.replace(".", "__") : lowered;
         if (normalized.contains("__")) {
             int separator = normalized.indexOf("__");
             if (separator < 1 || separator >= normalized.length() - 2) {

@@ -3,8 +3,8 @@ id: jarvis-calendar-workflow-v1
 type: workflow
 title: Kalendarz Google — plan, wolne terminy, wydarzenia, zadania
 status: active
-version: 3
-tags: [kalendarz, Google Calendar, plan, terminarz, wydarzenie, wydarzenia, spotkanie, spotkania, wizyta, przypomnienie, zadanie, zadania, Google Tasks]
+version: 4
+tags: [kalendarz, Google Calendar, terminarz, wydarzenie, wydarzenia, spotkanie, spotkania, wizyta, przypomnienie, zadanie, zadania, Google Tasks]
 aliases: [co mam dzisiaj, co mam jutro, co mam w planie, mój plan dnia, plan na jutro, plan na dziś, plan na tydzień, co mam w tym tygodniu, kiedy mam wolne, wolne terminy, znajdź wolny termin, dodaj do kalendarza, wpisz do kalendarza, zapisz w kalendarzu, umów spotkanie, przesuń spotkanie, przełóż spotkanie, przenieś wydarzenie, połącz kalendarz, co mam do zrobienia, moje zadania, lista zadań, dodaj zadanie, odhacz zadanie, zrobione]
 ---
 
