@@ -55,7 +55,11 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
     private record Listed(String calendarId, String eventId) {
     }
 
+    private record ListedTask(String listId, String listTitle, String taskId, String title, java.time.LocalDate due) {
+    }
+
     private final CalendarClient client;
+    private final TasksClient tasks;
     private final GoogleOAuth oauth;
     private final UserDevice device;
     private final Clock clock;
@@ -65,14 +69,21 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
             return size() > REMEMBERED_LISTS;
         }
     });
+    private final Map<String, List<ListedTask>> lastTaskLists = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, List<ListedTask>> eldest) {
+            return size() > REMEMBERED_LISTS;
+        }
+    });
 
     @Autowired
-    public CalendarTool(CalendarClient client, GoogleOAuth oauth, UserDevice device) {
-        this(client, oauth, device, Clock.systemUTC());
+    public CalendarTool(CalendarClient client, TasksClient tasks, GoogleOAuth oauth, UserDevice device) {
+        this(client, tasks, oauth, device, Clock.systemUTC());
     }
 
-    CalendarTool(CalendarClient client, GoogleOAuth oauth, UserDevice device, Clock clock) {
+    CalendarTool(CalendarClient client, TasksClient tasks, GoogleOAuth oauth, UserDevice device, Clock clock) {
         this.client = client;
+        this.tasks = tasks;
         this.oauth = oauth;
         this.device = device;
         this.clock = clock;
@@ -85,7 +96,8 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
 
     @Override
     public String getDescription() {
-        return "The user's own Google Calendar: plan, free time, adding and moving events (each change approved by the user on their device).";
+        return "The user's own Google Calendar and Google Tasks: plan, free time, to-dos, adding and moving events, adding and "
+                + "completing tasks (each change approved by the user on their device).";
     }
 
     @Override
@@ -102,8 +114,9 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
                         + "(up to 5 minutes). Only when the user asks to connect the calendar.", ToolSafetyLevel.WRITE, false),
                 op("DISCONNECT", "Remove this user's calendar connection. Only on explicit request.", ToolSafetyLevel.WRITE, false),
                 op("CALENDARS", "The user's calendars (name, primary, read-only or writable).", ToolSafetyLevel.READ, false),
-                op("EVENTS", "Events in a time range, oldest first, with index numbers for MOVE. Times are already the user's "
-                        + "local time; repeat them as given. Default: today.", ToolSafetyLevel.READ, false,
+                op("EVENTS", "Events in a time range, oldest first, with index numbers for MOVE, plus the open tasks due in that "
+                        + "range (and overdue ones). Times are already the user's local time; repeat them as given. Default: today.",
+                        ToolSafetyLevel.READ, false,
                         day, from, to, days, arg("query", "Text to find in events, e.g. dentysta"), calendar),
                 op("FREE", "Free time slots in a range, between dayStart and dayEnd hours, at least durationMinutes long.",
                         ToolSafetyLevel.READ, false, day, from, to, days, intArg("durationMinutes", "Minimum slot length (default 30)"),
@@ -120,7 +133,15 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
                 op("MOVE", "Change an event from the last EVENTS list (index): new time and/or title/place. The user must approve it "
                         + "on their PC.", ToolSafetyLevel.WRITE, false,
                         intArg("index", "Event number from the last EVENTS list"), arg("start", "New start (keeps the length unless end is given)"),
-                        arg("end", "New end"), arg("title", "New title"), arg("location", "New place"))
+                        arg("end", "New end"), arg("title", "New title"), arg("location", "New place")),
+                op("TASKS", "Open Google Tasks (to-dos), dated first then undated, with taskIndex numbers for COMPLETE_TASK. With a "
+                        + "range: only tasks due in it plus overdue ones.", ToolSafetyLevel.READ, false,
+                        day, from, to, days, arg("list", "Task list name; empty = all lists")),
+                op("ADD_TASK", "Add a task (to-do). Tasks have a date but no hour. The user must approve it on their PC.",
+                        ToolSafetyLevel.WRITE, false, required("title", "Task"), arg("due", "Due date: today, tomorrow or 2026-10-15 (optional)"),
+                        arg("notes", "Notes"), arg("list", "Task list name; empty = the default list")),
+                op("COMPLETE_TASK", "Mark a task from the last task list (taskIndex) as done. The user must approve it on their PC.",
+                        ToolSafetyLevel.WRITE, false, intArg("taskIndex", "Task number from the last TASKS or EVENTS list"))
         ));
     }
 
@@ -148,6 +169,9 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
                 case "FREE" -> free(user, args);
                 case "CREATE" -> create(user, args);
                 case "MOVE" -> move(user, listKey, args);
+                case "TASKS" -> tasks(user, listKey, args);
+                case "ADD_TASK" -> addTask(user, args);
+                case "COMPLETE_TASK" -> completeTask(user, listKey, args);
                 default -> throw new GoogleException("Unknown calendar operation " + operation + ". Deleting events is not available.");
             };
             if (Boolean.TRUE.equals(data.get("declined"))) {
@@ -195,7 +219,90 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
         lastLists.put(listKey, listed);
         Map<String, Object> result = base(range);
         result.put("events", items);
+        // Tasks are a separate Google API; a missing permission must not hide the events.
+        try {
+            result.put("tasks", taskItems(listKey, openTasksIn(user, range, ""), range));
+        } catch (GoogleException exception) {
+            result.put("tasksNote", exception.getMessage());
+        }
         return result;
+    }
+
+    private Map<String, Object> tasks(String user, String listKey, Map<String, Object> args) {
+        boolean ranged = !text(args, "day").isBlank() || !text(args, "from").isBlank() || !text(args, "to").isBlank() || !text(args, "days").isBlank();
+        ZonedDateTime[] range = ranged ? range(args) : null;
+        List<TasksClient.Task> open = ranged ? openTasksIn(user, range, text(args, "list")) : tasks.openTasks(user, text(args, "list"));
+        Map<String, Object> result = new LinkedHashMap<>();
+        ZonedDateTime now = ZonedDateTime.now(clock).withZoneSameInstant(client.zone());
+        result.put("now", DAY.format(now) + ", " + HOUR.format(now));
+        if (range != null) result.put("range", DAY.format(range[0]) + " – " + DAY.format(range[1].minusMinutes(1)));
+        result.put("untrustedContent", true);
+        result.put("tasks", taskItems(listKey, open, range));
+        return result;
+    }
+
+    /** Open tasks due inside the range, plus overdue ones when the range starts today or earlier. */
+    private List<TasksClient.Task> openTasksIn(String user, ZonedDateTime[] range, String list) {
+        LocalDate today = LocalDate.now(clock.withZone(client.zone()));
+        LocalDate first = range[0].toLocalDate();
+        LocalDate end = range[1].toLocalDate().equals(range[1].minusNanos(1).toLocalDate()) ? range[1].toLocalDate().plusDays(1) : range[1].toLocalDate();
+        return tasks.openTasks(user, list).stream()
+                .filter(task -> task.due() != null && task.due().isBefore(end)
+                        && (!task.due().isBefore(first) || !first.isAfter(today) && task.due().isBefore(today)))
+                .toList();
+    }
+
+    private List<Map<String, Object>> taskItems(String listKey, List<TasksClient.Task> open, ZonedDateTime[] range) {
+        LocalDate today = LocalDate.now(clock.withZone(client.zone()));
+        List<Map<String, Object>> items = new ArrayList<>();
+        List<ListedTask> listed = new ArrayList<>();
+        for (TasksClient.Task task : open) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("taskIndex", items.size() + 1);
+            item.put("title", task.title());
+            item.put("due", task.due() == null ? "bez terminu" : DAY.format(task.due()));
+            if (task.due() != null && task.due().isBefore(today)) item.put("overdue", true);
+            if (!task.notes().isBlank()) item.put("notes", task.notes().length() > 300 ? task.notes().substring(0, 300) + "…" : task.notes());
+            item.put("list", task.listTitle());
+            items.add(item);
+            listed.add(new ListedTask(task.listId(), task.listTitle(), task.id(), task.title(), task.due()));
+        }
+        lastTaskLists.put(listKey, listed);
+        return items;
+    }
+
+    private Map<String, Object> addTask(String user, Map<String, Object> args) {
+        String title = required(args, "title");
+        if (title.length() > 300) throw new GoogleException("The task is too long (max 300 characters).");
+        LocalDate due = text(args, "due").isBlank() ? null : day(text(args, "due"), LocalDate.now(clock.withZone(client.zone())));
+        String notes = text(args, "notes");
+        if (notes.length() > 4000) notes = notes.substring(0, 4000);
+        TasksClient.TaskList list = tasks.chooseLists(user, text(args, "list")).getFirst();
+        String detail = "Zadanie: " + title + "\nTermin: " + (due == null ? "bez terminu" : DAY.format(due)) + "\nLista: " + list.title();
+        if (!device.approve("Jarvis chce dodać zadanie", detail)) {
+            return Map.of("declined", true);
+        }
+        TasksClient.Task created = tasks.insert(user, list, title, notes, due);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("title", created.title());
+        result.put("due", created.due() == null ? "bez terminu" : DAY.format(created.due()));
+        result.put("list", list.title());
+        result.put("added", true);
+        result.put("changed", true);
+        return result;
+    }
+
+    private Map<String, Object> completeTask(String user, String listKey, Map<String, Object> args) {
+        List<ListedTask> last = lastTaskLists.get(listKey);
+        if (last == null || last.isEmpty()) throw new GoogleException("No task list in this conversation yet: call TASKS first, then COMPLETE_TASK with its taskIndex.");
+        ListedTask task = last.get(number(args, "taskIndex", 1, 1, last.size()) - 1);
+        String detail = "Zadanie: " + task.title() + "\nTermin: " + (task.due() == null ? "bez terminu" : DAY.format(task.due()))
+                + "\nLista: " + task.listTitle();
+        if (!device.approve("Jarvis chce oznaczyć zadanie jako wykonane", detail)) {
+            return Map.of("declined", true);
+        }
+        tasks.complete(user, new TasksClient.TaskList(task.listId(), task.listTitle()), task.taskId());
+        return Map.of("title", task.title(), "completed", true, "changed", true);
     }
 
     private Map<String, Object> free(String user, Map<String, Object> args) {
@@ -436,10 +543,18 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
             case "DISCONNECT" -> String.valueOf(data.getOrDefault("message", "Calendar disconnected."));
             case "EVENTS" -> {
                 int count = data.get("events") instanceof List<?> list ? list.size() : 0;
-                yield "Calendar read: " + count + " event(s) in " + data.get("range") + "."
-                        + (count == 0 ? " An empty calendar is a valid result: nothing is planned." : "") + " " + UNTRUSTED;
+                int taskCount = data.get("tasks") instanceof List<?> list ? list.size() : 0;
+                yield "Calendar read: " + count + " event(s) and " + taskCount + " open task(s) due in " + data.get("range") + "."
+                        + (count == 0 ? " An empty calendar is a valid result: nothing is planned." : "")
+                        + (data.containsKey("tasksNote") ? " Tasks could not be read: " + data.get("tasksNote") : "") + " " + UNTRUSTED;
             }
             case "FREE" -> "Free time computed for " + data.get("range") + ". " + UNTRUSTED;
+            case "TASKS" -> {
+                int count = data.get("tasks") instanceof List<?> list ? list.size() : 0;
+                yield "Tasks read: " + count + " open task(s)." + (count == 0 ? " No open tasks is a valid result." : "") + " " + UNTRUSTED;
+            }
+            case "ADD_TASK" -> "Task added after the user approved it: " + data.get("title") + ", due " + data.get("due") + ".";
+            case "COMPLETE_TASK" -> "Task marked as done after the user approved it: " + data.get("title") + ".";
             case "CREATE" -> "Event added after the user approved it: " + data.get("title") + ", " + data.get("when") + "."
                     + (data.containsKey("conflicts") ? " It overlaps other events; mention it." : "");
             case "MOVE" -> "Event changed after the user approved it: " + data.get("title") + ", " + data.get("when") + "."

@@ -10,10 +10,11 @@ public enum GoogleService {
 
     /** Read-only mail. */
     GMAIL("gmail", "Gmail", List.of("https://www.googleapis.com/auth/gmail.readonly")),
-    /** Calendars (read) and events (read, add, move). Deleting is not offered by Jarvis. */
+    /** Calendars (read), events (read, add, move) and tasks (read, add, complete). Deleting is not offered by Jarvis. */
     CALENDAR("calendar", "Google Calendar", List.of(
             "https://www.googleapis.com/auth/calendar.readonly",
-            "https://www.googleapis.com/auth/calendar.events"));
+            "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/tasks"));
 
     private final String provider;
     private final String label;

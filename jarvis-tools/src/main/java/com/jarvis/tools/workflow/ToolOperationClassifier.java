@@ -123,8 +123,8 @@ public final class ToolOperationClassifier {
         }
         if (t.equals("calendar")) {
             return switch (o) {
-                case "EVENTS", "FREE" -> ToolOperationRole.SEARCH;
-                case "CREATE", "MOVE" -> ToolOperationRole.WRITE;
+                case "EVENTS", "FREE", "TASKS" -> ToolOperationRole.SEARCH;
+                case "CREATE", "MOVE", "ADD_TASK", "COMPLETE_TASK" -> ToolOperationRole.WRITE;
                 case "CONNECT", "DISCONNECT" -> ToolOperationRole.EXECUTE;
                 default -> ToolOperationRole.READ;
             };

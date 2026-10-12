@@ -1,17 +1,18 @@
 ---
 id: jarvis-calendar-workflow-v1
 type: workflow
-title: Kalendarz Google — plan, wolne terminy, wydarzenia
+title: Kalendarz Google — plan, wolne terminy, wydarzenia, zadania
 status: active
-version: 1
-tags: [kalendarz, Google Calendar, plan, terminarz, wydarzenie, wydarzenia, spotkanie, spotkania, wizyta, przypomnienie]
-aliases: [co mam dzisiaj, co mam jutro, co mam w planie, mój plan dnia, plan na jutro, plan na dziś, plan na tydzień, co mam w tym tygodniu, kiedy mam wolne, wolne terminy, znajdź wolny termin, dodaj do kalendarza, wpisz do kalendarza, zapisz w kalendarzu, umów spotkanie, przesuń spotkanie, przełóż spotkanie, przenieś wydarzenie, połącz kalendarz]
+version: 2
+tags: [kalendarz, Google Calendar, plan, terminarz, wydarzenie, wydarzenia, spotkanie, spotkania, wizyta, przypomnienie, zadanie, zadania, Google Tasks]
+aliases: [co mam dzisiaj, co mam jutro, co mam w planie, mój plan dnia, plan na jutro, plan na dziś, plan na tydzień, co mam w tym tygodniu, kiedy mam wolne, wolne terminy, znajdź wolny termin, dodaj do kalendarza, wpisz do kalendarza, zapisz w kalendarzu, umów spotkanie, przesuń spotkanie, przełóż spotkanie, przenieś wydarzenie, połącz kalendarz, co mam do zrobienia, moje zadania, lista zadań, dodaj zadanie, odhacz zadanie, zrobione]
 ---
 
-# Kalendarz Google — plan, wolne terminy, wydarzenia
+# Kalendarz Google — plan, wolne terminy, wydarzenia, zadania
 
-Do kalendarza służą narzędzia calendar__* (każdy użytkownik Jarvisa ma swój kalendarz). Jarvis może czytać,
-dodawać i przesuwać wydarzenia. Usuwać NIE może — wtedy powiedz, żeby użytkownik usunął je sam w Google Calendar.
+Do kalendarza i zadań (Google Tasks) służą narzędzia calendar__* (każdy użytkownik Jarvisa ma swój kalendarz).
+Jarvis może czytać, dodawać i przesuwać wydarzenia oraz czytać, dodawać i odhaczać zadania. Usuwać NIE może — wtedy
+powiedz, żeby użytkownik usunął je sam w Google Calendar.
 
 ## Co wywołać
 
@@ -25,9 +26,21 @@ dodawać i przesuwać wydarzenia. Usuwać NIE może — wtedy powiedz, żeby uż
 | „dodaj spotkanie z Anną w piątek o 14” | calendar__create, title=Spotkanie z Anną, start=<data> 14:00 |
 | „dodaj na cały dzień …”, „termin płatności 25.10” | calendar__create, title=…, start=2026-10-25 (sama data = cały dzień) |
 | „przesuń dentystę na 16” | najpierw calendar__events (żeby mieć index), potem calendar__move, index=<numer>, start=<data> 16:00 |
+| „co mam do zrobienia?”, „moje zadania” | calendar__tasks (wszystkie otwarte, z terminem i bez) |
+| „jakie zadania mam na ten tydzień?” | calendar__tasks, day=today, days=7 (plus zaległe) |
+| „dodaj zadanie: zadzwonić do PMT jutro” | calendar__add_task, title=Zadzwonić do PMT, due=tomorrow |
+| „odhacz OC”, „zrobione: raport” | najpierw calendar__tasks, potem calendar__complete_task, taskIndex=<numer> |
 | „jakie mam kalendarze?” | calendar__calendars |
 | „czy kalendarz jest połączony?” | calendar__status |
 | „połącz mój kalendarz” | calendar__connect (tylko na wyraźną prośbę; otwiera stronę Google na PC) |
+
+## Wydarzenia a zadania
+
+- Wydarzenie ma godzinę (spotkanie, wizyta). Zadanie to rzecz do zrobienia z samą datą albo bez daty
+  („zapłacić OC do 25.10”, „kupić prezent”). Gdy użytkownik mówi „przypomnij”, „do zrobienia”, „zadanie” — dodaj zadanie.
+- calendar__events zwraca też zadania z terminem w danym dniu oraz zaległe (overdue) — wymień je osobno po wydarzeniach,
+  zaległe z dopiskiem „zaległe”.
+- tasksNote w wyniku = zadań nie dało się odczytać (np. trzeba ponownie połączyć kalendarz); powiedz to jednym zdaniem.
 
 ## Daty i godziny
 
@@ -39,7 +52,7 @@ dodawać i przesuwać wydarzenia. Usuwać NIE może — wtedy powiedz, żeby uż
 
 ## Zmiany wymagają zgody użytkownika
 
-- calendar__create i calendar__move pokazują okno zgody na PC użytkownika z tytułem, datą i ewentualną kolizją.
+- calendar__create, calendar__move, calendar__add_task i calendar__complete_task pokazują okno zgody na PC użytkownika.
   Wydarzenie powstaje dopiero po kliknięciu „Zezwól”. Powiedz krótko: „Potwierdź na ekranie”.
 - Gdy wynik to DECLINED, użytkownik odmówił: nic nie zostało zmienione. Nie ponawiaj, zapytaj co poprawić.
 - Gdy wynik wspomina o kolizji (overlaps), powiedz, z czym koliduje.
@@ -63,5 +76,6 @@ dodawać i przesuwać wydarzenia. Usuwać NIE może — wtedy powiedz, żeby uż
 - connected=false → kalendarz tego użytkownika nie jest połączony; połączenie tylko na jego prośbę.
 - „needs the Jarvis Windows app” → do połączenia i do potwierdzania zmian potrzebna jest aplikacja Jarvis na PC,
   zalogowana na to konto.
-- 403 → w projekcie Google Cloud nie włączono Google Calendar API albo kalendarz jest tylko do odczytu.
+- 403 → w projekcie Google Cloud nie włączono Google Calendar API / Google Tasks API albo kalendarz jest tylko do odczytu.
+- „ticks the Tasks permission” → kalendarz był połączony przed dodaniem zadań: trzeba go połączyć jeszcze raz.
 - „invalid_grant” → zgoda wygasła lub została odwołana; trzeba ponownie połączyć kalendarz.

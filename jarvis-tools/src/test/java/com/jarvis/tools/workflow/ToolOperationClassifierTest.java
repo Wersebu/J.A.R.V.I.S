@@ -41,6 +41,9 @@ class ToolOperationClassifierTest {
         assertThat(ToolOperationClassifier.classify("calendar", "CALENDARS")).isEqualTo(ToolOperationRole.READ);
         assertThat(ToolOperationClassifier.classify("calendar", "CREATE")).isEqualTo(ToolOperationRole.WRITE);
         assertThat(ToolOperationClassifier.classify("calendar", "MOVE")).isEqualTo(ToolOperationRole.WRITE);
+        assertThat(ToolOperationClassifier.classify("calendar", "TASKS")).isEqualTo(ToolOperationRole.SEARCH);
+        assertThat(ToolOperationClassifier.classify("calendar", "ADD_TASK")).isEqualTo(ToolOperationRole.WRITE);
+        assertThat(ToolOperationClassifier.classify("calendar", "COMPLETE_TASK")).isEqualTo(ToolOperationRole.WRITE);
         assertThat(ToolOperationClassifier.classify("pc", "MEDIA", java.util.Map.of("action", "status"))).isEqualTo(ToolOperationRole.READ);
         assertThat(ToolOperationClassifier.classify("pc", "MEDIA", java.util.Map.of("action", "play"))).isEqualTo(ToolOperationRole.EXECUTE);
     }

@@ -56,6 +56,7 @@ class CalendarToolTest {
     private final List<String> approvals = new CopyOnWriteArrayList<>();
     private volatile boolean approve = true;
     private volatile String deviceStatus = "CONNECTED";
+    private volatile boolean tasksScopeMissing;
 
     @BeforeEach
     void setup() throws Exception {
@@ -79,6 +80,22 @@ class CalendarToolTest {
                     // Like Google: RFC 3339 with seconds, or 400.
                     status = 400;
                     response = "{\"error\":{\"code\":400,\"message\":\"Bad Request\"}}";
+                } else if (path.startsWith("/tasks/") && tasksScopeMissing) {
+                    status = 403;
+                    response = "{\"error\":{\"code\":403,\"message\":\"Request had insufficient authentication scopes.\"}}";
+                } else if (path.equals("/tasks/users/@me/lists")) {
+                    response = "{\"items\":[{\"id\":\"list1\",\"title\":\"Moje zadania\"}]}";
+                } else if (path.equals("/tasks/lists/list1/tasks") && method.equals("GET")) {
+                    response = "{\"items\":["
+                            + "{\"id\":\"t-oc\",\"title\":\"Zapłacić OC\",\"due\":\"2026-10-15T00:00:00.000Z\",\"status\":\"needsAction\"},"
+                            + "{\"id\":\"t-milk\",\"title\":\"Kupić mleko\",\"due\":\"2026-10-14T00:00:00.000Z\",\"status\":\"needsAction\"},"
+                            + "{\"id\":\"t-pmt\",\"title\":\"Raport PMT\",\"due\":\"2026-10-20T00:00:00.000Z\",\"status\":\"needsAction\"},"
+                            + "{\"id\":\"t-free\",\"title\":\"Przeczytać książkę\",\"status\":\"needsAction\"}]}";
+                } else if (path.equals("/tasks/lists/list1/tasks") && method.equals("POST")) {
+                    JsonNode sent = JSON.readTree(body);
+                    response = "{\"id\":\"t-new\",\"title\":" + sent.path("title") + ",\"due\":" + sent.path("due") + ",\"status\":\"needsAction\"}";
+                } else if (path.equals("/tasks/lists/list1/tasks/t-oc") && method.equals("PATCH")) {
+                    response = "{\"id\":\"t-oc\",\"title\":\"Zapłacić OC\",\"status\":\"completed\"}";
                 } else if (path.equals("/cal/users/me/calendarList")) {
                     response = "{\"items\":["
                             + "{\"id\":\"" + PRIMARY + "\",\"summary\":\"Owner\",\"primary\":true,\"selected\":true,\"accessRole\":\"owner\"},"
@@ -138,8 +155,8 @@ class CalendarToolTest {
                 return Map.of("approved", approve);
             }
         }, oauth);
-        tool = new CalendarTool(new CalendarClient(http, oauth, base.resolve("cal/"), ZoneId.of("Europe/Warsaw")), oauth, device,
-                Clock.fixed(NOW, ZoneId.of("UTC")));
+        tool = new CalendarTool(new CalendarClient(http, oauth, base.resolve("cal/"), ZoneId.of("Europe/Warsaw")),
+                new TasksClient(http, oauth, base.resolve("tasks/")), oauth, device, Clock.fixed(NOW, ZoneId.of("UTC")));
     }
 
     @AfterEach
@@ -263,6 +280,59 @@ class CalendarToolTest {
         call("owner", "EVENTS");
         assertThat(call("mom", "MOVE", "index", 1, "start", "2026-10-15 16:00").success()).isFalse();
         assertThat(approvals).isEmpty();
+    }
+
+    @Test
+    void todaysPlanAlsoShowsTasksDueTodayAndOverdueOnes() {
+        ToolResult result = call("owner", "EVENTS");
+        List<?> tasks = (List<?>) result.data().get("tasks");
+        assertThat(tasks.stream().map(task -> ((Map<?, ?>) task).get("title")).toList()).isEqualTo(List.of("Kupić mleko", "Zapłacić OC"));
+        Map<?, ?> overdue = (Map<?, ?>) tasks.getFirst();
+        assertThat(overdue.get("overdue")).isEqualTo(true);
+        assertThat(overdue.get("due")).isEqualTo("środa, 14 października 2026");
+        assertThat(result.message()).contains("3 event(s) and 2 open task(s)");
+    }
+
+    @Test
+    void allOpenTasksDatedFirstThenUndated() {
+        ToolResult result = call("owner", "TASKS");
+        List<?> tasks = (List<?>) result.data().get("tasks");
+        assertThat(tasks.stream().map(task -> ((Map<?, ?>) task).get("title")).toList())
+                .isEqualTo(List.of("Kupić mleko", "Zapłacić OC", "Raport PMT", "Przeczytać książkę"));
+        assertThat(((Map<?, ?>) tasks.getLast()).get("due")).isEqualTo("bez terminu");
+        assertThat(((Map<?, ?>) tasks.get(1)).get("taskIndex")).isEqualTo(2);
+    }
+
+    @Test
+    void addingAndCompletingTasksNeedApproval() {
+        ToolResult added = call("owner", "ADD_TASK", "title", "Opłacić OC", "due", "2026-10-25");
+        assertThat(added.success()).as(added.message()).isTrue();
+        assertThat(approvals.getFirst()).contains("Jarvis chce dodać zadanie", "Zadanie: Opłacić OC",
+                "Termin: niedziela, 25 października 2026", "Lista: Moje zadania");
+        assertThat(bodies.getLast().path("due").asText()).isEqualTo("2026-10-25T00:00:00.000Z");
+
+        call("owner", "TASKS");
+        ToolResult done = call("owner", "COMPLETE_TASK", "taskIndex", 2);
+        assertThat(done.success()).as(done.message()).isTrue();
+        assertThat(approvals.getLast()).contains("Jarvis chce oznaczyć zadanie jako wykonane", "Zadanie: Zapłacić OC");
+        assertThat(calls).contains("PATCH /tasks/lists/list1/tasks/t-oc");
+        assertThat(bodies.getLast().path("status").asText()).isEqualTo("completed");
+
+        approve = false;
+        ToolResult declined = call("owner", "ADD_TASK", "title", "X");
+        assertThat(declined.errorCode()).isEqualTo("DECLINED");
+    }
+
+    @Test
+    void oldConnectionWithoutTasksPermissionStillShowsEventsAndExplainsReconnect() {
+        tasksScopeMissing = true;
+        ToolResult events = call("owner", "EVENTS");
+        assertThat(events.success()).isTrue();
+        assertThat((List<?>) events.data().get("events")).hasSize(3);
+        assertThat(events.message()).contains("Tasks could not be read", "connects the calendar again");
+        ToolResult tasks = call("owner", "TASKS");
+        assertThat(tasks.success()).isFalse();
+        assertThat(tasks.message()).contains("ticks the Tasks permission");
     }
 
     @Test

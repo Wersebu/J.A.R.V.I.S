@@ -1,6 +1,6 @@
 # Kalendarz Google
 
-Jarvis czyta Twój kalendarz Google (plan dnia, wolne terminy), może **dodawać i przesuwać** wydarzenia, ale **nie usuwa** ich. Każde dodanie lub zmiana wymaga Twojej zgody w oknie na PC. Model nie może tego pominąć, nawet gdyby „poprosiła” go o to treść maila lub zaproszenia.
+Jarvis czyta Twój kalendarz Google (plan dnia, wolne terminy) i **zadania** (Google Tasks), może **dodawać i przesuwać** wydarzenia oraz **dodawać i odhaczać** zadania, ale niczego **nie usuwa**. Każde dodanie lub zmiana wymaga Twojej zgody w oknie na PC. Model nie może tego pominąć, nawet gdyby „poprosiła” go o to treść maila lub zaproszenia.
 
 Kalendarz działa jak Gmail: połączenie jest w Core, osobne dla każdego konta Jarvisa. Używa tej samej aplikacji Google i tego samego pliku klienta na serwerze, ale ma własną zgodę i własny token. Możesz więc mieć połączony Gmail bez kalendarza i odwrotnie.
 
@@ -15,6 +15,10 @@ Link: https://console.cloud.google.com/apis/library/calendar-json.googleapis.com
 - Sprawdź, czy u góry wybrany jest projekt **Jarvis** (ten sam co dla Gmaila).
 - Kliknij **Włącz** (*Enable*). Jeśli widzisz **Zarządzaj** (*Manage*), API jest już włączone.
 
+Tak samo włącz **Google Tasks API** (zadania to w Google osobna usługa):
+
+Link: https://console.cloud.google.com/apis/library/tasks.googleapis.com → **Włącz**.
+
 Na serwerze nie zmieniasz nic. Plik klienta (`JARVIS_GMAIL_CLIENT_FILE`) i klucz szyfrowania są wspólne.
 
 ### 2. Wgraj nowe wersje i połącz kalendarz
@@ -25,10 +29,12 @@ Na serwerze nie zmieniasz nic. Plik klienta (`JARVIS_GMAIL_CLIENT_FILE`) i klucz
    - zaktualizowany `docs/vault/workflows/Gmail.md` (wersja 5, z przejściem „z poczty do kalendarza”).
 3. Powiedz Jarvisowi: **„Połącz mój kalendarz Google”**. Na PC otworzy się strona Google:
    - wybierz konto, potem **Zaawansowane → Przejdź do: Jarvis**,
-   - **zaznacz oba pola** uprawnień: wyświetlanie kalendarzy oraz wyświetlanie i edytowanie wydarzeń,
+   - **zaznacz wszystkie pola** uprawnień: kalendarze, wydarzenia i zadania,
    - kliknij **Dalej**. Jarvis odpowie, które konto połączył.
 
 Google pokaże uprawnienie do „edytowania wydarzeń”, bo bez niego nie da się nic dodać. Usuwania Jarvis i tak nie ma: tej operacji po prostu nie ma w narzędziach.
+
+Jeśli kalendarz był połączony przed dodaniem zadań, połącz go jeszcze raz („Połącz mój kalendarz Google”), żeby Google dodał uprawnienie do zadań. Do tego czasu wydarzenia działają, a Jarvis powie, że zadania wymagają ponownego połączenia.
 
 ## Przykładowe polecenia
 
@@ -38,6 +44,9 @@ Google pokaże uprawnienie do „edytowania wydarzeń”, bo bez niego nie da si
 - „Dodaj spotkanie z Anną w piątek o 14 na godzinę w kawiarni Relaks”
 - „Przesuń dentystę na 16” → najpierw lista, potem zmiana wybranego wydarzenia, długość zostaje ta sama
 - „Dodaj termin płatności OC do kalendarza” → Jarvis bierze datę i kwotę z maila lub PDF-a i dodaje wydarzenie na cały dzień z przypomnieniem dzień wcześniej
+- „Co mam do zrobienia?” → otwarte zadania: najpierw z terminem (zaległe oznaczone), potem bez terminu
+- „Co mam dzisiaj?” → wydarzenia, a pod nimi zadania na dziś i zaległe
+- „Dodaj zadanie: zadzwonić do PMT jutro”, „odhacz OC” → zawsze po zgodzie w oknie na PC
 
 ### Okno zgody
 
@@ -73,7 +82,9 @@ Uwaga, koliduje z: „Dentysta” piątek, 16 października 2026, 14:30–15:30
 | Co widzisz | Co zrobić |
 |---|---|
 | Jarvis: „Google Calendar denied this request (403)” | Nie włączono Calendar API (krok 1) albo kalendarz jest tylko do odczytu |
-| Jarvis: „permissions were not all granted” | Przy łączeniu nie zaznaczono obu pól. Połącz ponownie |
+| Jarvis: „permissions were not all granted” | Przy łączeniu nie zaznaczono wszystkich pól. Połącz ponownie |
+| Jarvis: „ticks the Tasks permission” | Kalendarz połączono przed dodaniem zadań. Połącz go ponownie |
+| Jarvis: „Google Tasks API is not enabled” | Włącz Google Tasks API (krok 1) |
 | Jarvis: „needs the Jarvis Windows app” | Do połączenia i do zatwierdzania zmian potrzebna jest aplikacja Jarvis na PC, zalogowana na to konto |
 | Jarvis: „The user declined” | Kliknięto „Odmów”. Nic się nie zmieniło |
 | Jarvis: „invalid_grant” | Zgoda wygasła lub została odwołana. Połącz kalendarz jeszcze raz |
