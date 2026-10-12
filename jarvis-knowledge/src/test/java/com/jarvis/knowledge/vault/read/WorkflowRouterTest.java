@@ -69,6 +69,21 @@ class WorkflowRouterTest {
         assertThat(WorkflowRouter.mentions("co mam jutro?", WorkflowRouter.keywords(SPOTIFY))).isFalse();
     }
 
+    @Test
+    void archiveAndPrintingRequestsRouteToTheFilesWorkflowButCodingDoesNot() {
+        List<String> tags = List.of("archiwum", "archiwa", "zip", "rar", "7z", "rozpakuj", "wypakuj", "rozpakować", "drukarka 3D",
+                "druk 3D", "wydruk", "stl", "3mf", "gcode", "obj", "slicer", "Bambu", "Prusa", "Orca");
+        List<String> aliases = List.of("co jest w folderze", "co widzisz w folderze", "rozpakuj go", "pliki do druku", "do drukarki 3d");
+        StoredDocument files = document("Pliki na PC — zapoznanie z folderem, archiwa, druk 3D", tags, aliases);
+        List<String> keywords = WorkflowRouter.keywords(files);
+        assertThat(WorkflowRouter.saysAlias("pobawimy się trochę z plikami, co widzisz w folderze?", aliases)).isTrue();
+        assertThat(WorkflowRouter.saysAlias("rozpakuj go", aliases)).isTrue();
+        assertThat(WorkflowRouter.mentions("znajdziesz mi pliki do drukarki 3d?", keywords)).isTrue();
+        assertThat(WorkflowRouter.mentions("wypakuj tego zipa", keywords)).isTrue();
+        assertThat(WorkflowRouter.mentions("napisz funkcję w Javie i uruchom testy", keywords)).isFalse();
+        assertThat(WorkflowRouter.mentions("popraw błąd w pliku Main.java", keywords)).isFalse();
+    }
+
     private static StoredDocument document(String title, List<String> tags, List<String> aliases) {
         return new StoredDocument("id", "workflows/Spotify.md", title, "workflow", "active", "", tags, aliases, "1", "",
                 "frontmatter", "hash", 1L, 0L, 10, 900, "", StoredDocument.INDEXED, "", List.of(), true);

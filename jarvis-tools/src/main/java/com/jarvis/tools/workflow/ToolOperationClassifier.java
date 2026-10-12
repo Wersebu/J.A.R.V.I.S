@@ -148,9 +148,9 @@ public final class ToolOperationClassifier {
         }
         return switch (o) {
             case "READ", "SHELL_TAIL", "CHANGES", "PROJECT_INSTRUCTIONS" -> ToolOperationRole.READ;
-            case "LIST", "INFO" -> ToolOperationRole.INSPECT;
+            case "LIST", "INFO", "INSPECT" -> ToolOperationRole.INSPECT;
             case "FIND", "GREP" -> ToolOperationRole.SEARCH;
-            case "WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "UNDO" -> ToolOperationRole.WRITE;
+            case "WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "UNDO", "EXTRACT" -> ToolOperationRole.WRITE;
             case "SHELL", "SHELL_WAIT", "SHELL_CANCEL", "OPEN", "MEDIA" -> ToolOperationRole.EXECUTE;
             case "SHELL_LIST" -> ToolOperationRole.DISCOVERY;
             default -> null;

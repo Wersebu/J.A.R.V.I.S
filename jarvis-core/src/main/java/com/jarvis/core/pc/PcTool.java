@@ -79,15 +79,28 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
         return new ToolDefinition(TOOL_NAME, getDescription(), List.of(
                 op("INFO", "Show allowed folders, user home, OS and shell. Call this first when unsure where files are.",
                         ToolSafetyLevel.READ, false),
+                op("INSPECT", "Get to know a folder or file before answering, in ONE call: every file with its kind (3d-print-project, "
+                                + "3d-model, sliced-print, archive, document, image...), what is INSIDE each archive (zip, rar, 7z) without "
+                                + "extracting, 3MF print projects (slicer, printer, plates, parts, settings), and the text of notes/read-me files "
+                                + "(also inside archives). Read its hints. Use it first for 'what is in this folder', 'find the files to print', "
+                                + "'what did you extract'.", ToolSafetyLevel.READ, false,
+                        arg("path", false, "Folder or file; blank = the conversation's working folder"),
+                        intArg("depth", "Folder depth (default 4, max 8)")),
+                op("EXTRACT", "Extract a zip/rar/7z/tar archive into a NEW folder next to it (named like the archive; never overwrites). "
+                                + "Unsafe paths are refused. Afterwards INSPECT the result: archives often contain more archives.",
+                        ToolSafetyLevel.WRITE, true, arg("path", true, "Archive file"),
+                        arg("destination", false, "Target folder (default: next to the archive, named like it)")),
                 op("LIST", "List a directory on the PC (absolute path; blank = first allowed folder).",
                         ToolSafetyLevel.READ, false, arg("path", false, "Absolute directory path")),
                 op("READ", "Read a text file with line numbers ('   12<TAB>text'), 400 lines per call (limit up to 2000); use startLine/limit "
                                 + "to page through big files. Returns sha256 for pc__edit. Never copy the number prefix into edits.",
                         ToolSafetyLevel.READ, false, arg("path", true, "Absolute file path"),
                         intArg("startLine", "First line to read (1-based)"), intArg("limit", "Max lines (default 400)")),
-                op("FIND", "Find files by glob, newest first. '*.pdf' matches names anywhere below path; "
-                                + "'src/**/*.java' matches relative paths. Skips .git/node_modules/target/build folders.",
-                        ToolSafetyLevel.READ, false, arg("pattern", true, "Glob, e.g. *.docx or **/*Test.java"),
+                op("FIND", "Find files by name, newest first, case-insensitive. Glob '*.pdf' (names anywhere below path), several "
+                                + "'*.stl,*.obj,*.3mf', relative 'src/**/*.java', or a regex 're:\\.(stl|obj)$'. Does NOT look inside "
+                                + "archives: when nothing is found it lists archives it skipped - INSPECT them before saying files are missing. "
+                                + "Skips .git/node_modules/target/build folders.",
+                        ToolSafetyLevel.READ, false, arg("pattern", true, "Glob, list of globs or regex, e.g. *.stl,*.3mf"),
                         arg("path", false, "Absolute folder to search in"), intArg("maxResults", "Default 200")),
                 op("GREP", "Search file contents like ripgrep. pattern is a regex (literal=true for plain text). "
                                 + "outputMode: content (file:line:text, default), files (only file names) or count.",
@@ -259,6 +272,8 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
         Duration timeout = switch (operation) {
             case "FIND", "GREP", "PATCH", "SCREENSHOT" -> SEARCH;
             case "SPOTIFY" -> Duration.ofSeconds(120);
+            case "INSPECT" -> Duration.ofSeconds(90);
+            case "EXTRACT" -> Duration.ofSeconds(330);
             case "SHELL" -> shellTimeout(arguments);
             case "SHELL_WAIT" -> Duration.ofSeconds(clamp(arguments, "waitSeconds", 30, 0, 600) + 30);
             // The PC asks the user before deleting; leave time for the answer.
@@ -273,7 +288,7 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                 case "SPOTIFY" -> java.util.Set.of("play", "pause", "next", "previous", "enqueue", "volume", "seek",
                         "shuffle", "repeat", "save", "remove", "create_playlist", "add_to_playlist", "disconnect")
                         .contains(String.valueOf(arguments.getOrDefault("action", "")).toLowerCase(Locale.ROOT));
-                case "WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "SHELL", "UNDO" -> true;
+                case "WRITE", "EDIT", "PATCH", "MKDIR", "MOVE", "DELETE", "SHELL", "UNDO", "EXTRACT" -> true;
                 default -> false;
             };
             Map<String, Object> data = result == null ? Map.of() : result;
