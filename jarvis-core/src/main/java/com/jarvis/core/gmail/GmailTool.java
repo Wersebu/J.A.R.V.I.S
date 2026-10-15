@@ -137,7 +137,8 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
                 case "READ" -> client.read(user, conversation, args);
                 case "THREAD" -> client.thread(user, conversation, args);
                 case "ATTACHMENT" -> shareWithUser(user, client.attachment(user, conversation, args));
-                case "CREATE_DRAFT" -> client.createDraft(user, text(args, "to"), text(args, "cc"), text(args, "subject"), text(args, "body"));
+                case "CREATE_DRAFT" -> client.createDraft(user, GmailClient.text(args, "to"), GmailClient.text(args, "cc"),
+                        GmailClient.text(args, "subject"), GmailClient.text(args, "body"));
                 default -> throw new GoogleException("Unknown Gmail operation " + operation + ". Sending mail is not available.");
             };
             return new ToolResult(true, TOOL_NAME, operation, request.requestId(), request.conversationId(),
