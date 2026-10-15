@@ -79,6 +79,7 @@ class OllamaProviderNativeToolChatStreamingTest {
         assertThat(response.toolCalls().getFirst().arguments()).containsEntry("path", ".");
         assertThat(response.usage().promptTokens()).isEqualTo(120);
         assertThat(response.usage().completionTokens()).isEqualTo(18);
+        assertThat(events.messagesFor(CognitiveEventType.TOKEN_USAGE)).hasSize(1);
 
         // The whole point: thinking must arrive as separate, live events - not one dump at the end.
         List<String> thinkingChunks = events.messagesFor(CognitiveEventType.THINKING_TOKEN);

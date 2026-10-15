@@ -68,4 +68,28 @@ class ContextBudgetTest {
         assertThat(messages.get(1).toolCallId()).isEqualTo("call-0");
         assertThat(messages.stream().mapToInt(message -> message.content().length()).sum()).isLessThanOrEqualTo(50_000);
     }
+
+    @Test
+    void checkpointKeepsGoalSteeringAndRecentToolPairs() {
+        var messages = new ArrayList<ModelMessage>();
+        messages.add(ModelMessage.system("instructions"));
+        messages.add(ModelMessage.user("diagnose map 1-8"));
+        for (int i=0;i<8;i++) {
+            messages.add(ModelMessage.assistant("read " + i, List.of(new com.jarvis.common.ai.ModelToolCall("c"+i,"pc__read",Map.of("path","file"+i)))));
+            messages.add(ModelMessage.tool("c"+i,"pc__read","evidence " + i));
+        }
+        messages.add(ModelMessage.user("do not edit files"));
+        ContextBudget.checkpointHistory(messages,"Confirmed: workMap=1-8 [log:33940]. Rejected: wrong map. Next: selection confirmation.",4);
+        assertThat(messages).anyMatch(m -> m.content().equals("diagnose map 1-8"));
+        assertThat(messages).anyMatch(m -> m.content().contains("workMap=1-8"));
+        assertThat(messages).anyMatch(m -> m.content().equals("do not edit files"));
+        assertThat(messages.stream().filter(m -> m.role().equals("tool")).count()).isEqualTo(4);
+        assertThat(messages.stream().filter(m -> !m.toolCalls().isEmpty()).count()).isEqualTo(4);
+    }
+
+    @Test
+    void estimatedBudgetIncludesToolSchemasAndArguments() {
+        var messages = List.of(ModelMessage.assistant("",List.of(new com.jarvis.common.ai.ModelToolCall("id","pc__read",Map.of("path","x".repeat(3000))))));
+        assertThat(ContextBudget.estimatedInputTokens(messages,Map.of("schema","y".repeat(3000)),objectMapper)).isGreaterThan(2000);
+    }
 }

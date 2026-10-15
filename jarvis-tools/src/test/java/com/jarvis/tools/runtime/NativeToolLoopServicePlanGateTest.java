@@ -263,7 +263,7 @@ class NativeToolLoopServicePlanGateTest {
     }
 
     @Test
-    void agentWorkIsNeverCutOffByTheClockAndGetsMoreTurnsWhileMakingProgress() {
+    void readOnlyExplorationRespectsTurnBudgetInsteadOfExtendingToHundredsOfTurns() {
         CognitiveEventBus bus = new NoopBus();
         TaskPlanService plans = new TaskPlanService(new ObjectMapper(), "");
         PlanTool planTool = new PlanTool(plans, bus);
@@ -280,8 +280,8 @@ class NativeToolLoopServicePlanGateTest {
 
         ToolCallingResult result = service.execute(request("conv-long"));
 
-        assertThat(result.finalAnswer()).contains("Przeczytałem 9 plików");
-        assertThat(result.steps()).filteredOn(step -> "TOOL_CALL".equals(step.action())).hasSize(9);
+        assertThat(result.terminationInfo().terminationReason()).isEqualTo(ToolLoopTerminationReason.MAX_TURNS_REACHED);
+        assertThat(result.steps()).filteredOn(step -> "TOOL_CALL".equals(step.action())).hasSize(6);
     }
 
     private NativeToolLoopService service(RecordingProvider provider, PlanTool planTool, TaskPlanService plans, CognitiveEventBus bus) {

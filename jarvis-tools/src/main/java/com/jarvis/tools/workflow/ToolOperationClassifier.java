@@ -132,6 +132,7 @@ public final class ToolOperationClassifier {
         if (t.equals("gmail")) {
             return switch (o) {
                 case "SEARCH", "UNREAD" -> ToolOperationRole.SEARCH;
+                case "CREATE_DRAFT" -> ToolOperationRole.WRITE;
                 case "CONNECT", "DISCONNECT" -> ToolOperationRole.EXECUTE;
                 default -> ToolOperationRole.READ;
             };

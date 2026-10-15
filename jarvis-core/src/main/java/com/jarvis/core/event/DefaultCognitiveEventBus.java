@@ -23,6 +23,7 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultCognitiveEventBus.class);
     private static final ThreadLocal<RequestScope> REQUEST_SCOPE = new ThreadLocal<>();
     private final ExecutionTracer executionTracer;
+    private static final ThreadLocal<com.jarvis.common.ai.RequestTokenUsage> USAGE = new ThreadLocal<>();
 
     /**
      * Creates the event bus.
@@ -43,6 +44,7 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
     @Override
     public void startRequest(String requestId, String conversationId, Consumer<CognitiveEvent> sink) {
         REQUEST_SCOPE.set(new RequestScope(requestId, conversationId, sink == null ? event -> { } : sink, null, null));
+        USAGE.set(new com.jarvis.common.ai.RequestTokenUsage());
         executionTracer.start(requestId, conversationId, sink);
     }
 
@@ -53,6 +55,7 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
     public void finishRequest() {
         executionTracer.finish();
         REQUEST_SCOPE.remove();
+        USAGE.remove();
     }
 
     /**
@@ -83,6 +86,9 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
         RequestScope scope = REQUEST_SCOPE.get();
         if (scope == null) {
             return;
+        }
+        if (event == CognitiveEventType.TOKEN_USAGE && USAGE.get() != null) {
+            metadata = USAGE.get().record(metadata);
         }
         CognitiveEvent cognitiveEvent = new CognitiveEvent(
                 scope.requestId(),

@@ -501,6 +501,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                     doneReason = response.doneReason();
                     promptEvalCount = response.promptEvalCount();
                     evalCount = response.evalCount();
+                    publishTokenUsage(jobType, brain, promptEvalCount, evalCount);
                     break;
                 }
             }
@@ -685,6 +686,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                     state.finalEvalDurationNanos = response.evalDuration();
                     state.finalEvalCount = response.evalCount();
                     state.finalPromptEvalCount = response.promptEvalCount();
+                    publishTokenUsage(jobType, brain, response.promptEvalCount(), response.evalCount());
                     return false;
                 }
 
@@ -732,6 +734,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                     state.finalEvalDurationNanos = response.evalDuration();
                     state.finalEvalCount = response.evalCount();
                     state.finalPromptEvalCount = response.promptEvalCount();
+                    publishTokenUsage(jobType, brain, response.promptEvalCount(), response.evalCount());
                     return false;
                 }
 
@@ -1062,6 +1065,18 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
         private static QwenThinkingBudgetOutcome notApplicable() {
             return new QwenThinkingBudgetOutcome(false, null, 0, 0, false);
         }
+    }
+
+    private void publishTokenUsage(AIJobType jobType, Brain brain, Integer input, Integer output) {
+        Map<String, Object> counts = new LinkedHashMap<>();
+        counts.put("model", brain.model());
+        counts.put("callId", java.util.UUID.randomUUID().toString());
+        counts.put("contextWindow", contextBudgetService.ollamaOptions().get("num_ctx"));
+        counts.put("source", "ollama");
+        if (input != null && input >= 0) counts.put("inputTokens", input.longValue());
+        if (output != null && output >= 0) counts.put("outputTokens", output.longValue());
+        publishCognitive(jobType, CognitiveEventType.TOKEN_USAGE, "MEASURED",
+                "Actual model token usage", "model:" + brain.model(), counts);
     }
 
     private void publishCognitive(

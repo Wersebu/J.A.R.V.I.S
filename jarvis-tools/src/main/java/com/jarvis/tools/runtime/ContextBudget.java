@@ -101,6 +101,46 @@ public final class ContextBudget {
         return elided;
     }
 
+    /** Includes serialized tool definitions and call arguments, unlike a content-only budget.
+     * This is a conservative character estimate, not a tokenizer measurement.
+     */
+    public static int estimatedInputTokens(List<ModelMessage> messages, Object tools, ObjectMapper mapper) {
+        try {
+            return (int) Math.ceil((mapper.writeValueAsString(messages.stream().map(m -> Map.of(
+                    "role", m.role(), "content", m.content(), "toolCalls", m.toolCalls(),
+                    "toolCallId", m.toolCallId(), "toolName", m.toolName())).toList()).length()
+                    + messages.stream().mapToInt(m -> m.images().size() * 6144).sum()
+                    + mapper.writeValueAsString(tools).length()) / 3.0);
+        } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException("Cannot measure model context", e);
+        }
+    }
+
+    /** Replace old assistant/tool exchanges only after a checkpoint has been obtained.
+     * Keep instructions and user steering verbatim and keep complete recent call/result groups.
+     */
+    public static void checkpointHistory(List<ModelMessage> messages, String checkpoint, int keepRecent) {
+        int boundary = messages.size();
+        int tools = 0;
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            if ("tool".equals(messages.get(i).role())) tools++;
+            if (tools >= keepRecent && "assistant".equals(messages.get(i).role())) {
+                boundary = i;
+                break;
+            }
+        }
+        List<ModelMessage> retained = new ArrayList<>();
+        for (int i = 0; i < boundary; i++) {
+            var message = messages.get(i);
+            if ("system".equals(message.role()) || "user".equals(message.role())) retained.add(message);
+        }
+        // A model-authored checkpoint is conversation data, never a new privileged instruction.
+        retained.add(ModelMessage.assistant("[WORK CHECKPOINT — verify claims against sources]\n" + checkpoint, List.of()));
+        retained.addAll(messages.subList(boundary, messages.size()));
+        messages.clear();
+        messages.addAll(retained);
+    }
+
     private static Object shrink(Object value, int stringLimit, int listLimit, String pointer) {
         if (value instanceof String text) {
             if (text.length() <= stringLimit) {

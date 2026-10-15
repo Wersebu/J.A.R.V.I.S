@@ -8,8 +8,10 @@ import java.util.List;
  */
 public enum GoogleService {
 
-    /** Read-only mail. */
-    GMAIL("gmail", "Gmail", List.of("https://www.googleapis.com/auth/gmail.readonly")),
+    /** Read and compose mail, with sending only after an explicit UI approval. */
+    GMAIL("gmail", "Gmail", List.of(
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.compose")),
     /** Calendars (read), events (read, add, move) and tasks (read, add, complete). Deleting is not offered by Jarvis. */
     CALENDAR("calendar", "Google Calendar", List.of(
             "https://www.googleapis.com/auth/calendar.readonly",

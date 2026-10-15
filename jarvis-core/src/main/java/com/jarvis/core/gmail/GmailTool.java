@@ -28,7 +28,9 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * gmail__* tools: read-only Gmail of the Jarvis user who is asking. The account is taken from the authenticated
+ * gmail__* tools: the authenticated Jarvis user's Gmail. Sending is kept outside the model tool surface: CREATE_DRAFT
+ * writes an unsent Gmail draft and returns requiresApproval for the UI to show the exact content.
+ * The account is taken from the authenticated
  * session ({@link CurrentUserContext}), never from model arguments, so one person's conversation cannot read
  * another person's mail. Connections live in Core, so every device of the user (PC, phone) shares them.
  */
@@ -67,7 +69,7 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
 
     @Override
     public String getDescription() {
-        return "Read the user's own Gmail (read-only: cannot send, reply, delete or change mail).";
+        return "Read the user's own Gmail and prepare drafts. Sending is available only after explicit UI approval.";
     }
 
     @Override
@@ -79,6 +81,10 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
         ToolArgumentDefinition pageToken = arg("pageToken", false, "nextPageToken from the previous page");
         ToolArgumentDefinition index = intArg("index", "Position in this conversation's last list (1 = first message shown)");
         ToolArgumentDefinition maxChars = intArg("maxChars", "Text length: 200-20000");
+        ToolArgumentDefinition to = arg("to", true, "Recipient email address(es), comma-separated; plain addresses only");
+        ToolArgumentDefinition cc = arg("cc", false, "Optional CC email address(es), comma-separated");
+        ToolArgumentDefinition subject = arg("subject", true, "Email subject");
+        ToolArgumentDefinition body = arg("body", true, "Plain-text email body");
         return new ToolDefinition(TOOL_NAME, getDescription(), List.of(
                 op("STATUS", "Whether this user's Gmail is connected and which address. Does not read mail.", ToolSafetyLevel.READ, false),
                 op("CONNECT", "Connect this user's Gmail: opens the Google consent page in the browser on the user's PC and "
@@ -99,7 +105,9 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
                 op("ATTACHMENT", "Text of a PDF/DOCX/HTML/text attachment, read in memory (no OCR for scans/images).",
                         ToolSafetyLevel.READ, false, index, arg("id", false, "Message id, instead of index"),
                         arg("name", false, "Attachment file name or part of it"), intArg("attachment", "Attachment number from the attachments list"),
-                        maxChars)
+                        maxChars),
+                op("CREATE_DRAFT", "Create a real unsent Gmail draft and return it for the user to review. Never send it; the UI must show To, CC, subject and body and wait for the user's Send button.",
+                        ToolSafetyLevel.WRITE, true, to, cc, subject, body)
         ));
     }
 
@@ -129,10 +137,13 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
                 case "READ" -> client.read(user, conversation, args);
                 case "THREAD" -> client.thread(user, conversation, args);
                 case "ATTACHMENT" -> shareWithUser(user, client.attachment(user, conversation, args));
+                case "CREATE_DRAFT" -> client.createDraft(user, text(args, "to"), text(args, "cc"), text(args, "subject"), text(args, "body"));
                 default -> throw new GoogleException("Unknown Gmail operation " + operation + ". Sending mail is not available.");
             };
             return new ToolResult(true, TOOL_NAME, operation, request.requestId(), request.conversationId(),
-                    operation.equals("CONNECT") || operation.equals("DISCONNECT"), List.of(), message(operation, data), data, "", "", false, "");
+                    operation.equals("CONNECT") || operation.equals("DISCONNECT") || operation.equals("CREATE_DRAFT"),
+                    List.of(), message(operation, data), data, "", "", operation.equals("CREATE_DRAFT"),
+                    operation.equals("CREATE_DRAFT") ? String.valueOf(data.getOrDefault("draftId", "")) : "");
         } catch (GoogleException exception) {
             return failure(request, operation, "GMAIL_FAILED", exception.getMessage());
         } catch (RuntimeException exception) {
@@ -143,7 +154,7 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
 
     private Map<String, Object> status(String user) {
         Map<String, Object> status = new LinkedHashMap<>(oauth.status(user, GoogleService.GMAIL));
-        status.put("access", "read-only");
+        status.put("access", "read and draft; send requires UI approval");
         return status;
     }
 
@@ -151,7 +162,7 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
     private Map<String, Object> connect(String user) {
         devices.connectGoogle(user, GoogleService.GMAIL);
         String email = client.myEmail(user);
-        return Map.of("connected", true, "email", email, "access", "read-only");
+        return Map.of("connected", true, "email", email, "access", "read and draft; send requires UI approval");
     }
 
     /**
@@ -188,8 +199,12 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
             }
             return message.toString();
         }
-        if (operation.equals("CONNECT")) return "Gmail connected: " + data.getOrDefault("email", "") + " (read-only).";
+        if (operation.equals("CONNECT")) return "Gmail connected: " + data.getOrDefault("email", "")
+                + " (read and draft; sending requires explicit UI approval).";
         if (operation.equals("DISCONNECT")) return String.valueOf(data.getOrDefault("message", "Gmail disconnected."));
+        if (operation.equals("CREATE_DRAFT")) {
+            return "Gmail draft created and saved unsent. The user must review the recipient, subject and body in the UI and click Send; do not send it from a tool call.";
+        }
         if (data.get("messages") instanceof List<?> list && (operation.equals("UNREAD") || operation.equals("SEARCH"))) {
             String found = list.isEmpty()
                     ? "Gmail " + operation.toLowerCase(Locale.ROOT) + " read: 0 messages. An empty list is a valid result: nothing matched."

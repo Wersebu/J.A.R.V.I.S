@@ -376,6 +376,7 @@ class NativeToolLoopServiceCanonicalDatasetIdentityTest {
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
                 new NativeToolSchemaMapper(registry()), datasetService
         );
+        service.setContextBudgets(16_000, 100_000, 2_048);
 
         ToolCallingResult result = service.execute(request("request-1", "conversation-1"));
 
@@ -418,12 +419,14 @@ class NativeToolLoopServiceCanonicalDatasetIdentityTest {
     }
 
     private NativeToolLoopService service(AIProvider provider, ToolManager toolManager, StoreAuditDatasetService datasetService) {
-        return new NativeToolLoopService(
+        NativeToolLoopService service = new NativeToolLoopService(
                 List.of(provider), toolManager, query -> ToolIntent.LOCATION,
                 new ToolRuntimeProperties(true, 10, 10, 2, 30, "native", 10, 20),
                 new NoopCognitiveEventBus(), new ToolRuntimeDebugService(), new ObjectMapper(),
                 new NativeToolSchemaMapper(registry()), datasetService
         );
+        service.setContextBudgets(16_000, 100_000, 2_048);
+        return service;
     }
 
     private ToolCallingRequest request(String requestId, String conversationId) {

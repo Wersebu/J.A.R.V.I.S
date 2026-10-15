@@ -1,6 +1,6 @@
 # Gmail w aplikacji Windows
 
-Jarvis czyta pocztę przez oficjalne Gmail API. Połączenie jest **w Core, osobno dla każdego konta Jarvisa**: Twoja skrzynka jest Twoja, skrzynka mamy jest jej, a obie działają z każdego urządzenia (PC, później telefon). Dostęp jest **tylko do odczytu** (zakres `gmail.readonly`): Jarvis nie może wysłać, usunąć ani oznaczyć żadnego maila, bo Google nie wydaje mu takiego uprawnienia.
+Jarvis korzysta z oficjalnego Gmail API. Połączenie jest **w Core, osobno dla każdego konta Jarvisa**. Jarvis może czytać pocztę i zapisywać szkice (zakresy `gmail.readonly` i `gmail.compose`). Wysłanie wymaga kliknięcia **„Zatwierdź i wyślij”** w UI; karta pokazuje edytowalnego adresata, temat i treść. Jarvis nie wysyła wiadomości samodzielnie.
 
 Jedna aplikacja Google (Twoja, ustawiana raz w Google Cloud Console) obsługuje wszystkich. Każda osoba loguje się do niej własnym kontem Google.
 
@@ -40,7 +40,7 @@ W menu po lewej to sekcja **Platforma uwierzytelniania Google** (*Google Auth Pl
 4. **Dane kontaktowe** (*Contact information*): wpisz swój e-mail, potem **Dalej**.
 5. **Zakończ** (*Finish*): zaznacz zgodę na zasady usług Google API, potem **Dalej** i **Utwórz** (*Create*).
 
-Nie musisz nic ustawiać w sekcji **Dostęp do danych** (*Data access*). Jarvis sam prosi o uprawnienie tylko do odczytu poczty podczas łączenia.
+Nie musisz ręcznie dodawać zakresów w sekcji **Dostęp do danych** (*Data access*). Jarvis prosi Google podczas łączenia o odczyt poczty oraz obsługę szkiców. Po wdrożeniu tej funkcji połącz Gmail ponownie, aby zaakceptować nowe uprawnienie `gmail.compose`.
 
 ### Krok 4. Dodaj siebie jako testera
 
@@ -175,5 +175,5 @@ Wyniki zawierają nadawcę, temat i datę w polskim czasie (np. „sobota, 10 pa
 ## Kolejne etapy
 
 1. ✅ Czytanie, załączniki, skróty, pamięć listy w rozmowie, osobne konta dla każdej osoby (ten dokument).
-2. Szkice odpowiedzi w Gmailu i wysyłka wyłącznie po zatwierdzeniu na urządzeniu użytkownika (okno zgody na PC, później powiadomienie na telefonie), z pokazanym adresatem, tematem i treścią.
+2. ✅ Szkice w Gmailu i wysyłka po zatwierdzeniu w UI, z edytowalnym adresatem, tematem i treścią.
 3. Automatyzacja: sprawdzanie nowych maili w tle (`history.list`), ocena ważności, powiadomienia i dzienne podsumowanie.

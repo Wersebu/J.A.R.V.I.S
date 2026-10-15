@@ -1238,6 +1238,9 @@ public class DefaultToolCallingRuntime implements ToolCallingRuntime {
         if (result.data().containsKey("title")) {
             values.put("title", result.data().get("title"));
         }
+        for (String key : List.of("draftType", "to", "cc", "subject", "body")) {
+            if (result.data().containsKey(key)) values.put(key, result.data().get(key));
+        }
         if (result.data().containsKey("statusCode")) {
             values.put("statusCode", result.data().get("statusCode"));
         }

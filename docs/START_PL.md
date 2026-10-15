@@ -45,7 +45,7 @@ Przykładowy `JARVIS.md` w projekcie:
 - **🔊 Głos** i **🎤** (Ctrl+Spacja): rozmowa głosowa, Jarvis mówi, co robi, i czyta odpowiedzi. Do mówienia *do* Jarvisa potrzebny jest Whisper na serwerze — instrukcja w `docs/VOICE_PL.md`.
 - „Otwórz Spotify i puść muzykę”, „następny utwór”, „ścisz” — `pc__open` i `pc__media`.
 - „Pokaż polubione utwory”, „Sprawdź bibliotekę Spotify”, „Wyszukaj piosenkę i zagraj na komputerze” — `pc__spotify` przez oficjalne API i Spotify Connect do aplikacji Windows. Jednorazowo ustaw Client ID i połącz konto Premium przez OAuth. [Konfiguracja Spotify](SPOTIFY_PL.md). Wymaga aktualizacji serwera oraz klienta Windows.
-- „Co nowego na poczcie?”, „Pokaż maile od Anny”, „Streść ten wątek” — `gmail__*`, odczyt Gmaila przez oficjalne API (tylko do odczytu), osobno dla każdego konta Jarvisa. Jednorazowo utwórz klienta OAuth „Desktop app” w Google Cloud, wgraj go na serwer i połącz konto. [Konfiguracja Gmaila](GMAIL_PL.md).
+- „Co nowego na poczcie?”, „Pokaż maile od Anny”, „Streść ten wątek” i „Przygotuj szkic” — `gmail__*`, osobne konto Gmail na użytkownika. Wysyłka szkicu wymaga jawnego zatwierdzenia w UI. [Konfiguracja Gmaila](GMAIL_PL.md).
 - „Co mam jutro?”, „kiedy mam wolne w piątek?”, „dodaj spotkanie z Anną w piątek o 14” — `calendar__*`, Kalendarz Google: czytanie, dodawanie i przesuwanie wydarzeń (każda zmiana po zgodzie w oknie na PC), osobno dla każdego konta. [Konfiguracja kalendarza](KALENDARZ_PL.md).
 
 ### Przeglądarka Jarvisa
