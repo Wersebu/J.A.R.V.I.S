@@ -495,6 +495,7 @@ public class GmailClient implements GmailDraftService {
 
     /** Creates an unsent Gmail draft. The returned id is later sent only through the explicit UI action. */
     public Map<String, Object> createDraft(String user, String to, String cc, String subject, String body) {
+        body = GmailTool.withDefaultSignature(body);
         String mime = mimeMessage(to, cc, subject, body);
         String raw = Base64.getUrlEncoder().withoutPadding().encodeToString(mime.getBytes(StandardCharsets.UTF_8));
         JsonNode created = write(user, "drafts", "POST", Map.of("message", Map.of("raw", raw)));
@@ -531,10 +532,12 @@ public class GmailClient implements GmailDraftService {
 
     @Override
     public Map<String, Object> sendApprovedDraft(String user, String draftId, String to, String cc, String subject, String body) {
+        body = GmailTool.withDefaultSignature(body);
         updateDraft(user, draftId, to, cc, subject, body);
         Map<String, Object> result = new LinkedHashMap<>(sendDraft(user, draftId));
         result.put("to", to.strip());
         result.put("subject", subject.strip());
+        result.put("body", body);
         return result;
     }
 
