@@ -173,13 +173,19 @@ public final class DiscordMessageListener extends ListenerAdapter {
     }
 
     /**
-     * Renders the un-forwarded messages as a short transcript, marking the last one as the message
-     * to answer. Core's conversation memory supplies the earlier context.
+     * Renders the un-forwarded messages as a short chat transcript. The framing matters: it must
+     * read as a conversation the bot is already part of, never as a request to fetch something -
+     * otherwise the model breaks character and apologizes that it "cannot access the channel".
+     * Core's conversation memory supplies the earlier context.
      */
     private String buildPrompt(List<String> batch) {
+        if (batch.size() == 1) {
+            return "Ktos wlasnie napisal na czacie:\n" + batch.get(0)
+                    + "\n\nOdbij pilke - odpowiedz krotko, w swoim stylu.";
+        }
         StringBuilder builder = new StringBuilder(
-                "Nowe wiadomosci na tym kanale Discord. Odpowiedz TYLKO na ostatnia (oznaczona >>>), "
-                        + "krotko i w swoim stylu:\n");
+                "Fragment rozmowy na czacie, w ktorej bierzesz udzial. "
+                        + "Odpowiedz tylko na OSTATNIA wypowiedz (oznaczona >>>), krotko, w swoim stylu:\n");
         for (int i = 0; i < batch.size(); i++) {
             boolean last = i == batch.size() - 1;
             builder.append(last ? ">>> " : "").append(batch.get(i)).append('\n');
