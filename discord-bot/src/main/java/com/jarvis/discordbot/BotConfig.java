@@ -56,6 +56,9 @@ public final class BotConfig {
     /** File where per-channel reply probabilities are persisted so they survive a restart. */
     public final Path settingsFile;
 
+    /** File where a persona edited from Discord is persisted so it survives a restart. */
+    public final Path personaStateFile;
+
     /** HTTP timeout for calls to Core (a tool-using answer can take a while). */
     public final int requestTimeoutSeconds;
 
@@ -73,6 +76,7 @@ public final class BotConfig {
             String conversationPrefix,
             int contextMessages,
             Path settingsFile,
+            Path personaStateFile,
             int requestTimeoutSeconds) {
         this.discordToken = discordToken;
         this.jarvisBaseUrl = jarvisBaseUrl;
@@ -87,6 +91,7 @@ public final class BotConfig {
         this.conversationPrefix = conversationPrefix;
         this.contextMessages = contextMessages;
         this.settingsFile = settingsFile;
+        this.personaStateFile = personaStateFile;
         this.requestTimeoutSeconds = requestTimeoutSeconds;
     }
 
@@ -110,10 +115,12 @@ public final class BotConfig {
         String conversationPrefix = optional("BOT_CONVERSATION_PREFIX", "discord-");
         int contextMessages = (int) clamp(parseLong("BOT_CONTEXT_MESSAGES", 50), 1, 200);
         Path settingsFile = Path.of(optional("BOT_SETTINGS_FILE", "channel-settings.json"));
+        Path personaStateFile = Path.of(optional("BOT_PERSONA_STATE_FILE", "persona-current.txt"));
         int timeout = (int) Math.max(5, parseLong("JARVIS_REQUEST_TIMEOUT_SECONDS", 120));
 
         return new BotConfig(discordToken, baseUrl, email, password, pushPersona, persona, replyChance,
-                alwaysOnMention, allowed, maxChars, conversationPrefix, contextMessages, settingsFile, timeout);
+                alwaysOnMention, allowed, maxChars, conversationPrefix, contextMessages, settingsFile,
+                personaStateFile, timeout);
     }
 
     private static String resolvePersona(String personaFile) {

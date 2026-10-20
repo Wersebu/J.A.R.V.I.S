@@ -6,6 +6,7 @@ import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.entities.channel.middleman.MessageChannel;
 import net.dv8tion.jda.api.events.guild.GuildReadyEvent;
+import net.dv8tion.jda.api.events.interaction.ModalInteractionEvent;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
@@ -14,6 +15,10 @@ import net.dv8tion.jda.api.interactions.commands.OptionType;
 import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.interactions.commands.build.SubcommandData;
+import net.dv8tion.jda.api.interactions.components.ActionRow;
+import net.dv8tion.jda.api.interactions.components.text.TextInput;
+import net.dv8tion.jda.api.interactions.components.text.TextInputStyle;
+import net.dv8tion.jda.api.interactions.modals.Modal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,21 +48,30 @@ public final class DiscordMessageListener extends ListenerAdapter {
     private static final Logger LOGGER = LoggerFactory.getLogger(DiscordMessageListener.class);
     private static final String COMMAND = "trolbot";
     private static final String SUBCOMMAND_CHANCE = "randompickmessage";
+    private static final String SUBCOMMAND_SHOW_PROMPT = "showprompt";
+    private static final String SUBCOMMAND_EDIT_PROMPT = "editprompt";
+    private static final String MODAL_EDIT_PROMPT = "trolbot-editprompt";
+    private static final String MODAL_FIELD_PERSONA = "persona";
+    private static final int MODAL_MAX_CHARS = 4000;
+    private static final int DISCORD_MESSAGE_LIMIT = 2000;
     private static final long TYPING_REFRESH_SECONDS = 8L;
 
     private final BotConfig config;
     private final JarvisClient jarvis;
     private final ChannelSettings channelSettings;
+    private final PersonaStore personaStore;
 
     private final ExecutorService workers = Executors.newFixedThreadPool(4, daemon("jarvis-bot-worker"));
     private final ScheduledExecutorService typing =
             Executors.newScheduledThreadPool(2, daemon("jarvis-bot-typing"));
     private final ConcurrentHashMap<String, ChannelState> states = new ConcurrentHashMap<>();
 
-    public DiscordMessageListener(BotConfig config, JarvisClient jarvis, ChannelSettings channelSettings) {
+    public DiscordMessageListener(BotConfig config, JarvisClient jarvis, ChannelSettings channelSettings,
+            PersonaStore personaStore) {
         this.config = config;
         this.jarvis = jarvis;
         this.channelSettings = channelSettings;
+        this.personaStore = personaStore;
     }
 
     /** Registers the /trolbot slash command in each guild as it becomes available. */
@@ -71,11 +85,16 @@ public final class DiscordMessageListener extends ListenerAdapter {
                 Commands.slash(COMMAND, "Ustawienia TrollBota")
                         .setGuildOnly(true)
                         .setDefaultPermissions(DefaultMemberPermissions.enabledFor(Permission.MANAGE_SERVER))
-                        .addSubcommands(new SubcommandData(SUBCOMMAND_CHANCE,
-                                "Szansa odpowiedzi na tym kanale, bez pingu (0 = nigdy, 1 = na kazda wiadomosc)")
-                                .addOptions(new OptionData(OptionType.NUMBER, "value",
-                                        "Liczba od 0 do 1 (np. 0.5 = 50%)", true)
-                                        .setMinValue(0.0).setMaxValue(1.0)))
+                        .addSubcommands(
+                                new SubcommandData(SUBCOMMAND_CHANCE,
+                                        "Szansa odpowiedzi na tym kanale, bez pingu (0 = nigdy, 1 = na kazda wiadomosc)")
+                                        .addOptions(new OptionData(OptionType.NUMBER, "value",
+                                                "Liczba od 0 do 1 (np. 0.5 = 50%)", true)
+                                                .setMinValue(0.0).setMaxValue(1.0)),
+                                new SubcommandData(SUBCOMMAND_SHOW_PROMPT,
+                                        "Pokazuje aktualna osobowosc bota (prompt)"),
+                                new SubcommandData(SUBCOMMAND_EDIT_PROMPT,
+                                        "Edytuje osobowosc bota (prompt) w okienku"))
         ).queue(
                 success -> LOGGER.info("Slash command /{} registered in guild {}", COMMAND, guild.getName()),
                 error -> LOGGER.warn("Could not register /{} in guild {}: {}. Czy bot ma scope "
@@ -84,9 +103,20 @@ public final class DiscordMessageListener extends ListenerAdapter {
 
     @Override
     public void onSlashCommandInteraction(SlashCommandInteractionEvent event) {
-        if (!COMMAND.equals(event.getName()) || !SUBCOMMAND_CHANCE.equals(event.getSubcommandName())) {
+        if (!COMMAND.equals(event.getName())) {
             return;
         }
+        String sub = event.getSubcommandName();
+        if (SUBCOMMAND_CHANCE.equals(sub)) {
+            handleChanceCommand(event);
+        } else if (SUBCOMMAND_SHOW_PROMPT.equals(sub)) {
+            handleShowPrompt(event);
+        } else if (SUBCOMMAND_EDIT_PROMPT.equals(sub)) {
+            handleEditPrompt(event);
+        }
+    }
+
+    private void handleChanceCommand(SlashCommandInteractionEvent event) {
         double value = event.getOption("value") == null ? config.defaultReplyChance
                 : event.getOption("value").getAsDouble();
         double stored = channelSettings.setReplyChance(event.getChannel().getId(), value);
@@ -96,6 +126,57 @@ public final class DiscordMessageListener extends ListenerAdapter {
                 .setEphemeral(true)
                 .queue();
         LOGGER.info("Reply chance for channel {} set to {}", event.getChannel().getId(), stored);
+    }
+
+    private void handleShowPrompt(SlashCommandInteractionEvent event) {
+        String persona = personaStore.current();
+        String fenced = "Aktualna osobowosc bota:\n```\n" + persona + "\n```";
+        if (fenced.length() <= DISCORD_MESSAGE_LIMIT) {
+            event.reply(fenced).setEphemeral(true).queue();
+            return;
+        }
+        // Too long for one ephemeral message: attach it as a text file instead.
+        event.replyFiles(net.dv8tion.jda.api.utils.FileUpload.fromData(
+                        persona.getBytes(java.nio.charset.StandardCharsets.UTF_8), "persona.txt"))
+                .setEphemeral(true)
+                .queue();
+    }
+
+    private void handleEditPrompt(SlashCommandInteractionEvent event) {
+        String current = personaStore.current();
+        String prefill = current.length() > MODAL_MAX_CHARS ? current.substring(0, MODAL_MAX_CHARS) : current;
+        TextInput input = TextInput.create(MODAL_FIELD_PERSONA, "Osobowosc bota (prompt)", TextInputStyle.PARAGRAPH)
+                .setValue(prefill)
+                .setRequired(true)
+                .setMaxLength(MODAL_MAX_CHARS)
+                .build();
+        Modal modal = Modal.create(MODAL_EDIT_PROMPT, "Edycja osobowosci TrollBota")
+                .addComponents(ActionRow.of(input))
+                .build();
+        event.replyModal(modal).queue();
+    }
+
+    @Override
+    public void onModalInteraction(ModalInteractionEvent event) {
+        if (!MODAL_EDIT_PROMPT.equals(event.getModalId())) {
+            return;
+        }
+        String persona = event.getValue(MODAL_FIELD_PERSONA) == null ? ""
+                : event.getValue(MODAL_FIELD_PERSONA).getAsString();
+        event.deferReply(true).queue();
+        workers.submit(() -> {
+            try {
+                personaStore.update(persona);
+                jarvis.publishPersona(personaStore.current());
+                event.getHook().sendMessage("Zapisane. Nowa osobowosc dziala od kolejnych odpowiedzi ("
+                        + personaStore.current().length() + " znakow).").setEphemeral(true).queue();
+                LOGGER.info("Persona edited from Discord by {}", event.getUser().getName());
+            } catch (RuntimeException exception) {
+                event.getHook().sendMessage("Nie udalo sie zapisac: " + exception.getMessage())
+                        .setEphemeral(true).queue();
+                LOGGER.warn("Persona edit failed: {}", exception.getMessage());
+            }
+        });
     }
 
     @Override

@@ -170,18 +170,35 @@ journalctl -u jarvis-discord-bot -f
 
 ## Sterowanie na żywo — slash-komenda
 
-Na kanale (musisz mieć uprawnienie **Zarządzanie serwerem**):
+Wszystkie komendy `/trolbot ...` są **tylko dla administracji** — widzi i używa ich tylko ktoś
+z uprawnieniem **Zarządzanie serwerem**.
 
+**Szansa odpowiedzi na kanale:**
 ```
 /trolbot randompickmessage value:0.5
 ```
-
 - Ustawia szansę odpowiedzi **na tym konkretnym kanale**, na wiadomości **bez pingu**:
   `0` = nigdy, `0.5` = 50% wiadomości, `1` = na każdą wiadomość.
 - Na **ping** (`@TrollBot`) bot odpowiada **zawsze**, niezależnie od tej wartości.
 - Ustawienie zapisuje się do pliku `channel-settings.json` i **przeżywa restart**.
 - Każda odpowiedź idzie z **kontekstem ostatnich ~50 wiadomości kanału** (w tym własnych bota),
   a wskaźnik **„pisze…"** trzyma się aż do wysłania pełnej odpowiedzi.
+
+**Podgląd osobowości (promptu):**
+```
+/trolbot showprompt
+```
+Pokazuje aktualny prompt bota (tylko dla Ciebie, jako wiadomość ephemeral; jeśli jest bardzo długi,
+przychodzi jako plik `persona.txt`).
+
+**Edycja osobowości (promptu) z Discorda:**
+```
+/trolbot editprompt
+```
+Otwiera **okienko** z aktualnym promptem w polu tekstowym — edytujesz i zapisujesz. Nowa osobowość:
+- od razu trafia do core (`globalPrompt`) i działa od kolejnych odpowiedzi,
+- zapisuje się do pliku `persona-current.txt` i **przeżywa restart** (po restarcie bot wczytuje
+  zapisaną wersję zamiast wbudowanej z `Persona.java`).
 
 ## Strojenie (zmienne w `.env`)
 

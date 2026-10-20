@@ -28,11 +28,12 @@ public final class DiscordTrollBot {
             return;
         }
 
+        PersonaStore personaStore = new PersonaStore(config.personaStateFile, config.persona);
         JarvisClient jarvis = new JarvisClient(config);
         try {
             jarvis.login();
             if (config.pushPersona) {
-                jarvis.publishPersona(config.persona);
+                jarvis.publishPersona(personaStore.current());
             } else {
                 LOGGER.info("BOT_PUSH_PERSONA=false; leaving the user's existing global prompt untouched.");
             }
@@ -48,7 +49,7 @@ public final class DiscordTrollBot {
                         GatewayIntent.GUILD_MESSAGES,
                         GatewayIntent.MESSAGE_CONTENT)
                 .setActivity(Activity.playing("i tak jestem od was lepszy"))
-                .addEventListeners(new DiscordMessageListener(config, jarvis, channelSettings))
+                .addEventListeners(new DiscordMessageListener(config, jarvis, channelSettings, personaStore))
                 .build();
 
         jda.awaitReady();
