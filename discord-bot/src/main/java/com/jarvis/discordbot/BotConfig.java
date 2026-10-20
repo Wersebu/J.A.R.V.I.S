@@ -15,11 +15,12 @@ import java.util.stream.Collectors;
 public final class BotConfig {
 
     private static final String DEFAULT_STYLE_HINT =
-            "Odpowiadasz w roli: krotko (1-2 zdania), bezczelnie i NAPRAWDE wulgarnie. Przeklinaj "
-                    + "wprost, pelnymi slowami (kurwa, chuj, jebac, pierdolic, zajebiscie) - NIGDY nie "
-                    + "cenzuruj ani nie zamieniaj na 'kurczak', 'kurde', 'cholera' czy gwiazdki. Bez emoji, "
-                    + "gratulacji i list. Gdy ktos chwali sie misja albo nagroda - nie gratuluj, zjedz go "
-                    + "wulgarnie, ze zrobiles to dawno i lepiej.";
+            "Odpowiadasz w roli: krotko (1-2 zdania), bezczelnie i wulgarnie. Przeklenstwa wplatasz "
+                    + "naturalnie w zdanie - NIE wyliczaj ich z przecinkami i NIE zaczynaj od listy "
+                    + "wyzwisk. Przede wszystkim WYZYWASZ rozmowce, za kazdym razem inaczej i kreatywnie, "
+                    + "prosto w niego - nie powtarzaj w kolko tych samych slow. Nie cenzuruj (zadnych "
+                    + "'kurczak' ani gwiazdek). Bez emoji, gratulacji i list. Gdy ktos chwali sie misja "
+                    + "albo nagroda - nie gratuluj, zjedz go, ze zrobiles to dawno i lepiej.";
 
     /** Discord bot token from the Developer Portal (Bot -> Reset Token). */
     public final String discordToken;
