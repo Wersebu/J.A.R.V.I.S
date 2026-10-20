@@ -202,21 +202,38 @@ public final class DiscordMessageListener extends ListenerAdapter {
         String line = author + ": " + content;
 
         ChannelState state = states.computeIfAbsent(channelId, key -> new ChannelState());
-        List<String> batch = null;
+        Runnable dispatch = null;
         synchronized (state) {
             state.pending.addLast(line);
             while (state.pending.size() > config.contextMessages) {
                 state.pending.removeFirst();
             }
+            state.lastMessage = event.getMessage();
             if (shouldReply(channelId, mentioned)) {
-                batch = new ArrayList<>(state.pending);
-                state.pending.clear();
+                state.replyWanted = true;
+                state.replyMentioned = state.replyMentioned || mentioned;
+            }
+            // One reply in flight per channel: whatever arrives while the bot is thinking is folded
+            // into the next single reply, so a busy channel never backs up a queue of generations.
+            if (state.replyWanted && !state.busy) {
+                dispatch = startReply(channelId, state);
             }
         }
-        if (batch != null) {
-            List<String> finalBatch = batch;
-            workers.submit(() -> handle(event.getMessage(), channelId, finalBatch, mentioned));
+        if (dispatch != null) {
+            workers.submit(dispatch);
         }
+    }
+
+    /** Prepares the next reply and marks the channel busy. Must be called while holding {@code state}. */
+    private Runnable startReply(String channelId, ChannelState state) {
+        List<String> batch = new ArrayList<>(state.pending);
+        state.pending.clear();
+        Message target = state.lastMessage;
+        boolean mentioned = state.replyMentioned;
+        state.replyWanted = false;
+        state.replyMentioned = false;
+        state.busy = true;
+        return () -> handle(channelId, state, target, batch, mentioned);
     }
 
     private boolean shouldReply(String channelId, boolean mentioned) {
@@ -226,8 +243,8 @@ public final class DiscordMessageListener extends ListenerAdapter {
         return ThreadLocalRandom.current().nextDouble() < channelSettings.replyChance(channelId);
     }
 
-    private void handle(Message message, String channelId, List<String> batch, boolean mentioned) {
-        MessageChannel channel = message.getChannel();
+    private void handle(String channelId, ChannelState state, Message target, List<String> batch, boolean mentioned) {
+        MessageChannel channel = target.getChannel();
         ScheduledFuture<?> keepTyping = typing.scheduleAtFixedRate(
                 () -> channel.sendTyping().queue(error -> { }),
                 0, TYPING_REFRESH_SECONDS, TimeUnit.SECONDS);
@@ -236,20 +253,32 @@ public final class DiscordMessageListener extends ListenerAdapter {
             String reply = jarvis.chat(config.conversationPrefix + channelId, prompt);
             if (reply.isBlank()) {
                 LOGGER.info("Jarvis returned an empty reply; staying silent.");
-                return;
-            }
-            String trimmed = reply.length() > config.maxReplyChars
-                    ? reply.substring(0, config.maxReplyChars)
-                    : reply;
-            if (mentioned) {
-                message.reply(trimmed).mentionRepliedUser(false).queue();
             } else {
-                channel.sendMessage(trimmed).queue();
+                String trimmed = reply.length() > config.maxReplyChars
+                        ? reply.substring(0, config.maxReplyChars)
+                        : reply;
+                if (mentioned) {
+                    target.reply(trimmed).mentionRepliedUser(false).queue();
+                } else {
+                    channel.sendMessage(trimmed).queue();
+                }
             }
         } catch (RuntimeException exception) {
             LOGGER.warn("Failed to get a reply from Jarvis Core: {}", exception.getMessage());
         } finally {
             keepTyping.cancel(false);
+            // If more messages piled up (and still warrant a reply) while we were thinking,
+            // fire exactly one follow-up covering them.
+            Runnable next = null;
+            synchronized (state) {
+                state.busy = false;
+                if (state.replyWanted) {
+                    next = startReply(channelId, state);
+                }
+            }
+            if (next != null) {
+                workers.submit(next);
+            }
         }
     }
 
@@ -282,8 +311,12 @@ public final class DiscordMessageListener extends ListenerAdapter {
         };
     }
 
-    /** Per-channel buffer of messages seen but not yet forwarded to Core. */
+    /** Per-channel buffer of messages seen but not yet forwarded, plus the single-reply-in-flight state. */
     private static final class ChannelState {
         private final Deque<String> pending = new ArrayDeque<>();
+        private boolean busy;
+        private boolean replyWanted;
+        private boolean replyMentioned;
+        private Message lastMessage;
     }
 }
