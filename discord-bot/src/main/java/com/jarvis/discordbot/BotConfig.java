@@ -14,6 +14,11 @@ import java.util.stream.Collectors;
  */
 public final class BotConfig {
 
+    private static final String DEFAULT_STYLE_HINT =
+            "Odpowiadasz w swojej roli: krotko (1-2 zdania), ostro i wulgarnie, bez emoji, bez "
+                    + "gratulacji i bez list. Gdy ktos chwali sie misja albo nagroda - nie gratuluj, "
+                    + "tylko zjedz go, ze zrobiles to dawno i lepiej.";
+
     /** Discord bot token from the Developer Portal (Bot -> Reset Token). */
     public final String discordToken;
 
@@ -53,6 +58,13 @@ public final class BotConfig {
     /** Maximum number of recent channel messages carried as context into a single reply. */
     public final int contextMessages;
 
+    /**
+     * Short style directive injected into every message sent to Core, right where the model weighs
+     * it most. It is what reliably keeps the bot in character against Core's own helpful identity;
+     * override via {@code BOT_STYLE_HINT} without rebuilding. Blank disables it.
+     */
+    public final String styleHint;
+
     /** File where per-channel reply probabilities are persisted so they survive a restart. */
     public final Path settingsFile;
 
@@ -75,6 +87,7 @@ public final class BotConfig {
             int maxReplyChars,
             String conversationPrefix,
             int contextMessages,
+            String styleHint,
             Path settingsFile,
             Path personaStateFile,
             int requestTimeoutSeconds) {
@@ -90,6 +103,7 @@ public final class BotConfig {
         this.maxReplyChars = maxReplyChars;
         this.conversationPrefix = conversationPrefix;
         this.contextMessages = contextMessages;
+        this.styleHint = styleHint;
         this.settingsFile = settingsFile;
         this.personaStateFile = personaStateFile;
         this.requestTimeoutSeconds = requestTimeoutSeconds;
@@ -114,13 +128,14 @@ public final class BotConfig {
         int maxChars = (int) clamp(parseLong("BOT_MAX_REPLY_CHARS", 2000), 1, 2000);
         String conversationPrefix = optional("BOT_CONVERSATION_PREFIX", "discord-");
         int contextMessages = (int) clamp(parseLong("BOT_CONTEXT_MESSAGES", 50), 1, 200);
+        String styleHint = optional("BOT_STYLE_HINT", DEFAULT_STYLE_HINT);
         Path settingsFile = Path.of(optional("BOT_SETTINGS_FILE", "channel-settings.json"));
         Path personaStateFile = Path.of(optional("BOT_PERSONA_STATE_FILE", "persona-current.txt"));
         int timeout = (int) Math.max(5, parseLong("JARVIS_REQUEST_TIMEOUT_SECONDS", 120));
 
         return new BotConfig(discordToken, baseUrl, email, password, pushPersona, persona, replyChance,
-                alwaysOnMention, allowed, maxChars, conversationPrefix, contextMessages, settingsFile,
-                personaStateFile, timeout);
+                alwaysOnMention, allowed, maxChars, conversationPrefix, contextMessages, styleHint,
+                settingsFile, personaStateFile, timeout);
     }
 
     private static String resolvePersona(String personaFile) {

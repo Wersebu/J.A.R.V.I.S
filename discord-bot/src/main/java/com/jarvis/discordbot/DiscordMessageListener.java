@@ -260,13 +260,13 @@ public final class DiscordMessageListener extends ListenerAdapter {
      * Core's conversation memory supplies the earlier context.
      */
     private String buildPrompt(List<String> batch) {
+        String steer = config.styleHint.isBlank() ? "" : config.styleHint + "\n\n";
         if (batch.size() == 1) {
-            return "Ktos wlasnie napisal na czacie:\n" + batch.get(0)
-                    + "\n\nOdbij pilke - odpowiedz krotko, w swoim stylu.";
+            return steer + "Ktos napisal na czacie: " + batch.get(0);
         }
-        StringBuilder builder = new StringBuilder(
-                "Fragment rozmowy na czacie, w ktorej bierzesz udzial. "
-                        + "Odpowiedz tylko na OSTATNIA wypowiedz (oznaczona >>>), krotko, w swoim stylu:\n");
+        StringBuilder builder = new StringBuilder(steer)
+                .append("Fragment czatu, w ktorym bierzesz udzial. ")
+                .append("Odpowiedz tylko na OSTATNIA wypowiedz (oznaczona >>>):\n");
         for (int i = 0; i < batch.size(); i++) {
             boolean last = i == batch.size() - 1;
             builder.append(last ? ">>> " : "").append(batch.get(i)).append('\n');
