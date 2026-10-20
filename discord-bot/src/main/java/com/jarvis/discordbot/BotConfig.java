@@ -32,14 +32,14 @@ public final class BotConfig {
     /** Persona text used as the Jarvis global prompt. Overridable via file; otherwise built-in. */
     public final String persona;
 
-    /** Probability (0..1) of replying to an ordinary, non-mention message. */
-    public final double replyChance;
+    /**
+     * Default probability (0..1) of replying to an ordinary, non-mention message, used for any
+     * channel that has no per-channel value set via {@code /trolbot randompickmessage}.
+     */
+    public final double defaultReplyChance;
 
-    /** Always reply when the bot is @mentioned, bypassing {@link #replyChance} and cooldown. */
+    /** Always reply when the bot is @mentioned, regardless of the per-channel probability. */
     public final boolean alwaysReplyOnMention;
-
-    /** Minimum seconds between unsolicited (non-mention) replies in the same channel. */
-    public final long channelCooldownSeconds;
 
     /** If non-empty, the bot only reacts in these channel IDs. Empty = every text channel. */
     public final Set<String> allowedChannelIds;
@@ -49,6 +49,12 @@ public final class BotConfig {
 
     /** Prefix for the per-channel Jarvis conversationId, giving the bot memory per channel. */
     public final String conversationPrefix;
+
+    /** Maximum number of recent channel messages carried as context into a single reply. */
+    public final int contextMessages;
+
+    /** File where per-channel reply probabilities are persisted so they survive a restart. */
+    public final Path settingsFile;
 
     /** HTTP timeout for calls to Core (a tool-using answer can take a while). */
     public final int requestTimeoutSeconds;
@@ -60,12 +66,13 @@ public final class BotConfig {
             String jarvisPassword,
             boolean pushPersona,
             String persona,
-            double replyChance,
+            double defaultReplyChance,
             boolean alwaysReplyOnMention,
-            long channelCooldownSeconds,
             Set<String> allowedChannelIds,
             int maxReplyChars,
             String conversationPrefix,
+            int contextMessages,
+            Path settingsFile,
             int requestTimeoutSeconds) {
         this.discordToken = discordToken;
         this.jarvisBaseUrl = jarvisBaseUrl;
@@ -73,12 +80,13 @@ public final class BotConfig {
         this.jarvisPassword = jarvisPassword;
         this.pushPersona = pushPersona;
         this.persona = persona;
-        this.replyChance = replyChance;
+        this.defaultReplyChance = defaultReplyChance;
         this.alwaysReplyOnMention = alwaysReplyOnMention;
-        this.channelCooldownSeconds = channelCooldownSeconds;
         this.allowedChannelIds = allowedChannelIds;
         this.maxReplyChars = maxReplyChars;
         this.conversationPrefix = conversationPrefix;
+        this.contextMessages = contextMessages;
+        this.settingsFile = settingsFile;
         this.requestTimeoutSeconds = requestTimeoutSeconds;
     }
 
@@ -97,14 +105,15 @@ public final class BotConfig {
 
         double replyChance = clamp(parseDouble("BOT_REPLY_CHANCE", 0.15), 0.0, 1.0);
         boolean alwaysOnMention = Boolean.parseBoolean(optional("BOT_ALWAYS_REPLY_ON_MENTION", "true"));
-        long cooldown = Math.max(0, parseLong("BOT_CHANNEL_COOLDOWN_SECONDS", 20));
         Set<String> allowed = parseChannelIds(optional("BOT_ALLOWED_CHANNEL_IDS", ""));
         int maxChars = (int) clamp(parseLong("BOT_MAX_REPLY_CHARS", 2000), 1, 2000);
         String conversationPrefix = optional("BOT_CONVERSATION_PREFIX", "discord-");
+        int contextMessages = (int) clamp(parseLong("BOT_CONTEXT_MESSAGES", 50), 1, 200);
+        Path settingsFile = Path.of(optional("BOT_SETTINGS_FILE", "channel-settings.json"));
         int timeout = (int) Math.max(5, parseLong("JARVIS_REQUEST_TIMEOUT_SECONDS", 120));
 
         return new BotConfig(discordToken, baseUrl, email, password, pushPersona, persona, replyChance,
-                alwaysOnMention, cooldown, allowed, maxChars, conversationPrefix, timeout);
+                alwaysOnMention, allowed, maxChars, conversationPrefix, contextMessages, settingsFile, timeout);
     }
 
     private static String resolvePersona(String personaFile) {

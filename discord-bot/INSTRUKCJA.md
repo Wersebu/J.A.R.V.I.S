@@ -26,9 +26,15 @@ Apka gada z core **tylko po HTTP**, więc jest niezależna od builda core i moż
    - **Reset Token** → skopiuj token (to jest `DISCORD_TOKEN`). Trzymaj go w sekrecie.
    - Włącz **MESSAGE CONTENT INTENT** (sekcja *Privileged Gateway Intents*). **Bez tego bot nie widzi treści wiadomości.**
 3. Zakładka **OAuth2 → URL Generator**:
-   - Scopes: **bot**
+   - Scopes: **bot** oraz **applications.commands** (to drugie jest potrzebne do slash-komendy `/trolbot`)
    - Bot Permissions: **View Channels**, **Send Messages**, **Read Message History**
    - Skopiuj wygenerowany URL, otwórz w przeglądarce i dodaj bota na swój serwer.
+
+   Gotowy link (podmień `TWOJE_APP_ID` na Application ID z zakładki *General Information*):
+   `https://discord.com/oauth2/authorize?client_id=TWOJE_APP_ID&scope=bot+applications.commands&permissions=68608`
+
+   > Jeśli bot był już dodany tylko ze scope `bot`, otwórz powyższy link jeszcze raz (z `applications.commands`),
+   > żeby slash-komenda `/trolbot` mogła się zarejestrować.
 
 ---
 
@@ -162,15 +168,34 @@ journalctl -u jarvis-discord-bot -f
 
 ---
 
-## Strojenie
+## Sterowanie na żywo — slash-komenda
+
+Na kanale (musisz mieć uprawnienie **Zarządzanie serwerem**):
+
+```
+/trolbot randompickmessage value:0.5
+```
+
+- Ustawia szansę odpowiedzi **na tym konkretnym kanale**, na wiadomości **bez pingu**:
+  `0` = nigdy, `0.5` = 50% wiadomości, `1` = na każdą wiadomość.
+- Na **ping** (`@TrollBot`) bot odpowiada **zawsze**, niezależnie od tej wartości.
+- Ustawienie zapisuje się do pliku `channel-settings.json` i **przeżywa restart**.
+- Każda odpowiedź idzie z **kontekstem ostatnich ~50 wiadomości kanału** (w tym własnych bota),
+  a wskaźnik **„pisze…"** trzyma się aż do wysłania pełnej odpowiedzi.
+
+## Strojenie (zmienne w `.env`)
 
 - **Osobowość**: edytuj `src/main/java/com/jarvis/discordbot/Persona.java` i przebuduj,
   albo ustaw `BOT_PERSONA_FILE=/sciezka/do/persona.txt` (bez przebudowy).
   Zmiana trafia do core przy następnym starcie (gdy `BOT_PUSH_PERSONA=true`).
-- **Jak często gada**: `BOT_REPLY_CHANCE` (0..1) i `BOT_CHANNEL_COOLDOWN_SECONDS`.
+- **Domyślna szansa** (dla kanałów bez `/trolbot ...`): `BOT_REPLY_CHANCE` (0..1).
   Oznaczenie `@bota` zawsze wywołuje odpowiedź (jeśli `BOT_ALWAYS_REPLY_ON_MENTION=true`).
+- **Ile kontekstu**: `BOT_CONTEXT_MESSAGES=50` — ile ostatnich wiadomości kanału bot dołącza do odpowiedzi.
 - **Tylko wybrane kanały**: `BOT_ALLOWED_CHANNEL_IDS=123...,456...` (ID kanału: prawy klik → *Copy Channel ID*,
   po włączeniu trybu developerskiego w Discordzie).
+
+> Dłuższą ciągłość rozmowy trzyma pamięć core per kanał. Żeby sięgała dokładnie ~50 wiadomości,
+> uruchom core ze zmienną `JARVIS_CONVERSATION_HISTORY_MAX_MESSAGES=50` (domyślne 30 też działa).
 
 ## Uwaga o tonie
 

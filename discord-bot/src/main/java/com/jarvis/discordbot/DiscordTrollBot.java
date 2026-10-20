@@ -42,15 +42,17 @@ public final class DiscordTrollBot {
             return;
         }
 
+        ChannelSettings channelSettings = new ChannelSettings(config.settingsFile, config.defaultReplyChance);
+
         JDA jda = JDABuilder.createLight(config.discordToken,
                         GatewayIntent.GUILD_MESSAGES,
                         GatewayIntent.MESSAGE_CONTENT)
                 .setActivity(Activity.playing("i tak jestem od was lepszy"))
-                .addEventListeners(new DiscordMessageListener(config, jarvis))
+                .addEventListeners(new DiscordMessageListener(config, jarvis, channelSettings))
                 .build();
 
         jda.awaitReady();
-        LOGGER.info("Jarvis troll bot is online as {}. Reply chance={}, mention-always={}.",
-                jda.getSelfUser().getName(), config.replyChance, config.alwaysReplyOnMention);
+        LOGGER.info("Jarvis troll bot is online as {}. Default reply chance={}, mention-always={}.",
+                jda.getSelfUser().getName(), config.defaultReplyChance, config.alwaysReplyOnMention);
     }
 }
