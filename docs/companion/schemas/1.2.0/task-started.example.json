@@ -1,0 +1,19 @@
+{
+  "eventId": "953aa5a0-8828-414d-aa77-b2394850b827",
+  "protocolVersion": "1.2.0",
+  "timestamp": "2026-11-24T22:45:01Z",
+  "sequence": 2,
+  "type": "task.started",
+  "taskId": "953aa5a0-8828-414d-aa77-b2394850b826",
+  "payload": {
+    "taskId": "953aa5a0-8828-414d-aa77-b2394850b826",
+    "role": "RESEARCH",
+    "state": "RUNNING",
+    "priority": 30,
+    "progress": null,
+    "createdAt": "2026-11-24T22:45:00Z",
+    "updatedAt": "2026-11-24T22:45:01Z",
+    "result": null,
+    "error": null
+  }
+}

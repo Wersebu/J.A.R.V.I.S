@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Companion Event 1.1.0",
+  "type": "object",
+  "required": [
+    "eventId",
+    "protocolVersion",
+    "timestamp",
+    "sequence",
+    "type",
+    "taskId",
+    "payload"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "protocolVersion": {
+      "const": "1.1.0"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "type": {
+      "type": "string",
+      "pattern": "^[a-z]+[.][a-z_.]+$"
+    },
+    "taskId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "pattern": "^task[.]"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payload": {
+            "$ref": "task.schema.json"
+          }
+        }
+      }
+    }
+  ]
+}

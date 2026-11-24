@@ -49,6 +49,7 @@ public class OllamaRequestCoordinator {
      * @return acquired permit
      */
     public Permit acquire(AIJobType jobType, String requestId) {
+        jobType = com.jarvis.common.ai.InferencePriorityContext.effective(jobType);
         long queuedNano = System.nanoTime();
         Instant queuedAt = Instant.now();
         AIJobType activeAtQueue;
@@ -80,17 +81,21 @@ public class OllamaRequestCoordinator {
                         requestId, MEMORY_AGENT_PRIORITY_GRACE_MS);
                 waitQuietly(MEMORY_AGENT_PRIORITY_GRACE_MS);
             }
-            while (activeJob != null || shouldPostpone(jobType)) {
-                if (isInteractive(jobType) && activeJob == AIJobType.MEMORY_AGENT) {
-                    LOGGER.info("[JARVIS][requestId={}][OLLAMA] CHAT_WAITING_BEHIND_MEMORY_AGENT", requestId);
+            try {
+                while (activeJob != null || shouldPostpone(jobType)) {
+                    if (isInteractive(jobType) && activeJob == AIJobType.MEMORY_AGENT) {
+                        LOGGER.info("[JARVIS][requestId={}][OLLAMA] CHAT_WAITING_BEHIND_MEMORY_AGENT", requestId);
+                    }
+                    if (jobType == AIJobType.MEMORY_AGENT && waitingChatJobs > 0) {
+                        LOGGER.info("[JARVIS][requestId={}][OLLAMA] WAITING_FOR_OLLAMA_PRIORITY chatPending={}", requestId, waitingChatJobs);
+                    }
+                    waitQuietly();
                 }
-                if (jobType == AIJobType.MEMORY_AGENT && waitingChatJobs > 0) {
-                    LOGGER.info("[JARVIS][requestId={}][OLLAMA] WAITING_FOR_OLLAMA_PRIORITY chatPending={}", requestId, waitingChatJobs);
+            } finally {
+                if (isInteractive(jobType)) {
+                    waitingChatJobs--;
+                    notifyAll();
                 }
-                waitQuietly();
-            }
-            if (isInteractive(jobType)) {
-                waitingChatJobs--;
             }
             activeJob = jobType;
         }
@@ -146,7 +151,7 @@ public class OllamaRequestCoordinator {
     }
 
     private boolean shouldPostpone(AIJobType jobType) {
-        return chatPriority && jobType == AIJobType.MEMORY_AGENT && waitingChatJobs > 0;
+        return chatPriority && !isInteractive(jobType) && waitingChatJobs > 0;
     }
 
     private boolean isInteractive(AIJobType jobType) {
