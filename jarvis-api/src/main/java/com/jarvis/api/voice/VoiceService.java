@@ -33,7 +33,8 @@ public class VoiceService {
     private static final Logger LOGGER = LoggerFactory.getLogger(VoiceService.class);
     private static final int MAX_SPEAK_CHARS = 4000;
 
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+    private final HttpClient http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
+            .connectTimeout(Duration.ofSeconds(5)).build();
     private final ObjectMapper objectMapper;
     private final String sttBaseUrl;
     private final String sttApiKey;
