@@ -15,7 +15,7 @@ import java.util.concurrent.*;
 /** Bounded process-local task engine. All transitions and snapshots share one lock. */
 @Service
 public class CompanionTasks implements AutoCloseable {
-    private static final String VERSION = "1.2.0";
+    private static final String VERSION = "1.3.0";
     public static String version() { return VERSION; }
     public record Request(String message, String role, Integer priority, Integer timeoutSeconds, Integer maxAttempts) {}
     public record Task(String taskId, String role, String state, int priority, Double progress,
@@ -24,6 +24,8 @@ public class CompanionTasks implements AutoCloseable {
                         String type, String taskId, Object payload) {}
     public record Replay(boolean resetRequired, List<Event> events, long latestSequence) {}
     private final ChatService chat;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private TaskAnnouncements announcements;
     private final ThreadPoolExecutor workers;
     private final ScheduledExecutorService timer;
     private final Map<String, Entry> tasks = new LinkedHashMap<>();
@@ -121,6 +123,17 @@ public class CompanionTasks implements AutoCloseable {
         long seq=sequences.merge(e.owner,1L,Long::sum);
         var log=events.computeIfAbsent(e.owner,k->new ArrayDeque<>());
         log.add(new Event(UUID.randomUUID().toString(),VERSION,Instant.now(),seq,type,e.task.taskId(),e.task));
+        String kind=switch(type){case "task.created"->"ACKNOWLEDGMENT";case "task.started"->"PROGRESS";case "task.completed"->"COMPLETED";case "task.failed"->"FAILED";default->null;};
+        if(announcements!=null && kind!=null) {
+            Task snapshot=e.task;
+            announcements.generate(e.owner,snapshot,kind,text->{synchronized(CompanionTasks.this){
+                if(!e.task.state().equals(snapshot.state()))return;
+                long announcementSeq=sequences.merge(e.owner,1L,Long::sum);
+                var journal=events.get(e.owner);
+                journal.add(new Event(UUID.randomUUID().toString(),VERSION,Instant.now(),announcementSeq,"assistant.task.announcement",snapshot.taskId(),Map.of("taskId",snapshot.taskId(),"kind",kind,"state",snapshot.state(),"text",text)));
+                while(journal.size()>512)journal.removeFirst();
+            }});
+        }
         while(log.size()>512)log.removeFirst();
     }
     public synchronized Replay replay(String owner,long after) {

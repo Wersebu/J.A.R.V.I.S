@@ -6,13 +6,14 @@ import java.util.concurrent.*;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 class OllamaCompanionPriorityTest {
+    private boolean waiting(Thread t){return t.getState()==Thread.State.WAITING || t.getState()==Thread.State.TIMED_WAITING;}
     @Test void interruptedWaiterDoesNotStarveBackground() throws Exception {
         var coordinator=new OllamaRequestCoordinator(true,mock(CognitiveEventBus.class));
         var active=coordinator.acquire(AIJobType.BACKGROUND,"active");
         var failure=new java.util.concurrent.atomic.AtomicReference<Throwable>();
         Thread interactive=new Thread(()->{try{assertThrows(OllamaException.class,()->coordinator.acquire(AIJobType.CHAT,"cancelled"));}catch(Throwable ex){failure.set(ex);}});
         interactive.start();long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(2);
-        while(interactive.getState()!=Thread.State.WAITING && System.nanoTime()<deadline)Thread.sleep(2);
+        while(!waiting(interactive) && System.nanoTime()<deadline)Thread.sleep(2);
         interactive.interrupt();interactive.join(2000);assertFalse(interactive.isAlive());assertNull(failure.get());active.close();
         var pool=Executors.newSingleThreadExecutor();
         try{pool.submit(()->{try(var ignored=coordinator.acquire(AIJobType.BACKGROUND,"later")){return true;}}).get(2,TimeUnit.SECONDS);}finally{pool.shutdownNow();}
@@ -32,8 +33,8 @@ class OllamaCompanionPriorityTest {
         try {
             background.start();conversation.start();
             long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(2);
-            while((background.getState()!=Thread.State.WAITING || conversation.getState()!=Thread.State.WAITING) && System.nanoTime()<deadline)Thread.sleep(2);
-            assertEquals(Thread.State.WAITING,conversation.getState());
+            while((!waiting(background) || !waiting(conversation)) && System.nanoTime()<deadline)Thread.sleep(2);
+            assertTrue(waiting(conversation));
         } finally {active.close();}
         background.join(2000);conversation.join(2000);
         assertEquals(java.util.List.of("conversation","background"),order);

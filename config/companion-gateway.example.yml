@@ -1,0 +1,19 @@
+# Opt-in development example. NOT loaded automatically. No production Ollama settings changed.
+jarvis:
+  model-gateway:
+    concurrency: 1
+    reserved-interactive: 1 # ignored at concurrency 1; reserves one request slot at 2/3
+    max-waiting: 128
+    queue-timeout-millis: 300000
+    minimum-free-heap-bytes: 0 # optional pressure floor, not a VRAM measurement
+    context-token-budget: 0 # 0=off; otherwise total admitted configured context tokens
+  ai:
+    context-window: 4096
+    reserved-output-tokens: 1024
+  ollama:
+    base-url: http://127.0.0.1:11434 # configured endpoint may be a remote inference host
+  companion:
+    task-concurrency: 2 # task worker count is independent of inference concurrency
+    announcements:
+      enabled: false
+      personality: Helpful, concise and calm.

@@ -32,6 +32,9 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
     // to warm up on its own) - the active model always warms unconditionally regardless.
     private static final String DEFAULT_ACTIVE_MODEL_KEEP_ALIVE = "-1m";
 
+    private com.jarvis.common.ai.ModelGateway modelGateway;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setModelGateway(com.jarvis.common.ai.ModelGateway gateway){this.modelGateway=gateway;}
     private final HttpClient httpClient;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
     private final OllamaProperties ollamaProperties;
@@ -157,7 +160,7 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
                 contextBudgetService.ollamaOptions(),
                 List.of()
         );
-        try {
+        try (var lease=modelGateway==null?null:modelGateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"startup-warmup")) {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(endpoint))
                     .timeout(Duration.ofMinutes(10))

@@ -1,204 +1,102 @@
 package com.jarvis.ollama;
 
 import com.jarvis.common.ai.AIJobType;
-import com.jarvis.common.diagnostics.InferenceDiagnostics;
-import com.jarvis.common.diagnostics.InferenceDiagnosticsContext;
+import com.jarvis.common.ai.InferencePriorityContext;
 import com.jarvis.common.event.CognitiveEventBus;
-import com.jarvis.common.event.CognitiveEventType;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-
 import java.time.Instant;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Coordinates access to Ollama and gives interactive chat requests priority.
- */
+/** Single Model Gateway admission gate for the configured Ollama endpoint. Never nest a second permit. */
 @Service
-public class OllamaRequestCoordinator {
-
-    private static final Logger LOGGER = LoggerFactory.getLogger(OllamaRequestCoordinator.class);
-    private static final long MEMORY_AGENT_PRIORITY_GRACE_MS = 200L;
-
+public class OllamaRequestCoordinator implements com.jarvis.common.ai.ModelGateway {
+    private final int concurrency, reservedInteractive, maxWaiting;
+    private final long minimumFreeHeapBytes, queueTimeoutMillis;
     private final boolean chatPriority;
-    private final CognitiveEventBus cognitiveEventBus;
-    private AIJobType activeJob;
-    private int waitingChatJobs;
+    private final CognitiveEventBus eventBus;
+    private final Map<UUID,AIJobType> active=new HashMap<>();
+    private int waiting, waitingInteractive;
+    private int contextTokens=16384;private long contextTokenBudget;
+    @Autowired(required=false)
+    public void contextBudget(@Value("${jarvis.ai.context-window:16384}") int contextTokens,
+        @Value("${jarvis.model-gateway.context-token-budget:0}") long budget) {
+        if(contextTokens<1 || budget<0 || budget>0 && budget<contextTokens)throw new IllegalArgumentException("Context token budget cannot admit one request");
+        this.contextTokens=contextTokens;this.contextTokenBudget=budget;
+    }
 
-    /**
-     * Creates the Ollama request coordinator.
-     *
-     * @param chatPriority whether chat requests have priority over memory jobs
-     */
+    public OllamaRequestCoordinator(boolean chatPriority,CognitiveEventBus bus) {
+        this(chatPriority,bus,1,0,128,0,300000);
+    }
+    @Autowired
     public OllamaRequestCoordinator(
-            @Value("${jarvis.memory.background.chat-priority:true}") boolean chatPriority,
-            CognitiveEventBus cognitiveEventBus
-    ) {
-        this.chatPriority = chatPriority;
-        this.cognitiveEventBus = cognitiveEventBus;
+        @Value("${jarvis.memory.background.chat-priority:true}") boolean chatPriority,
+        CognitiveEventBus bus,
+        @Value("${jarvis.model-gateway.concurrency:1}") int concurrency,
+        @Value("${jarvis.model-gateway.reserved-interactive:1}") int reserved,
+        @Value("${jarvis.model-gateway.max-waiting:128}") int maxWaiting,
+        @Value("${jarvis.model-gateway.minimum-free-heap-bytes:0}") long minimumFreeHeapBytes,
+        @Value("${jarvis.model-gateway.queue-timeout-millis:300000}") long queueTimeoutMillis) {
+        if(concurrency<1 || concurrency>64 || reserved<0 || reserved>concurrency || reserved>=concurrency && concurrency>1
+            || maxWaiting<1 || minimumFreeHeapBytes<0 || queueTimeoutMillis<1)
+            throw new IllegalArgumentException("Invalid Model Gateway admission configuration");
+        this.eventBus=bus;this.chatPriority=chatPriority;this.concurrency=concurrency;
+        this.reservedInteractive=concurrency==1?0:reserved;this.maxWaiting=maxWaiting;
+        this.minimumFreeHeapBytes=minimumFreeHeapBytes;this.queueTimeoutMillis=queueTimeoutMillis;
     }
-
-    /**
-     * Acquires an Ollama permit for one job.
-     *
-     * @param jobType job type
-     * @param requestId request id for logs
-     * @return acquired permit
-     */
-    public Permit acquire(AIJobType jobType, String requestId) {
-        jobType = com.jarvis.common.ai.InferencePriorityContext.effective(jobType);
-        long queuedNano = System.nanoTime();
-        Instant queuedAt = Instant.now();
-        AIJobType activeAtQueue;
-        int pendingJobs;
-        synchronized (this) {
-            activeAtQueue = activeJob;
-            pendingJobs = waitingChatJobs + (activeAtQueue == null ? 0 : 1);
-            if (isInteractive(jobType)) {
-                waitingChatJobs++;
-            }
-            LOGGER.info("[JARVIS][requestId={}][OLLAMA_QUEUE] jobType={} queuedAt={} activeJob={} pendingJobs={}",
-                    requestId, jobType, queuedAt, activeAtQueue == null ? "NONE" : activeAtQueue, pendingJobs);
-            if (isInteractive(jobType)) {
-                cognitiveEventBus.publish(CognitiveEventType.EXECUTION_TRACE, "STARTED", "Ollama queue wait started", null, Map.of(
-                        "stage", "OLLAMA_QUEUE_WAIT",
-                        "phase", "STARTED",
-                        "durationMs", 0,
-                        "jobType", jobType.name(),
-                        "queuedAt", queuedAt.toString(),
-                        "queuePosition", activeAtQueue == null ? 0 : 1,
-                        "activeJobAtQueueTime", activeAtQueue == null ? "NONE" : activeAtQueue.name(),
-                        "activeJob", activeAtQueue == null ? "NONE" : activeAtQueue.name(),
-                        "pendingJobs", pendingJobs,
-                        "severity", "GREEN"
-                ));
-            }
-            if (chatPriority && jobType == AIJobType.MEMORY_AGENT && activeJob == null && waitingChatJobs == 0) {
-                LOGGER.info("[JARVIS][requestId={}][OLLAMA] WAITING_FOR_OLLAMA_PRIORITY graceMs={}",
-                        requestId, MEMORY_AGENT_PRIORITY_GRACE_MS);
-                waitQuietly(MEMORY_AGENT_PRIORITY_GRACE_MS);
-            }
+    public Permit acquire(AIJobType requested,String requestId) {
+        AIJobType type=InferencePriorityContext.effective(requested);
+        if(Thread.currentThread().isInterrupted())throw new OllamaException("Inference cancelled before admission");
+        long start=System.nanoTime();Instant queued=Instant.now();UUID id=UUID.randomUUID();
+        trace(type,"STARTED",0);
+        AIJobType blocker;int pending;
+        synchronized(this) {
+            if(waiting>=maxWaiting)throw new OllamaException("Model Gateway queue capacity reached");
+            blocker=active.values().stream().findFirst().orElse(null);pending=waiting+active.size();
+            waiting++;if(interactive(type))waitingInteractive++;
             try {
-                while (activeJob != null || shouldPostpone(jobType)) {
-                    if (isInteractive(jobType) && activeJob == AIJobType.MEMORY_AGENT) {
-                        LOGGER.info("[JARVIS][requestId={}][OLLAMA] CHAT_WAITING_BEHIND_MEMORY_AGENT", requestId);
-                    }
-                    if (jobType == AIJobType.MEMORY_AGENT && waitingChatJobs > 0) {
-                        LOGGER.info("[JARVIS][requestId={}][OLLAMA] WAITING_FOR_OLLAMA_PRIORITY chatPending={}", requestId, waitingChatJobs);
-                    }
-                    waitQuietly();
+                while(!admissible(type)) {
+                    long remaining=queueTimeoutMillis-TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start);
+                    if(remaining<=0)throw new OllamaException("Model Gateway admission timeout");
+                    try{wait(Math.min(remaining,100));}catch(InterruptedException ex){Thread.currentThread().interrupt();throw new OllamaException("Inference cancelled while queued",ex);}
                 }
-            } finally {
-                if (isInteractive(jobType)) {
-                    waitingChatJobs--;
-                    notifyAll();
-                }
-            }
-            activeJob = jobType;
+                if(Thread.currentThread().isInterrupted())throw new OllamaException("Inference cancelled before admission");
+                active.put(id,type);
+            }finally{waiting--;if(interactive(type))waitingInteractive--;notifyAll();}
         }
-        long waitMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - queuedNano);
-        InferenceDiagnostics diagnostics = InferenceDiagnosticsContext.current();
-        if (diagnostics != null) {
-            diagnostics.setOllamaPermitQueueWaitMs(waitMs);
-            diagnostics.setRequestWaitedForAnotherOllamaJob(activeAtQueue != null);
-            diagnostics.setOllamaJobTypeBlockingRequest(activeAtQueue == null ? null : activeAtQueue.name());
-        }
-        Instant startedAt = Instant.now();
-        LOGGER.info("[JARVIS][requestId={}][OLLAMA_QUEUE] jobType={} startedAt={} waitMs={} activeJobAtQueue={} pendingJobs={}",
-                requestId, jobType, startedAt, waitMs, activeAtQueue == null ? "NONE" : activeAtQueue, pendingJobs);
-        if (isInteractive(jobType)) {
-            cognitiveEventBus.publish(CognitiveEventType.EXECUTION_TRACE, "FINISHED", "Ollama queue acquired", null, Map.ofEntries(
-                    Map.entry("stage", "OLLAMA_QUEUE_WAIT"),
-                    Map.entry("phase", "FINISHED"),
-                    Map.entry("durationMs", waitMs),
-                    Map.entry("jobType", jobType.name()),
-                    Map.entry("queuedAt", queuedAt.toString()),
-                    Map.entry("startedAt", startedAt.toString()),
-                    Map.entry("queueWaitMs", waitMs),
-                    Map.entry("queuePosition", activeAtQueue == null ? 0 : 1),
-                    Map.entry("activeJobAtQueueTime", activeAtQueue == null ? "NONE" : activeAtQueue.name()),
-                    Map.entry("activeJob", activeAtQueue == null ? "NONE" : activeAtQueue.name()),
-                    Map.entry("pendingJobs", pendingJobs),
-                    Map.entry("severity", severity(waitMs))
-            ));
-            if (waitMs > 500L) {
-                cognitiveEventBus.publish(CognitiveEventType.EXECUTION_BOTTLENECK, "MEDIUM", "Potential Bottleneck", null, Map.of(
-                        "stage", "OLLAMA_QUEUE_WAIT",
-                        "durationMs", waitMs,
-                        "type", "QUEUE_WAIT",
-                        "reason", "Waiting for local model",
-                        "severity", waitMs > 5_000L ? "HIGH" : "MEDIUM"
-                ));
-            }
-        }
-        return new Permit(this, jobType, queuedAt, startedAt, waitMs, activeAtQueue, pendingJobs);
+        long waitMillis=TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start);
+        var diagnostics=com.jarvis.common.diagnostics.InferenceDiagnosticsContext.current();
+        if(diagnostics!=null){diagnostics.setOllamaPermitQueueWaitMs(waitMillis);diagnostics.setRequestWaitedForAnotherOllamaJob(blocker!=null);diagnostics.setOllamaJobTypeBlockingRequest(blocker==null?null:blocker.name());}
+        trace(type,"FINISHED",waitMillis);
+        return new Permit(this,id,type,queued,Instant.now(),waitMillis,blocker,pending);
     }
-
-    private String severity(long durationMs) {
-        if (durationMs < 20L) {
-            return "GREEN";
-        }
-        if (durationMs < 100L) {
-            return "YELLOW";
-        }
-        if (durationMs < 500L) {
-            return "ORANGE";
-        }
-        return "RED";
+    private void trace(AIJobType type,String phase,long duration) {
+        if(!interactive(type))return;
+        try { eventBus.publish(com.jarvis.common.event.CognitiveEventType.EXECUTION_TRACE,phase,"Model Gateway queue "+phase.toLowerCase(Locale.ROOT),null,
+            Map.of("stage","OLLAMA_QUEUE_WAIT","phase",phase,"durationMs",duration,"queueWaitMs",duration,"jobType",type.name(),"severity",duration>500?"ORANGE":"GREEN"));
+        } catch(RuntimeException ignored) { /* Diagnostics cannot leak an acquired inference permit. */ }
     }
-
-    private boolean shouldPostpone(AIJobType jobType) {
-        return chatPriority && !isInteractive(jobType) && waitingChatJobs > 0;
-    }
-
-    private boolean isInteractive(AIJobType jobType) {
-        return jobType == AIJobType.CHAT || jobType == AIJobType.MAIN_MODEL;
-    }
-
-    private void waitQuietly() {
-        try {
-            wait();
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new OllamaException("Interrupted while waiting for Ollama permit", exception);
+    private boolean admissible(AIJobType type) {
+        if(active.size()>=concurrency || contextTokenBudget>0 && (long)(active.size()+1)*contextTokens>contextTokenBudget)return false;
+        if(!interactive(type)) {
+            long background=active.values().stream().filter(t->!interactive(t)).count();
+            if(background>=concurrency-reservedInteractive || chatPriority && waitingInteractive>0)return false;
         }
+        Runtime runtime=Runtime.getRuntime();
+        return runtime.maxMemory()-(runtime.totalMemory()-runtime.freeMemory())>=minimumFreeHeapBytes;
     }
-
-    private void waitQuietly(long millis) {
-        try {
-            wait(millis);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new OllamaException("Interrupted while waiting for Ollama permit", exception);
-        }
-    }
-
-    private synchronized void release(AIJobType jobType) {
-        if (activeJob == jobType) {
-            activeJob = null;
-        }
-        notifyAll();
-    }
-
-    /**
-     * Acquired Ollama permit.
-     */
-    public record Permit(
-            OllamaRequestCoordinator coordinator,
-            AIJobType jobType,
-            Instant queuedAt,
-            Instant startedAt,
-            long queueWaitMs,
-            AIJobType activeJobAtQueueTime,
-            int pendingJobs
-    ) implements AutoCloseable {
-
-        @Override
-        public void close() {
-            coordinator.release(jobType);
-        }
+    private boolean interactive(AIJobType type){return type==AIJobType.CHAT || type==AIJobType.MAIN_MODEL;}
+    private synchronized void release(UUID id){active.remove(id);notifyAll();}
+    public synchronized Map<String,Object> snapshot(){return Map.of("configuredConcurrency",concurrency,"activeInferenceRequests",active.size(),"waitingRequests",waiting,"reservedInteractive",reservedInteractive);}
+    public static final class Permit implements com.jarvis.common.ai.ModelGateway.Lease {
+        private final OllamaRequestCoordinator coordinator;private final UUID id;private final AIJobType jobType,activeJobAtQueueTime;
+        private final Instant queuedAt,startedAt;private final long queueWaitMs;private final int pendingJobs;
+        private final AtomicBoolean closed=new AtomicBoolean();
+        private Permit(OllamaRequestCoordinator c,UUID id,AIJobType type,Instant queued,Instant started,long wait,AIJobType blocker,int pending){coordinator=c;this.id=id;jobType=type;queuedAt=queued;startedAt=started;queueWaitMs=wait;activeJobAtQueueTime=blocker;pendingJobs=pending;}
+        public AIJobType jobType(){return jobType;}public Instant queuedAt(){return queuedAt;}public Instant startedAt(){return startedAt;}public long queueWaitMs(){return queueWaitMs;}public AIJobType activeJobAtQueueTime(){return activeJobAtQueueTime;}public int pendingJobs(){return pendingJobs;}
+        public void close(){if(closed.compareAndSet(false,true))coordinator.release(id);}
     }
 }

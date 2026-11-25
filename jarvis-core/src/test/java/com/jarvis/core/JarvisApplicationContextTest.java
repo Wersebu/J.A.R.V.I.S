@@ -17,6 +17,11 @@ import org.springframework.boot.test.context.SpringBootTest;
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
 class JarvisApplicationContextTest {
+    // Bean wiring must never issue real inference requests during the startup runner.
+    // Warmup behavior is covered by OllamaStartupModelWarmupTest with local fakes.
+    @org.springframework.boot.test.mock.mockito.MockBean
+    private java.net.http.HttpClient ollamaHttpClient;
+
 
     @Test
     void contextLoads() {

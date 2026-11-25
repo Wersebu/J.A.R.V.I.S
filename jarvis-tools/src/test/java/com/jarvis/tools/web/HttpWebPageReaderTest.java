@@ -143,6 +143,35 @@ class HttpWebPageReaderTest {
                 );
     }
 
+
+    @Test void rejectsRedirectWithoutContactingDestination() throws Exception {
+        server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
+        var hit=new java.util.concurrent.atomic.AtomicBoolean();
+        server.createContext("/redirect",exchange->{exchange.getResponseHeaders().add("Location","/private");exchange.sendResponseHeaders(302,-1);exchange.close();});
+        server.createContext("/private",exchange->{hit.set(true);write(exchange,"secret");});server.start();
+        assertThatThrownBy(()->new TestableReader(defaultProperties()).read(baseUrl()+"/redirect")).isInstanceOf(WebSearchException.class).hasMessageContaining("302");
+        assertThat(hit.get()).isFalse();
+    }
+    @Test void rejectsOversizedResponsesAndNonpublicAddressRanges() throws Exception {
+        startServer("x".repeat(2097153));
+        assertThatThrownBy(()->new TestableReader(defaultProperties()).read(baseUrl())).isInstanceOf(WebSearchException.class).hasMessageContaining("2 MiB");
+        for(String address:java.util.List.of("127.0.0.1","169.254.169.254","100.64.0.1","10.1.1.1","::1","fc00::1","224.0.0.1"))
+            assertThat(HttpWebPageReader.blockedAddress(java.net.InetAddress.getByName(address))).as(address).isTrue();
+        assertThat(HttpWebPageReader.blockedAddress(java.net.InetAddress.getByName("8.8.8.8"))).isFalse();
+    }
+
+
+    @Test void rejectsDnsRebindingAtConnectionResolution() throws Exception {
+        var resolutions=new java.util.concurrent.atomic.AtomicInteger();
+        var reader=new HttpWebPageReader(defaultProperties()) {
+            @Override protected java.net.InetAddress[] resolveAddresses(String host) throws java.net.UnknownHostException {
+                return new java.net.InetAddress[]{java.net.InetAddress.getByName(resolutions.incrementAndGet()==1?"8.8.8.8":"127.0.0.1")};
+            }
+        };
+        assertThatThrownBy(()->reader.read("http://rebinding.invalid/")).isInstanceOf(WebSearchException.class);
+        assertThat(resolutions.get()).isGreaterThanOrEqualTo(2);
+    }
+
     private WebSearchProperties defaultProperties() {
         return new WebSearchProperties(true, "http://127.0.0.1:8888", 5, 10, 320, 8000,
                 Duration.ofSeconds(1), Duration.ofSeconds(1));

@@ -972,7 +972,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                 model, question, false, null, properties.keepAlive(), options, List.of(base64Image));
         LOGGER.info("[JARVIS][requestId={}][OLLAMA] VISION_DESCRIBE_REQUEST model={} forceCpu={}",
                 diagnosticsRequestId(), model, forceCpu);
-        try {
+        try (var lease=requestCoordinator.acquire(AIJobType.BACKGROUND,diagnosticsRequestId())) {
             String requestJson = writeJson(requestBody, "vision image description");
             HttpRequest httpRequest = HttpRequest.newBuilder()
                     .uri(URI.create(endpoint))

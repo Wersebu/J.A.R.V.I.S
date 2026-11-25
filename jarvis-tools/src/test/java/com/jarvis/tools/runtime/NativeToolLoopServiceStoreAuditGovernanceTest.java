@@ -332,6 +332,9 @@ class NativeToolLoopServiceStoreAuditGovernanceTest {
                 new NativeToolSchemaMapper(registry()), datasetService
         );
 
+        // This large workflow fixture uses the configured application context window. Manual construction
+        // does not run Spring's @Autowired context-budget setter; small-window behavior has separate tests.
+        service.setContextBudgets(16000, 100000, 2048);
         ToolCallingResult result = service.execute(request("request-1", "conversation-1"));
 
         assertThat(result.handled()).isTrue();
@@ -503,6 +506,9 @@ class NativeToolLoopServiceStoreAuditGovernanceTest {
 
         @Override
         public ModelResponse toolChat(Brain brain, List<ModelMessage> messages, List<NativeToolDefinition> tools, AIJobType jobType) {
+            if(tools.isEmpty() && !messages.isEmpty() && messages.getLast().content().startsWith("Summarize the investigation")) {
+                return textTurn("Continue the verified store dataset workflow; retain the dataset identifier and pending operation from recent tool exchanges. Do not infer successful scheduling before tool confirmation.");
+            }
             calls++;
             return turns.isEmpty() ? textTurn("Oto gotowy grafik.") : turns.poll();
         }

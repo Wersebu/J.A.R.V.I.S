@@ -25,6 +25,9 @@ public class OllamaEmbeddingProvider implements EmbeddingProvider {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(OllamaEmbeddingProvider.class);
 
+    private com.jarvis.common.ai.ModelGateway modelGateway;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setModelGateway(com.jarvis.common.ai.ModelGateway gateway){this.modelGateway=gateway;}
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final OllamaProperties properties;
@@ -64,7 +67,7 @@ public class OllamaEmbeddingProvider implements EmbeddingProvider {
     public EmbeddingVector embed(String text) {
         long started = System.nanoTime();
         String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/embeddings";
-        try {
+        try (var lease=modelGateway==null?null:modelGateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"embedding")) {
             OllamaEmbeddingRequest request = new OllamaEmbeddingRequest(model, text == null ? "" : text);
             HttpRequest httpRequest = HttpRequest.newBuilder()
                     .uri(URI.create(endpoint))

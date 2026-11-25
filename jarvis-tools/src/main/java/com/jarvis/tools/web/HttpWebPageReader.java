@@ -8,9 +8,6 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -26,6 +23,8 @@ import java.util.regex.Pattern;
  */
 @Service
 public class HttpWebPageReader implements WebPageReader {
+    private static final java.util.concurrent.ScheduledThreadPoolExecutor DEADLINES=new java.util.concurrent.ScheduledThreadPoolExecutor(1,r->{Thread t=new Thread(r,"web-read-deadline");t.setDaemon(true);return t;});
+    static { DEADLINES.setRemoveOnCancelPolicy(true); }
 
     private static final Pattern TITLE_PATTERN = Pattern.compile("(?is)<title[^>]*>(.*?)</title>");
     private static final Pattern JSON_LD_PATTERN = Pattern.compile(
@@ -42,7 +41,7 @@ public class HttpWebPageReader implements WebPageReader {
             "(?is)https?:\\\\?/\\\\?/[^\"'\\s<>]{8,2000}");
 
     private final WebSearchProperties properties;
-    private final HttpClient httpClient;
+
     private final ObjectMapper objectMapper;
 
     /**
@@ -53,32 +52,47 @@ public class HttpWebPageReader implements WebPageReader {
     public HttpWebPageReader(WebSearchProperties properties) {
         this.properties = properties;
         this.objectMapper = new ObjectMapper();
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(properties.connectTimeout())
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
+
     }
 
     @Override
     public WebPageContent read(String url) {
         URI uri = safeUri(url);
         long started = System.nanoTime();
-        HttpRequest request = HttpRequest.newBuilder(uri)
-                .timeout(properties.readTimeout())
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.1")
-                .header("Accept-Language", "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7")
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        + "(KHTML, like Gecko) Chrome/126.0 Safari/537.36 Jarvis-WebSearchTool/2.5")
-                .GET()
-                .build();
-        try {
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        try (var client = org.apache.hc.client5.http.impl.classic.HttpClients.custom()
+                .setConnectionManager(org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder.create()
+                    .setDnsResolver(new org.apache.hc.client5.http.DnsResolver() {
+                        public InetAddress[] resolve(String host) throws java.net.UnknownHostException {
+                            InetAddress[] addresses=resolveAddresses(host);
+                            if(!allowPrivateHosts())for(InetAddress address:addresses) {
+                                if(blockedAddress(address))throw new java.net.UnknownHostException("Blocked nonpublic destination");
+                            }
+                            return addresses; // These exact validated addresses are used by the connection operator.
+                        }
+                        public String resolveCanonicalHostname(String host){return host;}
+                    })
+                    .setDefaultConnectionConfig(org.apache.hc.client5.http.config.ConnectionConfig.custom()
+                        .setConnectTimeout(org.apache.hc.core5.util.Timeout.ofMilliseconds(properties.connectTimeout().toMillis()))
+                        .setSocketTimeout(org.apache.hc.core5.util.Timeout.ofMilliseconds(properties.readTimeout().toMillis())).build()).build())
+                .disableRedirectHandling().disableAutomaticRetries().disableContentCompression().build()) {
+            var request=new org.apache.hc.client5.http.classic.methods.HttpGet(uri);
+            request.setHeader("Accept-Encoding","identity");
+            request.setHeader("User-Agent","Jarvis-WebReader/3");
+            var deadline=DEADLINES.schedule(()->request.cancel(),properties.connectTimeout().plus(properties.readTimeout()).toMillis(),java.util.concurrent.TimeUnit.MILLISECONDS);
+            try(var response=client.execute(request)) {
             long durationMs = (System.nanoTime() - started) / 1_000_000L;
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new WebSearchException("Web page returned HTTP " + response.statusCode(), response.statusCode());
+            if (response.getCode() < 200 || response.getCode() >= 300) {
+
+                throw new WebSearchException("Web page returned HTTP " + response.getCode(), response.getCode());
             }
-            String body = response.body() == null ? "" : response.body();
-            String contentType = response.headers().firstValue("content-type").orElse("");
+            String body;
+            try(var stream=response.getEntity().getContent()) {
+                if(response.getFirstHeader("content-encoding")!=null && !"identity".equalsIgnoreCase(response.getFirstHeader("content-encoding").getValue()))throw new WebSearchException("Encoded responses are not supported");
+                byte[] bytes=stream.readNBytes(2097153);
+                if(bytes.length>2097152)throw new WebSearchException("Web response exceeds 2 MiB limit");
+                body=new String(bytes,StandardCharsets.UTF_8);
+            }
+            String contentType = response.getFirstHeader("content-type")==null?"":response.getFirstHeader("content-type").getValue();
             String title = decode(extractTitle(body));
             String text = normalizeText(enrichWithStructuredData(body));
             int max = properties.pageMaxLength();
@@ -86,12 +100,10 @@ public class HttpWebPageReader implements WebPageReader {
             String returned = truncated ? text.substring(0, max).strip() : text;
             List<WebPageContent.WebPageLink> links = extractLinks(body, uri);
             return new WebPageContent(uri.toString(), title, returned, returned.length(), truncated, durationMs,
-                    response.statusCode(), contentType, links);
+                    response.getCode(), contentType, links);
+            } finally { deadline.cancel(false); }
         } catch (IOException exception) {
             throw new WebSearchException("Web page request failed for " + uri + ": " + exception.getClass().getSimpleName(), exception);
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new WebSearchException("Web page request interrupted for " + uri, exception);
         }
     }
 
@@ -102,6 +114,7 @@ public class HttpWebPageReader implements WebPageReader {
             if (!"http".equals(scheme) && !"https".equals(scheme)) {
                 throw new WebSearchException("Only http/https web page URLs are supported");
             }
+            if(uri.getUserInfo()!=null)throw new WebSearchException("URL credentials are not allowed");
             if (uri.getHost() == null || uri.getHost().isBlank()) {
                 throw new WebSearchException("Web page URL host is required");
             }
@@ -123,16 +136,21 @@ public class HttpWebPageReader implements WebPageReader {
         return false;
     }
 
+    protected InetAddress[] resolveAddresses(String host) throws java.net.UnknownHostException { return InetAddress.getAllByName(host); }
+
     private boolean isPrivateHost(String host) {
         try {
-            InetAddress address = InetAddress.getByName(host);
-            return address.isAnyLocalAddress()
-                    || address.isLoopbackAddress()
-                    || address.isLinkLocalAddress()
-                    || address.isSiteLocalAddress();
-        } catch (IOException exception) {
-            throw new WebSearchException("Web page host could not be resolved: " + host, exception);
-        }
+            for(InetAddress address:resolveAddresses(host))if(blockedAddress(address))return true;
+            return false;
+        }catch(IOException ex){throw new WebSearchException("Web page host could not be resolved",ex);}
+    }
+    static boolean blockedAddress(InetAddress address) {
+        byte[] bytes=address.getAddress();
+        return address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress()
+            || address.isSiteLocalAddress() || address.isMulticastAddress()
+            || bytes.length==16 && ((bytes[0]&0xfe)==0xfc || (bytes[0]&0xe0)!=0x20)
+            || bytes.length==16 && (bytes[0]==0x20 && bytes[1]==0x02 || bytes[0]==0x20 && bytes[1]==0x01 && (bytes[2]==0 && bytes[3]==0 || (bytes[2]&255)==0x0d && (bytes[3]&255)==0xb8))
+            || bytes.length==4 && ((bytes[0]&255)==0 || (bytes[0]&255)==100 && (bytes[1]&255)>=64 && (bytes[1]&255)<=127 || (bytes[0]&255)>=224);
     }
 
     private String normalizeText(String html) {

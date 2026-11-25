@@ -7,9 +7,10 @@ import java.util.*;
 @RequestMapping("/api/v1/companion")
 public class CompanionController {
     private final CompanionTasks tasks;
+    @org.springframework.beans.factory.annotation.Value("${jarvis.companion.provider-mode:LIVE}") private String providerMode="LIVE";
     public CompanionController(CompanionTasks tasks){this.tasks=tasks;}
     private String owner(){return CurrentUserContext.requireAuthenticatedUserId();}
-    @GetMapping("/capabilities") public Map<String,Object> capabilities(){return Map.of("contractVersion",CompanionTasks.version(),"tasks",true,"voiceStreaming",false,"durableHistory",false,"eventRetention",512,"maxActiveTasks",128);}
+    @GetMapping("/capabilities") public Map<String,Object> capabilities(){return Map.of("contractVersion",CompanionTasks.version(),"tasks",true,"voiceStreaming",false,"durableHistory",false,"eventRetention",512,"maxActiveTasks",128,"providerMode",providerMode);}
     @PostMapping("/tasks") @ResponseStatus(HttpStatus.ACCEPTED) public CompanionTasks.Task submit(@RequestBody CompanionTasks.Request request){return tasks.submit(owner(),request);}
     @GetMapping("/tasks") public List<CompanionTasks.Task> list(){return tasks.list(owner());}
     @GetMapping("/tasks/{id}") public CompanionTasks.Task get(@PathVariable String id){return tasks.get(owner(),id);}

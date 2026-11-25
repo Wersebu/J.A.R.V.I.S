@@ -19,3 +19,6 @@ knowledge/.history/
 secrets.key
 config/gmail-client.json
 *client_secret*.json
+
+# Companion benchmark/contract tooling
+__pycache__/

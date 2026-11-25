@@ -105,7 +105,7 @@ class GmailToolTest {
                 tokenForms.add(form);
                 // Each user's refresh token yields that user's access token, so mailboxes cannot mix.
                 String who = form.containsKey("code") ? "owner" : form.get("refresh_token").replace("refresh-", "");
-                response = "{\"access_token\":\"access-" + who + "\",\"expires_in\":3599,\"scope\":\"" + GoogleService.GMAIL.scopes().getFirst() + "\""
+                response = "{\"access_token\":\"access-" + who + "\",\"expires_in\":3599,\"scope\":\"" + String.join(" ", GoogleService.GMAIL.scopes()) + "\""
                         + (form.containsKey("code") ? ",\"refresh_token\":\"refresh-owner\"" : "") + "}";
             } else if (path.equals("/revoke")) {
                 response = "{}";
