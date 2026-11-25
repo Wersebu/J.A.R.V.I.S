@@ -38,6 +38,9 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <maven.compiler.release>${java.version}</maven.compiler.release>
         <jarvis.version>2.24.0</jarvis.version>
+        <!-- Mockito 5.20 uses Byte Buddy 1.17.7, including official Java 25 support. -->
+        <mockito.version>5.20.0</mockito.version>
+        <byte-buddy.version>1.17.7</byte-buddy.version>
     </properties>
 
     <dependencyManagement>
@@ -105,4 +108,13 @@
             </plugins>
         </pluginManagement>
     </build>
+
+    <profiles>
+        <profile>
+            <id>companion-integration</id>
+            <modules>
+                <module>jarvis-companion-integration</module>
+            </modules>
+        </profile>
+    </profiles>
 </project>

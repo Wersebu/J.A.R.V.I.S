@@ -6,11 +6,15 @@ Test credentials: SERVER/data/companion-integration/credentials.json (Git-ignore
 
 History: SERVER/data/companion-integration/history.db, configured explicitly through the launcher. It now survives integration restarts; durableHistory=true has been tested. All inference/actions remain explicitly simulated. No production SQLite/PostgreSQL database is touched. Keep this process loopback-only; an OS writer lock refuses concurrent recovery of its history file.
 
-Start from the backend checkout with the prepared developer classpath:
+Build the separate NONPRODUCTION launcher from the backend checkout:
+
+    mvn -Pcompanion-integration clean verify
+
+Then start it (existing generated credentials/history are preserved):
 
     powershell -File scripts/start-companion-integration.ps1 -Java 'C:\Program Files\Java\jdk-21\bin\java.exe'
 
-The script passes generated test credentials and an absolute isolated history path, and reports a failed Java exit. A developer runtime classpath is prepared in the same ignored directory from a passing Maven run. A packaged-jar route (-Jar) is documented by the script but not smoke-tested here. The integration main enforces loopback port 18080 and its own configuration/profile. Do not enable this profile on the production application.
+The script runs `javac-output-test/jarvis-companion-integration/jarvis-companion-integration-2.24.0-SNAPSHOT.jar` with generated test credentials and an absolute isolated history path. It checks the manifest and rejects a production Core JAR. `-Jar` accepts only the separate integration artifact; the old developer runtime-classpath and production-JAR PropertiesLauncher routes are retired. The launcher is physically outside jarvis-core and absent from production dependencies. It enforces loopback, defaults to port 18080 (`-Port` can select another local port), and uses its own configuration/profile. Do not enable this profile on the production application. API 1.4.0, credentials and fixture behavior are unchanged.
 
 ## Fixtures for Claude
 - Normal POST /tasks retains the simple simulated response without a plan.
