@@ -10,11 +10,14 @@ public class CompanionController {
     @org.springframework.beans.factory.annotation.Value("${jarvis.companion.provider-mode:LIVE}") private String providerMode="LIVE";
     public CompanionController(CompanionTasks tasks){this.tasks=tasks;}
     private String owner(){return CurrentUserContext.requireAuthenticatedUserId();}
-    @GetMapping("/capabilities") public Map<String,Object> capabilities(){return Map.of("contractVersion",CompanionTasks.version(),"tasks",true,"voiceStreaming",false,"durableHistory",false,"eventRetention",512,"maxActiveTasks",128,"providerMode",providerMode);}
+    @GetMapping("/capabilities") public Map<String,Object> capabilities(){return Map.of("contractVersion",CompanionTasks.version(),"tasks",true,"voiceStreaming",false,"durableHistory",tasks.durableHistory(),"eventRetention",512,"maxActiveTasks",128,"providerMode",providerMode,"taskPlans",true,"planEvidenceRequired",true);}
     @PostMapping("/tasks") @ResponseStatus(HttpStatus.ACCEPTED) public CompanionTasks.Task submit(@RequestBody CompanionTasks.Request request){return tasks.submit(owner(),request);}
     @GetMapping("/tasks") public List<CompanionTasks.Task> list(){return tasks.list(owner());}
     @GetMapping("/tasks/{id}") public CompanionTasks.Task get(@PathVariable String id){return tasks.get(owner(),id);}
     @PostMapping("/tasks/{id}/cancel") public CompanionTasks.Task cancel(@PathVariable String id){return tasks.cancel(owner(),id);}
+    @GetMapping("/tasks/{id}/plan") public com.jarvis.tools.taskplan.DynamicPlan plan(@PathVariable String id){return tasks.plan(owner(),id);}
+    @GetMapping("/tasks/{id}/plan/revisions") public List<com.jarvis.tools.taskplan.DynamicPlan> revisions(@PathVariable String id){return tasks.planRevisions(owner(),id);}
+    @DeleteMapping("/tasks/{id}") @ResponseStatus(HttpStatus.NO_CONTENT) public void delete(@PathVariable String id){tasks.delete(owner(),id);}
     @GetMapping("/state") public Map<String,Object> state(){return tasks.state(owner());}
     @GetMapping("/events") public CompanionTasks.Replay events(@RequestParam(defaultValue="0") long afterSequence){return tasks.replay(owner(),afterSequence);}
 }

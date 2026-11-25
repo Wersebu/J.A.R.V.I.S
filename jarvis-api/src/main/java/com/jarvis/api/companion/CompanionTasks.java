@@ -1,6 +1,9 @@
 package com.jarvis.api.companion;
 
 import com.jarvis.api.service.ChatService;
+import com.jarvis.common.companion.*;
+import com.jarvis.tools.taskplan.*;
+import com.fasterxml.jackson.databind.*;
 import com.jarvis.common.auth.CurrentUserContext;
 import com.jarvis.common.dto.ChatRequest;
 import jakarta.annotation.PreDestroy;
@@ -15,7 +18,7 @@ import java.util.concurrent.*;
 /** Bounded process-local task engine. All transitions and snapshots share one lock. */
 @Service
 public class CompanionTasks implements AutoCloseable {
-    private static final String VERSION = "1.3.0";
+    private static final String VERSION = "1.4.0";
     public static String version() { return VERSION; }
     public record Request(String message, String role, Integer priority, Integer timeoutSeconds, Integer maxAttempts) {}
     public record Task(String taskId, String role, String state, int priority, Double progress,
@@ -23,6 +26,33 @@ public class CompanionTasks implements AutoCloseable {
     public record Event(String eventId, String protocolVersion, Instant timestamp, long sequence,
                         String type, String taskId, Object payload) {}
     public record Replay(boolean resetRequired, List<Event> events, long latestSequence) {}
+    private CompanionDocumentStore history=new InMemoryCompanionStore();
+    private ObjectMapper mapper=new ObjectMapper().findAndRegisterModules().disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+    private DynamicPlanService plans;
+    private int retentionDays=30;
+    public boolean durableHistory(){return history.durable();}
+    @org.springframework.beans.factory.annotation.Autowired
+    public synchronized void configureHistory(CompanionDocumentStore store,ObjectMapper mapper,DynamicPlanService plans,@Value("${jarvis.companion.history.retention-days:30}") int retentionDays){
+        if(!tasks.isEmpty())throw new IllegalStateException("History must initialize before accepting tasks");
+        this.history=store;this.mapper=mapper.copy().findAndRegisterModules().disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);this.plans=plans;this.retentionDays=retentionDays;
+        plans.attach(this,this::publishPlan);
+        for(var document:history.all("task")){
+            Task restored;try{restored=this.mapper.readValue(document.body(),Task.class);}catch(Exception e){throw new IllegalStateException("Corrupt task history; refusing to discard it",e);}
+            Entry entry=new Entry(document.owner(),restored);tasks.put(restored.taskId(),entry);sequences.putIfAbsent(document.owner(),0L);
+            plans.register(entry.owner,restored.taskId(),restored.state());
+            boolean interrupted=!TERMINAL.contains(restored.state());
+            if(interrupted){Task recovered=new Task(restored.taskId(),restored.role(),"FAILED",restored.priority(),null,restored.createdAt(),Instant.now(),null,"Interrupted by backend restart; external work was not retried");persist(entry.owner,recovered);entry.task=recovered;}
+            plans.taskState(entry.owner,restored.taskId(),entry.task.state(),true);
+        }
+        purgeHistory();
+    }
+    private void persist(String owner,Task task){try{history.put(new CompanionDocumentStore.Document(owner,"task",task.taskId(),mapper.writeValueAsString(task),task.updatedAt()));}catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new IllegalStateException("Could not serialize public task history",e);}}
+    private void publishPlan(String owner,String type,String id,DynamicPlan plan){synchronized(this){Entry e=owned(owner,id);var payload=mapper.convertValue(e.task,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});payload.put("plan",plan);publish(owner,type,id,payload);}}
+    private void publish(String owner,String type,String id,Object payload){long sequence=sequences.merge(owner,1L,Long::sum);var journal=events.computeIfAbsent(owner,k->new ArrayDeque<>());journal.add(new Event(UUID.randomUUID().toString(),VERSION,Instant.now(),sequence,type,id,payload));while(journal.size()>512)journal.removeFirst();}
+    public synchronized DynamicPlan plan(String owner,String id){owned(owner,id);if(plans==null)throw new ResponseStatusException(HttpStatus.NOT_FOUND);return plans.find(owner,id).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND));}
+    public synchronized List<DynamicPlan> planRevisions(String owner,String id){owned(owner,id);return plans==null?List.of():plans.revisions(owner,id);}
+    public synchronized void delete(String owner,String id){Entry e=owned(owner,id);if(!TERMINAL.contains(e.task.state()))throw new ResponseStatusException(HttpStatus.CONFLICT,"Active tasks cannot be deleted");history.deleteTask(owner,id);if(plans!=null)plans.forget(owner,id);tasks.remove(id);publish(owner,"task.history.deleted",id,e.task);}
+    private void purgeHistory(){Instant cutoff=Instant.now().minus(java.time.Duration.ofDays(Math.max(0,retentionDays)));var terminal=tasks.values().stream().filter(e->TERMINAL.contains(e.task.state())).sorted(Comparator.comparing(e->e.task.updatedAt())).toList();for(var e:terminal){if(retentionDays>0&&e.task.updatedAt().isBefore(cutoff)||tasks.size()>1000)delete(e.owner,e.task.taskId());}}
     private final ChatService chat;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private TaskAnnouncements announcements;
@@ -45,6 +75,7 @@ public class CompanionTasks implements AutoCloseable {
             task=new Task(UUID.randomUUID().toString(), r.role()==null?"TASK":r.role(), "QUEUED",
                 r.priority()==null?50:r.priority(), null, now, now, null, null);
         }
+        Entry(String owner,Task restored){this.owner=owner;this.message="";this.position=++order;this.deadline=Long.MAX_VALUE;this.task=restored;}
         public int compareTo(Entry other) { int n=Integer.compare(task.priority(),other.task.priority()); return n==0?Long.compare(position,other.position):n; }
         public void run() {
             synchronized(CompanionTasks.this) {
@@ -53,7 +84,7 @@ public class CompanionTasks implements AutoCloseable {
                 runner=Thread.currentThread(); change(this,"RUNNING",null,null);
             }
             String[] result={null}; boolean failed=false;
-            try { CurrentUserContext.runAs(owner, () -> com.jarvis.common.ai.InferencePriorityContext.runBackground(() -> result[0]=chat.chat(new ChatRequest("companion-"+task.taskId(),message)).response())); }
+            try { CurrentUserContext.runAs(owner, () -> TaskExecutionContext.run(task.taskId(), () -> com.jarvis.common.ai.InferencePriorityContext.runBackground(() -> result[0]=chat.chat(new ChatRequest("companion-"+task.taskId(),message)).response()))); }
             catch(Exception ex) { failed=true; }
             finally {
                 synchronized(CompanionTasks.this) {
@@ -61,6 +92,7 @@ public class CompanionTasks implements AutoCloseable {
                     if(timeout) change(this,"TIMED_OUT",null,null);
                     else if(task.state().equals("CANCEL_REQUESTED")) change(this,"CANCELLED",null,null);
                     else if(failed) change(this,"FAILED",null,"Task execution failed");
+                    else if(plans!=null&&!plans.verifiedComplete(owner,task.taskId()))change(this,"FAILED",null,"Executable plan is incomplete or unverified");
                     else change(this,"COMPLETED",result[0],null);
                     if(alarm!=null) alarm.cancel(false);
                 }
@@ -88,11 +120,9 @@ public class CompanionTasks implements AutoCloseable {
         if(!sequences.containsKey(owner) && sequences.size()>=1024) throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,"Owner capacity reached");
         long active=tasks.values().stream().filter(e->!TERMINAL.contains(e.task.state())).count();
         if(active>=128) throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,"Task capacity reached");
-        if(tasks.size()>=1000) {
-            var it=tasks.values().iterator();
-            while(it.hasNext() && tasks.size()>=1000) if(TERMINAL.contains(it.next().task.state())) it.remove();
-        }
-        Entry e=new Entry(owner,request); tasks.put(e.task.taskId(),e); emit(e,"task.created");
+        purgeHistory();
+        if(tasks.size()>=1000){var oldest=tasks.values().stream().filter(e->TERMINAL.contains(e.task.state())).min(Comparator.comparing(e->e.task.updatedAt()));oldest.ifPresent(e->delete(e.owner,e.task.taskId()));}
+        Entry e=new Entry(owner,request);persist(owner,e.task);tasks.put(e.task.taskId(),e);if(plans!=null)plans.register(owner,e.task.taskId(),e.task.state());emit(e,"task.created");
         e.alarm=timer.schedule(()->expire(e),request.timeoutSeconds()==null?120:request.timeoutSeconds(),TimeUnit.SECONDS);
         workers.execute(e); return e.task;
     }
@@ -116,7 +146,9 @@ public class CompanionTasks implements AutoCloseable {
     }
     private void change(Entry e,String state,String result,String error) {
         if(TERMINAL.contains(e.task.state()))return;
-        Task t=e.task; e.task=new Task(t.taskId(),t.role(),state,t.priority(),null,t.createdAt(),Instant.now(),result,error);
+        Task t=e.task; Task next=new Task(t.taskId(),t.role(),state,t.priority(),null,t.createdAt(),Instant.now(),result,error);
+        persist(e.owner,next);e.task=next;
+        if(plans!=null)plans.taskState(e.owner,next.taskId(),state,false);
         emit(e,"task."+switch(state){case "RUNNING"->"started";case "CANCEL_REQUESTED"->"cancel_requested";default->state.toLowerCase(Locale.ROOT);});
     }
     private void emit(Entry e,String type) {
@@ -142,8 +174,10 @@ public class CompanionTasks implements AutoCloseable {
         return new Replay(reset,reset?List.of():log.stream().filter(e->e.sequence()>after).toList(),last);
     }
     public synchronized Map<String,Object> state(String owner) {
+        purgeHistory();
         List<Task> list=list(owner);
-        return Map.of("contractVersion",VERSION,"serverInstanceId",serverInstanceId,"latestSequence",sequences.getOrDefault(owner,0L),"tasks",list,"activeProcesses",list.stream().filter(t->!TERMINAL.contains(t.state())).count());
+        List<DynamicPlan> currentPlans=plans==null?List.of():list.stream().map(t->plans.find(owner,t.taskId())).flatMap(Optional::stream).toList();
+        return Map.of("plans",currentPlans,"contractVersion",VERSION,"serverInstanceId",serverInstanceId,"latestSequence",sequences.getOrDefault(owner,0L),"tasks",list,"activeProcesses",list.stream().filter(t->!TERMINAL.contains(t.state())).count());
     }
     @PreDestroy public synchronized void close() { closed=true; workers.shutdownNow(); timer.shutdownNow(); }
 }
