@@ -2,7 +2,7 @@
   "eventId": "953aa5a0-8828-414d-aa77-b2394850b827",
   "protocolVersion": "1.4.0",
   "timestamp": "2026-11-24T22:45:01Z",
-  "sequence": 2,
+  "sequence": 3,
   "type": "task.plan.created",
   "taskId": "953aa5a0-8828-414d-aa77-b2394850b826",
   "payload": {

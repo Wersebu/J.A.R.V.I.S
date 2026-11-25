@@ -16,3 +16,6 @@ Source/config audit, not a claim about a running Linux deployment:
 5. Cut over authority only after explicit review; preserve export/rollback and user-controlled deletion across both stores. No destructive migration or production storage change was performed.
 
 Open inputs: actual deployed PostgreSQL connection metadata (through secure config, not SHARED secrets), pgvector extension/version, embedding dimension/model revision, intended ownership of knowledge files, and retention/deletion policy. Runtime verification is pending access to the designated nonproduction infrastructure.
+
+## Stage 3 additions
+A separate optional SQLite CompanionDocumentStore now persists public task/plan history and the new autonomous-memory namespace. Existing conversation/semantic/knowledge stores and defaults remain unchanged. Task/history persistence and memory extraction/dreaming have independent opt-in flags; the isolated integration launcher enables only its dedicated test history file. See HISTORY_RECOVERY.md and AUTONOMOUS_MEMORY.md. The PostgreSQL/pgvector proposal above is still optional and unimplemented pending environment verification.

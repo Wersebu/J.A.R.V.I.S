@@ -40,7 +40,7 @@ public class CompanionTasks implements AutoCloseable {
             Task restored;try{restored=this.mapper.readValue(document.body(),Task.class);}catch(Exception e){throw new IllegalStateException("Corrupt task history; refusing to discard it",e);}
             Entry entry=new Entry(document.owner(),restored);tasks.put(restored.taskId(),entry);sequences.putIfAbsent(document.owner(),0L);
             plans.register(entry.owner,restored.taskId(),restored.state());
-            boolean interrupted=!TERMINAL.contains(restored.state());
+            boolean interrupted=!TERMINAL.contains(restored.state()) || restored.state().equals("COMPLETED")&&plans.find(entry.owner,restored.taskId()).filter(p->!p.status().equals("COMPLETED")).isPresent();
             if(interrupted){Task recovered=new Task(restored.taskId(),restored.role(),"FAILED",restored.priority(),null,restored.createdAt(),Instant.now(),null,"Interrupted by backend restart; external work was not retried");persist(entry.owner,recovered);entry.task=recovered;}
             plans.taskState(entry.owner,restored.taskId(),entry.task.state(),true);
         }
@@ -51,7 +51,7 @@ public class CompanionTasks implements AutoCloseable {
     private void publish(String owner,String type,String id,Object payload){long sequence=sequences.merge(owner,1L,Long::sum);var journal=events.computeIfAbsent(owner,k->new ArrayDeque<>());journal.add(new Event(UUID.randomUUID().toString(),VERSION,Instant.now(),sequence,type,id,payload));while(journal.size()>512)journal.removeFirst();}
     public synchronized DynamicPlan plan(String owner,String id){owned(owner,id);if(plans==null)throw new ResponseStatusException(HttpStatus.NOT_FOUND);return plans.find(owner,id).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND));}
     public synchronized List<DynamicPlan> planRevisions(String owner,String id){owned(owner,id);return plans==null?List.of():plans.revisions(owner,id);}
-    public synchronized void delete(String owner,String id){Entry e=owned(owner,id);if(!TERMINAL.contains(e.task.state()))throw new ResponseStatusException(HttpStatus.CONFLICT,"Active tasks cannot be deleted");history.deleteTask(owner,id);if(plans!=null)plans.forget(owner,id);tasks.remove(id);publish(owner,"task.history.deleted",id,e.task);}
+    public synchronized void delete(String owner,String id){Entry e=owned(owner,id);if(!TERMINAL.contains(e.task.state()))throw new ResponseStatusException(HttpStatus.CONFLICT,"Active tasks cannot be deleted");history.deleteTask(owner,id);if(plans!=null)plans.forget(owner,id);tasks.remove(id);events.getOrDefault(owner,new ArrayDeque<>()).removeIf(event->id.equals(event.taskId()));Task tombstone=new Task(e.task.taskId(),e.task.role(),e.task.state(),e.task.priority(),null,e.task.createdAt(),e.task.updatedAt(),null,null);publish(owner,"task.history.deleted",id,tombstone);}
     private void purgeHistory(){Instant cutoff=Instant.now().minus(java.time.Duration.ofDays(Math.max(0,retentionDays)));var terminal=tasks.values().stream().filter(e->TERMINAL.contains(e.task.state())).sorted(Comparator.comparing(e->e.task.updatedAt())).toList();for(var e:terminal){if(retentionDays>0&&e.task.updatedAt().isBefore(cutoff)||tasks.size()>1000)delete(e.owner,e.task.taskId());}}
     private final ChatService chat;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
@@ -171,7 +171,8 @@ public class CompanionTasks implements AutoCloseable {
     public synchronized Replay replay(String owner,long after) {
         long last=sequences.getOrDefault(owner,0L); var log=events.getOrDefault(owner,new ArrayDeque<>());
         boolean reset=after<0 || after>last || (!log.isEmpty() && after<log.getFirst().sequence()-1);
-        return new Replay(reset,reset?List.of():log.stream().filter(e->e.sequence()>after).toList(),last);
+        var tail=log.stream().filter(e->e.sequence()>after).toList();long expected=after+1;for(var event:tail){if(event.sequence()!=expected++)reset=true;}
+        return new Replay(reset,reset?List.of():tail,last);
     }
     public synchronized Map<String,Object> state(String owner) {
         purgeHistory();
@@ -179,5 +180,8 @@ public class CompanionTasks implements AutoCloseable {
         List<DynamicPlan> currentPlans=plans==null?List.of():list.stream().map(t->plans.find(owner,t.taskId())).flatMap(Optional::stream).toList();
         return Map.of("plans",currentPlans,"contractVersion",VERSION,"serverInstanceId",serverInstanceId,"latestSequence",sequences.getOrDefault(owner,0L),"tasks",list,"activeProcesses",list.stream().filter(t->!TERMINAL.contains(t.state())).count());
     }
-    @PreDestroy public synchronized void close() { closed=true; workers.shutdownNow(); timer.shutdownNow(); }
+    @PreDestroy public void close() {
+        synchronized(this){closed=true;workers.shutdownNow();timer.shutdownNow();}
+        try{workers.awaitTermination(5,TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}
+    }
 }

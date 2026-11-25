@@ -88,6 +88,8 @@ public class NativeToolLoopService {
     private final GoalCompletionVerifier goalCompletionVerifier;
     /** Optional agent planner; when present, unfinished plans raise the budget and gate the final answer. */
     private TaskPlanService taskPlanService;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.jarvis.tools.taskplan.DynamicPlanService companionPlans;
     /** Tells whether the active model can see images (screenshots are then shown to it directly). */
     private com.jarvis.common.model.ActiveModelService activeModelService;
     private static final String IMAGE_KEY = "_imageBase64";
@@ -2409,7 +2411,8 @@ public class NativeToolLoopService {
             return "";
         }
         StringBuilder block = new StringBuilder("\n\nWorking style (autonomous agent):\n"
-                + "- For a task that needs 3 or more actions, first call plan__create with the goal and concrete steps, "
+                + "- In a companion task context, use taskplan__create/get/add_step/update_step/reorder/complete for complex executable work; bind to the current task only. Do not make a plan for simple conversation. Public actionable work only, no hidden reasoning. Set IN_PROGRESS before real work and use the returned executionEvidenceRef to complete it. Never manufacture evidence or percentages.\n"
+                + "- Outside a companion task, for a task that needs 3 or more actions, first call plan__create with the goal and concrete steps, "
                 + "then execute the steps yourself, calling plan__update_step (done/blocked + short note) after each.\n"
                 + "- Make reasonable assumptions and proceed; do not stop to ask the user to confirm ordinary, "
                 + "non-destructive steps. Ask only when essential information is truly missing or before an "
@@ -2443,6 +2446,9 @@ public class NativeToolLoopService {
                 + "needed, inspect devices, then play a URI returned by search/library on the correct computer. "
                 + "Follow pagination. Do not claim playback until observedPlayback/current confirms it; commands are "
                 + "asynchronous. Respect API errors, account requirements and Retry-After; never fabricate results.\n");
+        String companionTask=com.jarvis.common.companion.TaskExecutionContext.current();
+        if(companionTask!=null){block.append("\nBackend context: companion task ").append(companionTask).append(". Use taskplan tools, not legacy plan tools. Only executable work belongs in this checklist; the final response needs no artificial execution step. If work happened before planning, verify it with a fresh read rather than repeating side effects.\n");if(companionPlans!=null)companionPlans.find(com.jarvis.common.auth.CurrentUserContext.requireAuthenticatedUserId(),companionTask).ifPresent(p->block.append("Current authoritative plan revision: ").append(p.revision()).append("; call taskplan__get before modifying it.\n"));}
+        else block.append("\nBackend context: ordinary conversation; no companion task is active.\n");
         unfinishedPlan(request).ifPresent(plan -> block
                 .append("\nThis conversation has an UNFINISHED plan from earlier - continue it (do not recreate it "
                         + "unless the user asked for something different):\n")
@@ -3215,7 +3221,7 @@ public class NativeToolLoopService {
 
     private static boolean isAgentTool(String tool) {
         String name = tool == null ? "" : tool.toLowerCase(Locale.ROOT);
-        return name.equals("pc") || name.equals("coding") || name.equals("plan") || name.equals("output") || name.equals("agent")
+        return name.equals("pc") || name.equals("coding") || name.equals("plan") || name.equals("taskplan") || name.equals("output") || name.equals("agent")
                 || name.equals("browser") || name.startsWith("mcp_");
     }
 

@@ -131,7 +131,73 @@
             ],
             "format": "uuid"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "COMPLETED"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "evidenceRef": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "startedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "completedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "IN_PROGRESS"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "startedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "completedAt": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "PENDING"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "startedAt": {
+                  "type": "null"
+                },
+                "completedAt": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
       },
       "minItems": 1,
       "maxItems": 100
@@ -145,5 +211,32 @@
       "minimum": 1,
       "maximum": 100
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "COMPLETED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "steps": {
+            "items": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "COMPLETED",
+                    "SKIPPED"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

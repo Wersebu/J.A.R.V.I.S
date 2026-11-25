@@ -1,0 +1,16 @@
+# Opt-in development example only; not loaded automatically and not a production rollout.
+jarvis:
+  companion:
+    history:
+      enabled: false
+      path: ./data/companion-history.db # separate from conversation memory and knowledge indexes
+      retention-days: 30
+  memory:
+    autonomous:
+      enabled: false
+      provider: ollama
+      model: gpt-oss:20b # configurable; uses the existing low-priority Model Gateway
+    dreaming:
+      enabled: false
+      idle-millis: 300000
+      check-millis: 60000

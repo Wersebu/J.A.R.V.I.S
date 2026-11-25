@@ -12,7 +12,7 @@ for directory in (root/'schemas').iterdir():
     registry=Registry().with_resources((schema['$id'],Resource.from_contents(schema)) for schema in schemas.values())
     for schema in schemas.values():Draft202012Validator.check_schema(schema)
     for path in directory.glob('*.example.json'):
-        payload=json.loads(path.read_text(encoding='utf-8'));name='event' if 'eventId' in payload else 'state'
+        payload=json.loads(path.read_text(encoding='utf-8'));name='event' if 'eventId' in payload else 'capabilities' if path.name.startswith('capabilities') else 'memory' if path.name.startswith('memory.') else 'state'
         Draft202012Validator(schemas[name],registry=registry,format_checker=FormatChecker()).validate(payload);count+=1
 assert (root/'API_CONTRACT.md').read_bytes()==(root.parent/'SERVER/docs/companion/API_CONTRACT.md').read_bytes()
 print(f'All schemas checked; {count} examples validated; contract copies match.')

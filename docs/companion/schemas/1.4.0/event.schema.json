@@ -183,6 +183,30 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "task.plan.completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "plan": {
+                "properties": {
+                  "status": {
+                    "const": "COMPLETED"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ]
 }

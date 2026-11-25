@@ -6,6 +6,7 @@ public interface CompanionDocumentStore {
     record Document(String owner,String kind,String id,String body,Instant updatedAt) {}
     boolean durable();
     List<Document> all(String kind);
+    default List<Document> documents(String owner,String kind,String prefix){return all(kind).stream().filter(d->d.owner().equals(owner)&&d.id().startsWith(prefix)).toList();}
     Optional<Document> find(String owner,String kind,String id);
     void put(Document document);
     default void putAll(List<Document> documents){documents.forEach(this::put);}

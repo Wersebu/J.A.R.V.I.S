@@ -24,6 +24,8 @@ public class DefaultMemoryJobService implements MemoryJobService {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultMemoryJobService.class);
 
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.jarvis.memory.autonomous.AutonomousMemoryPipeline autonomous;
     private final MemoryAgentService memoryAgentService;
     private final CognitiveEventBus cognitiveEventBus;
     private final MemoryProperties properties;
@@ -62,6 +64,7 @@ public class DefaultMemoryJobService implements MemoryJobService {
 
     @Override
     public boolean submit(com.jarvis.memory.pipeline.PipelineContext context) {
+        if(autonomous!=null&&autonomous.enabled())return autonomous.submit(CurrentUserContext.requiredUserId(),new MemoryJob(UUID.randomUUID(),context.requestId(),context.conversationId(),context.request().message(),"",Instant.now(),java.util.List.of()));
         if (!properties.background().enabled() || !properties.backgroundAgent().enabled()) {
             LOGGER.info("[JARVIS][MEMORY][sourceRequestId={}] JOB_SKIPPED backgroundEnabled={} backgroundAgentEnabled={} durableMemory=KNOWLEDGE_FILES",
                     context.requestId(), properties.background().enabled(), properties.backgroundAgent().enabled());

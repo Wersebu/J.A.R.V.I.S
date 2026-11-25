@@ -59,7 +59,7 @@ public final class AiTraceLogger {
             String requestId, String model, String endpoint, String jobType, String reasoningLevel,
             int turn, String rawRequestJson
     ) {
-        if (!AiTraceSettings.logFullAiRequest()) {
+        if (PrivateInferenceContext.active() || !AiTraceSettings.logFullAiRequest()) {
             return;
         }
         LOGGER.info(formatOutboundAiRequest(requestId, model, endpoint, jobType, reasoningLevel, turn, rawRequestJson));

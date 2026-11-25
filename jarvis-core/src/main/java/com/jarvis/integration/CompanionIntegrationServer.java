@@ -24,14 +24,30 @@ import java.util.function.Consumer;
 @Profile("companion-integration")
 @EnableAutoConfiguration(exclude=org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration.class)
 @EnableWebSocket
-@Import({CompanionTasks.class,CompanionController.class,CompanionSocket.class,CompanionIntegrationServer.Login.class})
+@Import({CompanionTasks.class,CompanionController.class,CompanionSocket.class,com.jarvis.memory.companion.SQLiteCompanionDocumentStore.class,com.jarvis.tools.taskplan.DynamicPlanService.class,com.jarvis.tools.taskplan.DynamicPlanTool.class,com.jarvis.tools.DefaultToolManager.class,CompanionIntegrationServer.Login.class})
 public class CompanionIntegrationServer implements WebMvcConfigurer,WebSocketConfigurer {
     private final String token=required("JARVIS_INTEGRATION_TOKEN");
     private static String required(String key){String value=System.getenv(key);if(value==null||value.length()<16)throw new IllegalStateException(key+" must contain at least 16 characters");return value;}
-    public static void main(String[] args){SpringApplication app=new SpringApplication(CompanionIntegrationServer.class);app.setAdditionalProfiles("companion-integration");app.setDefaultProperties(Map.of("server.address","127.0.0.1","server.port","18080","spring.application.name","jarvis-companion-INTEGRATION","spring.config.name","companion-integration","jarvis.companion.task-concurrency","2"));app.run("--server.address=127.0.0.1","--server.port=18080","--spring.config.name=companion-integration","--jarvis.companion.provider-mode=SIMULATED");}
-    @Bean static ChatService integrationChat(){return new ChatService(){
-        public ChatResponse chat(ChatRequest request){try{Thread.sleep(1500);}catch(InterruptedException ex){Thread.currentThread().interrupt();throw new IllegalStateException("Mock inference cancelled",ex);}return new ChatResponse("[SIMULATED] Integration task completed.");}
+    public static void main(String[] args){SpringApplication app=new SpringApplication(CompanionIntegrationServer.class);app.setAdditionalProfiles("companion-integration");app.setDefaultProperties(Map.of("server.address","127.0.0.1","server.port","18080","spring.application.name","jarvis-companion-INTEGRATION","spring.config.name","companion-integration","jarvis.companion.task-concurrency","2"));app.run("--server.address=127.0.0.1","--server.port=18080","--spring.config.name=companion-integration","--jarvis.companion.provider-mode=SIMULATED","--jarvis.companion.history.enabled=true","--jarvis.companion.history.path="+java.util.Optional.ofNullable(System.getenv("JARVIS_INTEGRATION_HISTORY")).orElse("./data/companion-integration/history.db"));}
+    @Bean static ChatService integrationChat(com.jarvis.tools.taskplan.DynamicPlanService plans,com.jarvis.tools.ToolManager tools){return new ChatService(){
+        public ChatResponse chat(ChatRequest request){try{
+            if(request.message().startsWith("[SIMULATED_PLAN]")){
+                String owner=CurrentUserContext.requireAuthenticatedUserId(),id=com.jarvis.common.companion.TaskExecutionContext.current();
+                java.util.function.BiFunction<String,Map<String,Object>,com.jarvis.tools.ToolResult> planCall=(operation,args)->tools.execute(new com.jarvis.tools.ToolRequest("taskplan",operation,request.conversationId(),"integration-plan","","",args));
+                var result=planCall.apply("CREATE",Map.of("title","[SIMULATED] Dynamic integration plan","steps",List.of("Read simulated input","Inspect simulated result")));if(!result.success())throw new IllegalStateException("Simulated plan create rejected");
+                var p=plans.find(owner,id).orElseThrow();String first=p.steps().getFirst().stepId();planCall.apply("UPDATE_STEP",Map.of("expectedRevision",p.revision(),"stepId",first,"status","IN_PROGRESS"));Thread.sleep(400);
+                var evidence=tools.execute(new com.jarvis.tools.ToolRequest("integration","READ",request.conversationId(),"integration-read","","",Map.of()));p=plans.find(owner,id).orElseThrow();planCall.apply("UPDATE_STEP",Map.of("expectedRevision",p.revision(),"stepId",first,"status","COMPLETED","resultSummary","[SIMULATED] Input read","evidenceRef",evidence.data().get("executionEvidenceRef")));
+                p=plans.find(owner,id).orElseThrow();planCall.apply("ADD_STEP",Map.of("expectedRevision",p.revision(),"title","Verify simulated result","position",p.steps().size()));
+                p=plans.find(owner,id).orElseThrow();var ids=new ArrayList<>(p.steps().stream().map(com.jarvis.tools.taskplan.DynamicPlan.Step::stepId).toList());java.util.Collections.swap(ids,1,2);planCall.apply("REORDER",Map.of("expectedRevision",p.revision(),"stepIds",ids));
+                for(var step:plans.find(owner,id).orElseThrow().steps())if(step.status().equals("PENDING")){p=plans.find(owner,id).orElseThrow();planCall.apply("UPDATE_STEP",Map.of("expectedRevision",p.revision(),"stepId",step.stepId(),"status","IN_PROGRESS"));Thread.sleep(400);evidence=tools.execute(new com.jarvis.tools.ToolRequest("integration","VERIFY",request.conversationId(),"integration-verify","","",Map.of()));p=plans.find(owner,id).orElseThrow();planCall.apply("UPDATE_STEP",Map.of("expectedRevision",p.revision(),"stepId",step.stepId(),"status","COMPLETED","evidenceRef",evidence.data().get("executionEvidenceRef")));}
+                p=plans.find(owner,id).orElseThrow();result=planCall.apply("COMPLETE",Map.of("expectedRevision",p.revision()));if(!result.success())throw new IllegalStateException("Simulated completion rejected");
+            }else Thread.sleep(1500);
+        }catch(InterruptedException ex){Thread.currentThread().interrupt();throw new IllegalStateException("Mock inference cancelled",ex);}return new ChatResponse("[SIMULATED] Integration task completed.");}
         public void stream(ChatRequest request,Consumer<CognitiveEvent> sink){throw new UnsupportedOperationException("Integration launcher exposes companion task transport only");}
+    };}
+    @Bean static com.jarvis.tools.JarvisTool integrationEvidenceTool(){return new com.jarvis.tools.JarvisTool(){
+        public String getName(){return "integration";} public String getDescription(){return "[SIMULATED] Deterministic local integration fixture";}
+        public com.jarvis.tools.ToolResult execute(com.jarvis.tools.ToolRequest r){return new com.jarvis.tools.ToolResult(true,"integration",r.operation(),r.requestId(),r.conversationId(),false,List.of(),"[SIMULATED] Fixture action verified",Map.of("providerMode","SIMULATED"),"","",false,"");}
     };}
     @Override public void addInterceptors(InterceptorRegistry registry){registry.addInterceptor(new HandlerInterceptor(){
         public boolean preHandle(HttpServletRequest request,HttpServletResponse response,Object handler)throws Exception{

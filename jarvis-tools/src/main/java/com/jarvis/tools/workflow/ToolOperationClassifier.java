@@ -115,6 +115,7 @@ public final class ToolOperationClassifier {
     private static ToolOperationRole agentToolRole(String tool, String operation) {
         String t = tool.toLowerCase(java.util.Locale.ROOT);
         String o = operation.toUpperCase(java.util.Locale.ROOT);
+        if (t.equals("taskplan")) return ToolOperationRole.DISCOVERY; // Internal checklist metadata is not evidence of external work.
         if (t.equals("agent")) {
             return ToolOperationRole.INSPECT;
         }

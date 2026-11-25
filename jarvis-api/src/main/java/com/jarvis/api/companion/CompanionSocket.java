@@ -40,7 +40,7 @@ public class CompanionSocket extends TextWebSocketHandler {
                     case "state.sync" -> {
                         // Hold the journal lock across snapshot/cursor capture to avoid missing transitions.
                         Map<String,Object> snapshot;
-                        synchronized(tasks){link.cursor=tasks.replay(link.owner,Long.MAX_VALUE).latestSequence();snapshot=tasks.state(link.owner);}
+                        synchronized(tasks){snapshot=tasks.state(link.owner);link.cursor=((Number)snapshot.get("latestSequence")).longValue();}
                         send(link,"system.snapshot",snapshot);
                         link.subscribed=true;
                     }

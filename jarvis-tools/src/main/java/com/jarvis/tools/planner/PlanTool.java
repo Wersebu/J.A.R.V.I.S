@@ -94,6 +94,7 @@ public class PlanTool implements JarvisTool, ToolSchemaProvider {
 
     @Override
     public ToolResult execute(ToolRequest request) {
+        if(com.jarvis.common.companion.TaskExecutionContext.current()!=null)return new ToolResult(false,TOOL_NAME,request.operation(),request.requestId(),request.conversationId(),false,List.of(),"Use taskplan__create/get/add_step/update_step/reorder/complete for companion tasks",Map.of(),"TASK_PLAN_REQUIRED","Legacy plan cannot modify companion task plans",false,"");
         String operation = request.operation() == null ? "" : request.operation().toUpperCase(Locale.ROOT);
         try {
             TaskPlan plan = switch (operation) {

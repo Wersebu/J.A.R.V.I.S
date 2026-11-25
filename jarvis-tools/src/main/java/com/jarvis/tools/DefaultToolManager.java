@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.Optional;
 
 /**
@@ -16,6 +17,8 @@ import java.util.Optional;
  */
 @Service
 public class DefaultToolManager implements ToolManager {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.jarvis.tools.taskplan.DynamicPlanService companionPlans;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultToolManager.class);
 
@@ -74,12 +77,21 @@ public class DefaultToolManager implements ToolManager {
         if (request == null || request.toolName() == null || request.toolName().isBlank()) {
             throw new ToolException("Tool name is required");
         }
+        String companionTask=com.jarvis.common.companion.TaskExecutionContext.current();
+        String companionOwner=companionTask==null?null:com.jarvis.common.auth.CurrentUserContext.requireAuthenticatedUserId();
+        if(companionTask!=null&&companionPlans!=null)companionPlans.requireActive(companionOwner,companionTask);
         JarvisTool tool = combinedTools().get(normalize(request.toolName()));
         if (tool == null) {
             throw new ToolException("Tool not registered: " + request.toolName());
         }
         LOGGER.info("[TOOL] Executing tool={} operation={}", request.toolName(), request.operation());
         ToolResult result = tool.execute(request);
+        if(companionTask!=null&&companionPlans!=null&&!Set.of("plan","taskplan").contains(normalize(request.toolName()))) {
+            boolean success=result.success()&&!result.requiresApproval()&&!Boolean.parseBoolean(String.valueOf(result.data().get("running")))&&!Boolean.parseBoolean(String.valueOf(result.data().get("pending")));
+            String status=String.valueOf(result.data().getOrDefault("status","")).toUpperCase(Locale.ROOT);if(Set.of("RUNNING","PENDING","QUEUED","IN_PROGRESS","FAILED","ERROR","CANCELLED").contains(status))success=false;
+            Object exit=result.data().getOrDefault("exitCode",result.data().get("exit_code"));if(exit!=null){try{if(Long.parseLong(exit.toString())!=0)success=false;}catch(NumberFormatException e){success=false;}}
+            try{var evidence=companionPlans.recordEvidence(companionOwner,companionTask,request.toolName(),request.operation(),success);var data=new LinkedHashMap<String,Object>(result.data());data.put("executionEvidenceRef",evidence.evidenceRef());result=new ToolResult(result.success(),result.tool(),result.operation(),result.requestId(),result.conversationId(),result.changed(),result.targetNodeIds(),result.message(),data,result.errorCode(),result.errorMessage(),result.requiresApproval(),result.draftId());}catch(IllegalArgumentException ignored){/* Cancellation won the race; do not fabricate completion evidence. */}
+        }
         return new ToolResult(
                 result.success(),
                 result.tool().isBlank() ? request.toolName() : result.tool(),

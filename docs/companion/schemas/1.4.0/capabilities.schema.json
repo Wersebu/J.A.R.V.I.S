@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "contractVersion",
+    "tasks",
+    "taskPlans",
+    "planEvidenceRequired",
+    "durableHistory",
+    "voiceStreaming"
+  ],
+  "properties": {
+    "contractVersion": {
+      "const": "1.4.0"
+    },
+    "tasks": {
+      "const": true
+    },
+    "taskPlans": {
+      "const": true
+    },
+    "planEvidenceRequired": {
+      "const": true
+    },
+    "durableHistory": {
+      "type": "boolean"
+    },
+    "voiceStreaming": {
+      "const": false
+    },
+    "providerMode": {
+      "enum": [
+        "LIVE",
+        "SIMULATED"
+      ]
+    }
+  }
+}
