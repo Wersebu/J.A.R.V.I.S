@@ -1,0 +1,53 @@
+{
+  "date": "2026-11-26",
+  "baseCommit": "89b722e83c932c94683d8359ce6def7dae08cb2b",
+  "contractVersion": "1.5.0",
+  "maven": {
+    "command": "mvn package (Java 21, full reactor)",
+    "result": "PASS",
+    "tests": 981,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "packagedProductionJar": {
+    "sha256": "71db0496c11493774eaafbbbb0eec6be3c99000eaf09b2e04a29b11d02cfae7f",
+    "entrypoint": "Production JarvisApplication",
+    "legacyBlanketRecoveryInstructionAbsent": true,
+    "newDistinctReceiptGuardPresent": true,
+    "smoke": {
+      "packagedJarStartup": "PASS",
+      "modelStatus": "READY",
+      "ordinaryChat": "PASS",
+      "asynchronousTask": "COMPLETED",
+      "mainConversationDelegation": "PASS",
+      "backgroundNativeToolContext": "PASS",
+      "contractVersion": "1.5.0",
+      "gatewaySlotsConfigured": 4,
+      "stablePhysicalContext": 24576,
+      "windowsThreeSequentialSubmissions": "PASS",
+      "threeRunningBeforeRelease": "PASS",
+      "interactiveUnderThreeTasks": "PASS",
+      "individualManagement": "PASS",
+      "fakeOllamaCalls": 18
+    },
+    "threeTaskSubmissionCalls": 3,
+    "acknowledgmentRequiresNoAdditionalInference": true,
+    "instructionDeliveredToTaskInference": true,
+    "completionEventsReplayed": true,
+    "staleEditableIdentityAndUserGlobalPrompt": "PASS"
+  },
+  "inferenceValidation": "Loopback fake Ollama with real production routing, HTTP transport, gateway leases, scheduler, authentication, WebSocket and isolated SQLite. No production GPU/Ollama run.",
+  "configuration": {
+    "gatewaySlots": 4,
+    "reservedInteractive": 1,
+    "companionTasks": 3,
+    "physicalContext": 24576,
+    "backgroundSubmissionSpacingMs": 250,
+    "submissionNumPredict": 768,
+    "submissionThink": "low",
+    "autonomousMemory": false,
+    "dreaming": false
+  },
+  "deploymentPerformed": false
+}

@@ -53,6 +53,21 @@ class Phase2DelegationTest {
             assertEquals(2,tasks.replay("alice",0).events().stream().filter(e->e.type().equals("task.completed")).count());
         }finally{release.countDown();}
     }
+    @Test void sameChatRequestDeduplicatesRetriesButKeepsThreeIndependentGoals() {
+        var chat = mock(ChatService.class);
+        when(chat.chat(any())).thenReturn(new ChatResponse("done"));
+        try (var tasks = new CompanionTasks(chat, 3)) {
+            var adapter = new CompanionTaskSubmissionAdapter(tasks);
+            var ids = new HashSet<Object>();
+            for (String goal : List.of("alpha", "beta", "gamma")) {
+                var first = adapter.submit("alice", "source", goal, "TASK", "same-chat-request");
+                var retry = adapter.submit("alice", "source", goal, "TASK", "same-chat-request");
+                assertEquals(first.get("taskId"), retry.get("taskId"));
+                ids.add(first.get("taskId"));
+            }
+            assertEquals(3, ids.size()); assertEquals(3, tasks.list("alice").size());
+        }
+    }
     @Test void templatesNeverInvokeModelAndActivityScopesAreTruthful(){
         var provider=mock(com.jarvis.common.ai.AIProvider.class);var router=mock(com.jarvis.brain.BrainRouter.class);
         var announcements=new TaskAnnouncements(List.of(provider),router,true,"ignored");

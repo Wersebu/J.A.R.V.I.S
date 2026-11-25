@@ -64,6 +64,21 @@ class NativeToolLoopServiceWorkflowScopeTest {
     }
 
     @Test
+    void threeSequentialSubmissionsMustExistBeforeDelegatedAndCalendarCannotSubstitute() {
+        Deque<ModelResponse> turns = new ArrayDeque<>();
+        turns.add(toolCall("calendar__events", Map.of()));
+        for (String goal : List.of("Research alpha", "Research beta", "Research gamma"))
+            turns.add(toolCall("companion__submit", Map.of("message", goal)));
+        var result = run(turns, Map.of("workflowTools", List.of("calendar__events")),
+                "Run three independent background agents: research alpha, beta and gamma.");
+        assertThat(result.terminationInfo().terminationReason()).isEqualTo(ToolLoopTerminationReason.DELEGATED);
+        assertThat(executed).hasSize(3).allSatisfy(r -> assertThat(r.toolName()).isEqualTo("companion"));
+        assertThat(result.results().stream().filter(r -> r.success()).map(r -> r.data().get("taskId")).distinct()).hasSize(3);
+        assertThat(offeredPerTurn).hasSize(4).allSatisfy(names -> assertThat(names).containsExactly("companion__submit"));
+        assertThat(result.finalAnswer()).contains("task-Research alpha", "task-Research beta", "task-Research gamma");
+    }
+
+    @Test
     void aRealToolOutsideTheWorkflowScopeRunsAndItsFamilyIsOfferedFromThenOn() {
         Deque<ModelResponse> turns = new ArrayDeque<>();
         turns.add(toolCall("notes.ADD", Map.of("text", "Baniocha 05-532")));
@@ -111,6 +126,19 @@ class NativeToolLoopServiceWorkflowScopeTest {
     }
 
     @Test
+    void ongoingBackgroundClaimsRequireLatestActiveSchedulerState() {
+        var active = new ToolResult(true,"companion","GET","r","c",false,List.of(),"",
+                Map.of("taskId","real-id","state","RUNNING"),"","",false,"");
+        var completed = new ToolResult(true,"companion","GET","r","c",false,List.of(),"",
+                Map.of("taskId","real-id","state","COMPLETED"),"","",false,"");
+        var synchronous = new ToolResult(true,"agent","RUN","r","c",false,List.of(),"",
+                Map.of("report","done"),"","",false,"");
+        assertThat(NativeToolLoopService.hasActiveCompanionReceipt(List.of(active))).isTrue();
+        assertThat(NativeToolLoopService.hasActiveCompanionReceipt(List.of(active, completed))).isFalse();
+        assertThat(NativeToolLoopService.hasActiveCompanionReceipt(List.of(synchronous))).isFalse();
+    }
+
+    @Test
     void ordinaryPoliteRepliesAreNotMistakenForPromises() {
         assertThat(NativeToolLoopService.promisesBackgroundWork("W tej chwili przetwarzam dane geograficzne.")).isTrue();
         assertThat(NativeToolLoopService.promisesBackgroundWork("Pracuję nad tym w tle i wrócę z wynikiem.")).isTrue();
@@ -121,11 +149,15 @@ class NativeToolLoopServiceWorkflowScopeTest {
     }
 
     private ToolCallingResult run(Deque<ModelResponse> turns, Map<String, Object> context) {
+        return run(turns, context, "zapisz notatkę o Baniochy");
+    }
+
+    private ToolCallingResult run(Deque<ModelResponse> turns, Map<String,Object> context, String userMessage) {
         NativeToolLoopService service = new NativeToolLoopService(List.of(new ScriptedProvider(turns)), new NotesToolManager(),
                 query -> ToolIntent.UPDATE_DOCUMENT, new ToolRuntimeProperties(true, 6, 6, 1, 30, "native"), new QuietBus(),
                 new ToolRuntimeDebugService(), new ObjectMapper(), new NativeToolSchemaMapper(registry()),
                 new com.jarvis.tools.dataset.StoreAuditDatasetService(new QuietBus()));
-        return service.execute(new ToolCallingRequest("request-1", "conversation-1", "zapisz notatkę o Baniochy",
+        return service.execute(new ToolCallingRequest("request-1", "conversation-1", userMessage,
                 "Save a note.", "The user asked to save a note.", context, "Base prompt",
                 new Brain(BrainType.FAST, "stub", "stub-model", "stub", "", 0L, ReasoningLevel.LOW), KnowledgeMode.FAST, List.of(), ""));
     }
@@ -220,7 +252,7 @@ class NativeToolLoopServiceWorkflowScopeTest {
         @Override
         public ToolResult execute(ToolRequest request) {
             executed.add(request);
-            if(request.toolName().equals("companion"))return new ToolResult(true,"companion","SUBMIT",request.requestId(),request.conversationId(),true,List.of(),"Accepted",Map.of("taskId","real-task-id","state","QUEUED"),"","",false,"");
+            if(request.toolName().equals("companion"))return new ToolResult(true,"companion","SUBMIT",request.requestId(),request.conversationId(),true,List.of(),"Accepted",Map.of("taskId",request.arguments().get("message").equals("independent research") ? "real-task-id" : "task-"+request.arguments().get("message"),"state","QUEUED"),"","",false,"");
             if (addFails && "ADD".equals(request.operation())) {
                 return new ToolResult(false, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
                         false, List.of(), "No dataset", Map.of(), "STORE_DATASET_NOT_FOUND", "No dataset in this conversation", false, "");

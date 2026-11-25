@@ -319,7 +319,9 @@ public class NativeToolLoopService {
      * @return tool-calling result
      */
     public ToolCallingResult execute(ToolCallingRequest request) {
-        ToolCallingResult result = executeLoop(request);
+        ToolCallingResult result = com.jarvis.common.companion.DelegationRequest.requestedTasks(request.userMessage()) > 0
+                ? com.jarvis.common.ai.InferenceProfileContext.call("tool-selection", () -> executeLoop(request))
+                : executeLoop(request);
         // Ground every Spotify playback/control outcome, also for short follow-ups like "next" that name no app.
         boolean spotifyComposite = result.steps().stream().anyMatch(step -> "TOOL_CALL".equals(step.action()) && step.result() != null
                 && SpotifyAutopilot.handles(new ToolAction("TOOL_CALL", step.tool(), step.operation(), Map.of(), "", "")));
@@ -424,6 +426,7 @@ public class NativeToolLoopService {
         if (!properties.isEnabled()) {
             return new ToolCallingResult(false, "", List.of(), List.of());
         }
+        int requestedDelegations = com.jarvis.common.companion.DelegationRequest.requestedTasks(request.userMessage());
         ToolIntent intent = resolveIntent(request);
         InformationFreshness freshness = freshnessEvaluator.evaluate(request.userMessage(), request.goal(), request.reason());
         ToolScopeResolution scope = schemaMapper.resolveScope(intent, request.userMessage(), request.goal(), request.context());
@@ -450,6 +453,13 @@ public class NativeToolLoopService {
                 LOGGER.info("[NATIVE_TOOL_SCHEMA] requestId={} workflowScoped=true from={} to={}", request.requestId(),
                         definitions.size(), scoped.size());
                 definitions = scoped;
+            }
+        }
+        if (requestedDelegations > 0) {
+            // Explicit asynchronous delegation has its own capability, independent of Google/workflow affinity.
+            definitions = definitions.stream().filter(d -> d.name().startsWith("companion__")).toList();
+            if (definitions.stream().noneMatch(d -> d.name().equals("companion__submit"))) {
+                return new ToolCallingResult(true, "Delegowanie w tle jest niedostępne w tym kontekście. Nie utworzono żadnego zadania.", List.of(), List.of());
             }
         }
         if (definitions.isEmpty()) {
@@ -572,13 +582,20 @@ public class NativeToolLoopService {
         // consecutiveNoToolProgress above so this one reason is bounded on its own even before the
         // general backstop would trip.
         int liveEvidenceRecoveryAttempts = 0;
-        // A reply promising work "in the background" is rejected once: nothing runs after the loop ends.
+        // Background claims without a tracked receipt are rejected; accepted Companion tasks continue independently.
         boolean backgroundPromiseRejected = false;
+        int missingDelegationRetries = 0;
         // A reply that ignores the failure of the last tool call is rejected once.
         boolean silentFailureRejected = false;
         // Definitions offered to the model; grows when the model calls a real tool a workflow scope left out.
         List<NativeToolDefinition> offered = new ArrayList<>(definitions);
         messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions, existingDataset)));
+        if (requestedDelegations > 0) messages.add(ModelMessage.system(
+                "CORE ASYNC DELEGATION: submit " + requestedDelegations + " distinct tasks for the original user request. "
+                + "Use one companion__submit per independent goal, in one response or successive turns. "
+                + "Do not repeat accepted goals. Core counts distinct backend taskIds before acknowledging. "
+                + "Do not wait for completion, use agent__run, Calendar, Google Tasks, or taskplan as a substitute. "
+                + "A task list stores reminders; taskplan plans the current execution; neither starts a Companion agent."));
         if (!request.conversationContext().isBlank()) {
             // Multi-turn data-loss fix (round 3 of the reported production bug): this loop previously
             // never saw anything from earlier turns of the SAME conversation, only the current
@@ -789,6 +806,8 @@ public class NativeToolLoopService {
                     try {
                         action = schemaMapper.toAction(call.name(), call.arguments(), "Native model tool call");
                         validate(action);
+                        if (requestedDelegations > 0 && !(action.tool().equalsIgnoreCase("companion") && action.operation().equalsIgnoreCase("SUBMIT")))
+                            throw new InvalidToolArgumentException("This turn accepts only companion__submit for the requested independent tasks; external task lists are not agents.");
                         if (offerToolFamily(request, step, offered, action.tool())) {
                             messages.add(ModelMessage.system("Core added the " + action.tool() + " tools you just used to your tool "
                                     + "list; their exact names and arguments are available from now on."));
@@ -1187,20 +1206,40 @@ public class NativeToolLoopService {
                     }
                 }
                 var receipts=results.stream().filter(r->r.success()&&r.tool().equalsIgnoreCase("companion")&&r.operation().equalsIgnoreCase("SUBMIT")&&r.data().get("taskId")!=null).toList();
-                if(!receipts.isEmpty()){
+                int acceptedDelegations=(int)receipts.stream().map(r->r.data().get("taskId")).distinct().count();
+                if(!receipts.isEmpty() && acceptedDelegations >= Math.max(1,requestedDelegations)){
                     String acknowledgment="Przyjęto do wykonania w tle: "+receipts.stream().map(r->String.valueOf(r.data().get("taskId"))).collect(java.util.stream.Collectors.joining(", "))+". Możemy kontynuować rozmowę; wynik pojawi się w zadaniu.";
                     var info=buildTerminationInfo(ToolLoopTerminationReason.DELEGATED,false,false,started,step,maxCalls,steps,results,acknowledgment,"Await background task result",List.of());
                     publish(request,CognitiveEventType.TOOL_LOOP_FINISHED,"DELEGATED","Background task accepted",null,step,terminationMetadata(Map.of("taskIds",receipts.stream().map(r->r.data().get("taskId")).toList()),info));
                     return new ToolCallingResult(true,acknowledgment,steps,results,info);
                 }
+                if (acceptedDelegations > 0 && requestedDelegations > acceptedDelegations) {
+                    messages.add(ModelMessage.system("Core has accepted " + acceptedDelegations + " of " + requestedDelegations
+                            + " distinct tasks. Submit only the remaining independent goals now. Do not wait for or inspect task completion."));
+                }
                 continue;
             }
 
+            if (requestedDelegations > 0) {
+                var acceptedIds = results.stream().filter(r -> r.success() && r.tool().equalsIgnoreCase("companion")
+                        && r.operation().equalsIgnoreCase("SUBMIT") && r.data().get("taskId") != null)
+                        .map(r -> String.valueOf(r.data().get("taskId"))).distinct().toList();
+                if (missingDelegationRetries++ < 2) {
+                    messages.add(ModelMessage.system("The request requires " + requestedDelegations + " distinct task receipts; accepted IDs: "
+                            + acceptedIds + ". Submit the remaining tasks using companion__submit. Do not call unrelated tools or wait for completion."));
+                    continue;
+                }
+                String partial = "Utworzono " + acceptedIds.size() + " z " + requestedDelegations + " zadań. Potwierdzone identyfikatory: "
+                        + acceptedIds + ". Pozostałe zadania nie zostały utworzone.";
+                var info = buildTerminationInfo(ToolLoopTerminationReason.INCOMPLETE_GOAL, false, false, started, step, maxCalls, steps, results,
+                        partial, "Submit remaining tasks", List.of());
+                return new ToolCallingResult(true, partial, steps, results, info);
+            }
             String content = response.content().strip();
             boolean receipt=results.stream().anyMatch(r->r.success()&&(r.tool().equalsIgnoreCase("companion")&&r.data().get("taskId")!=null||r.tool().equalsIgnoreCase("agent")&&r.operation().equalsIgnoreCase("RUN")));
             if(com.jarvis.common.companion.DelegationClaims.started(content)&&!receipt)
                 content="Nie ma potwierdzenia uruchomienia agenta. Zadanie nie zostało utworzone przez backend.";
-            if(backgroundPromiseRejected&&promisesBackgroundWork(content)&&!receipt)
+            if(backgroundPromiseRejected&&promisesBackgroundWork(content)&&!hasActiveCompanionReceipt(results))
                 content="Nie ma potwierdzenia utworzenia zadania w tle. Nie mogę potwierdzić dalszego wykonania.";
             if (!content.isBlank()) {
                 LOGGER.info("[AGENT_LOOP] requestId={} turn={} action=FINAL_CONTENT", request.requestId(), step);
@@ -1339,9 +1378,9 @@ public class NativeToolLoopService {
                     continue;
                 }
 
-                if (!backgroundPromiseRejected && promisesBackgroundWork(content) && results.stream().noneMatch(r -> r.success() && r.tool().equalsIgnoreCase("companion") && r.data().get("taskId") != null)) {
-                    // Nothing runs after this loop ends, so "I'm processing it now / will get back to you" can never be
-                    // kept. Give the model one chance to actually do the work, or to say honestly what it needs.
+                if (!backgroundPromiseRejected && promisesBackgroundWork(content) && !hasActiveCompanionReceipt(results)) {
+                    // No tracked receipt backs this claim. Give the model one chance to submit real work
+                    // or explain the actual limitation; accepted asynchronous tasks may continue.
                     backgroundPromiseRejected = true;
                     LOGGER.info("[NATIVE_TOOL_LOOP] requestId={} step={} rejected background-work promise", request.requestId(), step);
                     publish(request, CognitiveEventType.TOOL_VERIFICATION_STARTED, "REENTER_TOOL_LOOP",
@@ -2263,11 +2302,21 @@ public class NativeToolLoopService {
             List<NativeToolDefinition> definitions,
             Optional<StoreAuditDataset> existingDataset
     ) {
+        if (com.jarvis.common.companion.DelegationRequest.requestedTasks(request.userMessage()) > 0) {
+            return "You are J.A.R.V.I.S. Core's asynchronous delegation runtime. The native tools field is authoritative. "
+                    + "Submit a separate self-contained goal using companion__submit for EACH requested independent agent. "
+                    + "Use distinct goals; never repeat a successful submission. Submit all tasks before ending the turn. "
+                    + "A successful receipt with taskId means accepted, not completed. Core returns a deterministic acknowledgment "
+                    + "when all receipts exist. Do not wait for results or invent progress. Calendar and Google Tasks are external "
+                    + "records, agent__run is synchronous, and taskplan only plans the current task. None substitutes for Companion. "
+                    + "If submission fails, report the actual limitation and accepted IDs. Never claim unavailable tools from a client prompt. "
+                    + "Original user request: " + request.userMessage();
+        }
         String base = """
                 You are J.A.R.V.I.S. inside a native tool-calling loop.
 
                 You are in a multi-turn agent loop. You may call several tools sequentially, observe each result,
-                then choose the next call. The complete active runtime tool catalog is supplied in the native
+                then choose the next call. The selected runtime tool catalog is supplied in the native
                 tools field, not in this prompt.
                 Use the available native tools when external evidence, current facts, live prices, knowledge operations, or approved actions are needed.
                 Do not print JSON tool protocols as text. Use native tool calls only.
@@ -4219,6 +4268,15 @@ public class NativeToolLoopService {
     }
 
     /** A reply that claims work is still going on after the turn ends. */
+    static boolean hasActiveCompanionReceipt(List<ToolResult> results) {
+        Map<String,String> latest = new LinkedHashMap<>();
+        for (ToolResult result : results) {
+            if (result.success() && result.tool().equalsIgnoreCase("companion") && result.data().get("taskId") != null)
+                latest.put(String.valueOf(result.data().get("taskId")), String.valueOf(result.data().get("state")));
+        }
+        return latest.values().stream().anyMatch(state -> Set.of("QUEUED", "RUNNING", "CANCEL_REQUESTED").contains(state));
+    }
+
     static boolean promisesBackgroundWork(String content) {
         return content != null && BACKGROUND_PROMISE.matcher(content).find();
     }

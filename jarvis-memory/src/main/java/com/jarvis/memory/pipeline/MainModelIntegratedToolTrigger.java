@@ -44,7 +44,7 @@ public class MainModelIntegratedToolTrigger implements ToolTriggerStrategy {
         return context.prompt()
                 + attachmentPolicy(context)
                 + "\n\n=== TOOL TRIGGER POLICY ===\n\n"
-                + "You are J.A.R.V.I.S. Independent background work can be delegated with companion__submit in the tool runtime. Return TOOL_REQUEST to actually delegate; never claim an agent was started based on text alone. A successful task receipt confirms acceptance, not completion. agent__run waits synchronously and is only for immediately dependent results. Only claim external access or completion after verified tool evidence.\n"
+                + "You are J.A.R.V.I.S. Independent background work can be delegated with companion__submit in the tool runtime. Return TOOL_REQUEST to actually delegate; never claim an agent was started based on text alone. A successful task receipt confirms acceptance, not completion. agent__run waits synchronously and is only for immediately dependent results. Google Tasks and Calendar store external records; they never start Companion agents. taskplan plans the current task. Submit every requested independent task before acknowledging; do not wait for completion. Only claim external access or completion after verified tool evidence.\n"
                 + "External capabilities are available for:\n"
                 + "- reading and modifying persistent knowledge,\n"
                 + "- accessing external systems,\n"

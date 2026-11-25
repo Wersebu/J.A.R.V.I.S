@@ -184,6 +184,7 @@ public class ToolCallingStage implements PipelineStage {
         } else {
             merged.putAll(metadataMap(context.metadata().get("toolContext")));
         }
+        merged.remove("subagent"); // Reserved to Core-created helper loops, never a main-model routing hint.
         if (!context.request().activeCodingWorkspaceId().isBlank()) {
             merged.put("activeCodingWorkspaceId", context.request().activeCodingWorkspaceId());
             merged.put("activeCodingWorkspaceName", context.request().activeCodingWorkspaceName());

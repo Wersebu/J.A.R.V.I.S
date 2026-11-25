@@ -1,0 +1,19 @@
+{
+  "scannedFiles": 1062,
+  "forbiddenArtifacts": [],
+  "unresolvedSecretPatternFindings": [],
+  "reviewedSyntheticFixtures": [
+    {
+      "file": "jarvis-knowledge/src/test/java/com/jarvis/knowledge/vault/VaultPathPolicyTest.java",
+      "kind": "github-token",
+      "classification": "pre-existing synthetic scanner assertion"
+    },
+    {
+      "file": "jarvis-knowledge/src/test/java/com/jarvis/knowledge/vault/VaultPathPolicyTest.java",
+      "kind": "private-key",
+      "classification": "pre-existing synthetic scanner assertion"
+    }
+  ],
+  "exampleEnvironmentFiles": "Two existing .env.example templates manually reviewed; placeholder/empty values only.",
+  "scope": "Current tracked tree plus new release files; no whole-history secret certification."
+}

@@ -101,6 +101,15 @@ public class ModelExecutionStage implements PipelineStage {
             }
         }
 
+        if (com.jarvis.common.companion.DelegationRequest.requestedTasks(context.request().message()) > 0) {
+            // Core-owned capability routing cannot be suppressed by a stale editable client identity.
+            // No extra inference is needed to decide whether explicitly requested agents need tools.
+            return context.withMetadata("mainModelAction", MainModelActionType.TOOL_REQUEST.name())
+                    .withMetadata("toolGoal", context.request().message())
+                    .withMetadata("toolReason", "Explicit asynchronous Companion delegation")
+                    .withMetadata("toolContext", Map.of())
+                    .withMetadata("mainModelDurationMs", 0L);
+        }
         boolean hasImages = !context.images().isEmpty();
         if (routedWorkflow(context)) {
             // Core already matched this message to a workflow (e.g. Spotify) and loaded it: the model's first thought

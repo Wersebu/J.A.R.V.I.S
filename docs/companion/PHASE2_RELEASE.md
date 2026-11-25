@@ -61,3 +61,9 @@ printing credential values.
 ## Final review checks
 
 Reviewed all 83 release candidate files and the implementation diff. No build/runtime binaries, local databases, production credentials or recognizable secret patterns were found in this candidate set. Synthetic authentication fixtures are explicitly test-only. The production overlay and packaged defaults both parse without duplicate YAML keys and match 4/1/3, 24576 context, 250 ms spacing, and disabled Autonomous Memory/Dreaming. All 1.5.0 JSON files parse and local schema references resolve. Five tests pass from the repository-local benchmark tooling. The unchanged Java implementation retains the recorded 977-test full regression and isolated JAR verification.
+
+## Production delegation integration fix
+
+See [the integration fix report](phase2/PRODUCTION_DELEGATION_FIX.md) for the
+three-task DELEGATED correction, production-path regression evidence and manual
+verification. Existing contract 1.5.0 and benchmarked configuration remain valid.

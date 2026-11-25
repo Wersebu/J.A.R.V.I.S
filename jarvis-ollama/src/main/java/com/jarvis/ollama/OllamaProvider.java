@@ -323,15 +323,18 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                             "toolDefinitions", tools == null ? 0 : tools.size()
                     ));
             Object nativeThink = resolveThink(brain);
+            LOGGER.info("[OLLAMA_NATIVE_CATALOG] requestId={} model={} profile={} think={} toolNames={} options={}", requestId,
+                    brain.model(), com.jarvis.common.ai.InferenceProfileContext.current(), nativeThink,
+                    tools == null ? List.of() : tools.stream().map(NativeToolDefinition::name).toList(), contextBudgetService.ollamaOptions());
             try (OllamaRequestCoordinator.Permit ignored = requestCoordinator.acquire(jobType, requestId)) {
                 // stream=true (previously false): this is the only way to see the model's
                 // "thinking" live for a native-tool-loop turn instead of it being a total black box
-                // until the whole (now-unbounded) call finishes - a turn producing several thousand
+                // until the profile-bounded call finishes - a turn producing many
                 // reasoning tokens used to show absolutely nothing in the UI/logs for its entire
                 // duration. Every chunk is published live below through the same THINKING_TOKEN
                 // cognitive event the plain streaming chat path already uses, so operators can watch
                 // it happen and judge for themselves whether it's still making progress instead of
-                // that judgment being made for them by an arbitrary cutoff.
+                // the configured per-call output and deadline limits still apply.
                 OllamaChatRequest requestBody = new OllamaChatRequest(
                         brain.model(),
                         toOllamaMessages(messages),
