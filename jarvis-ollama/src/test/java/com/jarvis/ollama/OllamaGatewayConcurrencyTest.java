@@ -24,4 +24,18 @@ class OllamaGatewayConcurrencyTest {
         assertThrows(OllamaException.class,()->gateway.acquire(AIJobType.BACKGROUND,"pressure"));
         assertEquals(0,gateway.snapshot().get("waitingRequests"));
     }
+    @Test void fullBackgroundWaitQueueCannotBlockFreeReservedInteractiveSlot() throws Exception {
+        var gateway=new OllamaRequestCoordinator(true,mock(CognitiveEventBus.class),2,1,1,0,2000);
+        var active=gateway.acquire(AIJobType.BACKGROUND,"active");
+        var pool=java.util.concurrent.Executors.newSingleThreadExecutor();
+        try {
+            var queued=pool.submit(()->{try(var ignored=gateway.acquire(AIJobType.BACKGROUND,"waiting")){return true;}});
+            long deadline=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(1);
+            while(((Integer)gateway.snapshot().get("waitingRequests"))!=1 && System.nanoTime()<deadline)Thread.sleep(2);
+            assertEquals(1,gateway.snapshot().get("waitingRequests"));
+            try(var voice=gateway.acquire(AIJobType.CHAT,"reserved")){assertEquals(2,gateway.snapshot().get("activeInferenceRequests"));}
+            active.close();assertTrue(queued.get(1,java.util.concurrent.TimeUnit.SECONDS));
+        }finally{active.close();pool.shutdownNow();}
+    }
+
 }

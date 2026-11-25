@@ -54,7 +54,7 @@ public class OllamaRequestCoordinator implements com.jarvis.common.ai.ModelGatew
         trace(type,"STARTED",0);
         AIJobType blocker;int pending;
         synchronized(this) {
-            if(waiting>=maxWaiting)throw new OllamaException("Model Gateway queue capacity reached");
+            if(waiting>=maxWaiting && !admissible(type))throw new OllamaException("Model Gateway queue capacity reached");
             blocker=active.values().stream().findFirst().orElse(null);pending=waiting+active.size();
             waiting++;if(interactive(type))waitingInteractive++;
             try {

@@ -145,12 +145,26 @@ public class HttpWebPageReader implements WebPageReader {
         }catch(IOException ex){throw new WebSearchException("Web page host could not be resolved",ex);}
     }
     static boolean blockedAddress(InetAddress address) {
+        if (address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress()
+                || address.isSiteLocalAddress() || address.isMulticastAddress()) return true;
         byte[] bytes=address.getAddress();
-        return address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress()
-            || address.isSiteLocalAddress() || address.isMulticastAddress()
-            || bytes.length==16 && ((bytes[0]&0xfe)==0xfc || (bytes[0]&0xe0)!=0x20)
-            || bytes.length==16 && (bytes[0]==0x20 && bytes[1]==0x02 || bytes[0]==0x20 && bytes[1]==0x01 && (bytes[2]==0 && bytes[3]==0 || (bytes[2]&255)==0x0d && (bytes[3]&255)==0xb8))
-            || bytes.length==4 && ((bytes[0]&255)==0 || (bytes[0]&255)==100 && (bytes[1]&255)>=64 && (bytes[1]&255)<=127 || (bytes[0]&255)>=224);
+        if (bytes.length==4) {
+            int a=bytes[0]&255, b=bytes[1]&255, c=bytes[2]&255;
+            return a==0 || a>=224 || a==100 && b>=64 && b<=127
+                    || a==192 && b==0 && (c==0 || c==2)
+                    || a==192 && b==88 && c==99
+                    || a==198 && (b==18 || b==19 || b==51 && c==100)
+                    || a==203 && b==0 && c==113;
+        }
+        if (bytes.length==16) {
+            if ((bytes[0]&0xe0)!=0x20) return true;
+            // Conservative special-purpose exclusions, including transition and documentation space.
+            return bytes[0]==0x20 && bytes[1]==0x02
+                    || bytes[0]==0x20 && bytes[1]==0x01
+                        && ((bytes[2]&255)<2 || (bytes[2]&255)==0x0d && (bytes[3]&255)==0xb8)
+                    || bytes[0]==0x3f && (bytes[1]&255)==0xff && (bytes[2]&0xf0)==0;
+        }
+        return true;
     }
 
     private String normalizeText(String html) {

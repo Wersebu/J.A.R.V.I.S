@@ -155,7 +155,7 @@ class HttpWebPageReaderTest {
     @Test void rejectsOversizedResponsesAndNonpublicAddressRanges() throws Exception {
         startServer("x".repeat(2097153));
         assertThatThrownBy(()->new TestableReader(defaultProperties()).read(baseUrl())).isInstanceOf(WebSearchException.class).hasMessageContaining("2 MiB");
-        for(String address:java.util.List.of("127.0.0.1","169.254.169.254","100.64.0.1","10.1.1.1","::1","fc00::1","224.0.0.1"))
+        for(String address:java.util.List.of("127.0.0.1","169.254.169.254","100.64.0.1","10.1.1.1","::1","fc00::1","224.0.0.1","198.18.0.1","198.19.255.254","192.0.0.1","192.0.2.1","198.51.100.1","203.0.113.1","2001:2::1","2001:db8::1","3fff::1"))
             assertThat(HttpWebPageReader.blockedAddress(java.net.InetAddress.getByName(address))).as(address).isTrue();
         assertThat(HttpWebPageReader.blockedAddress(java.net.InetAddress.getByName("8.8.8.8"))).isFalse();
     }
