@@ -69,8 +69,9 @@ class DefaultToolCallingRuntimeTest {
         assertThat(result.finalAnswer()).doesNotContain("\"type\"");
         assertThat(executed.get()).isNotNull();
         assertThat(executed.get().toolName()).isEqualTo("web");
-        assertThat(executed.get().operation()).isEqualTo("READ_WEB_PAGE");
-        assertThat(executions).hasValue(2);
+        // A sourced currency quote no longer needs a marketplace-price page-read recovery.
+        assertThat(executed.get().operation()).isEqualTo("SEARCH_WEB");
+        assertThat(executions).hasValue(1);
     }
 
     @Test

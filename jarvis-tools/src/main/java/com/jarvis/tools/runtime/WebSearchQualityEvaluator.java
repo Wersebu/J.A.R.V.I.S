@@ -51,7 +51,8 @@ public class WebSearchQualityEvaluator {
         Set<String> desiredDomains = desiredDomains(intentText);
         EntityDescriptor requestedEntity = entityMatcher.describe(intentText);
         boolean requiresSpecificValue = requiresSpecificValue(intentText);
-        boolean requiresMarketValue = marketObservationExtractor.requiresMarketValue(request);
+        boolean requiresMarketValue = !com.jarvis.common.run.PublicWebRequest.exchangeRate(intentText)
+                && marketObservationExtractor.requiresMarketValue(request);
 
         double bestScore = 0.0d;
         List<Map<String, Object>> accepted = new ArrayList<>();

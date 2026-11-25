@@ -89,3 +89,7 @@ Schemas/examples: schemas/1.5.0. Full coordination, implementation limits, bench
 
 
 1.0.0: initial additive integration target; legacy APIs unchanged. Streaming voice, durable history, automatic memory and proactive features are not promised by this release.
+
+## Interactive concurrency candidate (joint acceptance pending)
+
+See INTERACTIVE_CHAT_CONTRACT_DRAFT.md and schemas/1.6.0-draft for the request-ID/FIFO/multiplexing extension being coordinated with Claude. Candidate capabilities expose interactiveChat (requestIds, multiplexing, sameConversationPolicy=FIFO, requestControls, requestReplay, protocolRevision=candidate-1.6.0). Companion contractVersion remains 1.5.0 pending the coordinated minor-version publication; this appendix is not a completed release declaration. Older clients keep their visible local queue until they implement the new dispatcher and explicit controls.

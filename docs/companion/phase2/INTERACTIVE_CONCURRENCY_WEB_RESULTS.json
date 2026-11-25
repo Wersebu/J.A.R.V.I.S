@@ -1,0 +1,94 @@
+{
+  "date": "2026-11-26",
+  "baseCommit": "56a43d97abcd4c507cbe06801c60c3dce067f225",
+  "sourceState": "Review candidate on feature/companion-core; publication tracked in SHARED/CODEX_STATUS.md; joint Claude/Windows acceptance pending.",
+  "fullReactor": {
+    "command": "mvn package (Java 21)",
+    "tests": 987,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "result": "PASS"
+  },
+  "finalApiChecks": {
+    "tests": [
+      "InteractiveConcurrencyTest",
+      "ChatRunResumeTest",
+      "ProductionWebContextTest"
+    ],
+    "result": "PASS; included in final full-reactor run"
+  },
+  "packagedJarSha256": "d78dfce0d14c246f000e09cf9768f7df819704679492f4117f4601d46dec1726",
+  "productionPathRegression": {
+    "productionJar": "PASS",
+    "mockedInference": true,
+    "fakeSearxngHttp": "PASS",
+    "fourSameOwnerConversationsConcurrent": "PASS",
+    "sameConversationFifoHistory": "PASS",
+    "gatewayCapacityQueue": "PASS",
+    "requestCancellationIsolation": "PASS",
+    "queuedCancellationBeforeHistory": "PASS",
+    "explicitInstructionCorrelation": "PASS",
+    "requestReplay": "PASS",
+    "canonicalFrameIdentity": "PASS",
+    "retryNoDuplicateHistory": "PASS",
+    "ordinaryWebQuestions": [
+      {
+        "question": "Jaka jest aktualna pogoda w Warszawie?",
+        "answer": "FIXTURE pogoda Warszawa: 12 C, obserwacja 2026-11-26. https://weather.example.test/warsaw"
+      },
+      {
+        "question": "Jaki jest aktualny kurs USD do PLN?",
+        "answer": "FIXTURE USD/PLN kurs referencyjny: 4.1234 PLN, data 2026-11-26. https://nbp.example.test/usd-pln"
+      },
+      {
+        "question": "Sprawdź w internecie, kiedy wychodzi GTA VI.",
+        "answer": "FIXTURE GTA VI: przykładowa data wydania 2027-01-01; nie jest to prawdziwa informacja. https://publisher.example.test/gta-vi"
+      }
+    ],
+    "automaticThreeTaskDelegation": "PASS",
+    "providerUnavailable": "PASS",
+    "emptyResultsRejectFacts": "PASS",
+    "modelFailureNoToollessSynthesis": "PASS",
+    "physicalContext": 24576
+  },
+  "legacyCompanionRegression": {
+    "packagedJarStartup": "PASS",
+    "modelStatus": "READY",
+    "ordinaryChat": "PASS",
+    "asynchronousTask": "COMPLETED",
+    "mainConversationDelegation": "PASS",
+    "backgroundNativeToolContext": "PASS",
+    "contractVersion": "1.5.0",
+    "gatewaySlotsConfigured": 4,
+    "stablePhysicalContext": 24576,
+    "windowsThreeSequentialSubmissions": "PASS",
+    "threeRunningBeforeRelease": "PASS",
+    "interactiveUnderThreeTasks": "PASS",
+    "individualManagement": "PASS",
+    "fakeOllamaCalls": 20
+  },
+  "productionOllamaGpuTested": false,
+  "productionSearxngReachabilityTested": false,
+  "ubuntuDeployed": false,
+  "windowsModifiedOrRetested": false,
+  "ollamaConfigurationChanged": false,
+  "autonomousMemoryEnabled": false,
+  "dreamingEnabled": false,
+  "coordination": {
+    "proposal": "CORE_CHAT_CONCURRENCY_PROPOSAL.md",
+    "contract": "INTERACTIVE_CHAT_CONTRACT_DRAFT.md",
+    "requestedResponse": "WINDOWS_CHAT_CONCURRENCY_RESPONSE.md",
+    "status": "AWAITING_CLAUDE_RESPONSE",
+    "releaseComplete": false,
+    "coreProtocol": "CONFIRMED_FOR_WINDOWS_STAGE_2",
+    "clientRefactorStatus": "Stage 1 reported in WINDOWS_CONCURRENCY_REFACTOR.md; Stage 2/joint acceptance not confirmed",
+    "userConfirmedClaudeMonitorsShared": true
+  },
+  "testEnvironmentNote": "One earlier full-reactor attempt hit a Windows temporary SQLite-file cleanup error in unchanged VaultDocumentServiceTest. The subsequent complete run passed without skips or vault-source changes. A fake HTTP/1.0 connection-close EOF was also observed in one packaged check; the HTTP fixture now explicitly uses HTTP/1.1 plus Connection: close, and the final check passes, including deliberate model HTTP 503 without a tool-less retry.",
+  "providerProbeCli": {
+    "result": "PASS",
+    "fixtureQueries": 3,
+    "inferenceInvoked": false
+  }
+}

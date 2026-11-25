@@ -66,7 +66,14 @@ public class OllamaRequestCoordinator implements ModelGateway {
             blocker=active.values().stream().findFirst().map(Waiting::type).orElse(null);pending=queue.size()+active.size();
             queue.add(waiter);
             try {
+                boolean queueReported = false;
                 while(!next(waiter)){
+                    if (!queueReported) {
+                        queueReported = true;
+                        admissionEvent(CognitiveEventType.INFERENCE_QUEUED, "QUEUED", "Waiting for Model Gateway admission", null,
+                                Map.of("reason", active.size() >= concurrency ? "INFERENCE_CAPACITY" : "GATEWAY_ADMISSION",
+                                        "inferenceId", waiter.id().toString(), "profileId", waiter.profile(), "waitingRequests", queue.size()));
+                    }
                     checkInterrupted();long remaining=deadline-System.nanoTime();
                     if(remaining<=0)throw new OllamaException("Model Gateway admission timeout");
                     try{TimeUnit.NANOSECONDS.timedWait(this,Math.min(remaining,TimeUnit.MILLISECONDS.toNanos(100)));}
@@ -82,7 +89,12 @@ public class OllamaRequestCoordinator implements ModelGateway {
         var diagnostics=com.jarvis.common.diagnostics.InferenceDiagnosticsContext.current();
         if(diagnostics!=null){diagnostics.setOllamaPermitQueueWaitMs(waitMs);diagnostics.setRequestWaitedForAnotherOllamaJob(blocker!=null);diagnostics.setOllamaJobTypeBlockingRequest(blocker==null?null:blocker.name());}
         trace(waiter,"FINISHED",waitMs);
+        admissionEvent(CognitiveEventType.INFERENCE_STARTED, "ADMITTED", "Model Gateway admitted inference", null,
+                Map.of("inferenceId", waiter.id().toString(), "queueWaitMs", waitMs, "profileId", waiter.profile()));
         return new Permit(this,waiter,queuedAt,Instant.now(),waitMs,blocker,pending);
+    }
+    private void admissionEvent(CognitiveEventType type, String status, String message, String node, Map<String,Object> metadata) {
+        try { eventBus.publish(type, status, message, node, metadata); } catch (RuntimeException ignored) { }
     }
     private void checkInterrupted(){if(Thread.currentThread().isInterrupted())throw new OllamaException("Inference cancelled before admission");}
     private boolean next(Waiting w){

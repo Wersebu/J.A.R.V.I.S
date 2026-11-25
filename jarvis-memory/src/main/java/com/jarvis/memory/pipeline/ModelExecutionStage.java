@@ -101,12 +101,13 @@ public class ModelExecutionStage implements PipelineStage {
             }
         }
 
-        if (com.jarvis.common.companion.DelegationRequest.requestedTasks(context.request().message()) > 0) {
+        if (com.jarvis.common.companion.DelegationRequest.requestedTasks(context.request().message()) > 0
+                || com.jarvis.common.run.PublicWebRequest.requires(context.request().message())) {
             // Core-owned capability routing cannot be suppressed by a stale editable client identity.
             // No extra inference is needed to decide whether explicitly requested agents need tools.
             return context.withMetadata("mainModelAction", MainModelActionType.TOOL_REQUEST.name())
                     .withMetadata("toolGoal", context.request().message())
-                    .withMetadata("toolReason", "Explicit asynchronous Companion delegation")
+                    .withMetadata("toolReason", "Core-owned explicit delegation or public live research")
                     .withMetadata("toolContext", Map.of())
                     .withMetadata("mainModelDurationMs", 0L);
         }

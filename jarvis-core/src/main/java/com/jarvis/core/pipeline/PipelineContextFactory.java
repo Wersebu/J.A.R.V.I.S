@@ -62,7 +62,8 @@ public class PipelineContextFactory {
      */
     public PipelineContext create(ChatRequest request, Consumer<CognitiveEvent> eventSink) {
         String conversationId = normalizeConversationId(request.conversationId());
-        UUID requestUuid = UUID.randomUUID();
+        var interactive = com.jarvis.common.run.InteractiveRequestContext.current();
+        UUID requestUuid = interactive == null ? UUID.randomUUID() : UUID.fromString(interactive.requestId());
         String requestId = requestUuid.toString();
         Instant serverReceivedAt = Instant.now();
         InferenceDiagnostics diagnostics = diagnosticsService.create(requestUuid, conversationId);
@@ -106,9 +107,8 @@ public class PipelineContextFactory {
      * Finishes the current request context.
      */
     public void finish() {
-        traceRecorder.finish();
-        cognitiveEventBus.finishRequest();
-        InferenceDiagnosticsContext.clear();
+        try { traceRecorder.finish(); }
+        finally { try { cognitiveEventBus.finishRequest(); } finally { InferenceDiagnosticsContext.clear(); } }
     }
 
     private String normalizeConversationId(String conversationId) {

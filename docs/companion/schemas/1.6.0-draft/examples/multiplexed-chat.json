@@ -1,0 +1,166 @@
+{
+  "fixtureOnly": true,
+  "note": "Illustrative parser/UX example, not a production capture or performance result. Gateway wait value is illustrative.",
+  "requests": [
+    {
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "conversationId": "A",
+      "message": "First question A"
+    },
+    {
+      "requestId": "00000000-0000-4000-8000-000000000002",
+      "conversationId": "B",
+      "message": "Independent question B"
+    },
+    {
+      "requestId": "00000000-0000-4000-8000-000000000003",
+      "conversationId": "A",
+      "message": "New question A; not a steer"
+    }
+  ],
+  "serverFramesInDeliveryOrder": [
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "conversationId": "A",
+      "seq": 1,
+      "type": "CHAT_ACCEPTED",
+      "state": "ACCEPTED"
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "conversationId": "A",
+      "seq": 2,
+      "type": "CHAT_RUNNING",
+      "state": "RUNNING"
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000002",
+      "conversationId": "B",
+      "seq": 1,
+      "type": "CHAT_ACCEPTED",
+      "state": "ACCEPTED"
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000002",
+      "conversationId": "B",
+      "seq": 2,
+      "type": "CHAT_RUNNING",
+      "state": "RUNNING"
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000003",
+      "conversationId": "A",
+      "seq": 1,
+      "type": "CHAT_ACCEPTED",
+      "state": "ACCEPTED"
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000003",
+      "conversationId": "A",
+      "seq": 2,
+      "type": "CHAT_QUEUED",
+      "state": "QUEUED",
+      "reason": "CONVERSATION_ORDER",
+      "queuePosition": 1
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000002",
+      "conversationId": "B",
+      "seq": 3,
+      "event": "INFERENCE_QUEUED",
+      "status": "QUEUED",
+      "metadata": {
+        "reason": "INFERENCE_CAPACITY",
+        "inferenceId": "10000000-0000-4000-8000-000000000002",
+        "profileId": "main-conversation"
+      }
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000002",
+      "conversationId": "B",
+      "seq": 4,
+      "event": "INFERENCE_STARTED",
+      "status": "ADMITTED",
+      "metadata": {
+        "inferenceId": "10000000-0000-4000-8000-000000000002",
+        "queueWaitMs": 250,
+        "profileId": "main-conversation"
+      }
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000002",
+      "conversationId": "B",
+      "seq": 5,
+      "event": "ANSWER_TOKEN",
+      "status": "TOKEN",
+      "message": "Illustrative independent answer B",
+      "metadata": {
+        "text": "Illustrative independent answer B"
+      }
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000002",
+      "conversationId": "B",
+      "seq": 6,
+      "type": "COMPLETED",
+      "message": "Request completed"
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000003",
+      "conversationId": "A",
+      "seq": 3,
+      "type": "CHAT_CANCEL_ACCEPTED",
+      "active": true
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000003",
+      "conversationId": "A",
+      "seq": 4,
+      "type": "CANCELLED",
+      "message": "Cancelled before history admission"
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "conversationId": "A",
+      "seq": 3,
+      "event": "ANSWER_TOKEN",
+      "status": "TOKEN",
+      "message": "Illustrative answer A",
+      "metadata": {
+        "text": "Illustrative answer A"
+      }
+    },
+    {
+      "streamScope": "REQUEST",
+      "requestId": "00000000-0000-4000-8000-000000000001",
+      "conversationId": "A",
+      "seq": 4,
+      "type": "COMPLETED",
+      "message": "Request completed"
+    }
+  ],
+  "control": {
+    "type": "CHAT_CANCEL",
+    "requestId": "00000000-0000-4000-8000-000000000003",
+    "conversationId": "A"
+  },
+  "resume": {
+    "type": "CHAT_RESUME",
+    "requestId": "00000000-0000-4000-8000-000000000001",
+    "conversationId": "A",
+    "afterSeq": 2
+  }
+}

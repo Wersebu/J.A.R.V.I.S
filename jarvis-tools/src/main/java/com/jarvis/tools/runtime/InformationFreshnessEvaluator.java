@@ -46,6 +46,7 @@ public class InformationFreshnessEvaluator {
      * @return required freshness level
      */
     public InformationFreshness evaluate(String userMessage, String goal, String reason) {
+        if (com.jarvis.common.run.PublicWebRequest.requires(userMessage)) return InformationFreshness.MUST_BE_LIVE;
         String text = normalize(userMessage + " " + goal + " " + reason);
         if (text.isBlank()) {
             return InformationFreshness.STATIC;

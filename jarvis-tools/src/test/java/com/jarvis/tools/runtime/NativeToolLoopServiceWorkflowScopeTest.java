@@ -51,6 +51,7 @@ class NativeToolLoopServiceWorkflowScopeTest {
     private final List<List<ModelMessage>> messagesPerTurn = new CopyOnWriteArrayList<>();
     private final List<ToolRequest> executed = new CopyOnWriteArrayList<>();
     private volatile boolean addFails;
+    private volatile boolean providerFails;
 
     @Test
     void successfulAsyncReceiptEndsTurnWithoutAnotherModelCall() {
@@ -139,6 +140,16 @@ class NativeToolLoopServiceWorkflowScopeTest {
     }
 
     @Test
+    void ordinaryWebProviderFailureDoesNotRunToollessSynthesisOrInventAnAnswer() {
+        providerFails = true;
+        var result = run(new ArrayDeque<>(), Map.of(), "Jaka jest aktualna pogoda w Warszawie?");
+        assertThat(result.terminationInfo().terminationReason()).isEqualTo(ToolLoopTerminationReason.PROVIDER_FAILURE);
+        assertThat(result.finalAnswer()).contains("Nie potwierdzam aktualnych danych");
+        assertThat(offeredPerTurn).hasSize(1);
+        assertThat(executed).isEmpty();
+    }
+
+    @Test
     void ordinaryPoliteRepliesAreNotMistakenForPromises() {
         assertThat(NativeToolLoopService.promisesBackgroundWork("W tej chwili przetwarzam dane geograficzne.")).isTrue();
         assertThat(NativeToolLoopService.promisesBackgroundWork("Pracuję nad tym w tle i wrócę z wynikiem.")).isTrue();
@@ -184,7 +195,7 @@ class NativeToolLoopServiceWorkflowScopeTest {
         return new ToolRegistry() {
             @Override
             public List<ToolDefinition> definitions() {
-                return List.of(calendar, notes, knowledge, companion);
+                return List.of(calendar, notes, knowledge, companion, new ToolDefinition("web","Live web", List.of(new ToolOperationDefinition("SEARCH_WEB","Search",List.of(new ToolArgumentDefinition("query","string",true,"Query")),false,ToolSafetyLevel.READ))));
             }
 
             @Override
@@ -219,6 +230,7 @@ class NativeToolLoopServiceWorkflowScopeTest {
         public ModelResponse toolChat(Brain brain, List<ModelMessage> messages, List<NativeToolDefinition> tools, AIJobType jobType) {
             offeredPerTurn.add(tools.stream().map(NativeToolDefinition::name).toList());
             messagesPerTurn.add(List.copyOf(messages));
+            if (providerFails) throw new com.jarvis.common.ai.AIProviderException("Fixture transport failure");
             return turns.isEmpty() ? answer("") : turns.poll();
         }
     }

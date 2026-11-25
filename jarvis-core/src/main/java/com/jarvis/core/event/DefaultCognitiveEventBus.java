@@ -53,9 +53,8 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
      */
     @Override
     public void finishRequest() {
-        executionTracer.finish();
-        REQUEST_SCOPE.remove();
-        USAGE.remove();
+        try { executionTracer.finish(); }
+        finally { REQUEST_SCOPE.remove(); USAGE.remove(); }
     }
 
     /**

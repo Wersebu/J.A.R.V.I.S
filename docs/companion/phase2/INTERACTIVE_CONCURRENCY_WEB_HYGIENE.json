@@ -1,0 +1,21 @@
+{
+  "trackedFilesScanned": 1064,
+  "newFilesScanned": 14,
+  "changedFiles": 18,
+  "secretPatternFindings": [],
+  "forbiddenArtifacts": [],
+  "preexistingSyntheticScannerAssertions": [
+    {
+      "file": "jarvis-knowledge/src/test/java/com/jarvis/knowledge/vault/VaultPathPolicyTest.java",
+      "kind": "github-token"
+    },
+    {
+      "file": "jarvis-knowledge/src/test/java/com/jarvis/knowledge/vault/VaultPathPolicyTest.java",
+      "kind": "private-key"
+    }
+  ],
+  "ollamaAndApplicationConfigDiff": "UNCHANGED",
+  "sharedCopies": "MATCH",
+  "windowsRepositoryModified": false,
+  "scope": "Working tree candidate; not a whole-history secret certification."
+}

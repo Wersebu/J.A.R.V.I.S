@@ -130,6 +130,10 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             send(session, new WebSocketStatus("ERROR", "Invalid request JSON"));
             return;
         }
+        if (root == null || !root.isObject()) {
+            send(session, Map.of("type", "CHAT_REJECTED", "requestId", "", "conversationId", "", "seq", 0, "message", "Expected a JSON object"));
+            return;
+        }
         String messageType = root.path("type").asText("");
         if ("MCP_BRIDGE_RESPONSE".equals(messageType)) {
             LOGGER.info("[MCP_BRIDGE] inbound response session={} requestId={} server={} jsonBytes={}",
@@ -145,20 +149,29 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             resume(session, root);
             return;
         }
-        if ("CHAT_STEER".equals(messageType)) {
+        if ("CHAT_STEER".equals(messageType) || "CHAT_CANCEL".equals(messageType)) {
+            String owner = userId(session);
             String conversationId = root.path("conversationId").asText("");
-            String text = root.path("message").asText("");
-            boolean accepted = ChatRunControl.post(conversationId, text);
-            LOGGER.info("[USER_STEER] conversationId={} accepted={} chars={}", conversationId, accepted, text.length());
-            send(session, Map.of("type", accepted ? "CHAT_STEER_ACCEPTED" : "CHAT_STEER_REJECTED",
-                    "conversationId", conversationId, "message", text));
-            return;
-        }
-        if ("CHAT_CANCEL".equals(messageType)) {
-            String conversationId = root.path("conversationId").asText("");
-            boolean cancelled = ChatRunControl.cancel(conversationId);
-            LOGGER.info("[CHAT_CANCEL] conversationId={} active={}", conversationId, cancelled);
-            send(session, Map.of("type", "CHAT_CANCEL_ACCEPTED", "conversationId", conversationId, "active", cancelled));
+            String requestId = root.path("requestId").asText("");
+            var target = requestId.isBlank() ? chatRuns.find(owner, conversationId) : chatRuns.findRequest(owner, requestId);
+            target = target.filter(r -> r.conversationId().equals(conversationId) && r.isRunning());
+            if (target.isEmpty()) {
+                send(session, Map.of("type", messageType + "_REJECTED", "requestId", requestId,
+                        "conversationId", conversationId, "seq", 0, "reason", "UNKNOWN_OR_AMBIGUOUS_REQUEST"));
+                return;
+            }
+            var run = target.get();
+            boolean accepted;
+            if ("CHAT_CANCEL".equals(messageType)) {
+                accepted = run.cancel();
+                if (accepted) ChatRunControl.cancelRequest(owner, run.requestId());
+            } else {
+                accepted = run.isExecuting() && ChatRunControl.postRequest(owner, run.requestId(), root.path("message").asText(""));
+            }
+            String responseType = messageType + (accepted ? "_ACCEPTED" : "_REJECTED");
+            if (!run.emitControl(Map.of("type", responseType, "active", accepted)))
+                send(session, Map.of("type", responseType, "requestId", run.requestId(), "conversationId", conversationId,
+                        "seq", 0, "streamScope", "CONTROL", "active", accepted));
             return;
         }
         if ("PING".equals(messageType)) {
@@ -167,43 +180,57 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
         }
 
         ChatRequest request;
+        String requestId = root.path("requestId").asText("");
         try {
-            request = objectMapper.treeToValue(root, ChatRequest.class);
-        } catch (JsonProcessingException exception) {
-            send(session, new WebSocketStatus("ERROR", "Invalid chat request JSON"));
-            return;
+            if (requestId.isBlank()) requestId = java.util.UUID.randomUUID().toString();
+            if (!java.util.UUID.fromString(requestId).toString().equalsIgnoreCase(requestId)) throw new IllegalArgumentException("requestId must be a UUID");
+            requestId = java.util.UUID.fromString(requestId).toString();
+            var payload = (com.fasterxml.jackson.databind.node.ObjectNode) root.deepCopy();
+            payload.remove(java.util.List.of("type", "requestId", "afterSeq"));
+            if (payload.path("conversationId").asText("").isBlank()) payload.put("conversationId", java.util.UUID.randomUUID().toString());
+            request = objectMapper.treeToValue(payload, ChatRequest.class);
+            var registration = chatRuns.register(userId(session), requestId, request.conversationId(), objectMapper.writeValueAsString(request), session);
+            if (!registration.created()) {
+                registration.run().resume(session, root.path("afterSeq").asLong(0)); return;
+            }
+            startRequest(session, request, registration.run());
+        } catch (JsonProcessingException | IllegalArgumentException | IllegalStateException exception) {
+            send(session, Map.of("type", "CHAT_REJECTED", "requestId", requestId, "conversationId", root.path("conversationId").asText(""),
+                    "seq", 0, "message", "Request rejected: " + exception.getMessage()));
         }
+    }
 
-        // Dispatched, not run inline - see chatExecutor's javadoc. handleTextMessage must return
-        // quickly regardless of how long the chat pipeline takes, so the container keeps delivering
-        // other frames on this same session (MCP bridge responses in particular) throughout.
-        String userId = userId(session);
-        ChatRunRegistry.ChatRun run = chatRuns.start(userId, request.conversationId(), session);
+    private void startRequest(WebSocketSession session, ChatRequest request, ChatRunRegistry.ChatRun run) {
+        String owner = userId(session);
         String conversationId = request.conversationId();
-        chatExecutor.submit(() -> {
+        run.emit(Map.of("type", "CHAT_ACCEPTED", "state", "ACCEPTED"));
+        com.jarvis.common.run.ConversationTurns.Turn turn;
+        try { turn = com.jarvis.common.run.ConversationTurns.reserve(owner, conversationId); }
+        catch (RuntimeException failure) { run.finish(Map.of("type", "ERROR", "message", failure.getMessage())); return; }
+        if (turn.position() > 0) run.emit(Map.of("type", "CHAT_QUEUED", "state", "QUEUED", "reason", "CONVERSATION_ORDER", "queuePosition", turn.position()));
+        chatExecutor.submit(() -> CurrentUserContext.runAs(owner, () ->
+                com.jarvis.common.run.InteractiveRequestContext.run(new com.jarvis.common.run.InteractiveRequestContext.Request(run.requestId(), turn, () -> {
+                    if (!run.isExecuting()) { run.executing(); run.emit(Map.of("type", "CHAT_RUNNING", "state", "RUNNING")); }
+                }), () -> {
             Object control = ChatRunControl.open(conversationId, Thread.currentThread());
             try {
-                CurrentUserContext.runAs(userId, () -> chatService.stream(request, event -> {
-                    // After Stop nothing more reaches the user; throwing here unwinds the pipeline at
-                    // its next event (e.g. the next streamed token) instead of letting it run on.
-                    ChatRunControl.checkNotCancelled(conversationId);
-                    run.emit(event);
-                }));
+                if (run.cancellationRequested()) throw new com.jarvis.common.run.ChatRunCancelledException();
+                turn.await();
+                ChatRunControl.checkNotCancelled(conversationId);
+                com.jarvis.common.run.InteractiveRequestContext.current().onRunning().run();
+                chatService.stream(request, event -> {
+                    ChatRunControl.checkNotCancelled(conversationId); run.emit(event);
+                });
                 finishRun(run, conversationId, control, new WebSocketStatus("COMPLETED", "Request completed"));
             } catch (RuntimeException exception) {
-                if (ChatRunControl.isCancelled(conversationId)) {
-                    LOGGER.info("[CHAT_CANCEL] conversationId={} run stopped by the user", conversationId);
+                if (run.cancellationRequested() || ChatRunControl.isCancelled(conversationId))
                     finishRun(run, conversationId, control, new WebSocketStatus("CANCELLED", "Zatrzymano na Twoją prośbę"));
-                } else {
-                    LOGGER.error("[JARVIS] WebSocket chat failed", exception);
-                    finishRun(run, conversationId, control, new WebSocketStatus("ERROR",
-                            exception.getMessage() == null ? "Request failed" : exception.getMessage()));
+                else {
+                    LOGGER.error("[JARVIS] WebSocket chat failed requestId={}", run.requestId(), exception);
+                    finishRun(run, conversationId, control, new WebSocketStatus("ERROR", exception.getMessage() == null ? "Request failed" : exception.getMessage()));
                 }
-            } finally {
-                ChatRunControl.close(conversationId, control);
-                Thread.interrupted(); // never leak a Stop interrupt into the next pooled task
-            }
-        });
+            } finally { ChatRunControl.close(conversationId, control); turn.close(); Thread.interrupted(); }
+        })));
     }
 
     /**
@@ -223,14 +250,16 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
     private void resume(WebSocketSession session, JsonNode root) {
         String conversationId = root.path("conversationId").asText("");
         long afterSeq = root.path("afterSeq").asLong(0);
-        chatRuns.find(userId(session), conversationId).ifPresentOrElse(
+        String requestId = root.path("requestId").asText("");
+        var target = requestId.isBlank() ? chatRuns.find(userId(session), conversationId) : chatRuns.findRequest(userId(session), requestId);
+        target.filter(r -> r.conversationId().equals(conversationId)).ifPresentOrElse(
                 run -> {
-                    send(session, Map.of("type", "CHAT_RESUMED", "conversationId", conversationId,
-                            "running", run.isRunning()));
+                    send(session, Map.of("type", "CHAT_RESUMED", "requestId", run.requestId(), "conversationId", conversationId,
+                            "seq", 0, "running", run.isRunning()));
                     run.resume(session, afterSeq);
                 },
-                () -> send(session, Map.of("type", "CHAT_RESUME_UNKNOWN", "conversationId", conversationId,
-                        "message", "No active or recent request for this conversation")));
+                () -> send(session, Map.of("type", "CHAT_RESUME_UNKNOWN", "requestId", requestId, "conversationId", conversationId,
+                        "seq", 0, "message", "Unknown or ambiguous request; supply requestId")));
     }
 
     private String userId(WebSocketSession session) {
@@ -330,13 +359,14 @@ public class JarvisWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         synchronized (session) {
+            boolean interrupted = Thread.interrupted();
             try {
                 session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
             } catch (IllegalStateException exception) {
                 LOGGER.debug("[JARVIS] WebSocket session already closed");
             } catch (IOException exception) {
                 LOGGER.debug("[JARVIS] Could not send WebSocket message: {}", exception.getMessage());
-            }
+            } finally { if (interrupted) Thread.currentThread().interrupt(); }
         }
     }
 

@@ -69,12 +69,12 @@ class ChatRunResumeTest {
                 finished.countDown();
             }
         });
-        // Wait until the run has finished in the background, then resume after seq 1.
+        // Wait until the run has finished in the background, then resume after the first content frame (seq 3).
         long deadline = System.currentTimeMillis() + 3_000;
         while (registry.runningCount() > 0 && System.currentTimeMillis() < deadline) {
             Thread.onSpinWait();
         }
-        handler.handleTextMessage(second, new TextMessage("{\"type\":\"CHAT_RESUME\",\"conversationId\":\"conv-1\",\"afterSeq\":1}"));
+        handler.handleTextMessage(second, new TextMessage("{\"type\":\"CHAT_RESUME\",\"conversationId\":\"conv-1\",\"afterSeq\":3}"));
         assertThat(finished.await(2, TimeUnit.SECONDS)).isTrue();
 
         List<JsonNode> frames = frames(second.sentMessages());
@@ -82,7 +82,7 @@ class ChatRunResumeTest {
         assertThat(frames.stream().map(node -> node.path("message").asText()).toList())
                 .containsSubsequence("second", "third", "Request completed")
                 .doesNotContain("first");
-        assertThat(frames.get(frames.size() - 1).path("seq").asLong()).isEqualTo(4L);
+        assertThat(frames.get(frames.size() - 1).path("seq").asLong()).isEqualTo(6L);
     }
 
     @Test

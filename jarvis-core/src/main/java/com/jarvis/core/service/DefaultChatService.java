@@ -47,12 +47,23 @@ public class DefaultChatService implements ChatService {
      */
     @Override
     public ChatResponse chat(ChatRequest request) {
+        var turn = reserveTurn(request);
         try {
+            turn.await();
+            var interactive = com.jarvis.common.run.InteractiveRequestContext.current();
+            if (interactive != null) interactive.onRunning().run();
             PipelineContext context = pipelineContextFactory.create(request);
             return responseMapper.toChatResponse(pipelineExecutor.execute(context));
         } finally {
-            pipelineContextFactory.finish();
+            try { pipelineContextFactory.finish(); }
+            finally { if (com.jarvis.common.run.InteractiveRequestContext.current() == null) turn.close(); }
         }
+    }
+
+    private com.jarvis.common.run.ConversationTurns.Turn reserveTurn(ChatRequest request) {
+        var current = com.jarvis.common.run.InteractiveRequestContext.current();
+        return current != null ? current.turn() : com.jarvis.common.run.ConversationTurns.reserve(
+                com.jarvis.common.auth.CurrentUserContext.requiredUserId(), request.conversationId());
     }
 
     /**
@@ -63,11 +74,16 @@ public class DefaultChatService implements ChatService {
      */
     @Override
     public void stream(ChatRequest request, Consumer<CognitiveEvent> eventSink) {
+        var turn = reserveTurn(request);
         try {
+            turn.await();
+            var interactive = com.jarvis.common.run.InteractiveRequestContext.current();
+            if (interactive != null) interactive.onRunning().run();
             PipelineContext context = pipelineContextFactory.create(request, eventSink);
             pipelineExecutor.execute(context);
         } finally {
-            pipelineContextFactory.finish();
+            try { pipelineContextFactory.finish(); }
+            finally { if (com.jarvis.common.run.InteractiveRequestContext.current() == null) turn.close(); }
         }
     }
 }

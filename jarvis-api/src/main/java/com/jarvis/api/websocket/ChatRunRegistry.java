@@ -77,13 +77,26 @@ public class ChatRunRegistry implements AutoCloseable {
      * @return new run
      */
     public ChatRun start(String userId, String conversationId, WebSocketSession session) {
-        ChatRun run = new ChatRun(userId, conversationId);
-        run.attach(session);
-        ChatRun previous = runs.put(key(userId, conversationId), run);
-        if (previous != null && previous.isRunning()) {
-            LOGGER.warn("[CHAT_RUN] replacing still-running run conversationId={}", conversationId);
+        return register(userId, java.util.UUID.randomUUID().toString(), conversationId, "", session).run();
+    }
+
+    public record Registration(ChatRun run, boolean created) {}
+    public synchronized Registration register(String owner, String requestId, String conversationId, String fingerprint, WebSocketSession session) {
+        ChatRun existing = runs.get(key(owner, requestId));
+        if (existing != null) {
+            if (!existing.conversationId.equals(conversationId) || !existing.fingerprint.equals(fingerprint))
+                throw new IllegalArgumentException("Request ID already belongs to a different payload");
+            return new Registration(existing, false);
         }
-        return run;
+        if (runs.size() >= 2048) throw new IllegalStateException("Retained request capacity reached");
+        if (runs.values().stream().anyMatch(r -> r.requestId.equals(requestId) && !r.userId.equals(owner)))
+            throw new IllegalArgumentException("Request ID unavailable; generate a fresh UUID");
+        ChatRun run = new ChatRun(owner, requestId, conversationId, fingerprint);
+        run.attach(session); runs.put(key(owner, requestId), run);
+        return new Registration(run, true);
+    }
+    public Optional<ChatRun> findRequest(String owner, String requestId) {
+        return Optional.ofNullable(runs.get(key(owner, requestId)));
     }
 
     /**
@@ -94,7 +107,10 @@ public class ChatRunRegistry implements AutoCloseable {
      * @return run, when one is known
      */
     public Optional<ChatRun> find(String userId, String conversationId) {
-        return Optional.ofNullable(runs.get(key(userId, conversationId)));
+        var candidates = runs.values().stream().filter(r -> r.userId.equals(userId) && r.conversationId.equals(conversationId)).toList();
+        var active = candidates.stream().filter(ChatRun::isRunning).toList();
+        return active.size() == 1 ? Optional.of(active.getFirst())
+                : active.isEmpty() && candidates.size() == 1 ? Optional.of(candidates.getFirst()) : Optional.empty();
     }
 
     /**
@@ -143,6 +159,10 @@ public class ChatRunRegistry implements AutoCloseable {
 
         private final String userId;
         private final String conversationId;
+        private final String requestId;
+        private final String fingerprint;
+        private volatile boolean cancellationRequested;
+        private volatile boolean executing;
         private final Instant startedAt = Instant.now();
         private final Set<WebSocketSession> sessions = ConcurrentHashMap.newKeySet();
         private final Deque<Frame> buffer = new ArrayDeque<>();
@@ -150,9 +170,20 @@ public class ChatRunRegistry implements AutoCloseable {
         private volatile Instant finishedAt;
         private volatile String lastEvent = "";
 
-        private ChatRun(String userId, String conversationId) {
+        private ChatRun(String userId, String requestId, String conversationId, String fingerprint) {
             this.userId = userId;
+            this.requestId = requestId;
+            this.fingerprint = fingerprint;
             this.conversationId = conversationId;
+        }
+
+        public String requestId() { return requestId; }
+        public boolean isExecuting() { return executing && isRunning(); }
+        public void executing() { executing = true; }
+        public boolean cancellationRequested() { return cancellationRequested; }
+        public synchronized boolean cancel() {
+            if (!isRunning()) return false;
+            cancellationRequested = true; return true;
         }
 
         public String conversationId() {
@@ -178,7 +209,13 @@ public class ChatRunRegistry implements AutoCloseable {
          *
          * @param payload frame payload (serialized to a JSON object)
          */
-        public void emit(Object payload) {
+        public synchronized boolean emitControl(Object payload) {
+            if (!isRunning()) return false;
+            emit(payload); return true;
+        }
+
+        public synchronized void emit(Object payload) {
+            if (finishedAt != null) return;
             ObjectNode node = toObject(payload);
             if (node == null) {
                 return;
@@ -186,6 +223,9 @@ public class ChatRunRegistry implements AutoCloseable {
             String text;
             synchronized (this) {
                 node.put("seq", ++seq);
+                node.put("streamScope", "REQUEST");
+                node.put("requestId", requestId);
+                node.put("conversationId", conversationId);
                 if (!node.has("conversationId") || node.path("conversationId").asText("").isBlank()) {
                     node.put("conversationId", conversationId);
                 }
@@ -215,8 +255,12 @@ public class ChatRunRegistry implements AutoCloseable {
          *
          * @param payload terminal payload
          */
-        public void finish(Object payload) {
-            emit(payload);
+        public synchronized void finish(Object payload) {
+            ObjectNode terminal = toObject(payload);
+            if (cancellationRequested && terminal != null && "COMPLETED".equals(terminal.path("type").asText())) {
+                terminal.put("type", "CANCELLED"); terminal.put("message", "Zatrzymano na Twoją prośbę");
+            }
+            emit(terminal == null ? payload : terminal);
             finishedAt = Instant.now();
         }
 
@@ -230,6 +274,14 @@ public class ChatRunRegistry implements AutoCloseable {
         public int resume(WebSocketSession session, long afterSeq) {
             List<Frame> missed;
             synchronized (this) {
+                if (afterSeq < 0 || afterSeq > seq) {
+                    send(session, objectMapper.valueToTree(Map.of("type", "CHAT_RESUME_REJECTED", "requestId", requestId, "conversationId", conversationId,
+                            "seq", 0, "reason", "CURSOR_OUT_OF_RANGE", "lastSeq", seq)).toString());
+                    return 0;
+                }
+                if (!buffer.isEmpty() && afterSeq < buffer.getFirst().seq() - 1)
+                    send(session, objectMapper.valueToTree(Map.of("type", "CHAT_REPLAY_GAP", "requestId", requestId, "conversationId", conversationId,
+                            "seq", 0, "firstAvailableSeq", buffer.getFirst().seq(), "lastSeq", seq)).toString());
                 missed = new ArrayList<>();
                 for (Frame frame : buffer) {
                     if (frame.seq() > afterSeq) {
@@ -256,10 +308,7 @@ public class ChatRunRegistry implements AutoCloseable {
             synchronized (this) {
                 node.put("lastSeq", seq);
             }
-            String text = node.toString();
-            for (WebSocketSession session : sessions) {
-                send(session, text);
-            }
+            emit(node);
         }
 
         private ObjectNode toObject(Object payload) {
@@ -273,11 +322,12 @@ public class ChatRunRegistry implements AutoCloseable {
             return;
         }
         synchronized (session) {
+            boolean interrupted = Thread.interrupted();
             try {
                 session.sendMessage(new TextMessage(text));
             } catch (IllegalStateException | IOException exception) {
                 LOGGER.debug("[CHAT_RUN] could not deliver frame: {}", exception.getMessage());
-            }
+            } finally { if (interrupted) Thread.currentThread().interrupt(); }
         }
     }
 

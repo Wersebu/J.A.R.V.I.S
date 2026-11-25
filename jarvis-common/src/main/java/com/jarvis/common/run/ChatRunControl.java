@@ -29,7 +29,7 @@ public final class ChatRunControl {
     public static Object open(String conversationId, Thread worker) {
         Run run = new Run(worker);
         if (conversationId != null && !conversationId.isBlank()) {
-            RUNS.put(conversationId, run);
+            RUNS.put(key(conversationId), run);
         }
         return run;
     }
@@ -42,7 +42,7 @@ public final class ChatRunControl {
      * @return false when no run is active (the caller should send it as a normal message instead)
      */
     public static boolean post(String conversationId, String message) {
-        Run run = conversationId == null ? null : RUNS.get(conversationId);
+        Run run = conversationId == null ? null : RUNS.get(key(conversationId));
         if (run == null || run.cancelled || message == null || message.isBlank()) {
             return false;
         }
@@ -57,7 +57,7 @@ public final class ChatRunControl {
      * @return queued messages, oldest first
      */
     public static List<String> drain(String conversationId) {
-        Run run = conversationId == null ? null : RUNS.get(conversationId);
+        Run run = conversationId == null ? null : RUNS.get(key(conversationId));
         List<String> messages = new ArrayList<>();
         if (run != null) {
             String message;
@@ -75,7 +75,7 @@ public final class ChatRunControl {
      * @return true when the inbox is not empty
      */
     public static boolean hasPending(String conversationId) {
-        Run run = conversationId == null ? null : RUNS.get(conversationId);
+        Run run = conversationId == null ? null : RUNS.get(key(conversationId));
         return run != null && !run.inbox.isEmpty();
     }
 
@@ -86,7 +86,7 @@ public final class ChatRunControl {
      * @return false when no run is active
      */
     public static boolean cancel(String conversationId) {
-        Run run = conversationId == null ? null : RUNS.get(conversationId);
+        Run run = conversationId == null ? null : RUNS.get(key(conversationId));
         if (run == null) {
             return false;
         }
@@ -105,7 +105,7 @@ public final class ChatRunControl {
      * @return true when cancelled
      */
     public static boolean isCancelled(String conversationId) {
-        Run run = conversationId == null ? null : RUNS.get(conversationId);
+        Run run = conversationId == null ? null : RUNS.get(key(conversationId));
         return run != null && run.cancelled;
     }
 
@@ -128,13 +128,32 @@ public final class ChatRunControl {
      * @return messages that arrived too late to be used
      */
     public static List<String> close(String conversationId, Object handle) {
-        if (conversationId == null || RUNS.get(conversationId) != handle) {
+        if (conversationId == null || RUNS.get(key(conversationId)) != handle) {
             return List.of();
         }
         List<String> leftovers = drain(conversationId);
-        RUNS.remove(conversationId, handle);
+        RUNS.remove(key(conversationId), handle);
         leftovers.addAll(((Run) handle).drainAll()); // anything posted in between
         return leftovers;
+    }
+
+    private static String key(String conversationId) {
+        var current = InteractiveRequestContext.current();
+        return com.jarvis.common.auth.CurrentUserContext.requiredUserId() + "\u0000"
+                + (current == null ? conversationId : current.requestId());
+    }
+    public static boolean cancelRequest(String owner, String requestId) {
+        Run run = RUNS.get(owner + "\u0000" + requestId);
+        if (run == null) return false;
+        run.cancelled = true;
+        if (run.worker != null && run.worker != Thread.currentThread()) run.worker.interrupt();
+        return true;
+    }
+    public static boolean postRequest(String owner, String requestId, String message) {
+        Run run = RUNS.get(owner + "\u0000" + requestId);
+        if (run == null || run.cancelled || message == null || message.isBlank()) return false;
+        if (run.inbox.size() >= 16 || message.length() > 4000) return false;
+        run.inbox.add(message); return true;
     }
 
     private static final class Run {

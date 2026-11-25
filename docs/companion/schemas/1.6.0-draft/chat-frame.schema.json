@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Candidate canonical request frame (not connection/control diagnostics)",
+  "type": "object",
+  "required": [
+    "streamScope",
+    "requestId",
+    "conversationId",
+    "seq"
+  ],
+  "properties": {
+    "streamScope": {
+      "const": "REQUEST"
+    },
+    "requestId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "conversationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "type": {
+      "type": "string"
+    },
+    "event": {
+      "type": "string"
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "required": [
+        "event"
+      ]
+    }
+  ],
+  "additionalProperties": true
+}

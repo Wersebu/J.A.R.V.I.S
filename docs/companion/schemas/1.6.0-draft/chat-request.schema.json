@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Candidate interactive request",
+  "type": "object",
+  "required": [
+    "requestId",
+    "conversationId",
+    "message"
+  ],
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "conversationId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "message": {
+      "type": "string",
+      "minLength": 1
+    },
+    "type": {
+      "const": "CHAT_REQUEST"
+    }
+  },
+  "additionalProperties": true
+}
