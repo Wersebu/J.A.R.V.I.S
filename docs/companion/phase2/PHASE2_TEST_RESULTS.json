@@ -1,0 +1,25 @@
+{
+  "date": "2026-11-25",
+  "java": "21.0.9",
+  "maven": "3.10.0",
+  "reactor": "package",
+  "tests": 977,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "pythonBenchmarkTests": 5,
+  "artifact": "SERVER\\javac-output-test\\jarvis-core\\jarvis-core-2.24.0-SNAPSHOT.jar",
+  "sha256": "aabd2a47272ee143446e536a52d5e108ffcff91202a1510a038af01ef72e447c",
+  "packagedSmoke": {
+    "packagedJarStartup": "PASS",
+    "modelStatus": "READY",
+    "ordinaryChat": "PASS",
+    "asynchronousTask": "COMPLETED",
+    "mainConversationDelegation": "PASS",
+    "backgroundNativeToolContext": "PASS",
+    "contractVersion": "1.5.0",
+    "gatewaySlotsConfigured": 4,
+    "stablePhysicalContext": 24576,
+    "fakeOllamaCalls": 9
+  }
+}

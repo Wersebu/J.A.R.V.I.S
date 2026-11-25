@@ -17,6 +17,7 @@ import java.util.Map;
  * is loaded into system RAM and never competes with the chat model and voice for VRAM.
  */
 public final class OllamaEmbeddingBackend implements EmbeddingBackend {
+    private com.jarvis.common.ai.ModelGateway gateway;
 
     private final HttpJson http;
     private final String baseUrl;
@@ -37,6 +38,7 @@ public final class OllamaEmbeddingBackend implements EmbeddingBackend {
         this.model = model;
         this.forceCpu = forceCpu;
     }
+    public OllamaEmbeddingBackend(String baseUrl,String model,boolean forceCpu,Duration timeout,com.jarvis.common.ai.ModelGateway gateway){this(baseUrl,model,forceCpu,timeout);this.gateway=java.util.Objects.requireNonNull(gateway,"Ollama embeddings require ModelGateway");}
 
     @Override
     public String describe() {
@@ -53,7 +55,10 @@ public final class OllamaEmbeddingBackend implements EmbeddingBackend {
         if (forceCpu) {
             body.put("options", Map.of("num_gpu", 0));
         }
-        HttpJson.Response response = http.post(baseUrl + "/api/embed", body);
+        HttpJson.Response response;
+        try(var lease=gateway==null?null:gateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"vault-embedding")){
+            response = http.post(baseUrl + "/api/embed", body);
+        }
         if (!response.ok()) {
             String text = response.shortBody();
             String lower = text.toLowerCase(Locale.ROOT);

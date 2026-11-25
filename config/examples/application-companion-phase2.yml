@@ -1,0 +1,75 @@
+# Phase 2 production overlay for the operator-benchmarked GPT-OSS 20B setup.
+# Merge these keys into the EXISTING application.yml; do not duplicate jarvis:.
+# Preserve deployment-specific credentials, network, voice and database settings.
+# Ollama service environment is separate; see docs/companion/PHASE2_RELEASE.md.
+jarvis:
+  ollama:
+    base-url: http://127.0.0.1:11434
+    model: gpt-oss:20b
+  model-gateway:
+    concurrency: 4
+    reserved-interactive: 1
+    background-submit-spacing-millis: 250
+    max-waiting: 128
+    queue-timeout-millis: 300000
+    # Disable an obsolete additional token ceiling; the qualified 4-slot/24K
+    # tuple and verified model limits govern admission/context instead.
+    context-token-budget: 0
+  companion:
+    task-concurrency: 3
+    announcements:
+      enabled: true
+  inference:
+    physical-context-window: 24576
+    max-offered-tools: 16
+    profiles:
+      main-conversation:
+        output-tokens: 2048
+        reasoning: MEDIUM
+        priority: 10
+        timeout-seconds: 180
+      conversation-title:
+        input-tokens: 2048
+        output-tokens: 128
+        reasoning: LOW
+        priority: 70
+        timeout-seconds: 20
+        classification: BACKGROUND
+      memory-extraction:
+        input-tokens: 4096
+        output-tokens: 768
+        reasoning: LOW
+        priority: 80
+      memory-decision:
+        input-tokens: 4096
+        output-tokens: 768
+        reasoning: LOW
+        priority: 80
+      research:
+        input-tokens: 8192
+        output-tokens: 2048
+        priority: 50
+      planning:
+        input-tokens: 8192
+        output-tokens: 1024
+        priority: 40
+      coding:
+        input-tokens: 16384
+        output-tokens: 4096
+        reasoning: HIGH
+        priority: 50
+        timeout-seconds: 300
+  ai:
+    # Align compatibility settings; physical runner context is owned by inference.
+    context-window: 24576
+    reserved-output-tokens: 2048
+  memory:
+    autonomous:
+      enabled: false
+    dreaming:
+      enabled: false
+    background-agent:
+      enabled: false
+    background:
+      enabled: false
+      chat-priority: true

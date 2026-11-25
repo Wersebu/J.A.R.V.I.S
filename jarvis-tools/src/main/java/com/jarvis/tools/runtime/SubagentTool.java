@@ -25,6 +25,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 @Service
 public class SubagentTool implements JarvisTool, ToolSchemaProvider {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.jarvis.common.companion.ActivityTracker activityTracker;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SubagentTool.class);
     private static final int MAX_REPORT_CHARS = 8_000;
@@ -106,7 +108,7 @@ public class SubagentTool implements JarvisTool, ToolSchemaProvider {
                 task.length() > 200 ? task.substring(0, 200) + "..." : task);
         DEPTH.set(DEPTH.get() + 1);
         ToolCallingResult result;
-        try {
+        try (var activity=activityTracker==null?null:activityTracker.start("AGENT",child.requestId(),"agent__run")) {
             NativeToolLoopService service = loop.getIfAvailable();
             if (service == null) {
                 return failure(request, "Helper agents are not available in this Core build.");

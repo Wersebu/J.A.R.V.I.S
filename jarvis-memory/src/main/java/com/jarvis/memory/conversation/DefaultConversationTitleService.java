@@ -22,7 +22,7 @@ import java.util.concurrent.Executors;
  * One-shot, best-effort conversation title generator.
  */
 @Service
-public class DefaultConversationTitleService implements ConversationTitleService {
+public class DefaultConversationTitleService implements ConversationTitleService, org.springframework.beans.factory.DisposableBean {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultConversationTitleService.class);
     private static final int MAX_TITLE_CODE_POINTS = 60;
@@ -32,6 +32,7 @@ public class DefaultConversationTitleService implements ConversationTitleService
     private final List<AIProvider> aiProviders;
     private final CognitiveEventBus eventBus;
     private final ExecutorService executor;
+    private final java.util.Set<String> pending=java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public DefaultConversationTitleService(
             ConversationRepository conversationRepository,
@@ -43,11 +44,11 @@ public class DefaultConversationTitleService implements ConversationTitleService
         this.messageRepository = messageRepository;
         this.aiProviders = List.copyOf(aiProviders);
         this.eventBus = eventBus;
-        this.executor = Executors.newSingleThreadExecutor(runnable -> {
+        this.executor = new java.util.concurrent.ThreadPoolExecutor(1,1,0,java.util.concurrent.TimeUnit.SECONDS,new java.util.concurrent.ArrayBlockingQueue<>(64),runnable -> {
             Thread thread = new Thread(runnable, "jarvis-conversation-title");
             thread.setDaemon(true);
             return thread;
-        });
+        },new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     }
 
     @Override
@@ -60,7 +61,10 @@ public class DefaultConversationTitleService implements ConversationTitleService
         // over explicitly - otherwise repository lookups on that thread silently fall back to
         // CurrentUserContext.LOCAL_USER_ID and find nothing for a real authenticated user.
         String userId = CurrentUserContext.requiredUserId();
-        executor.submit(() -> CurrentUserContext.runAs(userId, () -> maybeGenerateTitle(conversationId, brain)));
+        String key=userId+":"+conversationId;
+        if(!pending.add(key))return;
+        try { executor.submit(() -> {try{CurrentUserContext.runAs(userId, () -> maybeGenerateTitle(conversationId, brain));}finally{pending.remove(key);Thread.interrupted();}}); }
+        catch(java.util.concurrent.RejectedExecutionException e){pending.remove(key);}
     }
 
     void maybeGenerateTitle(String conversationId, Brain brain) {
@@ -99,7 +103,8 @@ public class DefaultConversationTitleService implements ConversationTitleService
     private String generateWithFallback(Brain brain, String user, String assistant) {
         try {
             AIProvider provider = selectProvider(brain);
-            String response = provider.chat(brain, prompt(user, assistant), AIJobType.BACKGROUND).response();
+            Brain titleBrain=brain.withRoutingMetadata("Conversation title",0,com.jarvis.common.ai.ReasoningLevel.LOW);
+            String response = com.jarvis.common.ai.InferenceProfileContext.call("conversation-title",()->provider.chat(titleBrain, prompt(user, assistant), AIJobType.BACKGROUND).response());
             String sanitized = sanitizeModelTitle(response);
             if (!sanitized.isBlank()) {
                 return sanitized;
@@ -110,6 +115,9 @@ public class DefaultConversationTitleService implements ConversationTitleService
         }
         return fallbackTitle(user);
     }
+
+    public void close(){executor.shutdownNow();pending.clear();}
+    @Override public void destroy(){close();}
 
     private AIProvider selectProvider(Brain brain) {
         return aiProviders.stream()

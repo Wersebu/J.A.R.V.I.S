@@ -17,6 +17,8 @@ import java.util.Optional;
  */
 @Service
 public class DefaultToolManager implements ToolManager {
+    @Autowired(required=false)
+    private com.jarvis.common.companion.ActivityTracker activityTracker;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private com.jarvis.tools.taskplan.DynamicPlanService companionPlans;
 
@@ -85,7 +87,10 @@ public class DefaultToolManager implements ToolManager {
             throw new ToolException("Tool not registered: " + request.toolName());
         }
         LOGGER.info("[TOOL] Executing tool={} operation={}", request.toolName(), request.operation());
-        ToolResult result = tool.execute(request);
+        ToolResult result;
+        try(var activity=activityTracker==null?null:activityTracker.start("TOOL",request.requestId(),request.toolName()+"__"+request.operation())) {
+            result = tool.execute(request);
+        }
         if(companionTask!=null&&companionPlans!=null&&!Set.of("plan","taskplan").contains(normalize(request.toolName()))) {
             boolean success=result.success()&&!result.requiresApproval()&&!Boolean.parseBoolean(String.valueOf(result.data().get("running")))&&!Boolean.parseBoolean(String.valueOf(result.data().get("pending")));
             String status=String.valueOf(result.data().getOrDefault("status","")).toUpperCase(Locale.ROOT);if(Set.of("RUNNING","PENDING","QUEUED","IN_PROGRESS","FAILED","ERROR","CANCELLED").contains(status))success=false;

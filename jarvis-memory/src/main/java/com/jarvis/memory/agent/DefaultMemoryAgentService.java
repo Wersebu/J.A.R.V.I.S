@@ -101,7 +101,7 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
             String prompt = prompt(job);
             Brain brain = new Brain(BrainType.CLASSIFIER, "ollama", MODEL, "Background memory agent")
                     .withRoutingMetadata("Memory extraction", 0L, ReasoningLevel.LOW);
-            String response = selectProvider().chat(brain, prompt, AIJobType.MEMORY_AGENT).response();
+            String response = com.jarvis.common.ai.InferenceProfileContext.call("memory-decision",()->selectProvider().chat(brain, prompt, AIJobType.MEMORY_AGENT).response());
             return parseDecision(response);
         } catch (RuntimeException exception) {
             LOGGER.error("[JARVIS][MEMORY][jobId={}][sourceRequestId={}] MEMORY_AGENT_DECISION_FAILED",

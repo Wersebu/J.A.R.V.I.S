@@ -1,4 +1,4 @@
-﻿spring:
+spring:
   application:
     name: jarvis
 
@@ -26,9 +26,49 @@ jarvis:
     max-files-per-workspace: 20
     minimum-free-disk-space-bytes: 536870912
     prompt-max-characters: 24000
+  model-gateway:
+    concurrency: 4
+    reserved-interactive: 1
+    # Best-effort prompt burst spacing; generation remains concurrent. 0 disables it.
+    background-submit-spacing-millis: 250
+    max-waiting: 128
+    queue-timeout-millis: 300000
+  inference:
+    physical-context-window: 24576
+    max-offered-tools: 16
+    profiles:
+      conversation-title:
+        input-tokens: 2048
+        output-tokens: 128
+        reasoning: LOW
+        priority: 70
+        timeout-seconds: 20
+        classification: BACKGROUND
+      memory-extraction:
+        input-tokens: 4096
+        output-tokens: 768
+        reasoning: LOW
+        priority: 80
+      memory-decision:
+        input-tokens: 4096
+        output-tokens: 768
+        reasoning: LOW
+        priority: 80
+      research:
+        input-tokens: 8192
+        output-tokens: 2048
+        priority: 50
+      planning:
+        input-tokens: 8192
+        output-tokens: 1024
+        priority: 40
+  companion:
+    task-concurrency: 3
+    announcements:
+      enabled: true
   ai:
     identity-file: file:config/jarvis.md
-    context-window: 100000
+    context-window: 24576
     reserved-output-tokens: 2048
     # Ollama sampler repeat_penalty sent with every request. Without this, Ollama/llama.cpp
     # defaults to 1.0 (no penalty), letting a local model settle into repeating the exact same
@@ -262,6 +302,10 @@ jarvis:
     knowledge-document-estimate: 4
     knowledge-context-characters-per-document: 1500
   memory:
+    autonomous:
+      enabled: false
+    dreaming:
+      enabled: false
     database-path: ./data/jarvis-memory.db
     working-history-length: 30
     semantic-sql:

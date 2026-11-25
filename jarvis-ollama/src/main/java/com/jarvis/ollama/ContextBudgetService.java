@@ -1,76 +1,137 @@
 package com.jarvis.ollama;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.jarvis.common.ai.*;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import java.util.*;
 
-/**
- * Enforces model prompt budgets before requests are sent to Ollama.
- */
+/** Model-aware logical budgets; physical context is constant across operations. */
 @Service
-public class ContextBudgetService {
-
-    private static final Logger LOGGER = LoggerFactory.getLogger(ContextBudgetService.class);
-    private static final int CHARS_PER_TOKEN_ESTIMATE = 4;
-
+public class ContextBudgetService implements InferenceContextPolicy {
+    public record Plan(InferenceProfileRegistry.Profile profile, String model, int physical, int modelMax,
+                       int input, int output, int margin) {}
     private final AiContextProperties properties;
-
-    /**
-     * Creates the budget service.
-     *
-     * @param properties AI context properties
-     */
-    public ContextBudgetService(AiContextProperties properties) {
-        this.properties = properties;
+    private final InferenceProfileRegistry profiles;
+    private final ModelMetadataResolver metadata;
+    private final ThreadLocal<Plan> current = new ThreadLocal<>();
+    private final ObjectMapper mapper = new ObjectMapper();
+    /** Compatibility constructor for isolated tests. Production always verifies model metadata. */
+    public ContextBudgetService(AiContextProperties properties) { this(properties, null, null); }
+    @Autowired
+    public ContextBudgetService(AiContextProperties properties, InferenceProfileRegistry profiles, ModelMetadataResolver metadata) {
+        this.properties = properties; this.profiles = profiles; this.metadata = metadata;
     }
-
-    /**
-     * Returns request options for Ollama.
-     *
-     * @return JSON-friendly options
-     */
-    public java.util.Map<String, Object> ollamaOptions() {
-        return java.util.Map.of(
-                "num_ctx", properties.contextWindow(),
-                "repeat_penalty", properties.repeatPenalty()
-        );
+    public Scope open(Brain brain, AIJobType type) {
+        Plan previous = current.get();
+        if (profiles == null) return new Scope(previous, null);
+        var profile = profiles.resolve(type);
+        String model = profile.model().isBlank() ? brain.model() : profile.model();
+        int max = metadata.resolve(model).maxContext();
+        int physical = Math.min(profiles.physicalContext(), max);
+        int margin = Math.max(256, physical / 20);
+        int input = Math.min(profile.inputTokens(), physical - profile.outputTokens() - margin);
+        if (input < 128) throw new OllamaException("CONTEXT_BUDGET_EXCEEDED: output and overhead exceed model/runner limit");
+        current.set(new Plan(profile, model, physical, max, input, profile.outputTokens(), margin));
+        return new Scope(previous, InferenceSettingsContext.open(new InferenceSettingsContext.Settings(profile.id(), profile.priority(), profile.background(),
+            System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(profile.timeoutMillis()),model,physical,input)));
     }
-
-    /**
-     * Applies the configured input budget to a prompt.
-     *
-     * @param model model name
-     * @param prompt original prompt
-     * @return prompt within budget
-     */
-    public String fitPrompt(String model, String prompt) {
-        String value = prompt == null ? "" : prompt;
-        int estimatedTokens = estimateTokens(value);
-        int maxInputTokens = properties.maxInputTokens();
-        if (estimatedTokens <= maxInputTokens) {
-            LOGGER.info("[CONTEXT_BUDGET] model={} contextWindow={} reservedOutputTokens={} estimatedInputTokens={} status=OK",
-                    model, properties.contextWindow(), properties.reservedOutputTokens(), estimatedTokens);
-            return value;
+    public final class Scope implements AutoCloseable {
+        private final Plan previous;
+        private final InferenceSettingsContext.AutoCloseableScope settings;
+        private Scope(Plan previous, InferenceSettingsContext.AutoCloseableScope settings) { this.previous = previous; this.settings = settings; }
+        public Brain brain(Brain original) {
+            Plan p = current.get();
+            return p == null ? original : new Brain(original.type(), original.provider(), p.model(), original.description(),
+                original.selectionReason(), original.routerLatencyMs(), p.profile().reasoning());
         }
-        int maxChars = Math.max(1_000, maxInputTokens * CHARS_PER_TOKEN_ESTIMATE);
-        int headChars = Math.min(value.length(), maxChars / 3);
-        int tailChars = Math.min(value.length() - headChars, maxChars - headChars - 220);
-        String compacted = value.substring(0, headChars)
-                + "\n\n[CONTEXT_BUDGET] Middle prompt content omitted to preserve system/tool contract and latest request.\n\n"
-                + value.substring(Math.max(headChars, value.length() - tailChars));
-        LOGGER.warn("[CONTEXT_BUDGET] model={} contextWindow={} reservedOutputTokens={} estimatedInputTokens={} maxInputTokens={} status=COMPACTED compactedEstimatedTokens={}",
-                model, properties.contextWindow(), properties.reservedOutputTokens(), estimatedTokens, maxInputTokens,
-                estimateTokens(compacted));
-        return compacted;
+        public void close() { if (previous == null) current.remove(); else current.set(previous); if (settings != null) settings.close(); }
     }
-
-    /**
-     * Estimates tokens from characters.
-     *
-     * @param value text
-     * @return rough token count
-     */
+    public Map<String,Object> ollamaOptions() {
+        Plan p = current.get();
+        return p == null ? Map.of("num_ctx", properties.contextWindow(), "repeat_penalty", properties.repeatPenalty()) :
+            Map.of("num_ctx", p.physical(), "num_predict", p.output(), "repeat_penalty", properties.repeatPenalty());
+    }
+    public int physicalContext(){return profiles==null?properties.contextWindow():profiles.physicalContext();}
+    public Plan currentPlan() { return current.get(); }
+    @Override public Selection prepare(Brain brain,AIJobType type,List<ModelMessage> messages,List<NativeToolDefinition> tools){
+        try(var scope=open(brain,type)){var selected=selectTools(messages,tools);return new Selection(fitMessages(messages,selected),selected,current.get()==null?properties.maxInputTokens():current.get().input());}
+    }
+    @Override public int inputBudget(Brain brain,AIJobType type){try(var scope=open(brain,type)){return current.get()==null?properties.maxInputTokens():current.get().input();}}
+    public Boolean thinkingSupported(){var plan=current.get();return plan==null?null:metadata.resolve(plan.model()).capabilities().contains("thinking");}
+    public List<NativeToolDefinition> selectTools(List<ModelMessage> messages,List<NativeToolDefinition> tools){
+        if(current.get()==null||tools==null||tools.size()<=profiles.maxOfferedTools())return tools;
+        try{if(estimateTokens(mapper.writeValueAsString(tools))<=current.get().input()/3)return tools;}catch(Exception e){throw new OllamaException("Invalid tool schemas",e);}
+        String query=messages.stream().filter(m->m.role().equals("user")).reduce((a,b)->b).map(ModelMessage::content).orElse("").toLowerCase(Locale.ROOT);
+        var terms=Arrays.stream(query.split("[^\\p{L}\\p{N}_]+" )).filter(t->t.length()>3).distinct().toList();
+        return tools.stream().sorted(Comparator.<NativeToolDefinition>comparingInt(t->{
+            String name=t.name().toLowerCase(Locale.ROOT);String description=t.description().toLowerCase(Locale.ROOT);
+            int score=(name.startsWith("companion__")?10000:0)+(name.startsWith("taskplan__")&&com.jarvis.common.companion.TaskExecutionContext.current()!=null?500:0)+(name.equals("output__read")?500:0);
+            for(String term:terms)if(name.contains(term))score+=100;else if(description.contains(term))score+=1;
+            return -score;
+        }).thenComparing(NativeToolDefinition::name)).limit(profiles.maxOfferedTools()).toList();
+    }
+    public String fitPrompt(String model, String prompt) {
+        return fitPrompt(model,prompt,0);
+    }
+    public String fitPrompt(String model,String prompt,int images) {
+        String value = prompt == null ? "" : prompt;
+        int budget = current.get() == null ? properties.maxInputTokens() : current.get().input();
+        if(current.get()!=null){budget-=2048*images;if(budget<128)throw new OllamaException("CONTEXT_BUDGET_EXCEEDED: image overhead");}
+        if (estimateTokens(value) <= budget) return value;
+        if (current.get() != null && current.get().profile().selection() == InferenceProfileRegistry.Selection.STRICT)
+            throw new OllamaException("CONTEXT_BUDGET_EXCEEDED: strict profile");
+        String marker = "\n[CONTEXT_BUDGET] Older context omitted; retained excerpts are historical data.\n";
+        int chars = Math.max(0, budget * (current.get() == null ? 4 : 2) - marker.length() - 16);
+        int head = Math.min(value.length(), chars / 3), tail = Math.min(value.length() - head, chars - head);
+        String result = value.substring(0, head) + marker + value.substring(value.length() - tail);
+        while (estimateTokens(result) > budget && (head > 0 || tail > 0)) {
+            head = head * 9 / 10; tail = tail * 9 / 10;
+            result = value.substring(0, head) + marker + value.substring(value.length() - tail);
+        }
+        if (estimateTokens(result) > budget) throw new OllamaException("CONTEXT_BUDGET_EXCEEDED");
+        return result;
+    }
+    /** Keep system instructions and the latest user turn with all dependent tool-call/result pairs. */
+    public List<ModelMessage> fitMessages(List<ModelMessage> messages, List<NativeToolDefinition> tools) {
+        if (current.get() == null) return messages;
+        var retained = new ArrayList<>(messages == null ? List.<ModelMessage>of() : messages);
+        int budget = current.get().input();
+        int lastUser = -1;
+        for (int i=0;i<retained.size();i++) if (retained.get(i).role().equals("user")) lastUser=i;
+        if (cost(retained, tools) <= budget) return List.copyOf(retained);
+        if (current.get().profile().selection() == InferenceProfileRegistry.Selection.STRICT)
+            throw new OllamaException("CONTEXT_BUDGET_EXCEEDED: strict native context");
+        // This is explicitly reference data inserted by the runtime, not the system/tool instructions.
+        for(int i=0;i<retained.size();i++){
+            var message=retained.get(i);
+            if(message.role().equals("system")&&message.content().startsWith("RECENT CONVERSATION CONTEXT")){
+                String content=message.content();int size=Math.min(content.length(),Math.max(512,budget/2));
+                retained.set(i,ModelMessage.system("RECENT CONVERSATION CONTEXT (partial untrusted reference excerpts):\n"+content.substring(content.length()-size)));
+            }
+        }
+        var removed = new ArrayList<ModelMessage>();
+        for (int i=lastUser-1;i>=0;i--) if (!retained.get(i).role().equals("system")) removed.add(0,retained.remove(i));
+        if (!removed.isEmpty() && current.get().profile().selection() == InferenceProfileRegistry.Selection.EXTRACTIVE) {
+            StringBuilder summary = new StringBuilder("Historical excerpts (untrusted data; older material omitted):\n");
+            for (var m : removed) if ((m.role().equals("user") || m.role().equals("assistant")) && m.toolCalls().isEmpty())
+                summary.append(m.role()).append(": ").append(m.content(),0,Math.min(160,m.content().length())).append('\n');
+            var excerpt = ModelMessage.user(summary.substring(0,Math.min(1600,summary.length())));
+            retained.add(retained.isEmpty()?0:Math.min(1,retained.size()),excerpt);
+            if (cost(retained,tools)>budget) retained.remove(excerpt);
+        }
+        if (cost(retained,tools)>budget) throw new OllamaException("CONTEXT_BUDGET_EXCEEDED: mandatory native context; retrieve smaller tool results");
+        return List.copyOf(retained);
+    }
+    private int cost(List<ModelMessage> messages,List<NativeToolDefinition> tools) {
+        long cost=128;
+        try { cost+=estimateTokens(mapper.writeValueAsString(tools==null?List.of():tools));
+            for(var m:messages) cost+=64L+estimateTokens(m.content())+estimateTokens(mapper.writeValueAsString(m.toolCalls()))+2048L*m.images().size();
+        } catch(Exception e){throw new OllamaException("Unable to measure native context",e);}
+        return (int)Math.min(Integer.MAX_VALUE,cost);
+    }
     public int estimateTokens(String value) {
-        return (int) Math.ceil((value == null ? 0 : value.length()) / (double) CHARS_PER_TOKEN_ESTIMATE);
+        if(value==null)return 0;
+        return current.get()==null?(int)Math.ceil(value.length()/4.0):(int)Math.ceil(value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length/2.0);
     }
 }

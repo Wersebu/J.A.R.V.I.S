@@ -18,11 +18,15 @@ import java.util.concurrent.*;
 /** Bounded process-local task engine. All transitions and snapshots share one lock. */
 @Service
 public class CompanionTasks implements AutoCloseable {
-    private static final String VERSION = "1.4.0";
+    private static final String VERSION = "1.5.0";
     public static String version() { return VERSION; }
     public record Request(String message, String role, Integer priority, Integer timeoutSeconds, Integer maxAttempts) {}
     public record Task(String taskId, String role, String state, int priority, Double progress,
-                       Instant createdAt, Instant updatedAt, String result, String error) {}
+                       Instant createdAt, Instant updatedAt, String result, String error, String conversationId, String executionConversationId) {
+        public Task(String id,String role,String state,int priority,Double progress,Instant created,Instant updated,String result,String error) {
+            this(id,role,state,priority,progress,created,updated,result,error,null,"companion-"+id);
+        }
+    }
     public record Event(String eventId, String protocolVersion, Instant timestamp, long sequence,
                         String type, String taskId, Object payload) {}
     public record Replay(boolean resetRequired, List<Event> events, long latestSequence) {}
@@ -41,7 +45,7 @@ public class CompanionTasks implements AutoCloseable {
             Entry entry=new Entry(document.owner(),restored);tasks.put(restored.taskId(),entry);sequences.putIfAbsent(document.owner(),0L);
             plans.register(entry.owner,restored.taskId(),restored.state());
             boolean interrupted=!TERMINAL.contains(restored.state()) || restored.state().equals("COMPLETED")&&plans.find(entry.owner,restored.taskId()).filter(p->!p.status().equals("COMPLETED")).isPresent();
-            if(interrupted){Task recovered=new Task(restored.taskId(),restored.role(),"FAILED",restored.priority(),null,restored.createdAt(),Instant.now(),null,"Interrupted by backend restart; external work was not retried");persist(entry.owner,recovered);entry.task=recovered;}
+            if(interrupted){Task recovered=new Task(restored.taskId(),restored.role(),"FAILED",restored.priority(),null,restored.createdAt(),Instant.now(),null,"Interrupted by backend restart; external work was not retried",restored.conversationId(),restored.executionConversationId());persist(entry.owner,recovered);entry.task=recovered;}
             plans.taskState(entry.owner,restored.taskId(),entry.task.state(),true);
         }
         purgeHistory();
@@ -51,9 +55,15 @@ public class CompanionTasks implements AutoCloseable {
     private void publish(String owner,String type,String id,Object payload){long sequence=sequences.merge(owner,1L,Long::sum);var journal=events.computeIfAbsent(owner,k->new ArrayDeque<>());journal.add(new Event(UUID.randomUUID().toString(),VERSION,Instant.now(),sequence,type,id,payload));while(journal.size()>512)journal.removeFirst();}
     public synchronized DynamicPlan plan(String owner,String id){owned(owner,id);if(plans==null)throw new ResponseStatusException(HttpStatus.NOT_FOUND);return plans.find(owner,id).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND));}
     public synchronized List<DynamicPlan> planRevisions(String owner,String id){owned(owner,id);return plans==null?List.of():plans.revisions(owner,id);}
-    public synchronized void delete(String owner,String id){Entry e=owned(owner,id);if(!TERMINAL.contains(e.task.state()))throw new ResponseStatusException(HttpStatus.CONFLICT,"Active tasks cannot be deleted");history.deleteTask(owner,id);if(plans!=null)plans.forget(owner,id);tasks.remove(id);events.getOrDefault(owner,new ArrayDeque<>()).removeIf(event->id.equals(event.taskId()));Task tombstone=new Task(e.task.taskId(),e.task.role(),e.task.state(),e.task.priority(),null,e.task.createdAt(),e.task.updatedAt(),null,null);publish(owner,"task.history.deleted",id,tombstone);}
+    public synchronized void delete(String owner,String id){Entry e=owned(owner,id);if(!TERMINAL.contains(e.task.state()))throw new ResponseStatusException(HttpStatus.CONFLICT,"Active tasks cannot be deleted");history.deleteTask(owner,id);for(var key:history.documents(owner,"task-submission",""))if(key.body().equals(id))history.delete(owner,"task-submission",key.id());if(plans!=null)plans.forget(owner,id);tasks.remove(id);events.getOrDefault(owner,new ArrayDeque<>()).removeIf(event->id.equals(event.taskId()));Task tombstone=new Task(e.task.taskId(),e.task.role(),e.task.state(),e.task.priority(),null,e.task.createdAt(),e.task.updatedAt(),null,null);publish(owner,"task.history.deleted",id,tombstone);}
     private void purgeHistory(){Instant cutoff=Instant.now().minus(java.time.Duration.ofDays(Math.max(0,retentionDays)));var terminal=tasks.values().stream().filter(e->TERMINAL.contains(e.task.state())).sorted(Comparator.comparing(e->e.task.updatedAt())).toList();for(var e:terminal){if(retentionDays>0&&e.task.updatedAt().isBefore(cutoff)||tasks.size()>1000)delete(e.owner,e.task.taskId());}}
     private final ChatService chat;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.jarvis.common.ai.ModelGateway gateway;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private ActivityTracker activityTracker;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private ResourceTelemetry resourceTelemetry;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private TaskAnnouncements announcements;
     private final ThreadPoolExecutor workers;
@@ -68,6 +78,7 @@ public class CompanionTasks implements AutoCloseable {
     private static final Set<String> TERMINAL = Set.of("COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT");
     private final class Entry implements Runnable, Comparable<Entry> {
         final String owner, message; final long position; final long deadline;
+        final ArrayDeque<String> instructions=new ArrayDeque<>(); boolean acceptingInstructions=true;
         Task task; Thread runner; boolean timeout; ScheduledFuture<?> alarm;
         Entry(String owner, Request r) {
             this.owner=owner; message=r.message(); position=++order;
@@ -84,7 +95,7 @@ public class CompanionTasks implements AutoCloseable {
                 runner=Thread.currentThread(); change(this,"RUNNING",null,null);
             }
             String[] result={null}; boolean failed=false;
-            try { CurrentUserContext.runAs(owner, () -> TaskExecutionContext.run(task.taskId(), () -> com.jarvis.common.ai.InferencePriorityContext.runBackground(() -> result[0]=chat.chat(new ChatRequest("companion-"+task.taskId(),message)).response()))); }
+            try { CurrentUserContext.runAs(owner, () -> TaskExecutionContext.run(task.taskId(), () -> TaskInstructionContext.run(()->drainInstructions(owner,task.taskId()), () -> com.jarvis.common.ai.InferencePriorityContext.runBackground(() -> result[0]=com.jarvis.common.ai.InferenceProfileContext.call(task.role().equals("RESEARCH")?"research":"planning",()->executeConversation(this)))))); }
             catch(Exception ex) { failed=true; }
             finally {
                 synchronized(CompanionTasks.this) {
@@ -109,7 +120,8 @@ public class CompanionTasks implements AutoCloseable {
         deadlines.setRemoveOnCancelPolicy(true);
         timer=deadlines;
     }
-    public synchronized Task submit(String owner, Request request) {
+    public synchronized Task submit(String owner, Request request) { return submit(owner,request,null,null); }
+    public synchronized Task submit(String owner, Request request,String sourceConversation,String key) {
         if(closed) throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE);
         if(request==null || request.message()==null || request.message().isBlank() || request.message().length()>32000
             || (request.role()!=null && !Set.of("TASK","RESEARCH").contains(request.role()))
@@ -117,15 +129,50 @@ public class CompanionTasks implements AutoCloseable {
             || (request.timeoutSeconds()!=null && (request.timeoutSeconds()<1 || request.timeoutSeconds()>3600))
             || (request.maxAttempts()!=null && request.maxAttempts()!=1))
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Invalid task request; retries are not safe for tool execution");
+        String dedup=key==null?null:submissionKey(key,request.message(),request.role());
+        if(dedup!=null){var previous=history.find(owner,"task-submission",dedup);if(previous.isPresent()&&tasks.containsKey(previous.get().body()))return get(owner,previous.get().body());}
         if(!sequences.containsKey(owner) && sequences.size()>=1024) throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,"Owner capacity reached");
         long active=tasks.values().stream().filter(e->!TERMINAL.contains(e.task.state())).count();
         if(active>=128) throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,"Task capacity reached");
         purgeHistory();
         if(tasks.size()>=1000){var oldest=tasks.values().stream().filter(e->TERMINAL.contains(e.task.state())).min(Comparator.comparing(e->e.task.updatedAt()));oldest.ifPresent(e->delete(e.owner,e.task.taskId()));}
-        Entry e=new Entry(owner,request);persist(owner,e.task);tasks.put(e.task.taskId(),e);if(plans!=null)plans.register(owner,e.task.taskId(),e.task.state());emit(e,"task.created");
+        Entry e=new Entry(owner,request);
+        Task original=e.task;e.task=new Task(original.taskId(),original.role(),original.state(),original.priority(),null,original.createdAt(),original.updatedAt(),null,null,sourceConversation,"companion-"+original.taskId());
+        persistSubmission(owner,e.task,dedup);
+        tasks.put(e.task.taskId(),e);if(plans!=null)plans.register(owner,e.task.taskId(),e.task.state());emit(e,"task.created");
         e.alarm=timer.schedule(()->expire(e),request.timeoutSeconds()==null?120:request.timeoutSeconds(),TimeUnit.SECONDS);
-        workers.execute(e); return e.task;
+        try{workers.execute(e);}catch(RejectedExecutionException failure){change(e,"FAILED",null,"Task executor unavailable");if(e.alarm!=null)e.alarm.cancel(false);throw failure;}
+        return e.task;
     }
+    private void persistSubmission(String owner,Task task,String key){
+        if(key==null){persist(owner,task);return;}
+        try{history.putAll(List.of(new CompanionDocumentStore.Document(owner,"task",task.taskId(),mapper.writeValueAsString(task),task.updatedAt()),new CompanionDocumentStore.Document(owner,"task-submission",key,task.taskId(),task.createdAt())));}
+        catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new IllegalStateException("Could not persist task submission",e);}
+    }
+    private String submissionKey(String key,String message,String role){
+        try{return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest((key+"\n"+role+"\n"+message).getBytes(java.nio.charset.StandardCharsets.UTF_8)));}catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}
+    }
+    private String executeConversation(Entry entry){
+        String message=entry.message;
+        var initial=drainInstructions(entry.owner,entry.task.taskId());
+        if(!initial.isEmpty())message+="\nAdditional user instructions:\n"+String.join("\n",initial);
+        while(true){
+            if(Thread.currentThread().isInterrupted()||System.nanoTime()>=entry.deadline)throw new IllegalStateException("Task interrupted or expired");
+            String result=chat.chat(new ChatRequest(entry.task.executionConversationId()==null?"companion-"+entry.task.taskId():entry.task.executionConversationId(),message)).response();
+            synchronized(this){
+                if(entry.instructions.isEmpty()){entry.acceptingInstructions=false;return result;}
+                message="Continue the task with these additional authenticated user instructions:\n"+String.join("\n",entry.instructions);entry.instructions.clear();
+            }
+        }
+    }
+    public synchronized Task instruct(String owner,String id,String message){
+        Entry e=owned(owner,id);
+        if(!e.acceptingInstructions||!Set.of("QUEUED","RUNNING").contains(e.task.state()))throw new ResponseStatusException(HttpStatus.CONFLICT,"Task is no longer accepting instructions");
+        if(message==null||message.isBlank()||message.length()>4000)throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Instruction must contain 1..4000 characters");
+        if(e.instructions.size()>=16)throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,"Instruction mailbox full");
+        e.instructions.add(message);publish(owner,"task.instruction.accepted",id,Map.of("taskId",id,"delivery","NEXT_MODEL_ROUND"));return e.task;
+    }
+    private synchronized List<String> drainInstructions(String owner,String id){Entry e=owned(owner,id);var items=List.copyOf(e.instructions);e.instructions.clear();return items;}
     public synchronized List<Task> list(String owner) { return tasks.values().stream().filter(e->e.owner.equals(owner)).map(e->e.task).sorted(Comparator.comparing(Task::createdAt).reversed()).toList(); }
     private Entry owned(String owner,String id) { Entry e=tasks.get(id); if(e==null || !e.owner.equals(owner)) throw new ResponseStatusException(HttpStatus.NOT_FOUND); return e; }
     public synchronized Task get(String owner,String id) { return owned(owner,id).task; }
@@ -146,7 +193,7 @@ public class CompanionTasks implements AutoCloseable {
     }
     private void change(Entry e,String state,String result,String error) {
         if(TERMINAL.contains(e.task.state()))return;
-        Task t=e.task; Task next=new Task(t.taskId(),t.role(),state,t.priority(),null,t.createdAt(),Instant.now(),result,error);
+        Task t=e.task; Task next=new Task(t.taskId(),t.role(),state,t.priority(),null,t.createdAt(),Instant.now(),result,error,t.conversationId(),t.executionConversationId());
         persist(e.owner,next);e.task=next;
         if(plans!=null)plans.taskState(e.owner,next.taskId(),state,false);
         emit(e,"task."+switch(state){case "RUNNING"->"started";case "CANCEL_REQUESTED"->"cancel_requested";default->state.toLowerCase(Locale.ROOT);});
@@ -178,7 +225,20 @@ public class CompanionTasks implements AutoCloseable {
         purgeHistory();
         List<Task> list=list(owner);
         List<DynamicPlan> currentPlans=plans==null?List.of():list.stream().map(t->plans.find(owner,t.taskId())).flatMap(Optional::stream).toList();
-        return Map.of("plans",currentPlans,"contractVersion",VERSION,"serverInstanceId",serverInstanceId,"latestSequence",sequences.getOrDefault(owner,0L),"tasks",list,"activeProcesses",list.stream().filter(t->!TERMINAL.contains(t.state())).count());
+        return Map.of("plans",currentPlans,"contractVersion",VERSION,"serverInstanceId",serverInstanceId,"latestSequence",sequences.getOrDefault(owner,0L),"tasks",list,"activeProcesses",list.stream().filter(t->!TERMINAL.contains(t.state())).count(),"metrics",metrics(owner));
+    }
+    public synchronized Map<String,Object> metrics(String owner){
+        var own=list(owner);var result=new LinkedHashMap<String,Object>();
+        long running=own.stream().filter(t->t.state().equals("RUNNING")||t.state().equals("CANCEL_REQUESTED")).count();
+        result.put("observedAt",Instant.now());result.put("scope","OWNER");result.put("activeTasks",running);result.put("activeCompanionTasks",running);
+        result.put("queuedTasks",own.stream().filter(t->t.state().equals("QUEUED")).count());
+        if(activityTracker!=null)result.putAll(activityTracker.snapshot(owner));
+        long coding=((Number)result.getOrDefault("activeCodingTasks",0L)).longValue();
+        result.put("activeTasks",running+coding);
+        result.put("activeAgents",running+coding+((Number)result.getOrDefault("activeSynchronousAgents",0L)).longValue());
+        if(gateway!=null)result.putAll(gateway.snapshot(owner));
+        if(resourceTelemetry!=null)result.put("resources",resourceTelemetry.snapshot());
+        return result;
     }
     @PreDestroy public void close() {
         synchronized(this){closed=true;workers.shutdownNow();timer.shutdownNow();}

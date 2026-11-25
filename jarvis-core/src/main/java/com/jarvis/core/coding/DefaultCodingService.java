@@ -62,6 +62,8 @@ import java.util.stream.Stream;
 @Service
 @DependsOn("SQLiteMemoryInitializer")
 public class DefaultCodingService implements CodingService, InitializingBean {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.jarvis.common.companion.ActivityTracker activityTracker;
 
     private static final int DEFAULT_MAX_SEARCH_RESULTS = 100;
     private static final int DEFAULT_MAX_OUTPUT = 64_000;
@@ -900,7 +902,12 @@ public class DefaultCodingService implements CodingService, InitializingBean {
             currentExecution.set(execution);
             try {
                 if (!execution.cancelled()) {
-                    CurrentUserContext.runAs(ownerUserId, () -> runTaskLoop(id, state.id));
+                    CurrentUserContext.runAs(ownerUserId, () -> {
+                        try(var activity=activityTracker==null?null:activityTracker.start("CODING_TASK","coding-task-"+id,"coding-task",id)){
+                            com.jarvis.common.ai.InferencePriorityContext.runBackground(() ->
+                                com.jarvis.common.ai.InferenceProfileContext.call("coding",()->{runTaskLoop(id,state.id);return null;}));
+                        }
+                    });
                 }
                 future.complete(null);
             } catch (Throwable throwable) {

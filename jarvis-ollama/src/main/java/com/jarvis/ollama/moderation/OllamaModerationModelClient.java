@@ -33,6 +33,10 @@ import java.util.Map;
 @Service
 public class OllamaModerationModelClient implements ModerationModelClient {
 
+    private com.jarvis.common.ai.ModelGateway gateway;
+    private com.jarvis.ollama.ContextBudgetService budgets;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void inferenceInfrastructure(com.jarvis.common.ai.ModelGateway gateway,com.jarvis.ollama.ContextBudgetService budgets){this.gateway=gateway;this.budgets=budgets;}
     private static final Logger LOGGER = LoggerFactory.getLogger(OllamaModerationModelClient.class);
     private static final int MAX_RESPONSE_BYTES = 16_000;
     private static final String MODERATION_THINK = "low";
@@ -48,13 +52,17 @@ public class OllamaModerationModelClient implements ModerationModelClient {
         this.ollamaProperties = ollamaProperties;
     }
 
+    private int metadataLimit(String model){
+        try(var scope=budgets.open(new com.jarvis.common.ai.Brain(com.jarvis.common.ai.BrainType.CLASSIFIER,"ollama",model,"Moderation"),com.jarvis.common.ai.AIJobType.BACKGROUND)){return budgets.currentPlan().modelMax();}
+    }
     @Override
     public ModerationModelResponse moderate(ModerationRequest request, String systemPrompt, String model, Duration timeout) {
         try {
             String endpoint = normalizeBaseUrl(ollamaProperties.baseUrl()) + "/api/chat";
             Map<String, Object> options = Map.of(
                     "temperature", 0,
-                    "num_predict", MODERATION_NUM_PREDICT
+                    "num_predict", MODERATION_NUM_PREDICT,
+                    "num_ctx", budgets==null?16384:Math.min(budgets.physicalContext(),metadataLimit(model))
             );
             OllamaChatRequest requestBody = new OllamaChatRequest(
                     model,
@@ -77,7 +85,10 @@ public class OllamaModerationModelClient implements ModerationModelClient {
                     .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                     .build();
             long started = System.nanoTime();
-            HttpResponse<byte[]> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
+            HttpResponse<byte[]> response;
+            try(var lease=gateway==null?null:gateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"moderation")){
+                response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
+            }
             long latencyMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
             if (response.body().length > MAX_RESPONSE_BYTES) {
                 throw new ModerationModelException("Moderation model response too large");

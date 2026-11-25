@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Owner activity snapshot 1.5.0",
+  "type": "object",
+  "required": [
+    "observedAt",
+    "scope",
+    "activeTasks",
+    "queuedTasks",
+    "activeAgents"
+  ],
+  "properties": {
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "scope": {
+      "const": "OWNER"
+    },
+    "capacityScope": {
+      "const": "PROCESS"
+    },
+    "resources": {
+      "type": "object"
+    },
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "activities": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "activeTasks": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "queuedTasks": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "activeAgents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "activeSynchronousAgents": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "activeToolExecutions": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "inferenceActive": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "inferenceQueued": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "gatewaySlotsInUse": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "gatewaySlotsConfigured": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reservedInteractive": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "backgroundSubmitSpacingMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "activeCompanionTasks": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "activeCodingTasks": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

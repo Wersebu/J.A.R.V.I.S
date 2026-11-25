@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task announcement 1.5.0",
+  "type": "object",
+  "required": [
+    "taskId",
+    "kind",
+    "state",
+    "text"
+  ],
+  "properties": {
+    "taskId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "kind": {
+      "enum": [
+        "ACKNOWLEDGMENT",
+        "PROGRESS",
+        "COMPLETED",
+        "FAILED"
+      ]
+    },
+    "state": {
+      "enum": [
+        "QUEUED",
+        "RUNNING",
+        "COMPLETED",
+        "FAILED"
+      ]
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    }
+  }
+}

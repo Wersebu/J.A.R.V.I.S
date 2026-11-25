@@ -4,5 +4,6 @@ import java.util.Map;
 public interface ModelGateway {
     Lease acquire(AIJobType jobType,String requestId);
     Map<String,Object> snapshot();
+    default Map<String,Object> snapshot(String owner) { return snapshot(); }
     interface Lease extends AutoCloseable { @Override void close(); }
 }

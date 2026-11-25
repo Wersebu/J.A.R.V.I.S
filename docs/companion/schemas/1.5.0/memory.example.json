@@ -1,0 +1,21 @@
+{
+  "id": "653aa5a0-8828-414d-aa77-b2394850b826",
+  "revision": 1,
+  "subject": "example-project",
+  "predicate": "language",
+  "content": "[SIMULATED] Example project uses Java.",
+  "confidence": 0.9,
+  "category": "PROJECT",
+  "state": "ACTIVE",
+  "conflictWith": null,
+  "createdAt": "2026-11-25T00:00:00Z",
+  "updatedAt": "2026-11-25T00:00:00Z",
+  "expiresAt": null,
+  "sources": [
+    {
+      "conversationId": "example-conversation",
+      "requestId": "example-request",
+      "timestamp": "2026-11-25T00:00:00Z"
+    }
+  ]
+}

@@ -66,3 +66,12 @@ Validation: 957 full-reactor tests passed; 3 Python tests passed; all schemas/11
 Preserved intervening commit 73d7665 on feature/companion-core and all existing work; no reset/amend/main merge. Claude repository and CLAUDE_STATUS.md remain untouched. Production GPU benchmark still awaits an owner-approved window; no production deployment/configuration/migration was performed.
 
 Final verification: explicit FAILED -> IN_PROGRESS retry retains failed revisions and requires fresh evidence; asynchronous status strings and nonzero string exit codes cannot complete steps. Full Maven reactor now passes 959 tests with zero failures/errors/skips (companion-stage3-final-verified.log). Three Python tests and all schemas/11 examples pass. The isolated server was refreshed with this tested build while idle, preserving its history.
+
+
+## Companion Phase 2 implementation — 2026-11-25
+
+Implemented on feature/companion-core from a0cc3c7: four-slot gateway/interactive reservation, priority aging, cancellation/deadlines, all production Ollama admission paths, model metadata/profile budgets, true asynchronous companion tools, deterministic acknowledgment/status text, task instruction mailbox, bounded title work, owner activity/inference metrics and Coding background classification/tracking. Contract 1.5.0 and schemas published in docs/companion and mirrored to SHARED. Autonomous Memory/Dreaming remain disabled by default.
+
+Latest owner benchmark changes physical target to **24576**, flash attention, q8_0 KV, four Ollama slots. Smaller logical budgets and 250 ms configurable background admission spacing mitigate prompt bursts without serializing generation or claiming GPU preemption. Native final-response telemetry distinguishes measured prompt evaluation/generation from unknown pre-first-output runtime state.
+
+Final Java21/Maven3.10 package regression: **977 tests passed, zero failures/errors/skips**. Five Python benchmark-harness tests passed. Packaged JAR smoke with loopback fake Ollama and isolated SQLite: READY/auth/chat/actual conversation delegation/independent RESEARCH tool execution/stable24K all PASS. See phase2/PHASE2_TEST_RESULTS.json, phase2/PHASE2_IMPLEMENTATION.md and phase2/PHASE2_CORE_COORDINATION.md for evidence, artifact hash, limits and manual rollout. No Windows-source changes, Ubuntu deployment, Ollama service edits or automatic production benchmark were performed.

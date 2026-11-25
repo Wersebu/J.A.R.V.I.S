@@ -16,7 +16,7 @@ public class CompanionSocket extends TextWebSocketHandler {
     private final ScheduledExecutorService pump;
     private final ExecutorService delivery=Executors.newVirtualThreadPerTaskExecutor();
     private static final class Link {
-        final WebSocketSession socket; final String owner; long cursor; boolean subscribed;
+        final WebSocketSession socket; final String owner; long cursor; boolean subscribed; long lastMetrics;
         final java.util.concurrent.atomic.AtomicBoolean draining=new java.util.concurrent.atomic.AtomicBoolean();
         Link(WebSocketSession socket){this.socket=socket; owner=(String)socket.getAttributes().get("jarvis.userId");}
     }
@@ -70,7 +70,12 @@ public class CompanionSocket extends TextWebSocketHandler {
             delivery.execute(()->{
                 try {
                     synchronized(link) {
-                        if(link.subscribed) deliver(link);
+                        if(link.subscribed) {
+                            deliver(link);
+                            if(link.subscribed&&System.nanoTime()-link.lastMetrics>TimeUnit.SECONDS.toNanos(1)) {
+                                send(link,"system.metrics",tasks.metrics(link.owner));link.lastMetrics=System.nanoTime();
+                            }
+                        }
                     }
                 } catch(Exception ex) {
                     links.remove(link.socket.getId());

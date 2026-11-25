@@ -39,6 +39,11 @@ import java.util.stream.Collectors;
 @Service
 public class DefaultActiveModelService implements ActiveModelService, InitializingBean {
 
+    private com.jarvis.common.ai.ModelGateway gateway;
+    private ContextBudgetService budgets;
+    private ModelMetadataResolver modelMetadata;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void inferenceInfrastructure(com.jarvis.common.ai.ModelGateway gateway,ContextBudgetService budgets,ModelMetadataResolver metadata){this.gateway=gateway;this.budgets=budgets;this.modelMetadata=metadata;}
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultActiveModelService.class);
 
     private final HttpClient httpClient;
@@ -234,14 +239,17 @@ public class DefaultActiveModelService implements ActiveModelService, Initializi
                     "messages", List.of(Map.of("role", "user",
                             "content", "What single colour fills this image? Answer with one word.",
                             "images", List.of(GREEN_PNG))),
-                    "options", Map.of("num_predict", 400, "temperature", 0));
+                    "options", Map.of("num_predict", 400, "temperature", 0, "num_ctx", budgets==null?16384:Math.min(budgets.physicalContext(),modelMetadata.resolve(model).maxContext())));
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(endpoint))
                     .timeout(Duration.ofSeconds(180)) // the first call may load the model
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
                     .build();
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response;
+            try(var lease=gateway==null?null:gateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"vision-capability-probe")){
+                response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            }
             String answer = response.statusCode() >= 200 && response.statusCode() < 300
                     ? objectMapper.readTree(response.body()).path("message").path("content").asText("")
                     : "";
@@ -296,6 +304,7 @@ public class DefaultActiveModelService implements ActiveModelService, Initializi
                     normalized, installed.stream().map(InstalledModel::name).collect(Collectors.joining(",")));
             return ModelSwitchResult.rejected(activeModel(), "Model is not installed in Ollama: " + normalized);
         }
+        if(modelMetadata!=null){try{modelMetadata.invalidate();modelMetadata.resolve(normalized);}catch(RuntimeException ex){return ModelSwitchResult.rejected(activeModel(),"Model metadata could not be verified");}}
         String previous = activeModel.getAndSet(normalized);
         persist(normalized);
         LOGGER.info("[JARVIS] [MODEL] Active model switched: previous={} active={}", previous, normalized);

@@ -56,6 +56,8 @@ class DefaultConversationTitleServiceTest {
         assertThat(record.title()).isEqualTo("Migracja SQLite rozmow");
         assertThat(record.titleSource()).isEqualTo("GENERATED");
         assertThat(provider.jobType).isEqualTo(AIJobType.BACKGROUND);
+        assertThat(provider.profile).isEqualTo("conversation-title");
+        assertThat(provider.reasoning).isEqualTo(com.jarvis.common.ai.ReasoningLevel.LOW);
         assertThat(eventBus.events).extracting(CognitiveEvent::event)
                 .containsExactly(
                         CognitiveEventType.CONVERSATION_TITLE_UPDATED,
@@ -254,6 +256,8 @@ class DefaultConversationTitleServiceTest {
         };
         private int calls;
         private AIJobType jobType;
+        private String profile;
+        private com.jarvis.common.ai.ReasoningLevel reasoning;
 
         @Override
         public String provider() {
@@ -269,6 +273,7 @@ class DefaultConversationTitleServiceTest {
         public ChatResponse chat(Brain brain, String prompt, AIJobType jobType) {
             calls++;
             this.jobType = jobType;
+            this.profile=com.jarvis.common.ai.InferenceProfileContext.current();this.reasoning=brain.reasoningLevel();
             if (failure != null) {
                 throw failure;
             }

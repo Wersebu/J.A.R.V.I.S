@@ -148,7 +148,14 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
         }
     }
 
-    private WarmupResult warmup(String model, String keepAlive) {
+    private WarmupResult warmup(String model,String keepAlive){
+        return com.jarvis.common.ai.InferenceProfileContext.call("warmup",()->{
+            try(var profile=contextBudgetService.open(new com.jarvis.common.ai.Brain(com.jarvis.common.ai.BrainType.CLASSIFIER,"ollama",model,"Warmup"),com.jarvis.common.ai.AIJobType.BACKGROUND)){
+                return warmupResolved(model,keepAlive);
+            }
+        });
+    }
+    private WarmupResult warmupResolved(String model, String keepAlive) {
         long startedNano = System.nanoTime();
         String endpoint = normalizeBaseUrl(ollamaProperties.baseUrl()) + "/api/generate";
         OllamaGenerateRequest requestBody = new OllamaGenerateRequest(

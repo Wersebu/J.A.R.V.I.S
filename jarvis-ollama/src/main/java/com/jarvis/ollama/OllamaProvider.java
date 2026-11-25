@@ -162,7 +162,8 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
         long startedNano = System.nanoTime();
         String requestId = diagnosticsRequestId();
         boolean hasImages = images != null && !images.isEmpty();
-        try {
+        try (var profileScope = contextBudgetService.open(brain, jobType); var deadline = new InferenceDeadline()) {
+            brain = profileScope.brain(brain);
             LOGGER.info("[JARVIS][requestId={}][OLLAMA] HTTP_CALL_PREPARING model={} reasoning={}",
                     requestId, brain.model(), brain.reasoningLevel());
             eventSink.publish(StatusChangedEvent.create(ChatEventType.MODEL_LOADING, conversationId, "MODEL_LOADING"));
@@ -179,10 +180,10 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                     "reasoningLevel", brain.reasoningLevel().name()
             ));
 
+            Object think = resolveThink(brain);
             try (OllamaRequestCoordinator.Permit ignored = requestCoordinator.acquire(jobType, requestId)) {
                 long httpPreparationStarted = System.nanoTime();
-                String budgetedPrompt = contextBudgetService.fitPrompt(brain.model(), prompt);
-                Object think = resolveThink(brain);
+                String budgetedPrompt = contextBudgetService.fitPrompt(brain.model(), prompt, images==null?0:images.size());
                 String requestJson = hasImages
                         ? objectMapper.writeValueAsString(buildChatRequestWithImages(brain, budgetedPrompt, images, think))
                         : objectMapper.writeValueAsString(new OllamaGenerateRequest(
@@ -203,10 +204,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                 // real HTTP body below, including the post-context-budgeting prompt text.
                 AiTraceLogger.logOutboundAiRequest(requestId, brain.model(), endpoint, jobType.name(),
                         brain.reasoningLevel().name(), AiTraceTurnContext.current(), requestJson);
-                // No per-request timeout - a slow local model genuinely still generating must
-                // never be cut off mid-response purely because a clock ran out (matches the
-                // NativeToolLoopService wall-clock timeout, which is disabled by default for the
-                // same reason).
+                // Profile deadline also bounds streaming body reads.
                 HttpRequest httpRequest = HttpRequest.newBuilder()
                         .uri(URI.create(endpoint))
                         .header("Content-Type", "application/json")
@@ -232,6 +230,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                                 "severity", "GREEN"
                         ));
                 HttpResponse<InputStream> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+                deadline.body(httpResponse.body());
                 long ollamaRequestLatencyMs = nanosToMillis(System.nanoTime() - requestStartedNano);
                 if (diagnostics != null) {
                     diagnostics.setResponseHeadersReceivedMs(ollamaRequestLatencyMs);
@@ -260,6 +259,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                 }
 
                 if (httpResponse.statusCode() < 200 || httpResponse.statusCode() >= 300) {
+                    httpResponse.body().close();
                     LOGGER.error("[JARVIS][requestId={}][OLLAMA] HTTP_ERROR status={}", requestId, httpResponse.statusCode());
                     throw new OllamaException("Ollama request failed with status " + httpResponse.statusCode());
                 }
@@ -272,6 +272,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                 ));
                 streamResponse(conversationId, brain, httpResponse.body(), startedAt, startedNano, ollamaRequestLatencyMs, jobType, eventSink,
                         budgetedPrompt, images == null ? List.of() : images);
+                deadline.check();
             }
         } catch (JsonProcessingException exception) {
             LOGGER.error("[JARVIS] Ollama JSON error", exception);
@@ -308,7 +309,10 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
     ) {
         String requestId = diagnosticsRequestId();
         String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/chat";
-        try {
+        try (var profileScope = contextBudgetService.open(brain, jobType); var deadline = new InferenceDeadline()) {
+            brain = profileScope.brain(brain);
+            tools = contextBudgetService.selectTools(messages, tools);
+            messages = contextBudgetService.fitMessages(messages, tools);
             LOGGER.info("[JARVIS][requestId={}][OLLAMA] NATIVE_TOOL_CHAT_PREPARING model={} tools={}",
                     requestId, brain.model(), tools == null ? 0 : tools.size());
             publishCognitive(jobType, CognitiveEventType.MODEL_REQUEST_STARTED, "REQUESTING",
@@ -318,6 +322,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                             "provider", provider(),
                             "toolDefinitions", tools == null ? 0 : tools.size()
                     ));
+            Object nativeThink = resolveThink(brain);
             try (OllamaRequestCoordinator.Permit ignored = requestCoordinator.acquire(jobType, requestId)) {
                 // stream=true (previously false): this is the only way to see the model's
                 // "thinking" live for a native-tool-loop turn instead of it being a total black box
@@ -332,7 +337,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                         toOllamaMessages(messages),
                         toOllamaTools(tools),
                         true,
-                        resolveThink(brain),
+                        nativeThink,
                         properties.keepAlive(),
                         contextBudgetService.ollamaOptions()
                 );
@@ -343,17 +348,14 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                 AiTraceLogger.logOutboundAiRequest(requestId, brain.model(), endpoint, jobType.name(),
                         brain.reasoningLevel().name(), AiTraceTurnContext.current(), requestJson);
                 long started = System.nanoTime();
-                // No per-request timeout - see the identical comment on the streaming chat request
-                // above. A native tool-call turn with a large tool schema and a slow local model
-                // can legitimately take well over 5 minutes to generate; that used to abort the
-                // turn with HttpTimeoutException regardless of how much real progress the model was
-                // making, defeating the NativeToolLoopService wall-clock timeout being disabled.
+                // Profile deadline also bounds streaming body reads.
                 HttpRequest httpRequest = HttpRequest.newBuilder()
                         .uri(URI.create(endpoint))
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                         .build();
                 HttpResponse<InputStream> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+                deadline.body(httpResponse.body());
                 if (httpResponse.statusCode() < 200 || httpResponse.statusCode() >= 300) {
                     String errorBody = new String(httpResponse.body().readAllBytes(), StandardCharsets.UTF_8);
                     LOGGER.error("[JARVIS][requestId={}][OLLAMA] NATIVE_TOOL_CHAT_HTTP_ERROR status={} body={}",
@@ -380,6 +382,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                                 "finishReason", modelResponse.finishReason(),
                                 "severity", severity(durationMs)
                         ));
+                deadline.check();
                 return modelResponse;
             }
         } catch (JsonProcessingException exception) {
@@ -502,6 +505,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                     promptEvalCount = response.promptEvalCount();
                     evalCount = response.evalCount();
                     publishTokenUsage(jobType, brain, promptEvalCount, evalCount);
+                    publishNativePhaseMetrics(jobType,brain,response);
                     break;
                 }
             }
@@ -621,7 +625,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
         );
         publishMetrics(jobType, brain, metrics, generationTimeMs,
                 qwenBudgetTarget ? new QwenThinkingBudgetOutcome(true, qwenThinkingBudgetProperties.getMode(), configuredMaxTokens, state.estimatedThinkingTokens, thinkingLimited)
-                        : QwenThinkingBudgetOutcome.notApplicable());
+                        : QwenThinkingBudgetOutcome.notApplicable(),state.finalPromptEvalDurationNanos!=null&&state.finalEvalDurationNanos!=null);
 
         LOGGER.info(
                 "[JARVIS] Generation time: {} ms, tokens: {}, tokens per second: {}",
@@ -680,6 +684,8 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
 
                 OllamaGenerateResponse response = objectMapper.readValue(line, OllamaGenerateResponse.class);
                 if (Boolean.TRUE.equals(response.done())) {
+                    handleThinkingChunk(response.thinking(),conversationId,brain,jobType,eventSink,startedNano,state);
+                    handleContentChunk(response.response(),conversationId,brain,jobType,eventSink,startedNano,state);
                     state.finalTotalDurationNanos = response.totalDuration();
                     state.finalLoadDurationNanos = response.loadDuration();
                     state.finalPromptEvalDurationNanos = response.promptEvalDuration();
@@ -697,7 +703,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                 handleContentChunk(response.response(), conversationId, brain, jobType, eventSink, startedNano, state);
             }
         }
-        return false;
+        throw new OllamaException("Ollama stream ended without a completion marker");
     }
 
     /**
@@ -728,6 +734,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
 
                 OllamaChatResponse response = objectMapper.readValue(line, OllamaChatResponse.class);
                 if (Boolean.TRUE.equals(response.done())) {
+                    if(response.message()!=null){handleThinkingChunk(response.message().thinking(),conversationId,brain,jobType,eventSink,startedNano,state);handleContentChunk(response.message().content(),conversationId,brain,jobType,eventSink,startedNano,state);}
                     state.finalTotalDurationNanos = response.totalDuration();
                     state.finalLoadDurationNanos = response.loadDuration();
                     state.finalPromptEvalDurationNanos = response.promptEvalDuration();
@@ -748,7 +755,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                 handleContentChunk(content, conversationId, brain, jobType, eventSink, startedNano, state);
             }
         }
-        return false;
+        throw new OllamaException("Ollama stream ended without a completion marker");
     }
 
     /**
@@ -883,6 +890,8 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
      * every call site must go through this instead of unconditionally sending the reasoning level.
      */
     private Object resolveThink(Brain brain) {
+        Boolean verified=contextBudgetService.thinkingSupported();
+        if(verified!=null)return verified?brain.reasoningLevel().name().toLowerCase(java.util.Locale.ROOT):null;
         if (!activeModelService.activeModelCapabilities().contains(ModelCapability.THINKING)) {
             return null;
         }
@@ -966,10 +975,20 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
      */
     @Override
     public String describeImage(String model, String question, String base64Image, boolean forceCpu) {
+        return com.jarvis.common.ai.InferenceProfileContext.call("vision-description",()->describeImageProfiled(model,question,base64Image,forceCpu));
+    }
+    private String describeImageProfiled(String model,String question,String base64Image,boolean forceCpu){
+        try(var profile=contextBudgetService.open(new Brain(com.jarvis.common.ai.BrainType.CLASSIFIER,"ollama",model,"Vision description"),AIJobType.BACKGROUND);var deadline=new InferenceDeadline()){
+            String result=describeImageResolved(profile.brain(new Brain(com.jarvis.common.ai.BrainType.CLASSIFIER,"ollama",model,"Vision description")).model(),question,base64Image,forceCpu);
+            deadline.check();return result;
+        }
+    }
+    private String describeImageResolved(String model,String question,String base64Image,boolean forceCpu){
         String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/generate";
-        Map<String, Object> options = forceCpu ? Map.of("num_gpu", 0) : Map.of();
+        Map<String, Object> options = new LinkedHashMap<>(contextBudgetService.currentPlan()==null?Map.of():contextBudgetService.ollamaOptions());
+        if(forceCpu)options.put("num_gpu",0);
         OllamaGenerateRequest requestBody = new OllamaGenerateRequest(
-                model, question, false, null, properties.keepAlive(), options, List.of(base64Image));
+                model, contextBudgetService.fitPrompt(model,question), false, null, properties.keepAlive(), options, List.of(base64Image));
         LOGGER.info("[JARVIS][requestId={}][OLLAMA] VISION_DESCRIBE_REQUEST model={} forceCpu={}",
                 diagnosticsRequestId(), model, forceCpu);
         try (var lease=requestCoordinator.acquire(AIJobType.BACKGROUND,diagnosticsRequestId())) {
@@ -1018,6 +1037,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
         LOGGER.info("[JARVIS][requestId={}][QWEN_THINKING_BUDGET] continuation request sent model={} endpoint={}",
                 diagnosticsRequestId(), brain.model(), endpoint);
         HttpResponse<InputStream> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
+        InferenceDeadline.attach(response.body());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new OllamaException("Qwen thinking-budget continuation request failed with status " + response.statusCode());
         }
@@ -1267,8 +1287,21 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
         );
     }
 
+    private void publishNativePhaseMetrics(AIJobType type,Brain brain,OllamaChatResponse response){
+        var metadata=new LinkedHashMap<String,Object>();metadata.put("model",brain.model());metadata.put("phaseTimingSource","OLLAMA_FINAL_RESPONSE");
+        metadata.put("phaseTimingsMeasured",response.promptEvalDuration()!=null&&response.evalDuration()!=null);
+        if(response.promptEvalDuration()!=null){metadata.put("promptEvalDurationMs",response.promptEvalDuration()/1_000_000.0);publishNativeTrace(type,brain,"OLLAMA_PROMPT_EVAL",TimeUnit.NANOSECONDS.toMillis(response.promptEvalDuration()));}
+        if(response.evalDuration()!=null){metadata.put("evalDurationMs",response.evalDuration()/1_000_000.0);publishNativeTrace(type,brain,"OLLAMA_GENERATION",TimeUnit.NANOSECONDS.toMillis(response.evalDuration()));}
+        if(response.promptEvalCount()!=null)metadata.put("promptEvalCount",response.promptEvalCount());
+        if(response.evalCount()!=null)metadata.put("evalCount",response.evalCount());
+        if(response.promptEvalCount()!=null&&response.promptEvalDuration()!=null&&response.promptEvalDuration()>0)
+            metadata.put("promptTokensPerSecond",response.promptEvalCount()*1e9/response.promptEvalDuration());
+        if(response.evalCount()!=null&&response.evalDuration()!=null&&response.evalDuration()>0)
+            metadata.put("generationTokensPerSecond",response.evalCount()*1e9/response.evalDuration());
+        publishCognitive(type,CognitiveEventType.OLLAMA_METRICS,"MEASURED","Completed inference phase timings","model:"+brain.model(),metadata);
+    }
     private void publishMetrics(AIJobType jobType, Brain brain, OllamaInferenceMetrics metrics, long requestTotalMs,
-            QwenThinkingBudgetOutcome qwenThinkingBudget) {
+            QwenThinkingBudgetOutcome qwenThinkingBudget,boolean phaseTimingsMeasured) {
         InferenceDiagnostics activeDiagnostics = InferenceDiagnosticsContext.current();
         diagnostics(d -> {
             d.setOllamaMetrics(metrics);
@@ -1277,6 +1310,8 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
         });
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("model", metrics.model());
+        metadata.put("phaseTimingSource","OLLAMA_FINAL_RESPONSE");
+        metadata.put("phaseTimingsMeasured",phaseTimingsMeasured);
         metadata.put("reasoningLevel", brain.reasoningLevel().name());
         metadata.put("totalDurationMs", metrics.totalDurationMs());
         metadata.put("requestTotalMs", requestTotalMs);

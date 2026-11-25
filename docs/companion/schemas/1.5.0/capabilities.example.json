@@ -1,0 +1,9 @@
+{
+  "contractVersion": "1.5.0",
+  "tasks": true,
+  "taskPlans": true,
+  "planEvidenceRequired": true,
+  "durableHistory": true,
+  "voiceStreaming": false,
+  "providerMode": "SIMULATED"
+}

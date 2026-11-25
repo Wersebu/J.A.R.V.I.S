@@ -1,0 +1,27 @@
+# Core Phase 2 — Windows coordination, contract 1.5.0
+
+2026-11-25. Core implementation completed on `feature/companion-core`; final verification is recorded in PHASE2_IMPLEMENTATION.md. Windows sources and Ubuntu services were not changed. The latest owner benchmark selects **four slots, one interactive reservation, stable physical 24576**, FLASH_ATTENTION=1 and q8_0 KV. Earlier 16K targets in historical design documents are superseded. Core does not set Ollama service environment variables.
+
+## Wire contract ready for Claude
+
+- `/api/v1/companion/capabilities`: contractVersion **1.5.0**, optional inferenceTelemetry / asyncDelegation / taskInstructions flags. Versioned schemas: `../schemas/1.5.0`; historical schemas preserved.
+- `/state` and `system.snapshot`: additive `metrics`. Subscribed sockets: transient **system.metrics**, sequence **0**, approximately once a second. Do not feed these into journal replay cursors or discard them as old sequence 0 events. Task/plan/instruction events retain normal journal sequencing.
+- Independent counters: activeCompanionTasks, activeCodingTasks, activeTasks (sum of actual running Companion/Coding work), activeSynchronousAgents, activeAgents (running tasks plus helpers), queuedTasks (Companion queue), activeToolExecutions, inferenceActive, inferenceQueued. Do not sum overlapping counters into a fictitious process total. Coding's existing CODING_TASK_* events still describe its own persistent lifecycle and waiting-for-user states.
+- Dynamic capacity fields: gatewaySlotsConfigured, gatewaySlotsInUse, reservedInteractive, backgroundSubmitSpacingMs. `capacityScope=PROCESS` means occupancy includes all owners; work details/counters are owner-filtered. This is process-local Core admission, not a direct GPU-slot counter. `ADMITTED` does not prove the GPU is currently decoding.
+- Request details: inferenceId, requestId, optional taskId, profileId, model, physicalContext, inputBudget, queueWaitMs, elapsedMs, phase ADMITTED / WAITING_GATEWAY. Synchronous helper activity has its own request identity. Missing fields mean unavailable.
+- Optional resource object has status/source/time, gpus[] with actual byte units when measurable, and availableHostRamBytes on Linux. Omit/hide unavailable or stale values. No static Whisper allocation, no heap-derived VRAM, no guessed activeModels or aggregate throughput.
+- Task DTO adds nullable **conversationId** (source dialogue) and **executionConversationId** (independent task conversation). Old historical tasks may have null links. The existing activeProcesses field keeps its previous Companion-only nonterminal semantics.
+- Main async delegation emits a deterministic receipt answer and tool-loop terminationReason **DELEGATED**, completed=false, goalSatisfied=false. This ends the conversational submission operation; it is not task completion. Existing agent__run remains synchronous.
+- Task result delivery: `task.completed.payload.result` plus task/conversation identifiers; render in the linked conversation or task details. Core does not silently append asynchronous results to source conversation memory. Persisted result remains available through get/history.
+- `assistant.task.announcement` remains the notification family; all text is now deterministic and bound to actual state. Deduplicate journal events on reconnect. Avoid speaking the main receipt acknowledgment and the equivalent task-created announcement twice. No LLM call is needed in VoiceConductor for acknowledgment/progress.
+- Additional instruction: POST `/api/v1/companion/tasks/{id}/instructions` with `{message}` (1..4000 chars, mailbox max 16), or companion__instruct. New journal event `task.instruction.accepted` says delivery NEXT_MODEL_ROUND. Late/terminal requests return conflict; cancellation interrupts worker/transport and does not undo effects.
+
+## Prefill latency and diagnostics
+
+Owner measurements at 24K: idle TTFT/first content **159/342 ms**, background prefill **1116/3367 ms**, background generation **279–288/762–811 ms**. A reserved lease does not reserve GPU compute or preempt an Ollama request. Background admission spacing defaults to a configurable **250 ms**, 0 disables it; this mitigates bursts without serializing generation and is not yet a benchmark-qualified optimal value. Smaller logical input budgets remain independent from physical 24K.
+
+`OLLAMA_METRICS` now also reports native tool-chat completed-phase measurements. `phaseTimingSource=OLLAMA_FINAL_RESPONSE`, `phaseTimingsMeasured` and actual promptEvalDurationMs / evalDurationMs distinguish measured prefill/generation work from unavailable telemetry. Missing native phase values are omitted. Before first output, no reliable live separation of runtime queue, loading, prefill and transport is claimed. Keep those states unresolved in the UI; do not label the whole TTFT interval as measured prefill.
+
+## Client acceptance still to validate jointly
+
+Accept minor contract 1.5.0 and DELEGATED; process sequence-0 metrics independently of replay; show actual ordinary conversation while tasks run; render linked completion/failure/cancellation; retain coding-specific lifecycle; hide unknown resource/throughput rows; prevent stale subtitles and duplicate voice announcements. Core regression and packaged-JAR smoke are separate from Windows end-to-end validation. Full evidence and operator rollout steps are in PHASE2_IMPLEMENTATION.md.

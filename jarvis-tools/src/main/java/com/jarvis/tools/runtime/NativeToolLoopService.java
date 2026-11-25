@@ -68,6 +68,8 @@ import com.jarvis.tools.planner.TaskPlanService;
  */
 @Service
 public class NativeToolLoopService {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.jarvis.common.ai.InferenceContextPolicy inferenceContextPolicy;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(NativeToolLoopService.class);
 
@@ -149,7 +151,7 @@ public class NativeToolLoopService {
     /** Per-result budget for agent tools (pc, coding, plan, output, MCP) before visible shortening. */
     private int maxResultChars = 16_000;
     /** Budget for all loop message contents before the oldest tool results are elided. */
-    private int contextWindow = 16_384;
+    private int contextWindow = 24_576;
     private int reservedOutputTokens = 2_048;
     private static final int MAX_PLAN_GATE_ATTEMPTS = 1;
 
@@ -279,10 +281,10 @@ public class NativeToolLoopService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setContextBudgets(
             @org.springframework.beans.factory.annotation.Value("${jarvis.tools.max-result-chars:16000}") int maxResultChars,
-            @org.springframework.beans.factory.annotation.Value("${jarvis.ai.context-window:16384}") int window,
+            @org.springframework.beans.factory.annotation.Value("${jarvis.inference.physical-context-window:24576}") int window,
             @org.springframework.beans.factory.annotation.Value("${jarvis.ai.reserved-output-tokens:2048}") int reserve) {
         this.maxResultChars = Math.max(2_000, maxResultChars);
-        this.contextWindow = window > 0 ? window : 16_384;
+        this.contextWindow = window > 0 ? window : 24_576;
         this.reservedOutputTokens = reserve > 0 && reserve < contextWindow ? reserve : Math.max(512, contextWindow / 8);
     }
 
@@ -429,8 +431,10 @@ public class NativeToolLoopService {
         List<NativeToolDefinition> definitions = scope.definitions();
         if (Boolean.TRUE.equals(request.context().get("subagent"))) {
             // Helper agents cannot start further helpers; do not offer the tool at all.
-            definitions = definitions.stream().filter(definition -> !definition.name().startsWith("agent__")).toList();
+            definitions = definitions.stream().filter(definition -> !definition.name().startsWith("agent__")&&!definition.name().startsWith("companion__")).toList();
         }
+        if(com.jarvis.common.companion.TaskExecutionContext.current()!=null)
+            definitions=definitions.stream().filter(d->!d.name().equals("companion__submit")).toList();
         if (!workingDirectory(request).isBlank() && activeCodingWorkspaceId(request).isBlank()) {
             // The conversation works in a folder chosen in the chat (pc__* tools). coding__* tools need a
             // workspace pinned in the "Kod" tab and would only fail and confuse the model here.
@@ -440,7 +444,7 @@ public class NativeToolLoopService {
             // The preloaded workflow names the tools its job needs; offering only those (plus knowledge) keeps the
             // prompt small - each definition is prompt-evaluation time on a local model.
             List<NativeToolDefinition> scoped = definitions.stream()
-                    .filter(definition -> named.contains(definition.name()) || WORKFLOW_KNOWLEDGE_TOOLS.contains(definition.name()))
+                    .filter(definition -> named.contains(definition.name()) || WORKFLOW_KNOWLEDGE_TOOLS.contains(definition.name()) || definition.name().startsWith("companion__"))
                     .toList();
             if (scoped.stream().anyMatch(definition -> named.contains(definition.name()))) {
                 LOGGER.info("[NATIVE_TOOL_SCHEMA] requestId={} workflowScoped=true from={} to={}", request.requestId(),
@@ -677,6 +681,7 @@ public class NativeToolLoopService {
                 request.requestId(), agentState.goalContract().originalGoal(), agentState.goalContract().completionCriteria().size());
 
         for (int step = 1; step <= maxCalls; step++) {
+            for(String instruction:com.jarvis.common.companion.TaskInstructionContext.drain()) messages.add(ModelMessage.user("Additional authenticated user instruction for this task: " + instruction));
             if (maxCalls < properties.maxCallsAgent() && (hasUnfinishedPlan(request) || usedAgentTools(steps))) {
                 // A plan created mid-loop, or real work on the PC/project, turns this into an agent task.
                 maxCalls = properties.maxCallsAgent();
@@ -717,6 +722,11 @@ public class NativeToolLoopService {
                         "Powtarzane odczyty nie dają nowych danych — zmień podejście", null, step, Map.of());
             }
             try {
+                if(inferenceContextPolicy!=null){
+                    compactLargeResultsForProfile(request,messages);
+                    var selected=inferenceContextPolicy.prepare(request.brain(),AIJobType.MAIN_MODEL,messages,List.copyOf(offered));
+                    messages.clear();messages.addAll(selected.messages());offered.clear();offered.addAll(selected.tools());
+                }
                 checkpointIfNeeded(request, messages, List.copyOf(offered), step);
                 response = selectProvider(request).toolChat(request.brain(), messages, List.copyOf(offered), AIJobType.MAIN_MODEL);
             } catch (ContextCheckpointException exception) {
@@ -1176,10 +1186,22 @@ public class NativeToolLoopService {
                         }
                     }
                 }
+                var receipts=results.stream().filter(r->r.success()&&r.tool().equalsIgnoreCase("companion")&&r.operation().equalsIgnoreCase("SUBMIT")&&r.data().get("taskId")!=null).toList();
+                if(!receipts.isEmpty()){
+                    String acknowledgment="Przyjęto do wykonania w tle: "+receipts.stream().map(r->String.valueOf(r.data().get("taskId"))).collect(java.util.stream.Collectors.joining(", "))+". Możemy kontynuować rozmowę; wynik pojawi się w zadaniu.";
+                    var info=buildTerminationInfo(ToolLoopTerminationReason.DELEGATED,false,false,started,step,maxCalls,steps,results,acknowledgment,"Await background task result",List.of());
+                    publish(request,CognitiveEventType.TOOL_LOOP_FINISHED,"DELEGATED","Background task accepted",null,step,terminationMetadata(Map.of("taskIds",receipts.stream().map(r->r.data().get("taskId")).toList()),info));
+                    return new ToolCallingResult(true,acknowledgment,steps,results,info);
+                }
                 continue;
             }
 
             String content = response.content().strip();
+            boolean receipt=results.stream().anyMatch(r->r.success()&&(r.tool().equalsIgnoreCase("companion")&&r.data().get("taskId")!=null||r.tool().equalsIgnoreCase("agent")&&r.operation().equalsIgnoreCase("RUN")));
+            if(com.jarvis.common.companion.DelegationClaims.started(content)&&!receipt)
+                content="Nie ma potwierdzenia uruchomienia agenta. Zadanie nie zostało utworzone przez backend.";
+            if(backgroundPromiseRejected&&promisesBackgroundWork(content)&&!receipt)
+                content="Nie ma potwierdzenia utworzenia zadania w tle. Nie mogę potwierdzić dalszego wykonania.";
             if (!content.isBlank()) {
                 LOGGER.info("[AGENT_LOOP] requestId={} turn={} action=FINAL_CONTENT", request.requestId(), step);
                 // General cross-cutting no-progress backstop (round 5 of the reported production
@@ -1317,7 +1339,7 @@ public class NativeToolLoopService {
                     continue;
                 }
 
-                if (!backgroundPromiseRejected && promisesBackgroundWork(content)) {
+                if (!backgroundPromiseRejected && promisesBackgroundWork(content) && results.stream().noneMatch(r -> r.success() && r.tool().equalsIgnoreCase("companion") && r.data().get("taskId") != null)) {
                     // Nothing runs after this loop ends, so "I'm processing it now / will get back to you" can never be
                     // kept. Give the model one chance to actually do the work, or to say honestly what it needs.
                     backgroundPromiseRejected = true;
@@ -1326,7 +1348,7 @@ public class NativeToolLoopService {
                             "Reply promised background work, continuing", null, step, Map.of("reason", "BACKGROUND_PROMISE"));
                     messages.add(ModelMessage.assistant(content, List.of()));
                     messages.add(ModelMessage.system("Your reply says work is going on now or later (\"przetwarzam\", \"w tle\", "
-                            + "\"wrócę z wynikiem\"...). That is impossible: nothing runs after you answer, and the user has NOT seen "
+                            + "\"wrócę z wynikiem\"...). No backend task receipt exists for this claim. Create one with companion__submit or do the work now; the user has NOT seen "
                             + "that reply. Either do the work now by calling the tools, or answer honestly what is missing or what "
                             + "failed (including tool errors) and what the user should do."));
                     if (step >= maxCalls) {
@@ -2274,8 +2296,9 @@ public class NativeToolLoopService {
                 For links or listing requests, return only URLs from tool evidence and never invent item ids.
                 Stop with plain final content only when enough evidence is available.
 
-                There is no background process after this turn: if you stop calling tools before the task is
-                actually done, nothing further will ever be delivered to the user - do not claim otherwise.
+                Independent work continues only after a successful companion__submit receipt with a real taskId.
+                Without that receipt, nothing continues after this turn. Never invent execution or completion.
+                Use companion__submit for independent work; agent__run waits for an immediately needed result.
                 If a task needs several more tool calls and is worth a status update, call system__notify_user
                 with one short message, then immediately keep calling tools - it does not end your turn and is
                 never a substitute for finishing the task.
@@ -2424,7 +2447,7 @@ public class NativeToolLoopService {
                 + "- pc__shell keeps the working directory per conversation. A long command returns a processId while it keeps "
                 + "running - use pc__shell_wait (optionally untilPattern) instead of starting it again.\n"
                 + "- A result marked _shortened has an outputId; read the omitted part with output__read / output__grep.\n"
-                + "- For a broad search or analysis whose raw output would be large, delegate it with agent__run and work from "
+                + "- For a broad search or analysis whose raw output would be large, delegate it with agent__run when its immediate result is required and work from "
                 + "its report.\n"
                 + "- If you broke something, pc__undo restores the previous content of files you changed.\n"
                 + "- Quality loop for anything you create (web page, UI, document, code): do not stop at the first draft. "
@@ -2448,7 +2471,7 @@ public class NativeToolLoopService {
                 + "asynchronous. Respect API errors, account requirements and Retry-After; never fabricate results.\n");
         String companionTask=com.jarvis.common.companion.TaskExecutionContext.current();
         if(companionTask!=null){block.append("\nBackend context: companion task ").append(companionTask).append(". Use taskplan tools, not legacy plan tools. Only executable work belongs in this checklist; the final response needs no artificial execution step. If work happened before planning, verify it with a fresh read rather than repeating side effects.\n");if(companionPlans!=null)companionPlans.find(com.jarvis.common.auth.CurrentUserContext.requireAuthenticatedUserId(),companionTask).ifPresent(p->block.append("Current authoritative plan revision: ").append(p.revision()).append("; call taskplan__get before modifying it.\n"));}
-        else block.append("\nBackend context: ordinary conversation; no companion task is active.\n");
+        else block.append("\nBackend context: ordinary conversation; no companion task is active. You are J.A.R.V.I.S. Use companion__submit for independent background work and continue talking; agent__run is synchronous. Only a successful backend receipt confirms task acceptance. Never claim an agent was started, a service accessed, or work completed without actual tool evidence.\n");
         unfinishedPlan(request).ifPresent(plan -> block
                 .append("\nThis conversation has an UNFINISHED plan from earlier - continue it (do not recreate it "
                         + "unless the user asked for something different):\n")
@@ -3111,7 +3134,7 @@ public class NativeToolLoopService {
 
     private void checkpointIfNeeded(ToolCallingRequest request, List<ModelMessage> messages,
                                     List<NativeToolDefinition> tools, int step) {
-        int inputBudget = contextWindow - reservedOutputTokens;
+        int inputBudget = inferenceContextPolicy==null?contextWindow-reservedOutputTokens:inferenceContextPolicy.inputBudget(request.brain(),AIJobType.MAIN_MODEL);
         int before = ContextBudget.estimatedInputTokens(messages, tools, objectMapper);
         if (before <= inputBudget * 0.75) return;
         // Never let the provider silently truncate an already oversized checkpoint request.
@@ -3143,6 +3166,21 @@ public class NativeToolLoopService {
         LOGGER.info("[CONTEXT_BUDGET] requestId={} step={} checkpoint=true estimatedBefore={} estimatedAfter={} contextWindow={}",
                 request.requestId(), step, before, after, contextWindow);
         if (after >= inputBudget) throw new ContextCheckpointException("Context remains too large after checkpoint");
+    }
+
+    /** Keep full evidence addressable while passing bounded, explicitly partial previews to background prompts. */
+    private void compactLargeResultsForProfile(ToolCallingRequest request,List<ModelMessage> messages){
+        if(toolOutputStore==null||inferenceContextPolicy==null)return;
+        int limit=Math.max(2000,Math.min(maxResultChars,inferenceContextPolicy.inputBudget(request.brain(),AIJobType.MAIN_MODEL)/2));
+        for(int i=0;i<messages.size();i++){
+            var message=messages.get(i);
+            if(!message.role().equals("tool")||message.content().length()<=limit)continue;
+            String id=toolOutputStore.put(message.content());
+            try{
+                String preview=objectMapper.writeValueAsString(Map.of("compacted",true,"outputId",id,"readWith","output__read", "preview",message.content().substring(0,Math.min(limit/2,message.content().length())),"note","Partial evidence only. Retrieve the required range from output__read; do not infer omitted fields or completion."));
+                messages.set(i,new ModelMessage(message.role(),preview,message.toolCalls(),message.toolCallId(),message.toolName(),message.images()));
+            }catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new ContextCheckpointException("Could not preserve a bounded tool result");}
+        }
     }
 
     private ToolCallingResult stopRepeatedReads(ToolCallingRequest request, List<ModelMessage> messages,

@@ -181,7 +181,7 @@ public class ModelExecutionStage implements PipelineStage {
         selectProvider(context).stream(context.conversationId(), context.brain(), mainPrompt, AIJobType.MAIN_MODEL, context.images(), event -> {
             if (event instanceof TokenEvent tokenEvent) {
                 StreamingStructuredResponseParser.ParserUpdate update = streamingParser.accept(tokenEvent.text());
-                handleParserUpdate(context, update, streamState, true);
+                handleParserUpdate(context, update, streamState, !com.jarvis.common.companion.DelegationClaims.requested(context.request().message()));
             }
             if (event instanceof ThinkingTokenEvent thinkingTokenEvent) {
                 streamState.thinking.append(thinkingTokenEvent.text());
@@ -211,6 +211,10 @@ public class ModelExecutionStage implements PipelineStage {
 
     private PipelineContext finalizeDecision(PipelineContext context, DecisionOutcome outcome) {
         MainModelAction action = outcome.action();
+        if(action.type()==MainModelActionType.FINAL_ANSWER&&com.jarvis.common.companion.DelegationClaims.requested(context.request().message())&&com.jarvis.common.companion.DelegationClaims.started(action.answer())){
+            action=new MainModelAction(MainModelActionType.FINAL_ANSWER,"Nie ma potwierdzenia utworzenia zadania przez backend. Nie rozpoczęto nowego agenta.","","UNVERIFIED_DELEGATION","",Map.of());
+            return finishStreamedUserFacingResponse(context,action.answer(),outcome.streamState()).withMetadata("mainModelAction",action.type().name());
+        }
         publishMainModelAction(context, action, outcome.durationMs());
         TELEMETRY_LOGGER.info(
                 "[JARVIS_TOOL_DECISION] requestId={} initialModelDecision={} toolRequestedByModel={} autoTriggered=false reason={} modelCalls=1 durationMs={}",

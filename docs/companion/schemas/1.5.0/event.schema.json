@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Companion Event 1.5.0",
+  "type": "object",
+  "required": [
+    "eventId",
+    "protocolVersion",
+    "timestamp",
+    "sequence",
+    "type",
+    "taskId",
+    "payload"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "protocolVersion": {
+      "const": "1.5.0"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "type": {
+      "type": "string",
+      "pattern": "^[a-z]+[.][a-z_.]+$"
+    },
+    "taskId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "task.created",
+              "task.started",
+              "task.cancel_requested",
+              "task.completed",
+              "task.failed",
+              "task.cancelled",
+              "task.timed_out",
+              "task.progress"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payload": {
+            "$ref": "task.schema.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "assistant.task.announcement"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "announcement.schema.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "system.snapshot"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "state.schema.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "system.connected"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": [
+              "contractVersion",
+              "serverInstanceId"
+            ],
+            "properties": {
+              "contractVersion": {
+                "const": "1.5.0"
+              },
+              "serverInstanceId": {
+                "type": "string",
+                "format": "uuid"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "enum": [
+              "task.plan.created",
+              "task.plan.updated",
+              "task.plan.step.updated",
+              "task.plan.completed"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "allOf": [
+              {
+                "$ref": "task.schema.json"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "plan"
+                ],
+                "properties": {
+                  "plan": {
+                    "$ref": "plan.schema.json"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "task.history.deleted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "task.schema.json"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "task.plan.completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "properties": {
+              "plan": {
+                "properties": {
+                  "status": {
+                    "const": "COMPLETED"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "system.metrics"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sequence": {
+            "const": 0
+          },
+          "payload": {
+            "$ref": "metrics.schema.json"
+          }
+        }
+      }
+    }
+  ]
+}

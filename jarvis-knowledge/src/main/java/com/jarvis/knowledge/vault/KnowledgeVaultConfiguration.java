@@ -20,6 +20,8 @@ import java.nio.file.Path;
  */
 @Configuration
 public class KnowledgeVaultConfiguration {
+    @org.springframework.beans.factory.annotation.Autowired
+    private ObjectProvider<com.jarvis.common.ai.ModelGateway> gateways;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(KnowledgeVaultConfiguration.class);
 
@@ -48,7 +50,7 @@ public class KnowledgeVaultConfiguration {
         KnowledgeVaultProperties.Embedding settings = vaultProperties.embedding();
         EmbeddingBackend backend = switch (settings.provider()) {
             case "none", "disabled", "" -> null;
-            case "ollama" -> new OllamaEmbeddingBackend(settings.baseUrl(), settings.model(), settings.forceCpu(), settings.timeout());
+            case "ollama" -> new OllamaEmbeddingBackend(settings.baseUrl(), settings.model(), settings.forceCpu(), settings.timeout(),gateways.getObject());
             case "openai", "openai-compatible", "tei" -> new OpenAiCompatibleEmbeddingBackend(settings.baseUrl(), settings.model(),
                     settings.apiKey(), "remote".equals(settings.tokenizer()), settings.timeout());
             case "core" -> {

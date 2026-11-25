@@ -11,6 +11,8 @@ public enum ToolLoopTerminationReason {
 
     /** The loop produced a real, verified final answer; nothing further was needed. */
     COMPLETED,
+    /** Independent work was accepted as a real asynchronous task; it is not completed yet. */
+    DELEGATED,
     /** The configured turn/call budget ({@code max-calls-fast}/{@code max-calls-research}) ran out. */
     MAX_TURNS_REACHED,
     /** The loop's own wall-clock budget ({@code timeout-seconds}) was exceeded. */

@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Task plan 1.5.0",
+  "type": "object",
+  "required": [
+    "planId",
+    "taskId",
+    "revision",
+    "title",
+    "createdAt",
+    "updatedAt",
+    "status",
+    "steps",
+    "completedStepCount",
+    "totalStepCount"
+  ],
+  "properties": {
+    "planId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "taskId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "enum": [
+        "ACTIVE",
+        "COMPLETED",
+        "CANCELLED",
+        "FAILED",
+        "INTERRUPTED"
+      ]
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "stepId",
+          "title",
+          "description",
+          "position",
+          "status",
+          "startedAt",
+          "completedAt",
+          "resultSummary",
+          "error",
+          "evidenceRef"
+        ],
+        "properties": {
+          "stepId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1000
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "IN_PROGRESS",
+              "COMPLETED",
+              "FAILED",
+              "SKIPPED",
+              "CANCELLED"
+            ]
+          },
+          "startedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "completedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "resultSummary": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1000
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1000
+          },
+          "evidenceRef": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "COMPLETED"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "evidenceRef": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "startedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "completedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "IN_PROGRESS"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "startedAt": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "completedAt": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "PENDING"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "startedAt": {
+                  "type": "null"
+                },
+                "completedAt": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 100
+    },
+    "completedStepCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "totalStepCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "COMPLETED"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "steps": {
+            "items": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "COMPLETED",
+                    "SKIPPED"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

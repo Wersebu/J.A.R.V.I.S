@@ -93,7 +93,7 @@ public class NativeToolSchemaMapper {
         Map<String, String> rejectedTools = new LinkedHashMap<>();
         for (ToolDefinition definition : toolRegistry.definitions()) {
             boolean storeAuditScope = resolvedIntent == ToolIntent.STORE_AUDIT;
-            if (storeAuditScope && !definition.name().equalsIgnoreCase("taskplan") && !isStoreAuditToolFamily(definition.name())) {
+            if (storeAuditScope && !definition.name().equalsIgnoreCase("taskplan") && !definition.name().equalsIgnoreCase("companion") && !isStoreAuditToolFamily(definition.name())) {
                 for (ToolOperationDefinition operation : definition.operations()) {
                     String functionName = definition.name().toLowerCase(Locale.ROOT) + "__" + operation.name().toLowerCase(Locale.ROOT);
                     rejectedTools.put(functionName, "STORE_AUDIT workflow scope: unrelated tool family");

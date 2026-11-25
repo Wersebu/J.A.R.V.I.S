@@ -53,6 +53,17 @@ class NativeToolLoopServiceWorkflowScopeTest {
     private volatile boolean addFails;
 
     @Test
+    void successfulAsyncReceiptEndsTurnWithoutAnotherModelCall() {
+        Deque<ModelResponse> turns=new ArrayDeque<>();
+        turns.add(toolCall("companion__submit",Map.of("message","independent research")));
+        var result=run(turns,Map.of());
+        assertThat(result.terminationInfo().terminationReason()).isEqualTo(ToolLoopTerminationReason.DELEGATED);
+        assertThat(result.terminationInfo().completed()).isFalse();
+        assertThat(offeredPerTurn).hasSize(1);
+        assertThat(result.finalAnswer()).contains("real-task-id");
+    }
+
+    @Test
     void aRealToolOutsideTheWorkflowScopeRunsAndItsFamilyIsOfferedFromThenOn() {
         Deque<ModelResponse> turns = new ArrayDeque<>();
         turns.add(toolCall("notes.ADD", Map.of("text", "Baniocha 05-532")));
@@ -80,7 +91,7 @@ class NativeToolLoopServiceWorkflowScopeTest {
         // The promise never reaches the user (later answers may still be judged by the goal gate, as before).
         assertThat(result.finalAnswer()).doesNotContain("przetwarzam", "odezwę się");
         assertThat(messagesPerTurn).hasSizeGreaterThanOrEqualTo(3);
-        assertThat(messagesPerTurn.get(2)).anySatisfy(message -> assertThat(message.content()).contains("nothing runs after you answer"));
+        assertThat(messagesPerTurn.get(2)).anySatisfy(message -> assertThat(message.content()).contains("No backend task receipt exists"));
     }
 
     @Test
@@ -137,10 +148,11 @@ class NativeToolLoopServiceWorkflowScopeTest {
         ToolDefinition knowledge = new ToolDefinition("knowledge", "Knowledge", List.of(
                 new ToolOperationDefinition("SEARCH_CONTENT", "Search.", List.of(new ToolArgumentDefinition("query", "string", true, "Query")),
                         false, ToolSafetyLevel.READ)));
+        ToolDefinition companion=new ToolDefinition("companion","Async delegation",List.of(new ToolOperationDefinition("SUBMIT","Create real task",List.of(new ToolArgumentDefinition("message","string",true,"Goal")),false,ToolSafetyLevel.READ)));
         return new ToolRegistry() {
             @Override
             public List<ToolDefinition> definitions() {
-                return List.of(calendar, notes, knowledge);
+                return List.of(calendar, notes, knowledge, companion);
             }
 
             @Override
@@ -208,6 +220,7 @@ class NativeToolLoopServiceWorkflowScopeTest {
         @Override
         public ToolResult execute(ToolRequest request) {
             executed.add(request);
+            if(request.toolName().equals("companion"))return new ToolResult(true,"companion","SUBMIT",request.requestId(),request.conversationId(),true,List.of(),"Accepted",Map.of("taskId","real-task-id","state","QUEUED"),"","",false,"");
             if (addFails && "ADD".equals(request.operation())) {
                 return new ToolResult(false, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
                         false, List.of(), "No dataset", Map.of(), "STORE_DATASET_NOT_FOUND", "No dataset in this conversation", false, "");
