@@ -62,6 +62,12 @@ public class SQLiteConversationMessageRepository implements com.jarvis.memory.co
                 insert.setString(9, message.createdAt().toString());
                 insert.setString(10, message.status().name());
                 insert.executeUpdate();
+                try(var verify=connection.prepareStatement("SELECT content,request_id,conversation_id,role FROM conversation_messages WHERE id=? AND user_id=?")){
+                    verify.setString(1,message.id().toString());verify.setString(2,userId());
+                    try(var row=verify.executeQuery()){
+                        if(!row.next()||!message.content().equals(row.getString(1))||!message.requestId().equals(row.getString(2))||!conversationId.equals(row.getString(3))||!message.role().name().equals(row.getString(4)))throw new IllegalStateException("Durable message verification failed");
+                    }
+                }
             }
         } catch (SQLException exception) {
             throw new IllegalStateException("Could not append durable conversation message", exception);

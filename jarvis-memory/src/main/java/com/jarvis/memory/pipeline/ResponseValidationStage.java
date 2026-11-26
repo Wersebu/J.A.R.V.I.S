@@ -75,14 +75,10 @@ public class ResponseValidationStage implements PipelineStage {
         }
         ValidationOutcome validation = validateAndCorrect(context);
         PipelineContext responseContext = validation.context();
-        ConversationMessage assistantMessage = ConversationMessage.chat(
-                responseContext.conversationId(),
-                responseContext.requestId(),
-                MessageRole.ASSISTANT,
-                responseContext.response(),
-                Instant.now()
-        );
+        ConversationMessage assistantMessage = com.jarvis.common.event.AssistantResponse.message(
+                com.jarvis.common.auth.CurrentUserContext.requiredUserId(),responseContext.conversationId(),responseContext.requestId(),responseContext.response(),Instant.now());
         memoryService.addMessage(responseContext.conversationId(), assistantMessage);
+        cognitiveEventBus.answerCommitted(assistantMessage);
         conversationTitleService.maybeGenerateTitleAsync(responseContext.conversationId(), responseContext.brain());
         cognitiveEventBus.publish(CognitiveEventType.CONVERSATION_ASSISTANT_RESPONSE_PERSISTED,
                 "PERSISTED", "Assistant response persisted", null, Map.of(
@@ -111,7 +107,7 @@ public class ResponseValidationStage implements PipelineStage {
                 Map.entry("confidence", responseContext.executionPlan().confidence())
         ));
         boolean memoryJobSubmitted = memoryJobService.submit(responseContext);
-        return responseContext.withMetadata("memoryJobSubmitted", memoryJobSubmitted)
+        return responseContext.withMetadata("assistantMessageId",assistantMessage.id().toString()).withMetadata("assistantMessagePersisted",true).withMetadata("answerPublished",true).withMetadata("memoryJobSubmitted", memoryJobSubmitted)
                 .withMetadata("grounded", validation.finalResult().valid())
                 .withMetadata("groundingRegenerated", validation.regenerated());
     }

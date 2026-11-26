@@ -9,6 +9,10 @@ import java.util.function.Consumer;
  * Single publication channel for cognitive pipeline activity.
  */
 public interface CognitiveEventBus {
+    /** Called only after the final assistant message was persisted successfully. */
+    default void answerCommitted(com.jarvis.common.memory.ConversationMessage message) {
+        AssistantResponse.publish(this,message);
+    }
 
     /**
      * Starts a request-scoped event stream.

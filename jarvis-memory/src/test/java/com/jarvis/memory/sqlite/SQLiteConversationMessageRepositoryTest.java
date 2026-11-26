@@ -32,6 +32,15 @@ class SQLiteConversationMessageRepositoryTest {
     }
 
     @Test
+    void conflictingContentUnderAnExistingMessageIdCannotBeReportedAsPersisted(){
+        var original=com.jarvis.common.event.AssistantResponse.message("local-user","conversation-1","request","Original",Instant.now());
+        repository.append("conversation-1",original);
+        var conflicting=com.jarvis.common.event.AssistantResponse.message("local-user","conversation-1","request","Different body",Instant.now());
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->repository.append("conversation-1",conflicting)).isInstanceOf(IllegalStateException.class).hasMessageContaining("verification failed");
+        assertThat(repository.getAllMessages("conversation-1")).extracting(ConversationMessage::content).containsExactly("Original");
+    }
+
+    @Test
     void appendSelfAssignsMonotonicSequenceNumbersPerConversation() {
         repository.append("conversation-1", ConversationMessage.chat("conversation-1", "r1", MessageRole.USER, "hello", Instant.now()));
         repository.append("conversation-1", ConversationMessage.chat("conversation-1", "r1", MessageRole.ASSISTANT, "hi", Instant.now()));

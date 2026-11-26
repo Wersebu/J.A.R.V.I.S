@@ -107,6 +107,30 @@ class ChatRunResumeTest {
         assertThat(frames.stream().filter(node -> "HEARTBEAT".equals(node.path("type").asText())).count()).isEqualTo(1);
     }
 
+    @Test
+    void partiallyUndeliveredAnswerCannotFinishCompletedAndRemainsReplayable() throws Exception {
+        try(var registry=new ChatRunRegistry(objectMapper,Duration.ZERO,1000,Duration.ofMinutes(1))){
+            var first=new TestWebSocketSession("first");var run=registry.start("owner","conversation",first);
+            run.emit(Map.of("event","ANSWER_TOKEN","metadata",Map.of("text","First part","messageId","message")));
+            first.close();run.emit(Map.of("event","ANSWER_TOKEN","metadata",Map.of("text","Second part","messageId","message")));
+            run.finish(Map.of("type","COMPLETED"));var reconnected=new TestWebSocketSession("reconnected");run.resume(reconnected,0);
+            var replay=frames(reconnected.sentMessages());assertThat(replay.stream().anyMatch(f->"COMPLETED".equals(f.path("type").asText()))).isFalse();
+            assertThat(replay.stream().anyMatch(f->"ANSWER_DELIVERY_DEFERRED".equals(f.path("code").asText()))).isTrue();
+            assertThat(replay.stream().filter(f->"ANSWER_TOKEN".equals(f.path("event").asText())).count()).isEqualTo(2);
+        }
+    }
+
+    @Test
+    void replayOfAllAnswerPartsDuringExecutionAllowsCompletion() throws Exception {
+        try(var registry=new ChatRunRegistry(objectMapper,Duration.ZERO,1000,Duration.ofMinutes(1))){
+            var first=new TestWebSocketSession("first");var run=registry.start("owner","conversation",first);
+            run.emit(Map.of("event","ANSWER_TOKEN","metadata",Map.of("text","First","messageId","message")));first.close();
+            run.emit(Map.of("event","ANSWER_TOKEN","metadata",Map.of("text","Second","messageId","message")));
+            var reconnected=new TestWebSocketSession("reconnected");run.resume(reconnected,0);run.finish(Map.of("type","COMPLETED"));
+            assertThat(frames(reconnected.sentMessages()).stream().anyMatch(f->"COMPLETED".equals(f.path("type").asText()))).isTrue();
+        }
+    }
+
     private List<JsonNode> frames(List<WebSocketMessage<?>> messages) {
         return messages.stream().map(message -> {
             try {

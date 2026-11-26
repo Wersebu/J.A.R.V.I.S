@@ -30,7 +30,7 @@ public class TaskResultDelivery {
         if(conversation==null)return null;
         String[] sample={null};CurrentUserContext.runAs(owner,()->sample[0]=memory.getMessages(conversation).stream().filter(m->m.role()==MessageRole.USER).reduce((a,b)->b).map(m->m.content().substring(0,Math.min(400,m.content().length()))).orElse(null));return sample[0];
     }
-    public static UUID messageId(String owner,String conversation,String deliveryId){return UUID.nameUUIDFromBytes((owner+"\n"+conversation+"\n"+deliveryId).getBytes(StandardCharsets.UTF_8));}
+    public static UUID messageId(String owner,String conversation,String deliveryId){return com.jarvis.common.event.AssistantResponse.messageId(owner,conversation,deliveryId);}
     /** Read-only main-model continuation. Exact deliverables are appended separately by the engine. */
     public String synthesize(String owner,String conversation,String evidence){
         if(router==null)return "";
@@ -55,8 +55,7 @@ public class TaskResultDelivery {
                 // Deleted conversations must never be resurrected by delayed work.
                 if(conversations.find(conversation).isEmpty()){status[0]=Status.DELETED;return;}
                 UUID id=messageId(owner,conversation,deliveryId);
-                memory.addMessage(conversation,new ConversationMessage(id,conversation,deliveryId,
-                    MessageRole.ASSISTANT,content,created,0,ConversationMessageType.CHAT,ConversationMessageStatus.FINAL));
+                memory.addMessage(conversation,com.jarvis.common.event.AssistantResponse.message(owner,conversation,deliveryId,content,created));
                 status[0]=Status.DELIVERED;
             }
         });

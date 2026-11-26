@@ -106,7 +106,7 @@ public class CognitivePipelineExecutor {
                 for(Throwable cause=exception;cause!=null;cause=cause.getCause())if(cause instanceof com.jarvis.common.companion.IncompleteTaskException incomplete)throw incomplete;
                 throw new com.jarvis.common.companion.IncompleteTaskException("PIPELINE_FAILED: "+exception.getClass().getSimpleName(),failedContext.response());
             }
-            return failedContext.withResponse(GRACEFUL_ERROR_RESPONSE, null);
+            throw new IllegalStateException("Request failed before durable answer delivery",exception);
         }
     }
 

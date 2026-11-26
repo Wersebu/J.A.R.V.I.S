@@ -23,6 +23,17 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultCognitiveEventBus.class);
     private static final ThreadLocal<RequestScope> REQUEST_SCOPE = new ThreadLocal<>();
     private final ExecutionTracer executionTracer;
+    private static final java.util.Set<CognitiveEventType> ANSWER_EVENTS=java.util.Set.of(CognitiveEventType.ANSWER_STREAM_STARTED,CognitiveEventType.ANSWER_STARTED,CognitiveEventType.ANSWER_TOKEN,CognitiveEventType.TOKEN,CognitiveEventType.ANSWER_FINISHED,CognitiveEventType.STREAMING_STARTED,CognitiveEventType.STREAMING_FINISHED);
+    private static final ThreadLocal<Publication> PUBLICATION=new ThreadLocal<>();
+    private static final class Publication {boolean publishing; java.util.UUID messageId; String text;}
+    @Override public void answerCommitted(com.jarvis.common.memory.ConversationMessage message){
+        var scope=REQUEST_SCOPE.get();var publication=PUBLICATION.get();
+        if(scope==null||publication==null||!scope.requestId().equals(message.requestId())||!scope.conversationId().equals(message.conversationId()))throw new IllegalStateException("Answer publication identity mismatch");
+        if(publication.messageId!=null){if(publication.messageId.equals(message.id())&&publication.text.equals(message.content()))return;throw new IllegalStateException("A request cannot commit two different answers");}
+        publication.publishing=true;
+        try {CognitiveEventBus.super.answerCommitted(message);publication.messageId=message.id();publication.text=message.content();}
+        finally {publication.publishing=false;}
+    }
     private static final ThreadLocal<com.jarvis.common.ai.RequestTokenUsage> USAGE = new ThreadLocal<>();
 
     /**
@@ -45,6 +56,7 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
     public void startRequest(String requestId, String conversationId, Consumer<CognitiveEvent> sink) {
         REQUEST_SCOPE.set(new RequestScope(requestId, conversationId, sink == null ? event -> { } : sink, null, null));
         USAGE.set(new com.jarvis.common.ai.RequestTokenUsage());
+        PUBLICATION.set(new Publication());
         executionTracer.start(requestId, conversationId, sink);
     }
 
@@ -54,7 +66,7 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
     @Override
     public void finishRequest() {
         try { executionTracer.finish(); }
-        finally { REQUEST_SCOPE.remove(); USAGE.remove(); }
+        finally { REQUEST_SCOPE.remove(); USAGE.remove(); PUBLICATION.remove(); }
     }
 
     /**
@@ -87,6 +99,8 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
         if (scope == null) {
             return;
         }
+        // Legacy model/tool stages propose chunks; only the validated, persisted answer is user-visible.
+        if(ANSWER_EVENTS.contains(event)&&(PUBLICATION.get()==null||!PUBLICATION.get().publishing))return;
         if (event == CognitiveEventType.TOKEN_USAGE && USAGE.get() != null) {
             metadata = USAGE.get().record(metadata);
         }

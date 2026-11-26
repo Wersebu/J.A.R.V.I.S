@@ -54,10 +54,10 @@ public class SQLiteConversationMemoryService implements ConversationMemoryServic
     @Override
     public void addMessage(String conversationId, ConversationMessage message) {
         Instant now = Instant.now();
-        workingMemoryStore.addMessage(conversationId, message);
         conversationRepository.createIfAbsent(conversationId, now);
         conversationMessageRepository.append(conversationId, message);
         conversationRepository.touch(conversationId, now);
+        workingMemoryStore.addMessage(conversationId, message);
     }
 
     @Override

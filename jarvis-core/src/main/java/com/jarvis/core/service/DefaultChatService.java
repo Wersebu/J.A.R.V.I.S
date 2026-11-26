@@ -53,11 +53,17 @@ public class DefaultChatService implements ChatService {
             var interactive = com.jarvis.common.run.InteractiveRequestContext.current();
             if (interactive != null) interactive.onRunning().run();
             PipelineContext context = pipelineContextFactory.create(request);
-            return responseMapper.toChatResponse(pipelineExecutor.execute(context));
+            var completed=pipelineExecutor.execute(context);
+            requireDelivered(completed);
+            return responseMapper.toChatResponse(completed);
         } finally {
             try { pipelineContextFactory.finish(); }
             finally { if (com.jarvis.common.run.InteractiveRequestContext.current() == null) turn.close(); }
         }
+    }
+
+    private void requireDelivered(PipelineContext context){
+        if(context.response()==null||context.response().isBlank()||!Boolean.TRUE.equals(context.metadata().get("assistantMessagePersisted"))||!Boolean.TRUE.equals(context.metadata().get("answerPublished")))throw new IllegalStateException("Request cannot succeed without a persisted and published answer");
     }
 
     private com.jarvis.common.run.ConversationTurns.Turn reserveTurn(ChatRequest request) {
@@ -80,7 +86,7 @@ public class DefaultChatService implements ChatService {
             var interactive = com.jarvis.common.run.InteractiveRequestContext.current();
             if (interactive != null) interactive.onRunning().run();
             PipelineContext context = pipelineContextFactory.create(request, eventSink);
-            pipelineExecutor.execute(context);
+            requireDelivered(pipelineExecutor.execute(context));
         } finally {
             try { pipelineContextFactory.finish(); }
             finally { if (com.jarvis.common.run.InteractiveRequestContext.current() == null) turn.close(); }

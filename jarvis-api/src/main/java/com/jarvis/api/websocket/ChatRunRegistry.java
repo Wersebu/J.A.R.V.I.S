@@ -169,6 +169,9 @@ public class ChatRunRegistry implements AutoCloseable {
         private long seq;
         private volatile Instant finishedAt;
         private volatile String lastEvent = "";
+        private boolean answerObserved;
+        private String answerMessageId;
+        private final java.util.Set<String> answerRecipients=new java.util.HashSet<>();
 
         private ChatRun(String userId, String requestId, String conversationId, String fingerprint) {
             this.userId = userId;
@@ -245,8 +248,14 @@ public class ChatRunRegistry implements AutoCloseable {
                     buffer.removeFirst();
                 }
             }
+            boolean answerToken="ANSWER_TOKEN".equals(node.path("event").asText());
+            var recipients=new java.util.HashSet<String>();
             for (WebSocketSession session : sessions) {
-                send(session, text);
+                if(send(session,text))recipients.add(session.getId());
+            }
+            if(answerToken){
+                if(!answerObserved)answerRecipients.addAll(recipients);else answerRecipients.retainAll(recipients);
+                answerObserved=true;answerMessageId=node.path("metadata").path("messageId").asText("");
             }
         }
 
@@ -257,6 +266,10 @@ public class ChatRunRegistry implements AutoCloseable {
          */
         public synchronized void finish(Object payload) {
             ObjectNode terminal = toObject(payload);
+            if(terminal!=null&&!cancellationRequested&&"COMPLETED".equals(terminal.path("type").asText())&&answerObserved){
+                if(answerMessageId!=null&&!answerMessageId.isBlank())terminal.put("messageId",answerMessageId);
+                if(answerRecipients.isEmpty()){terminal.put("type","ERROR");terminal.put("code","ANSWER_DELIVERY_DEFERRED");terminal.put("message","Answer persisted, but no session received its complete text; restore history or resume the request");}
+            }
             if (cancellationRequested && terminal != null && "COMPLETED".equals(terminal.path("type").asText())) {
                 terminal.put("type", "CANCELLED"); terminal.put("message", "Zatrzymano na Twoją prośbę");
             }
@@ -289,9 +302,11 @@ public class ChatRunRegistry implements AutoCloseable {
                     }
                 }
                 // Attach inside the lock so no frame can slip between replay and live delivery.
+                boolean replayed=true;
                 for (Frame frame : missed) {
-                    send(session, frame.text());
+                    replayed=send(session,frame.text())&&replayed;
                 }
+                if(replayed&&answerObserved&&(buffer.isEmpty()||afterSeq>=buffer.getFirst().seq()-1))answerRecipients.add(session.getId());
                 attach(session);
             }
             LOGGER.info("[CHAT_RUN] resumed conversationId={} afterSeq={} replayed={} running={}",
@@ -317,16 +332,18 @@ public class ChatRunRegistry implements AutoCloseable {
         }
     }
 
-    private void send(WebSocketSession session, String text) {
+    private boolean send(WebSocketSession session, String text) {
         if (session == null || !session.isOpen()) {
-            return;
+            return false;
         }
         synchronized (session) {
             boolean interrupted = Thread.interrupted();
             try {
                 session.sendMessage(new TextMessage(text));
+                return true;
             } catch (IllegalStateException | IOException exception) {
                 LOGGER.debug("[CHAT_RUN] could not deliver frame: {}", exception.getMessage());
+                return false;
             } finally { if (interrupted) Thread.currentThread().interrupt(); }
         }
     }
