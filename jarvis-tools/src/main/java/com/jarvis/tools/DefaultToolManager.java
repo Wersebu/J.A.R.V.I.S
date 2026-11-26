@@ -22,6 +22,16 @@ public class DefaultToolManager implements ToolManager {
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private com.jarvis.tools.taskplan.DynamicPlanService companionPlans;
 
+    @Autowired(required=false)
+    private org.springframework.beans.factory.ObjectProvider<com.jarvis.common.companion.CompanionEventSink> companionEvents;
+
+    private void agentEvent(String owner,String task,String type,ToolRequest request,Map<String,Object> details) {
+        if(task==null||companionEvents==null)return;
+        var sink=companionEvents.getIfAvailable();if(sink==null)return;
+        var payload=new LinkedHashMap<String,Object>(details);payload.put("conversationId",request.conversationId());payload.put("requestId",request.requestId());payload.put("tool",request.toolName());payload.put("operation",request.operation());
+        sink.record(owner,type,task,payload);
+    }
+
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultToolManager.class);
 
     private final Map<String, JarvisTool> staticTools;
@@ -79,6 +89,7 @@ public class DefaultToolManager implements ToolManager {
         if (request == null || request.toolName() == null || request.toolName().isBlank()) {
             throw new ToolException("Tool name is required");
         }
+        if(!com.jarvis.common.companion.AgentScope.permits(request.toolName(),request.operation()))throw new ToolException("Capability is outside this agent's assigned scope");
         String companionTask=com.jarvis.common.companion.TaskExecutionContext.current();
         String companionOwner=companionTask==null?null:com.jarvis.common.auth.CurrentUserContext.requireAuthenticatedUserId();
         if(companionTask!=null&&companionPlans!=null)companionPlans.requireActive(companionOwner,companionTask);
@@ -88,9 +99,15 @@ public class DefaultToolManager implements ToolManager {
         }
         LOGGER.info("[TOOL] Executing tool={} operation={}", request.toolName(), request.operation());
         ToolResult result;
+        long started=System.nanoTime();
+        agentEvent(companionOwner,companionTask,"agent.tool.started",request,Map.of());
         try(var activity=activityTracker==null?null:activityTracker.start("TOOL",request.requestId(),request.toolName()+"__"+request.operation())) {
             result = tool.execute(request);
+        } catch(RuntimeException failure) {
+            agentEvent(companionOwner,companionTask,"agent.tool.failed",request,Map.of("durationMs",(System.nanoTime()-started)/1_000_000,"errorCode",failure.getClass().getSimpleName()));
+            throw failure;
         }
+        agentEvent(companionOwner,companionTask,result.success()?"agent.tool.completed":"agent.tool.failed",request,Map.of("durationMs",(System.nanoTime()-started)/1_000_000,"success",result.success(),"errorCode",result.errorCode()==null?"":result.errorCode()));
         if(companionTask!=null&&companionPlans!=null&&!Set.of("plan","taskplan").contains(normalize(request.toolName()))) {
             boolean success=result.success()&&!result.requiresApproval()&&!Boolean.parseBoolean(String.valueOf(result.data().get("running")))&&!Boolean.parseBoolean(String.valueOf(result.data().get("pending")));
             String status=String.valueOf(result.data().getOrDefault("status","")).toUpperCase(Locale.ROOT);if(Set.of("RUNNING","PENDING","QUEUED","IN_PROGRESS","FAILED","ERROR","CANCELLED").contains(status))success=false;

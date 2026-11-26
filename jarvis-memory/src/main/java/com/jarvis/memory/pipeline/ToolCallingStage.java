@@ -126,6 +126,13 @@ public class ToolCallingStage implements PipelineStage {
                 context.images(),
                 conversationContextSummary(context)
         ));
+        var agentScope = com.jarvis.common.companion.AgentScope.current();
+        if (agentScope != null && agentScope.tools().stream().anyMatch(t -> !t.startsWith("output__") && !t.startsWith("companion__"))
+                && result.results().stream().noneMatch(r -> r.success() && com.jarvis.common.companion.AgentScope.permits(r.tool(), r.operation())
+                    && !Set.of("output", "companion").contains(r.tool().toLowerCase(java.util.Locale.ROOT)))) {
+            String code = result.results().stream().filter(r -> !r.success()).map(r -> r.errorCode()).filter(c -> c != null && !c.isBlank()).findFirst().orElse("NO_EXECUTION_EVIDENCE");
+            throw new com.jarvis.common.companion.IncompleteTaskException(code, null);
+        }
         String answer;
         if (!result.handled()) {
             answer = streamGuidedAnswer(context,
@@ -203,7 +210,7 @@ public class ToolCallingStage implements PipelineStage {
             // Kept only from the conversation's topic: narrow the tools only when the model's own goal is that topic.
             workflowTools = List.of();
         }
-        if (!workflowTools.isEmpty()) {
+        if (!workflowTools.isEmpty()&&!Boolean.TRUE.equals(merged.get("semanticOrchestration"))) {
             merged.put("workflowTools", workflowTools);
         }
         return Map.copyOf(merged);

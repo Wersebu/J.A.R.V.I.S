@@ -1110,6 +1110,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
             String nodeId,
             Map<String, Object> metadata
     ) {
+        if(event==CognitiveEventType.TOKEN_USAGE&&jobType==AIJobType.BACKGROUND)com.jarvis.common.companion.AgentScope.usage(metadata);
         if (jobType == AIJobType.CHAT || jobType == AIJobType.MAIN_MODEL) {
             if (jobType == AIJobType.MAIN_MODEL
                     && (event == CognitiveEventType.ANSWER_STARTED

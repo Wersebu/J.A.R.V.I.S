@@ -26,7 +26,7 @@ public class CompanionDelegationTool implements JarvisTool,ToolSchemaProvider {
         try{
             var service=submissions.getIfAvailable();if(service==null)throw new IllegalStateException("Async delegation unavailable");
             String owner=CurrentUserContext.requireAuthenticatedUserId();String op=r.operation().toUpperCase(Locale.ROOT);
-            if(TaskExecutionContext.current()!=null&&op.equals("SUBMIT"))throw new IllegalArgumentException("Background tasks cannot recursively delegate; finish current task first");
+            if(TaskExecutionContext.current()!=null&&op.equals("SUBMIT")&&AgentScope.current()==null)throw new IllegalArgumentException("Legacy background tasks cannot recursively delegate");
             Map<String,Object> result=switch(op){
                 case "SUBMIT"->r.arguments().containsKey("name")||r.arguments().containsKey("dependsOn")?service.submit(owner,r.conversationId(),text(r,"message"),r.arguments().containsKey("role")?text(r,"role"):"TASK",r.requestId(),r.arguments().containsKey("name")?text(r,"name"):null,dependencies(r)):service.submit(owner,r.conversationId(),text(r,"message"),r.arguments().containsKey("role")?text(r,"role"):"TASK",r.requestId());
                 case "GET"->service.get(owner,text(r,"taskId"));case "CANCEL"->service.cancel(owner,text(r,"taskId"));

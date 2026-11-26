@@ -65,6 +65,9 @@ public class CognitivePipelineExecutor {
 
         try {
             for (PipelineStage stage : stages) {
+                boolean handled=Boolean.TRUE.equals(context.metadata().get("semanticOrchestration"))&&java.util.Set.of("DIRECT","DELEGATE").contains(String.valueOf(context.metadata().get("orchestrationAction")));
+                if(handled&&java.util.Set.of("KnowledgeModeStage","KnowledgeRetrievalStage","ContextBuilderStage","PromptBuilderStage","ModelExecutionStage","ToolCallingStage").contains(stage.name()))continue;
+                if(com.jarvis.common.companion.AgentScope.current()!=null&&java.util.Set.of("MemoryRetrievalStage","KnowledgeRetrievalStage","ContextBuilderStage").contains(stage.name()))continue;
                 context = executeStage(stage, context);
             }
             long durationMs = Duration.between(pipelineStartedAt, Instant.now()).toMillis();

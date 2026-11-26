@@ -66,15 +66,16 @@ class DefaultConversationTitleServiceTest {
     }
 
     @Test
-    void waitsForAssistantMessage() {
+    void generatesFromFirstUserMessageWithoutWaitingForAssistant() {
         conversations.createIfAbsent("c1", Instant.parse("2026-08-19T10:00:00Z"));
-        messages.append("c1", user("Nazwij rozmowe dopiero po odpowiedzi"));
+        messages.append("c1", user("Przygotuj raport o serwerze"));
+        provider.response="Raport o serwerze";
 
         service.maybeGenerateTitle("c1", BRAIN);
 
-        assertThat(conversations.find("c1").orElseThrow().titleSource()).isEqualTo("DEFAULT");
-        assertThat(provider.calls).isZero();
-        assertThat(eventBus.events).isEmpty();
+        assertThat(conversations.find("c1").orElseThrow().titleSource()).isEqualTo("GENERATED");
+        assertThat(provider.calls).isEqualTo(1);
+        assertThat(eventBus.events).hasSize(2);
     }
 
     @Test

@@ -25,11 +25,11 @@ public class InferenceProfileRegistry implements org.springframework.beans.facto
         String id = InferenceProfileContext.current();
         if (id == null) id = type == AIJobType.MEMORY_AGENT ? "memory-extraction" :
             InferencePriorityContext.effective(type) == AIJobType.BACKGROUND ? "research" : "main-conversation";
-        int input = switch (id) { case "conversation-title" -> 2048; case "memory-extraction", "memory-decision" -> 4096;
+        int input = switch (id) { case "orchestration" -> 16384; case "conversation-title" -> 2048; case "memory-extraction", "memory-decision" -> 4096;
             case "planning", "research", "dreaming", "tool-selection" -> 8192; case "coding" -> 16384; case "acknowledgment", "progress" -> 1024; default -> Integer.MAX_VALUE; };
         int output = switch (id) { case "warmup" -> 16; case "conversation-title" -> 128; case "acknowledgment", "progress" -> 96;
             case "memory-extraction", "memory-decision", "dreaming", "tool-selection" -> 768; case "planning" -> 1024; case "coding" -> 4096; default -> 2048; };
-        boolean background = !id.equals("main-conversation") && !id.startsWith("tool-");
+        boolean background = !id.equals("orchestration")&&!id.equals("main-conversation") && !id.startsWith("tool-");
         background |= InferencePriorityContext.effective(type) == AIJobType.BACKGROUND || type == AIJobType.MEMORY_AGENT;
         String prefix = "profiles." + id + ".";
         String classification=env.getProperty("jarvis.inference."+prefix+"classification","INHERIT").toUpperCase(java.util.Locale.ROOT);
@@ -41,7 +41,7 @@ public class InferenceProfileRegistry implements org.springframework.beans.facto
         input = integer(prefix + "input-tokens", input); output = integer(prefix + "output-tokens", output);
         String model = env.getProperty("jarvis.inference." + prefix + "model", "");
         ReasoningLevel reasoning = ReasoningLevel.valueOf(env.getProperty("jarvis.inference." + prefix + "reasoning",
-            id.equals("conversation-title") || id.startsWith("memory") || id.equals("tool-selection") ? "LOW" : id.equals("coding")?"HIGH":"MEDIUM").toUpperCase(java.util.Locale.ROOT));
+            id.equals("orchestration") || id.equals("conversation-title") || id.startsWith("memory") || id.equals("tool-selection") ? "LOW" : id.equals("coding")?"HIGH":"MEDIUM").toUpperCase(java.util.Locale.ROOT));
         Selection selection = Selection.valueOf(env.getProperty("jarvis.inference." + prefix + "selection", "EXTRACTIVE").toUpperCase(java.util.Locale.ROOT));
         if (physicalContext() < 512 || input < 1 || output < 1 || priority < 0 || priority > 100 || timeout < 1)
             throw new IllegalArgumentException("Invalid inference profile: " + id);

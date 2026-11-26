@@ -75,12 +75,23 @@ public class HttpWebPageReader implements WebPageReader {
                         .setConnectTimeout(org.apache.hc.core5.util.Timeout.ofMilliseconds(properties.connectTimeout().toMillis()))
                         .setSocketTimeout(org.apache.hc.core5.util.Timeout.ofMilliseconds(properties.readTimeout().toMillis())).build()).build())
                 .disableRedirectHandling().disableAutomaticRetries().disableContentCompression().build()) {
+            var visited=new java.util.HashSet<URI>();
+            for(int hop=0;hop<=5;hop++){
+            if(!visited.add(uri))throw new WebSearchException("Redirect loop detected");
+            long remaining=properties.connectTimeout().plus(properties.readTimeout()).toNanos()-(System.nanoTime()-started);
+            if(remaining<=0)throw new WebSearchException("Web request deadline exceeded");
             var request=new org.apache.hc.client5.http.classic.methods.HttpGet(uri);
             request.setHeader("Accept-Encoding","identity");
             request.setHeader("User-Agent","Jarvis-WebReader/3");
-            var deadline=DEADLINES.schedule(()->request.cancel(),properties.connectTimeout().plus(properties.readTimeout()).toMillis(),java.util.concurrent.TimeUnit.MILLISECONDS);
+            var deadline=DEADLINES.schedule(()->request.cancel(),remaining,java.util.concurrent.TimeUnit.NANOSECONDS);
             try(var response=client.execute(request)) {
             long durationMs = (System.nanoTime() - started) / 1_000_000L;
+            if(java.util.Set.of(301,302,303,307,308).contains(response.getCode())){
+                var location=response.getFirstHeader("location");if(location==null||hop==5)throw new WebSearchException("Redirect location missing or limit exceeded",response.getCode());
+                URI next=safeUri(uri.resolve(location.getValue()).toString());
+                if(uri.getScheme().equalsIgnoreCase("https")&&next.getScheme().equalsIgnoreCase("http"))throw new WebSearchException("HTTPS downgrade redirect is not allowed",response.getCode());
+                uri=next;continue;
+            }
             if (response.getCode() < 200 || response.getCode() >= 300) {
 
                 throw new WebSearchException("Web page returned HTTP " + response.getCode(), response.getCode());
@@ -102,6 +113,8 @@ public class HttpWebPageReader implements WebPageReader {
             return new WebPageContent(uri.toString(), title, returned, returned.length(), truncated, durationMs,
                     response.getCode(), contentType, links);
             } finally { deadline.cancel(false); }
+            }
+            throw new WebSearchException("Redirect limit exceeded");
         } catch (IOException exception) {
             throw new WebSearchException("Web page request failed for " + uri + ": " + exception.getClass().getSimpleName(), exception);
         }

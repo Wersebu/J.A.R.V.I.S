@@ -41,7 +41,7 @@ jarvis:
         input-tokens: 2048
         output-tokens: 128
         reasoning: LOW
-        priority: 70
+        priority: 30
         timeout-seconds: 20
         classification: BACKGROUND
       memory-extraction:

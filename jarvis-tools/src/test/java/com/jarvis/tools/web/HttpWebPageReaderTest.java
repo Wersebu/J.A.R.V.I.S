@@ -144,13 +144,24 @@ class HttpWebPageReaderTest {
     }
 
 
-    @Test void rejectsRedirectWithoutContactingDestination() throws Exception {
+    @Test void followsAllowedRedirectAndReturnsFinalUrl() throws Exception {
         server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         var hit=new java.util.concurrent.atomic.AtomicBoolean();
         server.createContext("/redirect",exchange->{exchange.getResponseHeaders().add("Location","/private");exchange.sendResponseHeaders(302,-1);exchange.close();});
         server.createContext("/private",exchange->{hit.set(true);write(exchange,"secret");});server.start();
-        assertThatThrownBy(()->new TestableReader(defaultProperties()).read(baseUrl()+"/redirect")).isInstanceOf(WebSearchException.class).hasMessageContaining("302");
-        assertThat(hit.get()).isFalse();
+        var result=new TestableReader(defaultProperties()).read(baseUrl()+"/redirect");
+        assertThat(hit.get()).isTrue();assertThat(result.url()).endsWith("/private");
+    }
+    @Test void redirectRevalidatesPrivateDestinationBeforeContact()throws Exception{
+        server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);var redirectReceived=new java.util.concurrent.atomic.AtomicBoolean();var hit=new java.util.concurrent.atomic.AtomicBoolean();
+        server.createContext("/start",exchange->{redirectReceived.set(true);exchange.getResponseHeaders().add("Location","/blocked");exchange.sendResponseHeaders(301,-1);exchange.close();});
+        server.createContext("/blocked",exchange->{hit.set(true);write(exchange,"must not be read");});server.start();
+        var reader=new HttpWebPageReader(defaultProperties()){@Override protected boolean allowPrivateHosts(){return !redirectReceived.get();}};
+        assertThatThrownBy(()->reader.read(baseUrl()+"/start")).isInstanceOf(WebSearchException.class).hasMessageContaining("Private or local");assertThat(hit.get()).isFalse();
+    }
+    @Test void redirectLoopIsBounded()throws Exception{
+        server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);server.createContext("/loop",exchange->{exchange.getResponseHeaders().add("Location","/loop");exchange.sendResponseHeaders(301,-1);exchange.close();});server.start();
+        assertThatThrownBy(()->new TestableReader(defaultProperties()).read(baseUrl()+"/loop")).isInstanceOf(WebSearchException.class).hasMessageContaining("loop");
     }
     @Test void rejectsOversizedResponsesAndNonpublicAddressRanges() throws Exception {
         startServer("x".repeat(2097153));

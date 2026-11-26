@@ -10,7 +10,7 @@ public interface CompanionDocumentStore {
     Optional<Document> find(String owner,String kind,String id);
     void put(Document document);
     default void putAll(List<Document> documents){documents.forEach(this::put);}
-    default void deleteTask(String owner,String id){delete(owner,"task",id);delete(owner,"task-input",id);delete(owner,"task-delivery","task-result/"+id);delete(owner,"plan",id);deletePrefix(owner,"plan-revision",id+"/");deletePrefix(owner,"evidence",id+"/");}
+    default void deleteTask(String owner,String id){for(String kind:List.of("agent-scope","agent-telemetry","agent-recovered","orchestration-root"))delete(owner,kind,id);deletePrefix(owner,"agent-telemetry-history",id+"/");delete(owner,"task",id);delete(owner,"task-input",id);delete(owner,"task-delivery","task-result/"+id);delete(owner,"plan",id);deletePrefix(owner,"plan-revision",id+"/");deletePrefix(owner,"evidence",id+"/");}
     void delete(String owner,String kind,String id);
     void deletePrefix(String owner,String kind,String prefix);
 }

@@ -86,6 +86,16 @@ public class ModelExecutionStage implements PipelineStage {
         if (context.response() != null && !context.response().isBlank()) {
             return context;
         }
+        if(Boolean.TRUE.equals(context.metadata().get("semanticOrchestration"))&&"TOOLS".equals(context.metadata().get("orchestrationAction")))return context;
+        var scope=com.jarvis.common.companion.AgentScope.current();
+        if(scope!=null&&scope.tools().stream().allMatch(t->t.startsWith("output__")||t.startsWith("companion__"))){
+            var response=selectProvider(context).toolChat(context.brain(),List.of(com.jarvis.common.ai.ModelMessage.system(context.prompt()),com.jarvis.common.ai.ModelMessage.user(context.request().message())),List.of(),AIJobType.MAIN_MODEL);
+            if(response.content()==null||response.content().isBlank()||java.util.Set.of("length","max_tokens").contains(response.finishReason()))throw new com.jarvis.common.companion.IncompleteTaskException("INCOMPLETE_ANALYSIS",response.content());
+            return context.withResponse(response.content(),null).withMetadata("mainModelAction",MainModelActionType.FINAL_ANSWER.name());
+        }
+        if(scope!=null)return context.withMetadata("mainModelAction",MainModelActionType.TOOL_REQUEST.name())
+            .withMetadata("toolGoal",context.request().message()).withMetadata("toolReason","Isolated agent execution")
+            .withMetadata("toolContext",Map.of("semanticOrchestration",true,"workflowTools",java.util.List.copyOf(com.jarvis.common.companion.AgentScope.current().tools())));
         PipelineContext gated = applyConversationImageGate(context);
         if (gated != null) {
             return gated;

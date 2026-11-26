@@ -82,6 +82,7 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
      */
     @Override
     public void publish(CognitiveEventType event, String status, String message, String nodeId, Map<String, Object> metadata) {
+        if(event==CognitiveEventType.TOKEN_USAGE)com.jarvis.common.companion.AgentScope.usage(metadata);
         RequestScope scope = REQUEST_SCOPE.get();
         if (scope == null) {
             return;
