@@ -9,6 +9,16 @@ import java.util.List;
  * Provider-independent contract for AI chat generation.
  */
 public interface AIProvider {
+    default boolean supportsStreamingChat(){return false;}
+
+    /** One generation, streamed deltas plus its final response. Empty schema means ordinary native chat.
+     * Adapters may map schema to Ollama format or OpenAI Responses text.format; tool deltas stay internal.
+     * The fallback is explicitly buffered and never simulates token streaming or repeats inference.
+     */
+    default ModelResponse streamChat(Brain brain,List<ModelMessage> messages,List<NativeToolDefinition> tools,
+            java.util.Map<String,Object> responseSchema,AIJobType jobType,java.util.function.Consumer<ModelStreamEvent> sink){
+        return toolChat(brain,messages,tools,jobType);
+    }
 
     /**
      * Returns the provider identifier handled by this implementation.

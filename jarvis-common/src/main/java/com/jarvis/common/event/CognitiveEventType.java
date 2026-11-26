@@ -4,6 +4,8 @@ package com.jarvis.common.event;
  * Unified cognitive event types emitted by the J.A.R.V.I.S. processing pipeline.
  */
 public enum CognitiveEventType {
+    /** Monotonic request-level first-token/visible/WebSocket/generation timing. */
+    ANSWER_STREAM_METRICS,
     /** Actual provider counts for one completed inference; never estimated. */
     TOKEN_USAGE,
     INFERENCE_QUEUED,

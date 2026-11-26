@@ -124,6 +124,23 @@ class OllamaProviderNativeToolChatStreamingTest {
         assertThat(error.getMessage()).contains("<|channel|>thought").contains("degenerate");
     }
 
+    @Test
+    void nativeStreamingApiEmitsContentDeltasBeforeReturningAndSeparatesTechnicalCalls() throws IOException {
+        startServer("{\"message\":{\"content\":\"first \"},\"done\":false}\n"
+                +"{\"message\":{\"content\":\"second\"},\"done\":false}\n"
+                +"{\"done\":true,\"done_reason\":\"stop\",\"prompt_eval_count\":7,\"eval_count\":3}\n");
+        var provider=newProvider(new RecordingCognitiveEventBus());var events=new ArrayList<com.jarvis.common.ai.ModelStreamEvent>();
+        var response=provider.streamChat(new Brain(BrainType.FAST,"ollama","gemma4:12b",""),List.of(ModelMessage.user("hi")),List.of(),Map.of(),AIJobType.MAIN_MODEL,events::add);
+        assertThat(provider.supportsStreamingChat()).isTrue();assertThat(response.content()).isEqualTo("first second");
+        assertThat(events.stream().filter(e->e.type()==com.jarvis.common.ai.ModelStreamEvent.Type.CONTENT).map(com.jarvis.common.ai.ModelStreamEvent::text)).containsExactly("first ","second");
+        assertThat(events.stream().filter(e->e.type()==com.jarvis.common.ai.ModelStreamEvent.Type.FIRST_TOKEN).count()).isEqualTo(1);
+    }
+    @Test
+    void streamedProviderErrorKeepsTheActualCauseInsteadOfEmptyCompletionError() throws IOException {
+        startServer("{\"error\":\"Invalid response grammar\"}\n");var provider=newProvider(new RecordingCognitiveEventBus());
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->provider.streamChat(new Brain(BrainType.FAST,"ollama","gemma4:12b",""),List.of(ModelMessage.user("hi")),List.of(),Map.of(),AIJobType.MAIN_MODEL,event->{})).isInstanceOf(OllamaException.class).hasMessageContaining("Invalid response grammar");
+    }
+
     private void startServer(String ndjsonBody) throws IOException {
         byte[] response = ndjsonBody.getBytes(StandardCharsets.UTF_8);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);

@@ -21,6 +21,7 @@ public class StreamingStructuredResponseParser {
     private int streamValueStart;
     private int streamedUntil;
     private boolean streamClosed;
+    private final com.jarvis.common.ai.JsonStringFragments decoder=new com.jarvis.common.ai.JsonStringFragments();
 
     /**
      * Creates the parser.
@@ -103,7 +104,7 @@ public class StreamingStructuredResponseParser {
             }
             streamedUntil = streamValueStart;
         }
-        int end = findUnescapedClosingQuote(streamedUntil);
+        int end = findUnescapedClosingQuote(streamValueStart);
         int availableEnd = end < 0 ? raw.length() : end;
         if (availableEnd <= streamedUntil) {
             if (end >= 0) {
@@ -161,12 +162,7 @@ public class StreamingStructuredResponseParser {
     }
 
     private String decodeJsonStringFragment(String value) {
-        return value
-                .replace("\\n", "\n")
-                .replace("\\r", "\r")
-                .replace("\\t", "\t")
-                .replace("\\\"", "\"")
-                .replace("\\\\", "\\");
+        return decoder.accept(value);
     }
 
     /**

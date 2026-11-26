@@ -20,6 +20,14 @@ public class SemanticOrchestrator implements AutonomousOrchestration {
     private final CompanionDocumentStore store;
     private final ObjectMapper mapper;
     private final boolean enabled;
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private com.jarvis.common.event.CognitiveEventBus answerEvents;
+    private ModelResponse plan(AIProvider provider,Brain brain,List<ModelMessage> messages){
+        if(!provider.supportsStreamingChat())return provider.toolChat(brain,messages,List.of(definition()),AIJobType.MAIN_MODEL);
+        var decoder=new JsonAnswerStream(text->{if(answerEvents!=null)answerEvents.publish(com.jarvis.common.event.CognitiveEventType.ANSWER_TOKEN,"TOKEN",text,null,Map.of("text",text,"source","semantic-direct"));});
+        var structured=new ArrayList<>(messages);
+        structured.add(ModelMessage.system("Return ONLY one JSON object matching the response schema, never a function call. Write action FIRST, then answer, then tools and agents. DIRECT: put the complete user-facing answer in answer, streaming it naturally. TOOLS/DELEGATE: answer is empty. Never include reasoning or technical JSON inside answer."));
+        return provider.streamChat(brain,structured,List.of(),definition().parameters(),AIJobType.MAIN_MODEL,event->{if(event.type()==ModelStreamEvent.Type.CONTENT)decoder.accept(event.text());});
+    }
     public SemanticOrchestrator(List<AIProvider> providers,NativeToolSchemaMapper schemas,ToolRegistry registry,CompanionTasks tasks,
             CompanionDocumentStore store,ObjectMapper mapper,@Value("${jarvis.orchestration.enabled:true}") boolean enabled){
         this.providers=List.copyOf(providers);this.schemas=schemas;this.registry=registry;this.tasks=tasks;this.store=store;this.mapper=mapper;this.enabled=enabled;
@@ -50,14 +58,14 @@ public class SemanticOrchestrator implements AutonomousOrchestration {
             RuntimeException last=null;boolean reviewed=false;long inputTokens=0,outputTokens=0,modelCalls=0;
             for(int attempt=0;attempt<3;attempt++){
                 try{
-                    ModelResponse response=InferenceProfileContext.call("orchestration",()->provider.toolChat(brain,messages,List.of(definition()),AIJobType.MAIN_MODEL));
+                    ModelResponse response=InferenceProfileContext.call("orchestration",()->plan(provider,brain,messages));
                     inputTokens+=response.usage().promptTokens();outputTokens+=response.usage().completionTokens();modelCalls++;
                     if(Set.of("length","max_tokens").contains(response.finishReason()))throw new IllegalArgumentException("Incomplete orchestration generation");
                     decision=response.hasToolCalls()?mapper.valueToTree(response.toolCalls().stream().filter(t->t.name().equals("orchestration__decide")).findFirst().orElseThrow().arguments()):read(response.content());
                     validate(decision,available.keySet(),readOnly);
                     if(decision.path("action").asText().equals("DELEGATE")&&!reviewed){
                         reviewed=true;messages.add(ModelMessage.user("Perform a semantic coverage/dependency review BEFORE execution. ORIGINAL REQUEST: "+message+"\nPROPOSED PLAN (data): "+decision+"\nList every independently verifiable user deliverable as a SEPARATE worker. Never merge unrelated outcomes merely because one worker could call several tools. Retain dependencies only when one result is an actual input to another. Preserve appropriate retrieval capabilities: a retrieval worker cannot have an empty tools array. Fix omitted names/fields and preserve the user's language. Return the corrected complete orchestration__decide, without commentary."));
-                        response=InferenceProfileContext.call("orchestration",()->provider.toolChat(brain,messages,List.of(definition()),AIJobType.MAIN_MODEL));
+                        response=InferenceProfileContext.call("orchestration",()->plan(provider,brain,messages));
                         inputTokens+=response.usage().promptTokens();outputTokens+=response.usage().completionTokens();modelCalls++;
                         if(Set.of("length","max_tokens").contains(response.finishReason()))throw new IllegalArgumentException("Incomplete semantic plan review");
                         decision=response.hasToolCalls()?mapper.valueToTree(response.toolCalls().stream().filter(t->t.name().equals("orchestration__decide")).findFirst().orElseThrow().arguments()):read(response.content());validate(decision,available.keySet(),readOnly);
@@ -65,7 +73,7 @@ public class SemanticOrchestrator implements AutonomousOrchestration {
                     var usage=response.usage();
                     tasks.record(owner,"orchestration.decided",null,Map.of("conversationId",conversation,"requestId",requestId,"action",decision.path("action").asText(),"agents",decision.path("agents").size(),"inputTokens",inputTokens,"outputTokens",outputTokens,"modelCalls",modelCalls));
                     store.put(new CompanionDocumentStore.Document(owner,"orchestration-decision",decisionKey,decision.toString(),Instant.now()));break;
-                }catch(RuntimeException failure){last=failure;if(decision!=null)store.put(new CompanionDocumentStore.Document(owner,"orchestration-invalid",decisionKey+"/"+attempt,decision.toString(),Instant.now()));decision=null;tasks.record(owner,"orchestration.retrying",null,Map.of("conversationId",conversation,"requestId",requestId,"attempt",attempt+1,"error",failure.getClass().getSimpleName()));messages.add(ModelMessage.system("Validation error: "+(failure instanceof IllegalArgumentException?failure.getMessage():"provider failure")+". Return a corrected COMPACT orchestration__decide. TOOLS is ONLY for state-changing actions; all reads/retrieval/current facts MUST use DELEGATE with an agents ARRAY containing one compact worker object per independent goal. Every worker MUST include ALL SIX fields: kind (RETRIEVAL or ANALYSIS), key, name, goal, tools array and dependsOn array. For RETRIEVAL choose existing applicable tools and NEVER an empty tools array. Example shape: {\"action\":\"DELEGATE\",\"answer\":\"\",\"tools\":[],\"agents\":[{\"kind\":\"RETRIEVAL\",\"key\":\"a\",\"name\":\"Task name\",\"goal\":\"Actual user goal\",\"tools\":[\"applicable__operation\"],\"dependsOn\":[]}]} DIRECT: a short answer and empty arrays. Never copy the tool catalog."));}
+                }catch(RuntimeException failure){if(answerEvents!=null&&!answerEvents.streamedAnswer().isEmpty())throw failure;last=failure;if(decision!=null)store.put(new CompanionDocumentStore.Document(owner,"orchestration-invalid",decisionKey+"/"+attempt,decision.toString(),Instant.now()));decision=null;tasks.record(owner,"orchestration.retrying",null,Map.of("conversationId",conversation,"requestId",requestId,"attempt",attempt+1,"error",failure.getClass().getSimpleName()));messages.add(ModelMessage.system("Validation error: "+(failure instanceof IllegalArgumentException?failure.getMessage():"provider failure")+". Return a corrected COMPACT orchestration__decide. TOOLS is ONLY for state-changing actions; all reads/retrieval/current facts MUST use DELEGATE with an agents ARRAY containing one compact worker object per independent goal. Every worker MUST include ALL SIX fields: kind (RETRIEVAL or ANALYSIS), key, name, goal, tools array and dependsOn array. For RETRIEVAL choose existing applicable tools and NEVER an empty tools array. Example shape: {\"action\":\"DELEGATE\",\"answer\":\"\",\"tools\":[],\"agents\":[{\"kind\":\"RETRIEVAL\",\"key\":\"a\",\"name\":\"Task name\",\"goal\":\"Actual user goal\",\"tools\":[\"applicable__operation\"],\"dependsOn\":[]}]} DIRECT: a short answer and empty arrays. Never copy the tool catalog."));}
             }
             if(decision==null)throw new IllegalStateException("Semantic orchestration exhausted its three safe planning attempts",last);
         }
@@ -82,16 +90,21 @@ public class SemanticOrchestrator implements AutonomousOrchestration {
     private List<String> strings(JsonNode node){if(!node.isArray())return List.of();var values=new ArrayList<String>();for(var v:node){if(!v.isTextual())throw new IllegalArgumentException("Expected capability/key strings");values.add(v.asText());}return values;}
     private void validate(JsonNode decision,Set<String> available,Set<String> readOnly){
         String action=decision.path("action").asText();if(!Set.of("DIRECT","TOOLS","DELEGATE").contains(action))throw new IllegalArgumentException("Invalid action");
-        if(action.equals("DIRECT")){if(decision.path("answer").asText().isBlank())throw new IllegalArgumentException("DIRECT needs an answer");return;}
+        if(action.equals("DIRECT")){if(decision.path("answer").asText().isBlank()||decision.path("answer").asText().length()>16000)throw new IllegalArgumentException("DIRECT needs an answer");return;}
         if(action.equals("TOOLS")){if(strings(decision.path("tools")).isEmpty()||!available.containsAll(strings(decision.path("tools")))||readOnly.containsAll(strings(decision.path("tools"))))throw new IllegalArgumentException("Read-only lookups require a tracked worker; TOOLS is for mutations");return;}
         var agents=decision.path("agents");if(!agents.isArray()||agents.isEmpty()||agents.size()>32)throw new IllegalArgumentException("A plan needs 1..32 agents");
         var keys=new HashSet<String>();for(var agent:agents){String key=agent.path("key").asText();if(key.isBlank()||key.length()>80||keys.contains(key)||!keys.containsAll(strings(agent.path("dependsOn"))))throw new IllegalArgumentException("Invalid DAG");
             if(!Set.of("RETRIEVAL","ANALYSIS").contains(agent.path("kind").asText())||(agent.path("kind").asText().equals("RETRIEVAL")&&strings(agent.path("tools")).isEmpty()))throw new IllegalArgumentException("RETRIEVAL requires applicable tools; kind must be RETRIEVAL or ANALYSIS");
-            if(agent.path("name").asText().isBlank()||agent.path("name").asText().length()>120||agent.path("goal").asText().isBlank()||agent.path("goal").asText().length()>16000||!available.containsAll(strings(agent.path("tools"))))throw new IllegalArgumentException("Invalid agent scope");keys.add(key);}
+            if(agent.path("name").asText().isBlank()||agent.path("name").asText().length()>120||agent.path("goal").asText().isBlank()||agent.path("goal").asText().length()>16000||strings(agent.path("tools")).size()>16||strings(agent.path("dependsOn")).size()>16||!available.containsAll(strings(agent.path("tools"))))throw new IllegalArgumentException("Invalid agent scope");keys.add(key);}
     }
     private NativeToolDefinition definition(){
         Map<String,Object> string=Map.of("type","string");
         var agent=Map.of("type","object","additionalProperties",false,"properties",Map.of("kind",Map.of("type","string","enum",List.of("RETRIEVAL","ANALYSIS")),"key",Map.of("type","string","maxLength",80),"name",Map.of("type","string","maxLength",120),"goal",Map.of("type","string","maxLength",2000),"tools",Map.of("type","array","items",string,"maxItems",16),"dependsOn",Map.of("type","array","items",string,"maxItems",16)),"required",List.of("kind","key","name","goal","tools","dependsOn"));
-        return new NativeToolDefinition("orchestration__decide","Return one compact decision. Never explain the decision or copy the catalog.",Map.of("type","object","additionalProperties",false,"properties",Map.of("action",Map.of("type","string","enum",List.of("DIRECT","TOOLS","DELEGATE")),"answer",Map.of("type","string","maxLength",2000),"tools",Map.of("type","array","items",string,"maxItems",16),"agents",Map.of("type","array","items",agent,"maxItems",32)),"required",List.of("action","answer","tools","agents")));
+        var properties=new LinkedHashMap<String,Object>();
+        properties.put("action",Map.of("type","string","enum",List.of("DIRECT","TOOLS","DELEGATE")));
+        properties.put("answer",Map.of("type","string","maxLength",16000));
+        properties.put("tools",Map.of("type","array","items",string,"maxItems",16));
+        properties.put("agents",Map.of("type","array","items",agent,"maxItems",32));
+        return new NativeToolDefinition("orchestration__decide","Return one compact decision. Never explain the decision or copy the catalog.",Map.of("type","object","additionalProperties",false,"properties",properties,"required",List.of("action","answer","tools","agents")));
     }
 }

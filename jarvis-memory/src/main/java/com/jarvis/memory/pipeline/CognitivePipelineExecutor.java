@@ -23,6 +23,7 @@ public class CognitivePipelineExecutor {
     private static final Logger LOGGER = LoggerFactory.getLogger(CognitivePipelineExecutor.class);
     private static final String GRACEFUL_ERROR_RESPONSE = "I could not process this request safely. Please try again.";
 
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private com.jarvis.memory.ConversationMemoryService failedAnswerMemory;
     private final List<PipelineStage> stages;
     private final CognitiveEventBus cognitiveEventBus;
     private final PipelineDebugService pipelineDebugService;
@@ -87,6 +88,11 @@ public class CognitivePipelineExecutor {
             PipelineContext failedContext = exception instanceof PipelineExecutionException pipelineException
                     ? pipelineException.context()
                     : initialContext;
+            String visible=cognitiveEventBus.streamedAnswer();
+            if(failedAnswerMemory!=null&&!visible.isEmpty())try{
+                var partial=com.jarvis.common.event.AssistantResponse.message(com.jarvis.common.auth.CurrentUserContext.requiredUserId(),initialContext.conversationId(),initialContext.requestId(),visible,Instant.now());
+                failedAnswerMemory.addMessage(initialContext.conversationId(),new com.jarvis.common.memory.ConversationMessage(partial.id(),partial.conversationId(),partial.requestId(),partial.role(),partial.content(),partial.createdAt(),0,partial.messageType(),com.jarvis.common.memory.ConversationMessageStatus.FAILED));
+            }catch(RuntimeException persistenceFailure){exception.addSuppressed(persistenceFailure);}
             LOGGER.error("[JARVIS][requestId={}][PIPELINE] FAILED elapsedMs={}", failedContext.requestId(), durationMs, exception);
             cognitiveEventBus.error("Cognitive pipeline failed", Map.of(
                     "exception", exception.getClass().getSimpleName(),

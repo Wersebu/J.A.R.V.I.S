@@ -307,6 +307,18 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
             List<NativeToolDefinition> tools,
             AIJobType jobType
     ) {
+        return executeNativeChat(brain,messages,tools,jobType,Map.of(),null);
+    }
+    @Override public boolean supportsStreamingChat(){return true;}
+    @Override public ModelResponse streamChat(Brain brain,List<ModelMessage> messages,List<NativeToolDefinition> tools,Map<String,Object> schema,AIJobType jobType,java.util.function.Consumer<com.jarvis.common.ai.ModelStreamEvent> sink){
+        return executeNativeChat(brain,messages,tools,jobType,schema,sink);
+    }
+    /** GGUF grammar repetition bounds can expand enormously; Core validates these logical limits. */
+    private Object streamingSchema(Object value){
+        if(value instanceof Map<?,?> map){var result=new java.util.LinkedHashMap<String,Object>();for(var entry:map.entrySet())if(!java.util.Set.of("maxLength","maxItems").contains(entry.getKey()))result.put(entry.getKey().toString(),streamingSchema(entry.getValue()));return result;}
+        if(value instanceof List<?> list)return list.stream().map(this::streamingSchema).toList();return value;
+    }
+    private ModelResponse executeNativeChat(Brain brain,List<ModelMessage> messages,List<NativeToolDefinition> tools,AIJobType jobType,Map<String,Object> schema,java.util.function.Consumer<com.jarvis.common.ai.ModelStreamEvent> sink){
         String requestId = diagnosticsRequestId();
         String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/chat";
         try (var profileScope = contextBudgetService.open(brain, jobType); var deadline = new InferenceDeadline()) {
@@ -342,7 +354,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                         true,
                         nativeThink,
                         properties.keepAlive(),
-                        contextBudgetService.ollamaOptions()
+                        contextBudgetService.ollamaOptions(),schema==null||schema.isEmpty()?null:streamingSchema(schema)
                 );
                 // Serialized exactly once - this same String is what gets logged AND what becomes
                 // the HTTP body below, so the trace log can never drift from the real payload (see
@@ -372,7 +384,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                     throw new OllamaException("Ollama native tool chat failed with status " + httpResponse.statusCode()
                             + ": " + truncate(errorBody, 500));
                 }
-                ModelResponse modelResponse = readNativeToolChatStream(httpResponse.body(), brain, jobType, started);
+                ModelResponse modelResponse = readNativeToolChatStream(httpResponse.body(), brain, jobType, started,sink);
                 long durationMs = nanosToMillis(System.nanoTime() - started);
                 LOGGER.info("[JARVIS][requestId={}][OLLAMA] NATIVE_TOOL_CHAT_FINISHED durationMs={} contentChars={} thinkingChars={} toolCalls={}",
                         requestId, durationMs, modelResponse.content().length(), modelResponse.thinking().length(), modelResponse.toolCalls().size());
@@ -433,7 +445,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
     // reasoning and is cut off as a degenerate stream rather than left to run indefinitely.
     private static final int MAX_CONSECUTIVE_IDENTICAL_THINKING_CHUNKS = 12;
 
-    private ModelResponse readNativeToolChatStream(InputStream inputStream, Brain brain, AIJobType jobType, long startedNano) throws IOException {
+    private ModelResponse readNativeToolChatStream(InputStream inputStream, Brain brain, AIJobType jobType, long startedNano,java.util.function.Consumer<com.jarvis.common.ai.ModelStreamEvent> sink) throws IOException {
         StringBuilder thinkingBuilder = new StringBuilder();
         StringBuilder contentBuilder = new StringBuilder();
         List<OllamaToolCall> toolCalls = List.of();
@@ -452,8 +464,11 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                 if (line.isBlank()) {
                     continue;
                 }
-                OllamaChatResponse response = objectMapper.readValue(line, OllamaChatResponse.class);
+                var frame=objectMapper.readTree(line);
+                if(frame.hasNonNull("error"))throw new OllamaException("Ollama stream error: "+truncate(frame.path("error").asText(),500));
+                OllamaChatResponse response = objectMapper.treeToValue(frame, OllamaChatResponse.class);
                 OllamaChatMessage message = response.message();
+                if(message!=null&&sink!=null&&!thinkingStarted&&contentBuilder.isEmpty()&&((message.thinking()!=null&&!message.thinking().isEmpty())||(message.content()!=null&&!message.content().isEmpty())))sink.accept(new com.jarvis.common.ai.ModelStreamEvent(com.jarvis.common.ai.ModelStreamEvent.Type.FIRST_TOKEN,"","",""));
                 if (message != null) {
                     String thinking = message.thinking();
                     if (thinking != null && !thinking.isEmpty()) {
@@ -496,10 +511,13 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                                             "durationMs", nanosToMillis(System.nanoTime() - startedNano),
                                             "chunks", thinkingChunks, "characters", thinkingBuilder.length()));
                         }
+                        if(contentBuilder.isEmpty()&&!thinkingStarted)publishCognitive(jobType,CognitiveEventType.FIRST_TOKEN_RECEIVED,"RECEIVED","First model output received",null,Map.of("latencyMs",nanosToMillis(System.nanoTime()-startedNano),"channel","content"));
                         contentBuilder.append(content);
+                        if(sink!=null)sink.accept(com.jarvis.common.ai.ModelStreamEvent.content(content));
                     }
                     if (message.toolCalls() != null && !message.toolCalls().isEmpty()) {
                         toolCalls = message.toolCalls();
+                        if(sink!=null)for(var call:toolCalls)if(call.function()!=null)sink.accept(new com.jarvis.common.ai.ModelStreamEvent(com.jarvis.common.ai.ModelStreamEvent.Type.TOOL_CALL_COMPLETE,objectMapper.writeValueAsString(call.function().arguments()),call.id(),call.function().name()));
                     }
                 }
                 if (Boolean.TRUE.equals(response.done())) {

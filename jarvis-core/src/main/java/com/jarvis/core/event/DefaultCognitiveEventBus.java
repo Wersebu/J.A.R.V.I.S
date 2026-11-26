@@ -25,14 +25,41 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
     private final ExecutionTracer executionTracer;
     private static final java.util.Set<CognitiveEventType> ANSWER_EVENTS=java.util.Set.of(CognitiveEventType.ANSWER_STREAM_STARTED,CognitiveEventType.ANSWER_STARTED,CognitiveEventType.ANSWER_TOKEN,CognitiveEventType.TOKEN,CognitiveEventType.ANSWER_FINISHED,CognitiveEventType.STREAMING_STARTED,CognitiveEventType.STREAMING_FINISHED);
     private static final ThreadLocal<Publication> PUBLICATION=new ThreadLocal<>();
-    private static final class Publication {boolean publishing; java.util.UUID messageId; String text;}
+    private static final class Publication {
+        boolean publishing,started,committed,persisted;java.util.UUID messageId;final StringBuilder text=new StringBuilder();
+        final long began=System.nanoTime();long firstToken=-1,firstVisible=-1,firstSocket=-1,generationDone=-1;int chunks;
+        long elapsed(){return (System.nanoTime()-began)/1_000_000;}
+    }
+    @Override public String streamedAnswer(){var p=PUBLICATION.get();return p==null?"":p.text.toString();}
+    private Map<String,Object> answerMetadata(Publication p){var scope=REQUEST_SCOPE.get();var data=new java.util.LinkedHashMap<String,Object>();data.put("requestId",scope.requestId());data.put("conversationId",scope.conversationId());data.put("messageId",p.messageId.toString());data.put("persisted",p.persisted);data.put("source",p.persisted?"persisted-assistant-response":"live-assistant-response");return data;}
+    private void visible(String text){
+        if(text==null||text.isEmpty())return;
+        var p=PUBLICATION.get();if(p.committed)throw new IllegalStateException("Answer already committed");
+        p.publishing=true;
+        try{
+            var data=answerMetadata(p);
+            if(!p.started){p.started=true;publish(CognitiveEventType.ANSWER_STREAM_STARTED,"STARTED","Answer stream started",null,Map.copyOf(data));publish(CognitiveEventType.ANSWER_STARTED,"ANSWERING","Answer started",null,Map.copyOf(data));publish(CognitiveEventType.STREAMING_STARTED,"STREAMING","Streaming started",null,Map.copyOf(data));}
+            if(p.firstVisible<0)p.firstVisible=p.elapsed();p.text.append(text);data.put("text",text);data.put("index",++p.chunks);
+            publish(CognitiveEventType.ANSWER_TOKEN,"TOKEN",text,null,Map.copyOf(data));
+            if(p.firstSocket<0)p.firstSocket=p.elapsed();
+            publish(CognitiveEventType.TOKEN,"TOKEN",text,null,Map.copyOf(data));
+        }finally{p.publishing=false;}
+    }
     @Override public void answerCommitted(com.jarvis.common.memory.ConversationMessage message){
-        var scope=REQUEST_SCOPE.get();var publication=PUBLICATION.get();
-        if(scope==null||publication==null||!scope.requestId().equals(message.requestId())||!scope.conversationId().equals(message.conversationId()))throw new IllegalStateException("Answer publication identity mismatch");
-        if(publication.messageId!=null){if(publication.messageId.equals(message.id())&&publication.text.equals(message.content()))return;throw new IllegalStateException("A request cannot commit two different answers");}
-        publication.publishing=true;
-        try {CognitiveEventBus.super.answerCommitted(message);publication.messageId=message.id();publication.text=message.content();}
-        finally {publication.publishing=false;}
+        var scope=REQUEST_SCOPE.get();var p=PUBLICATION.get();
+        if(scope==null||p==null||!scope.requestId().equals(message.requestId())||!scope.conversationId().equals(message.conversationId())||!p.messageId.equals(message.id()))throw new IllegalStateException("Answer publication identity mismatch");
+        if(p.committed){if(p.text.toString().equals(message.content()))return;throw new IllegalStateException("A request cannot commit two different answers");}
+        p.persisted=true;
+        if(p.text.isEmpty())visible(message.content());
+        if(!p.text.toString().equals(message.content()))throw new IllegalStateException("Streamed answer differs from persisted answer");
+        p.publishing=true;
+        try{
+            var data=answerMetadata(p);data.put("characters",p.text.length());data.put("tokensStreamed",p.chunks);
+            publish(CognitiveEventType.ANSWER_FINISHED,"FINISHED","Answer committed",null,Map.copyOf(data));
+            publish(CognitiveEventType.STREAMING_FINISHED,"FINISHED","Streaming finished",null,Map.copyOf(data));
+            var metrics=answerMetadata(p);metrics.put("timeToFirstTokenMs",p.firstToken);metrics.put("timeToFirstVisibleAnswerTokenMs",p.firstVisible);metrics.put("timeToFirstWebSocketAnswerEventMs",p.firstSocket);metrics.put("generationCompletedMs",p.generationDone);metrics.put("answerChunks",p.chunks);
+            publish(CognitiveEventType.ANSWER_STREAM_METRICS,"FINISHED","Answer stream measurements",null,Map.copyOf(metrics));p.committed=true;
+        }finally{p.publishing=false;}
     }
     private static final ThreadLocal<com.jarvis.common.ai.RequestTokenUsage> USAGE = new ThreadLocal<>();
 
@@ -56,7 +83,7 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
     public void startRequest(String requestId, String conversationId, Consumer<CognitiveEvent> sink) {
         REQUEST_SCOPE.set(new RequestScope(requestId, conversationId, sink == null ? event -> { } : sink, null, null));
         USAGE.set(new com.jarvis.common.ai.RequestTokenUsage());
-        PUBLICATION.set(new Publication());
+        var publication=new Publication();publication.messageId=com.jarvis.common.event.AssistantResponse.messageId(com.jarvis.common.auth.CurrentUserContext.requiredUserId(),conversationId,requestId);PUBLICATION.set(publication);
         executionTracer.start(requestId, conversationId, sink);
     }
 
@@ -99,8 +126,16 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
         if (scope == null) {
             return;
         }
-        // Legacy model/tool stages propose chunks; only the validated, persisted answer is user-visible.
-        if(ANSWER_EVENTS.contains(event)&&(PUBLICATION.get()==null||!PUBLICATION.get().publishing))return;
+        var publication=PUBLICATION.get();
+        if(event==CognitiveEventType.THINKING_TOKEN)return; // Private reasoning is never a user-visible channel.
+        if(publication!=null){
+            if(event==CognitiveEventType.FIRST_TOKEN_RECEIVED&&publication.firstToken<0)publication.firstToken=publication.elapsed();
+            if(!publication.publishing&&((event==CognitiveEventType.EXECUTION_TRACE&&"NATIVE_TOOL_MODEL_TURN".equals(metadata.get("stage"))&&"FINISHED".equals(status))||event==CognitiveEventType.STREAMING_FINISHED))publication.generationDone=publication.elapsed();
+            if(ANSWER_EVENTS.contains(event)&&!publication.publishing){
+                if(event==CognitiveEventType.ANSWER_TOKEN&&!"progress-update".equals(metadata.get("source")))visible(String.valueOf(metadata.getOrDefault("text",message)));
+                return;
+            }
+        }
         if (event == CognitiveEventType.TOKEN_USAGE && USAGE.get() != null) {
             metadata = USAGE.get().record(metadata);
         }

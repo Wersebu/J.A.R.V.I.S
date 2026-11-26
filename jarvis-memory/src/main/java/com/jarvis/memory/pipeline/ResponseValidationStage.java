@@ -75,6 +75,8 @@ public class ResponseValidationStage implements PipelineStage {
         }
         ValidationOutcome validation = validateAndCorrect(context);
         PipelineContext responseContext = validation.context();
+        String streamed=cognitiveEventBus.streamedAnswer();
+        if(!streamed.isEmpty()&&!streamed.equals(responseContext.response()))throw new IllegalStateException("Validation changed an already streamed answer; refusing a mismatched successful history");
         ConversationMessage assistantMessage = com.jarvis.common.event.AssistantResponse.message(
                 com.jarvis.common.auth.CurrentUserContext.requiredUserId(),responseContext.conversationId(),responseContext.requestId(),responseContext.response(),Instant.now());
         memoryService.addMessage(responseContext.conversationId(), assistantMessage);
