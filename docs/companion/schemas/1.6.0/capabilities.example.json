@@ -1,0 +1,17 @@
+{
+  "contractVersion": "1.6.0",
+  "tasks": true,
+  "taskPlans": true,
+  "planEvidenceRequired": true,
+  "durableHistory": true,
+  "voiceStreaming": false,
+  "providerMode": "SIMULATED",
+  "interactiveChat": {
+    "requestIds": true,
+    "multiplexing": true,
+    "sameConversationPolicy": "FIFO",
+    "requestControls": true,
+    "requestReplay": true,
+    "protocolRevision": "1.6.0"
+  }
+}

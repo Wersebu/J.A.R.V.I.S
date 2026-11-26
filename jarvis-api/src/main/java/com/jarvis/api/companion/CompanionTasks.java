@@ -18,7 +18,7 @@ import java.util.concurrent.*;
 /** Bounded process-local task engine. All transitions and snapshots share one lock. */
 @Service
 public class CompanionTasks implements AutoCloseable {
-    private static final String VERSION = "1.5.0";
+    private static final String VERSION = "1.6.0";
     public static String version() { return VERSION; }
     public record Request(String message, String role, Integer priority, Integer timeoutSeconds, Integer maxAttempts) {}
     public record Task(String taskId, String role, String state, int priority, Double progress,

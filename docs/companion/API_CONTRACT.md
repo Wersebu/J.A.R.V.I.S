@@ -1,6 +1,6 @@
-# Companion API contract 1.5.0
+# Companion API contract 1.6.0
 
-Updated 2026-11-25 (1.5.0; prior publication 2026-11-24). Backend owns state. Additive to existing APIs; legacy /ws/jarvis is unchanged. Version changes are recorded here and in CONTRACT_VERSION.txt. Major = incompatible; minor = additive; patch = clarification. Clients ignore unknown fields/events.
+Updated 2026-11-26 (1.6.0; prior publication 1.5.0). Backend owns state. Additive to existing APIs; /ws/jarvis retains legacy payloads and adds feature-detected request multiplexing. Version changes are recorded here and in CONTRACT_VERSION.txt. Major = incompatible; minor = additive; patch = clarification. Clients ignore unknown fields/events.
 
 ## Availability
 Initial integration target: /api/v1/companion REST and /ws/companion. See CODEX_STATUS.md for verified implementation. Reserved events below are NOT capability claims. No deployment has occurred.
@@ -93,3 +93,8 @@ Schemas/examples: schemas/1.5.0. Full coordination, implementation limits, bench
 ## Interactive concurrency candidate (joint acceptance pending)
 
 See INTERACTIVE_CHAT_CONTRACT_DRAFT.md and schemas/1.6.0-draft for the request-ID/FIFO/multiplexing extension being coordinated with Claude. Candidate capabilities expose interactiveChat (requestIds, multiplexing, sameConversationPolicy=FIFO, requestControls, requestReplay, protocolRevision=candidate-1.6.0). Companion contractVersion remains 1.5.0 pending the coordinated minor-version publication; this appendix is not a completed release declaration. Older clients keep their visible local queue until they implement the new dispatcher and explicit controls.
+
+
+## Interactive chat publication (1.6.0, 2026-11-26)
+
+The current Companion contractVersion/protocolVersion is 1.6.0. Earlier 1.5.0 examples above remain compatible historical examples. The canonical chat extension is published in INTERACTIVE_CHAT_CONTRACT.md and schemas/1.6.0; the draft appendix above is superseded. interactiveChat.protocolRevision is 1.6.0. Actual Windows dispatcher/view-model and packaged Core compatibility passed with simulated providers. See WINDOWS_STAGE3_RESULTS.md for exact validation and remaining physical-audio/provider acceptance. No production deployment is implied.

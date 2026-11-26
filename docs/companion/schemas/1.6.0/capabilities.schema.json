@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "contractVersion",
+    "tasks",
+    "taskPlans",
+    "planEvidenceRequired",
+    "durableHistory",
+    "voiceStreaming"
+  ],
+  "properties": {
+    "contractVersion": {
+      "const": "1.6.0"
+    },
+    "tasks": {
+      "const": true
+    },
+    "taskPlans": {
+      "const": true
+    },
+    "planEvidenceRequired": {
+      "const": true
+    },
+    "durableHistory": {
+      "type": "boolean"
+    },
+    "voiceStreaming": {
+      "const": false
+    },
+    "providerMode": {
+      "enum": [
+        "LIVE",
+        "SIMULATED"
+      ]
+    },
+    "inferenceTelemetry": {
+      "type": "boolean"
+    },
+    "asyncDelegation": {
+      "type": "boolean"
+    },
+    "taskInstructions": {
+      "type": "boolean"
+    },
+    "interactiveChat": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "requestIds",
+        "multiplexing",
+        "sameConversationPolicy",
+        "requestControls",
+        "requestReplay",
+        "protocolRevision"
+      ],
+      "properties": {
+        "requestIds": {
+          "type": "boolean"
+        },
+        "multiplexing": {
+          "type": "boolean"
+        },
+        "sameConversationPolicy": {
+          "const": "FIFO"
+        },
+        "requestControls": {
+          "type": "boolean"
+        },
+        "requestReplay": {
+          "type": "boolean"
+        },
+        "protocolRevision": {
+          "const": "1.6.0"
+        }
+      }
+    }
+  }
+}
