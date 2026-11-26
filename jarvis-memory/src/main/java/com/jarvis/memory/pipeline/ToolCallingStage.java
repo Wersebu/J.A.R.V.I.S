@@ -140,6 +140,7 @@ public class ToolCallingStage implements PipelineStage {
                 context.model(), null, Math.max(1, answer.length() / 4), null);
         return context.withResponse(answer, finished)
                 .withMetadata("toolCallingHandled", true)
+                .withMetadata("backgroundExecutionIncomplete", result.terminationInfo().terminationReason()!=ToolLoopTerminationReason.UNKNOWN&&!result.terminationInfo().completed())
                 .withMetadata("toolCallingSteps", result.steps().size());
     }
 

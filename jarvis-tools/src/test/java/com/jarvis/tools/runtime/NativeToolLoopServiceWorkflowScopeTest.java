@@ -61,7 +61,7 @@ class NativeToolLoopServiceWorkflowScopeTest {
         assertThat(result.terminationInfo().terminationReason()).isEqualTo(ToolLoopTerminationReason.DELEGATED);
         assertThat(result.terminationInfo().completed()).isFalse();
         assertThat(offeredPerTurn).hasSize(1);
-        assertThat(result.finalAnswer()).contains("real-task-id");
+        assertThat(result.finalAnswer()).contains("independent research").doesNotContain("real-task-id");
     }
 
     @Test
@@ -76,7 +76,7 @@ class NativeToolLoopServiceWorkflowScopeTest {
         assertThat(executed).hasSize(3).allSatisfy(r -> assertThat(r.toolName()).isEqualTo("companion"));
         assertThat(result.results().stream().filter(r -> r.success()).map(r -> r.data().get("taskId")).distinct()).hasSize(3);
         assertThat(offeredPerTurn).hasSize(4).allSatisfy(names -> assertThat(names).containsExactly("companion__submit"));
-        assertThat(result.finalAnswer()).contains("task-Research alpha", "task-Research beta", "task-Research gamma");
+        assertThat(result.finalAnswer()).contains("Research alpha", "Research beta", "Research gamma").doesNotContain("task-Research");
     }
 
     @Test
@@ -264,7 +264,7 @@ class NativeToolLoopServiceWorkflowScopeTest {
         @Override
         public ToolResult execute(ToolRequest request) {
             executed.add(request);
-            if(request.toolName().equals("companion"))return new ToolResult(true,"companion","SUBMIT",request.requestId(),request.conversationId(),true,List.of(),"Accepted",Map.of("taskId",request.arguments().get("message").equals("independent research") ? "real-task-id" : "task-"+request.arguments().get("message"),"state","QUEUED"),"","",false,"");
+            if(request.toolName().equals("companion"))return new ToolResult(true,"companion","SUBMIT",request.requestId(),request.conversationId(),true,List.of(),"Accepted",Map.of("taskId",request.arguments().get("message").equals("independent research") ? "real-task-id" : "task-"+request.arguments().get("message"),"state","QUEUED","name",request.arguments().get("message")),"","",false,"");
             if (addFails && "ADD".equals(request.operation())) {
                 return new ToolResult(false, request.toolName(), request.operation(), request.requestId(), request.conversationId(),
                         false, List.of(), "No dataset", Map.of(), "STORE_DATASET_NOT_FOUND", "No dataset in this conversation", false, "");

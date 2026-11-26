@@ -147,8 +147,11 @@ public class ConversationController {
      */
     @DeleteMapping("/api/v1/conversations/{conversationId}")
     public ResponseEntity<ConversationDeletedResponse> delete(@PathVariable String conversationId) {
-        int deleted = conversationMemoryService.deleteConversation(conversationId);
-        return ResponseEntity.ok(new ConversationDeletedResponse(conversationId, deleted));
+        try(var turn=com.jarvis.common.run.ConversationTurns.reserve(com.jarvis.common.auth.CurrentUserContext.requiredUserId(),conversationId)){
+            turn.await();
+            int deleted = conversationMemoryService.deleteConversation(conversationId);
+            return ResponseEntity.ok(new ConversationDeletedResponse(conversationId, deleted));
+        }
     }
 
     /**

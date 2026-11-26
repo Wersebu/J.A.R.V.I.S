@@ -14,6 +14,9 @@ import java.util.UUID;
  */
 @Service
 public class ToolOutputStore {
+    private com.jarvis.common.companion.CompanionDocumentStore persistent;
+    @org.springframework.beans.factory.annotation.Autowired
+    public synchronized void configurePersistence(com.jarvis.common.companion.CompanionDocumentStore store){this.persistent=store;}
 
     private static final int MAX_ENTRIES = 300;
 
@@ -31,8 +34,10 @@ public class ToolOutputStore {
      * @return id to pass to {@code output__read}
      */
     public synchronized String put(String text) {
-        String id = "out-" + UUID.randomUUID().toString().substring(0, 8);
-        outputs.put(id, text == null ? "" : text);
+        String id = "out-" + UUID.randomUUID();
+        String owner=com.jarvis.common.auth.CurrentUserContext.requiredUserId();
+        if(persistent!=null)persistent.put(new com.jarvis.common.companion.CompanionDocumentStore.Document(owner,"tool-output",id,text==null?"":text,java.time.Instant.now()));
+        outputs.put(owner+"/"+id, text == null ? "" : text);
         return id;
     }
 
@@ -43,6 +48,8 @@ public class ToolOutputStore {
      * @return text, when still stored
      */
     public synchronized Optional<String> get(String id) {
-        return Optional.ofNullable(outputs.get(id == null ? "" : id.strip()));
+        String owner=com.jarvis.common.auth.CurrentUserContext.requiredUserId();String key=id==null?"":id.strip();
+        if(persistent!=null)return persistent.find(owner,"tool-output",key).map(com.jarvis.common.companion.CompanionDocumentStore.Document::body);
+        return Optional.ofNullable(outputs.get(owner+"/"+key));
     }
 }

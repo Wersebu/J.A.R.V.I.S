@@ -7,13 +7,17 @@ import java.util.*;
 @RequestMapping("/api/v1/companion")
 public class CompanionController {
     private final CompanionTasks tasks;
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private com.jarvis.tools.runtime.ToolOutputStore outputs;
     @org.springframework.beans.factory.annotation.Value("${jarvis.companion.provider-mode:LIVE}") private String providerMode="LIVE";
     public CompanionController(CompanionTasks tasks){this.tasks=tasks;}
     private String owner(){return CurrentUserContext.requireAuthenticatedUserId();}
-    @GetMapping("/capabilities") public Map<String,Object> capabilities(){var result=new LinkedHashMap<String,Object>(Map.of("contractVersion",CompanionTasks.version(),"tasks",true,"voiceStreaming",false,"durableHistory",tasks.durableHistory(),"eventRetention",512,"maxActiveTasks",128,"providerMode",providerMode,"taskPlans",true,"planEvidenceRequired",true));result.put("inferenceTelemetry",true);result.put("asyncDelegation",true);result.put("taskInstructions",true);result.put("interactiveChat",Map.of("requestIds",true,"multiplexing",true,"sameConversationPolicy","FIFO","requestControls",true,"requestReplay",true,"protocolRevision","1.6.0"));return result;}
+    @GetMapping("/capabilities") public Map<String,Object> capabilities(){var result=new LinkedHashMap<String,Object>(Map.of("contractVersion",CompanionTasks.version(),"tasks",true,"voiceStreaming",false,"durableHistory",tasks.durableHistory(),"eventRetention",512,"maxActiveTasks",128,"providerMode",providerMode,"taskPlans",true,"planEvidenceRequired",true));result.put("inferenceTelemetry",true);result.put("asyncDelegation",true);result.put("taskInstructions",true);result.put("autonomousResults",true);result.put("taskDependencies",true);result.put("resultArtifacts",true);result.put("partialResults",true);result.put("interactiveChat",Map.of("requestIds",true,"multiplexing",true,"sameConversationPolicy","FIFO","requestControls",true,"requestReplay",true,"protocolRevision","1.6.0"));return result;}
     @PostMapping("/tasks") @ResponseStatus(HttpStatus.ACCEPTED) public CompanionTasks.Task submit(@RequestBody CompanionTasks.Request request){return tasks.submit(owner(),request);}
     @GetMapping("/tasks") public List<CompanionTasks.Task> list(){return tasks.list(owner());}
     @GetMapping("/tasks/{id}") public CompanionTasks.Task get(@PathVariable String id){return tasks.get(owner(),id);}
+    @GetMapping("/tasks/{id}/info") public Map<String,Object> info(@PathVariable String id){return tasks.info(owner(),id);}
+    @GetMapping(value="/tasks/{id}/result",produces="text/plain;charset=UTF-8") public String result(@PathVariable String id){return Objects.toString(tasks.get(owner(),id).result(),"");}
+    @GetMapping(value="/outputs/{id}",produces="text/plain;charset=UTF-8") public String output(@PathVariable String id){owner();if(outputs==null)throw new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND);return outputs.get(id).orElseThrow(()->new org.springframework.web.server.ResponseStatusException(HttpStatus.NOT_FOUND));}
     @PostMapping("/tasks/{id}/cancel") public CompanionTasks.Task cancel(@PathVariable String id){return tasks.cancel(owner(),id);}
     public record Instruction(String message){}
     @PostMapping("/tasks/{id}/instructions") public CompanionTasks.Task instruct(@PathVariable String id,@RequestBody Instruction instruction){return tasks.instruct(owner(),id,instruction.message());}

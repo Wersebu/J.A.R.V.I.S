@@ -48,6 +48,34 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the same call with valid JSON.
  */
 class NativeToolLoopServiceProviderToolRepairTest {
+    private ToolCallingResult background(NativeToolLoopService service){
+        ToolCallingResult[] result={null};com.jarvis.common.companion.TaskExecutionContext.run("task-test",()->result[0]=service.execute(new ToolCallingRequest(
+            "recovery","isolated-execution","list project files","List project files","test","Base prompt",
+            new Brain(BrainType.FAST,"stub","stub-model","stub","",0L,ReasoningLevel.LOW),KnowledgeMode.FAST)));
+        return result[0];
+    }
+    @Test void backgroundContextFailureRecoversWithoutRepeatingSuccessfulTools(){
+        Deque<Object> turns=new ArrayDeque<>();turns.add(toolCallTurn("mcp_roblox_search_game_tree__call",Map.of("query","files")));
+        turns.add("CONTEXT_BUDGET_EXCEEDED: mandatory native context");turns.add(textTurn("Zweryfikowany wynik na podstawie odczytu."));
+        var provider=new ScriptedFailureProvider(turns);var manager=new FakeToolManager();var service=newService(provider,manager,robloxRegistry());service.setToolOutputStore(new ToolOutputStore());
+        var result=background(service);assertThat(result.finalAnswer()).contains("Zweryfikowany wynik");assertThat(manager.executedTools()).hasSize(1);assertThat(provider.callCount()).isEqualTo(3);
+    }
+    @Test void truncatedBackgroundDeliverableContinuesAndRetainsEveryPart(){
+        Deque<Object> turns=new ArrayDeque<>();turns.add(toolCallTurn("mcp_roblox_search_game_tree__call",Map.of("query","files")));turns.add(new ModelResponse("Pierwsza część. ","",List.of(),"length",new ModelUsage(0,0,0)));turns.add(textTurn("Druga część i zakończenie."));
+        var provider=new ScriptedFailureProvider(turns);var service=newService(provider,new FakeToolManager(),robloxRegistry());
+        assertThat(background(service).finalAnswer()).contains("Pierwsza część. Druga część i zakończenie.");assertThat(provider.callCount()).isEqualTo(3);
+    }
+    @Test void repeatedTruncationTerminatesWithPreservedPartialDeliverable(){
+        Deque<Object> turns=new ArrayDeque<>();for(int i=0;i<4;i++)turns.add(new ModelResponse("fragment ","",List.of(),"length",new ModelUsage(0,0,0)));
+        var provider=new ScriptedFailureProvider(turns);var service=newService(provider,new FakeToolManager(),robloxRegistry());
+        var failure=org.junit.jupiter.api.Assertions.assertThrows(com.jarvis.common.companion.IncompleteTaskException.class,()->background(service));
+        assertThat(failure.partialResult()).isEqualTo("fragment ".repeat(4));assertThat(provider.callCount()).isEqualTo(4);
+    }
+    @Test void emptyBackgroundGenerationRetriesAndProducesActualResult(){
+        Deque<Object> turns=new ArrayDeque<>();turns.add(textTurn(""));turns.add(toolCallTurn("mcp_roblox_search_game_tree__call",Map.of("query","files")));turns.add(textTurn("Gotowy pełny materiał."));
+        var provider=new ScriptedFailureProvider(turns);var service=newService(provider,new FakeToolManager(),robloxRegistry());
+        assertThat(background(service).finalAnswer()).contains("Gotowy pełny materiał.");assertThat(provider.callCount()).isEqualTo(3);
+    }
 
     private static final String REAL_TOOL_MALFORMED_ERROR =
             "Ollama native tool chat failed with status 500: {\"error\":\"error parsing tool call: "

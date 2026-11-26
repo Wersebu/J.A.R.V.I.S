@@ -39,7 +39,7 @@ public class OllamaRequestCoordinator implements ModelGateway {
     public OllamaRequestCoordinator(boolean priority,CognitiveEventBus bus){this(priority,bus,1,0,128,0,300000);}
     @Autowired
     public OllamaRequestCoordinator(@Value("${jarvis.memory.background.chat-priority:true}") boolean priority,CognitiveEventBus bus,
-        @Value("${jarvis.model-gateway.concurrency:4}") int concurrency,@Value("${jarvis.model-gateway.reserved-interactive:1}") int reserved,
+        @Value("${jarvis.model-gateway.concurrency:1}") int concurrency,@Value("${jarvis.model-gateway.reserved-interactive:0}") int reserved,
         @Value("${jarvis.model-gateway.max-waiting:128}") int maxWaiting,@Value("${jarvis.model-gateway.minimum-free-heap-bytes:0}") long heap,
         @Value("${jarvis.model-gateway.queue-timeout-millis:300000}") long timeout) {
         if(concurrency<1||concurrency>64||reserved<0||reserved>concurrency||reserved>=concurrency&&concurrency>1||maxWaiting<1||heap<0||timeout<1)

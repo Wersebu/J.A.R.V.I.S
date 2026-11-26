@@ -99,6 +99,10 @@ public class CognitivePipelineExecutor {
             }
             LOGGER.info("[JARVIS][requestId={}][PIPELINE] FINISHED totalMs={}", failedContext.requestId(), durationMs);
             logSummary(failedContext, diagnostics, pipelineStartedNano);
+            if(com.jarvis.common.companion.TaskExecutionContext.current()!=null){
+                for(Throwable cause=exception;cause!=null;cause=cause.getCause())if(cause instanceof com.jarvis.common.companion.IncompleteTaskException incomplete)throw incomplete;
+                throw new com.jarvis.common.companion.IncompleteTaskException("PIPELINE_FAILED: "+exception.getClass().getSimpleName(),failedContext.response());
+            }
             return failedContext.withResponse(GRACEFUL_ERROR_RESPONSE, null);
         }
     }

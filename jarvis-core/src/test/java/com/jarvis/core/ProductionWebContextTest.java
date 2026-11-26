@@ -50,7 +50,7 @@ class ProductionWebContextTest {
     @Test
     void productionControllersOwnHealthAndAuthenticationWithoutIntegrationBeans() {
         var gateway=context.getBean(com.jarvis.common.ai.ModelGateway.class);
-        assertThat(gateway.snapshot()).containsEntry("configuredConcurrency",4).containsEntry("reservedInteractive",1);
+        assertThat(gateway.snapshot()).containsEntry("configuredConcurrency",1).containsEntry("reservedInteractive",0);
         assertThat(context.getBeansOfType(com.jarvis.common.companion.CompanionTaskSubmission.class)).hasSize(1);
         assertThat(context.getBeansOfType(com.jarvis.common.ai.InferenceContextPolicy.class)).hasSize(1);
         assertThat(context.getBeansOfType(HealthController.class)).hasSize(1);

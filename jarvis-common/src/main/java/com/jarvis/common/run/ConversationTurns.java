@@ -9,6 +9,11 @@ public final class ConversationTurns {
     private static final Map<String, ArrayDeque<Turn>> QUEUES = new HashMap<>();
     private static int outstanding;
     private ConversationTurns() {}
+    /** Autonomous writes yield to all already admitted interactive work. */
+    public static synchronized Turn reserveIfIdle(String owner,String conversation) {
+        if(QUEUES.containsKey(owner+"\u0000"+conversation))return null;
+        return reserve(owner,conversation);
+    }
     public static synchronized Turn reserve(String owner, String conversation) {
         if (outstanding >= 1024) throw new IllegalStateException("Interactive request queue is full");
         String key = owner + "\u0000" + conversation;
