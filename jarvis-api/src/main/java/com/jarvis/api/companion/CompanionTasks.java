@@ -99,10 +99,10 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         }
         publish(owner,type,id,payload);
     }
-    private boolean deliveryPending(Entry e){return e.task.conversationId()!=null&&history.find(e.owner,"task-delivery",e.coordinator?"task-group/"+groupId(e):"task-result/"+e.task.taskId()).isEmpty();}
+    private boolean deliveryPending(Entry e){if(e.scope!=null){var root=tasks.get(e.scope.rootTaskId());return root!=null&&!TERMINAL.contains(root.task.state());}return e.task.conversationId()!=null&&history.find(e.owner,"task-delivery",e.coordinator?"task-group/"+groupId(e):"task-result/"+e.task.taskId()).isEmpty();}
     public synchronized DynamicPlan plan(String owner,String id){owned(owner,id);if(plans==null)throw new ResponseStatusException(HttpStatus.NOT_FOUND);return plans.find(owner,id).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND));}
     public synchronized List<DynamicPlan> planRevisions(String owner,String id){owned(owner,id);return plans==null?List.of():plans.revisions(owner,id);}
-    public synchronized void delete(String owner,String id){Entry e=owned(owner,id);if(!TERMINAL.contains(e.task.state()))throw new ResponseStatusException(HttpStatus.CONFLICT,"Active tasks cannot be deleted");history.deleteTask(owner,id);roots.remove(id);for(var document:history.documents(owner,"event","")){var event=decode(document.body(),Event.class);if(id.equals(event.taskId()))history.delete(owner,"event",document.id());}for(var key:history.documents(owner,"task-submission",""))if(key.body().equals(id))history.delete(owner,"task-submission",key.id());if(plans!=null)plans.forget(owner,id);tasks.remove(id);if(tasks.values().stream().noneMatch(other->other.owner.equals(owner)&&groupId(other).equals(groupId(e)))){history.delete(owner,"task-synthesis","task-group/"+groupId(e));history.delete(owner,"task-stream","task-group/"+groupId(e));}events.getOrDefault(owner,new ArrayDeque<>()).removeIf(event->id.equals(event.taskId()));Task tombstone=new Task(e.task.taskId(),e.task.role(),e.task.state(),e.task.priority(),null,e.task.createdAt(),e.task.updatedAt(),null,null);publish(owner,"task.history.deleted",id,tombstone);}
+    public synchronized void delete(String owner,String id){Entry e=owned(owner,id);if(!TERMINAL.contains(e.task.state()))throw new ResponseStatusException(HttpStatus.CONFLICT,"Active tasks cannot be deleted");history.deleteTask(owner,id);history.delete(owner,"task-identity",id);roots.remove(id);for(var document:history.documents(owner,"event","")){var event=decode(document.body(),Event.class);if(id.equals(event.taskId()))history.delete(owner,"event",document.id());}for(var key:history.documents(owner,"task-submission",""))if(key.body().equals(id))history.delete(owner,"task-submission",key.id());if(plans!=null)plans.forget(owner,id);tasks.remove(id);if(tasks.values().stream().noneMatch(other->other.owner.equals(owner)&&groupId(other).equals(groupId(e)))){history.delete(owner,"task-synthesis","task-group/"+groupId(e));history.delete(owner,"task-stream","task-group/"+groupId(e));}events.getOrDefault(owner,new ArrayDeque<>()).removeIf(event->id.equals(event.taskId()));Task tombstone=new Task(e.task.taskId(),e.task.role(),e.task.state(),e.task.priority(),null,e.task.createdAt(),e.task.updatedAt(),null,null);publish(owner,"task.history.deleted",id,tombstone);}
     private void purgeHistory(){Instant cutoff=Instant.now().minus(java.time.Duration.ofDays(Math.max(0,retentionDays)));var terminal=tasks.values().stream().filter(e->TERMINAL.contains(e.task.state())&&!deliveryPending(e)).sorted(Comparator.comparing(e->e.task.updatedAt())).toList();for(var e:terminal){if(retentionDays>0&&e.task.updatedAt().isBefore(cutoff)||tasks.size()>1000)delete(e.owner,e.task.taskId());}}
     private final ChatService chat;
     @org.springframework.beans.factory.annotation.Autowired(required=false)
@@ -177,12 +177,12 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         String key=submissionKey(requestId,conversation,"ROOT");
         var previous=history.find(owner,"orchestration-request",key);if(previous.isPresent())return owned(owner,previous.get().body()).task;
         if(agents.isEmpty()||agents.size()>32||tasks.values().stream().filter(e->!TERMINAL.contains(e.task.state())).count()+agents.size()+1>128)throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,"Orchestration admission capacity exceeded");
-        var request=new Request(message,"TASK",50,3600,1);var entry=new Entry(owner,request);var t=entry.task;
+        var request=new Request(message,"CONVERSATION",50,3600,1,"Koordynacja",List.of(),conversation,requestId);var entry=new Entry(owner,request);var t=entry.task;
         entry.task=new Task(t.taskId(),t.role(),"RUNNING",50,null,t.createdAt(),t.updatedAt(),null,null,conversation,t.executionConversationId());entry.coordinator=true;
-        entry.submission=new Submission(request,"Realizacja: "+message.substring(0,Math.min(100,message.length())),key,Instant.now().plusSeconds(3600),resultDelivery==null?null:resultDelivery.languageReference(owner,conversation));
+        entry.submission=new Submission(request,"Koordynacja: "+agents.stream().map(AutonomousOrchestration.Agent::name).collect(java.util.stream.Collectors.joining(", ")).substring(0,Math.min(100,agents.stream().map(AutonomousOrchestration.Agent::name).collect(java.util.stream.Collectors.joining(", ")).length())),key,Instant.now().plusSeconds(3600),resultDelivery==null?null:resultDelivery.languageReference(owner,conversation));
         var root=new Root(t.taskId(),key,agents.size(),Map.of(),false);roots.put(t.taskId(),root);
         history.putAll(List.of(document(owner,"task",t.taskId(),entry.task),document(owner,"task-input",t.taskId(),entry.submission),document(owner,"orchestration-root",t.taskId(),root),new CompanionDocumentStore.Document(owner,"orchestration-request",key,t.taskId(),Instant.now())));
-        tasks.put(t.taskId(),entry);if(plans!=null)plans.register(owner,t.taskId(),"RUNNING");emit(entry,"task.created");
+        history.put(document(owner,"task-identity",t.taskId(),Map.of("requestId",requestId,"idempotencyKey",key)));tasks.put(t.taskId(),entry);if(plans!=null)plans.register(owner,t.taskId(),"RUNNING");emit(entry,"task.created");
         var plan=plans==null?null:plans.create(owner,t.taskId(),entry.submission.name(),agents.stream().map(AutonomousOrchestration.Agent::name).toList());
         var ids=new HashMap<String,String>();var steps=new LinkedHashMap<String,String>();
         try{
@@ -190,7 +190,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
                 var agent=agents.get(i);var dependencies=agent.dependsOn().stream().map(k->{var id=ids.get(k);if(id==null)throw new IllegalArgumentException("Dependency must reference an earlier agent");return id;}).toList();
                 var tools=new HashSet<>(agent.tools());tools.add("output__read");tools.add("output__grep");tools.add("companion__submit");
                 var scope=new AgentScope.Scope(t.taskId(),t.taskId(),1,tools,readOnly.containsAll(agent.tools()));
-                var child=submitInternal(owner,new Request(agent.goal(),"TASK",50,600,1,agent.name(),dependencies,null,null),conversation,requestId+"/"+agent.key(),scope,key);
+                var child=submitInternal(owner,new Request(agent.goal(),"TASK",50,600,1,agent.name(),dependencies,conversation,requestId),conversation,requestId+"/"+agent.key(),scope,key);
                 ids.put(agent.key(),child.taskId());if(plan!=null)steps.put(child.taskId(),plan.steps().get(i).stepId());
                 roots.put(t.taskId(),new Root(t.taskId(),key,agents.size(),steps,false));history.put(document(owner,"orchestration-root",t.taskId(),roots.get(t.taskId())));
             }
@@ -208,7 +208,8 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         var old=history.find(owner,"task-submission",dedup);if(old.isPresent())return owned(owner,old.get().body()).task;
         String step=null;if(plans!=null){var plan=plans.find(owner,root.taskId()).orElseThrow();plan=plans.add(owner,root.taskId(),plan.revision(),request.name()==null?"Dodatkowy agent":request.name(),null,plan.steps().size());step=plan.steps().getLast().stepId();}
         var scope=new AgentScope.Scope(root.taskId(),parentId,parent.scope.depth()+1,parent.scope.tools(),parent.scope.replaySafe());
-        var child=submitInternal(owner,request,parent.task.conversationId(),stableKey,scope,root.groupId());
+        var scopedRequest=new Request(request.message(),request.role(),request.priority(),request.timeoutSeconds(),request.maxAttempts(),request.name(),request.dependsOn(),parent.task.conversationId(),parent.submission.request().parentRequestId());
+        var child=submitInternal(owner,scopedRequest,parent.task.conversationId(),stableKey,scope,root.groupId());
         var steps=new LinkedHashMap<>(root.steps());if(step!=null)steps.put(child.taskId(),step);var updated=new Root(root.taskId(),root.groupId(),root.expectedAgents()+1,steps,true);roots.put(root.taskId(),updated);history.put(document(owner,"orchestration-root",root.taskId(),updated));
         return child;
     }
@@ -236,6 +237,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         e.scope=scope;
         e.submission=new Submission(request,request.name()!=null?request.name():request.message().strip().replaceAll("\\s+"," ").substring(0,Math.min(120,request.message().strip().replaceAll("\\s+"," ").length())),group,original.createdAt().plusSeconds(request.timeoutSeconds()==null?120:request.timeoutSeconds()),resultDelivery==null?null:resultDelivery.languageReference(owner,sourceConversation));
         persistSubmission(owner,e.task,dedup,e.submission,scope);
+        history.put(document(owner,"task-identity",e.task.taskId(),Map.of("requestId",Objects.toString(request.parentRequestId(),e.task.taskId()),"idempotencyKey",Objects.toString(dedup,e.task.taskId()))));
         tasks.put(e.task.taskId(),e);if(plans!=null)plans.register(owner,e.task.taskId(),e.task.state());emit(e,"task.created");
         e.alarm=timer.schedule(()->expire(e),request.timeoutSeconds()==null?120:request.timeoutSeconds(),TimeUnit.SECONDS);
         try{if(e.task.state().equals("QUEUED"))workers.execute(e);else continuations.execute(this::processCompletions);}catch(RejectedExecutionException failure){change(e,"FAILED",null,"Task executor unavailable");if(e.alarm!=null)e.alarm.cancel(false);throw failure;}
@@ -273,8 +275,8 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
     public synchronized List<Task> list(String owner) { return tasks.values().stream().filter(e->e.owner.equals(owner)).map(e->e.task).sorted(Comparator.comparing(Task::createdAt).reversed()).toList(); }
     private Entry owned(String owner,String id) { Entry e=tasks.get(id); if(e==null || !e.owner.equals(owner)) throw new ResponseStatusException(HttpStatus.NOT_FOUND); return e; }
     public synchronized Task get(String owner,String id) { return owned(owner,id).task; }
-    public synchronized Map<String,Object> wire(String owner,Task task){owned(owner,task.taskId());var value=mapper.convertValue(task,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});value.putAll(info(owner,task.taskId()));value.put("lifecycleState",task.state());value.put("agentState",switch(task.state()){case "WAITING","QUEUED"->"PENDING";case "PARTIALLY_COMPLETED","TIMED_OUT"->"FAILED";case "CANCEL_REQUESTED"->"RUNNING";default->task.state();});value.put("state",switch(task.state()){case "WAITING"->"QUEUED";case "RETRYING"->"RUNNING";case "PARTIALLY_COMPLETED"->"FAILED";case "SKIPPED"->"CANCELLED";default->task.state();});return value;}
-    public synchronized Map<String,Object> info(String owner,String id){var e=owned(owner,id);var result=new LinkedHashMap<String,Object>();result.put("taskId",id);result.put("name",taskName(e));result.put("groupId",groupId(e));result.put("dependsOn",e.submission==null?List.of():e.submission.request().dependsOn());result.put("resultRef","/api/v1/companion/tasks/"+id+"/result");result.put("coordinator",e.coordinator);if(e.scope!=null){result.put("rootTaskId",e.scope.rootTaskId());result.put("parentTaskId",e.scope.parentTaskId());result.put("tools",e.scope.tools());}history.find(owner,"agent-telemetry",id).ifPresent(d->result.put("telemetry",readMap(d.body())));result.put("attempts",history.documents(owner,"agent-telemetry-history",id+"/").stream().map(d->readMap(d.body())).toList());return result;}
+    public synchronized Map<String,Object> wire(String owner,Task task){owned(owner,task.taskId());var value=mapper.convertValue(task,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});value.putAll(info(owner,task.taskId()));if(owned(owner,task.taskId()).coordinator)value.put("role","CONVERSATION");value.put("lifecycleState",task.state());value.put("agentState",switch(task.state()){case "WAITING","QUEUED"->"PENDING";case "PARTIALLY_COMPLETED","TIMED_OUT"->"FAILED";case "CANCEL_REQUESTED"->"RUNNING";default->task.state();});value.put("state",switch(task.state()){case "WAITING"->"QUEUED";case "RETRYING"->"RUNNING";case "PARTIALLY_COMPLETED"->"FAILED";case "SKIPPED"->"CANCELLED";default->task.state();});return value;}
+    public synchronized Map<String,Object> info(String owner,String id){var e=owned(owner,id);var result=new LinkedHashMap<String,Object>();result.put("taskId",id);result.put("name",taskName(e));result.put("groupId",groupId(e));result.put("dependsOn",e.submission==null?List.of():e.submission.request().dependsOn());result.put("resultRef","/api/v1/companion/tasks/"+id+"/result");result.put("coordinator",e.coordinator);result.put("executionRole",e.coordinator?"COORDINATOR":"WORKER");result.put("countsAsWorker",!e.coordinator);result.put("agentId",e.coordinator?null:id);result.put("requestId",e.submission==null? id:Objects.toString(e.submission.request().parentRequestId(),id));result.put("idempotencyKey",history.find(owner,"task-identity",id).map(d->readMap(d.body()).get("idempotencyKey")).orElse(id));if(e.coordinator){result.put("rootTaskId",id);result.put("parentTaskId",null);}if(e.scope!=null){result.put("rootTaskId",e.scope.rootTaskId());result.put("parentTaskId",e.scope.parentTaskId());result.put("tools",e.scope.tools());}history.find(owner,"agent-telemetry",id).ifPresent(d->result.put("telemetry",readMap(d.body())));result.put("attempts",history.documents(owner,"agent-telemetry-history",id+"/").stream().map(d->readMap(d.body())).toList());return result;}
     private Map<String,Object> readMap(String json){try{return mapper.readValue(json,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});}catch(Exception e){throw new IllegalStateException(e);}}
     public synchronized Task cancel(String owner,String id) {
         Entry e=owned(owner,id);
@@ -318,7 +320,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         var payload=wire(e.owner,e.task);
         publish(e.owner,type,e.task.taskId(),payload);
         String kind=switch(type){case "task.created"->"ACKNOWLEDGMENT";case "task.started"->"PROGRESS";case "task.completed"->"COMPLETED";case "task.failed","task.partially_completed"->"FAILED";default->null;};
-        if(announcements!=null && kind!=null) {
+        if(announcements!=null && kind!=null && e.scope==null && !e.coordinator) {
             Task snapshot=e.task;
             announcements.generate(e.owner,snapshot,kind,text->{synchronized(CompanionTasks.this){
                 if(!e.task.state().equals(snapshot.state()))return;
@@ -337,7 +339,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         purgeHistory();
         List<Task> list=list(owner);
         List<DynamicPlan> currentPlans=plans==null?List.of():list.stream().map(t->plans.find(owner,t.taskId())).flatMap(Optional::stream).toList();
-        return Map.of("plans",currentPlans.stream().map(this::wirePlan).toList(),"contractVersion",VERSION,"serverInstanceId",serverInstanceId,"latestSequence",sequences.getOrDefault(owner,0L),"tasks",list.stream().map(t->wire(owner,t)).toList(),"activeProcesses",list.stream().filter(t->!TERMINAL.contains(t.state())).count(),"metrics",metrics(owner),"deliveries",history.documents(owner,"task-delivery","").stream().map(d->decode(d.body(),Delivery.class)).toList(),"taskInfo",list.stream().map(t->info(owner,t.taskId())).toList(),"streams",activeStreams(owner));
+        return Map.of("plans",currentPlans.stream().map(this::wirePlan).toList(),"contractVersion",VERSION,"serverInstanceId",serverInstanceId,"latestSequence",sequences.getOrDefault(owner,0L),"tasks",list.stream().map(t->wire(owner,t)).toList(),"activeProcesses",list.stream().filter(t->!TERMINAL.contains(t.state())&&!owned(owner,t.taskId()).coordinator).count(),"metrics",metrics(owner),"deliveries",history.documents(owner,"task-delivery","").stream().map(d->decode(d.body(),Delivery.class)).toList(),"taskInfo",list.stream().map(t->info(owner,t.taskId())).toList(),"streams",activeStreams(owner));
     }
     private List<Map<String,Object>> activeStreams(String owner){
         var result=new ArrayList<Map<String,Object>>();
@@ -363,7 +365,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
                     else if(dependencies.stream().allMatch(d->d.task.state().equals("COMPLETED"))){change(waiting,"QUEUED",null,null);workers.execute(waiting);}
                 }
                 if(!historyReady||resultDelivery==null)return;
-                ready=tasks.values().stream().filter(e->!e.coordinator&&TERMINAL.contains(e.task.state())&&e.task.conversationId()!=null).toList();
+                ready=tasks.values().stream().filter(e->!e.coordinator&&e.scope==null&&TERMINAL.contains(e.task.state())&&e.task.conversationId()!=null).toList();
             }
             for(var e:ready){
                 try{
@@ -413,7 +415,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         for(var root:current){
             try{
                 Entry parent;List<Entry> children;synchronized(this){parent=tasks.get(root.taskId());if(parent==null||TERMINAL.contains(parent.task.state()))continue;children=tasks.values().stream().filter(e->e.scope!=null&&e.scope.rootTaskId().equals(root.taskId())).toList();}
-                if(children.stream().anyMatch(e->!TERMINAL.contains(e.task.state())||history.find(e.owner,"task-delivery","task-result/"+e.task.taskId()).isEmpty()))continue;
+                if(children.stream().anyMatch(e->!TERMINAL.contains(e.task.state())))continue;
                 String id="task-group/"+root.groupId();String result=history.find(parent.owner,"task-synthesis",id).map(CompanionDocumentStore.Document::body).orElse(null);
                 if(result==null){
                     var previous=history.find(parent.owner,"task-stream",id).map(d->readMap(d.body())).orElse(Map.of());
@@ -421,7 +423,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
                     java.util.function.Consumer<String> visible=chunk->{if(chunk==null||chunk.isEmpty())return;streamed.append(chunk);history.put(document(parent.owner,"task-stream",id,Map.of("text",streamed.toString(),"chunks",fragments.get()+1)));var payload=new LinkedHashMap<String,Object>();payload.put("messageId",TaskResultDelivery.messageId(parent.owner,parent.task.conversationId(),id).toString());payload.put("conversationId",parent.task.conversationId());payload.put("requestId",id);payload.put("taskId",root.taskId());payload.put("text",chunk);payload.put("index",fragments.incrementAndGet());payload.put("elapsedMs",(System.nanoTime()-generationStarted)/1_000_000);payload.put("persisted",false);record(parent.owner,"assistant.message.delta",root.taskId(),payload);};
                     StringBuilder evidence=new StringBuilder();int limit=Math.max(100,12000/Math.max(1,children.size()));for(var child:children){String value=Objects.toString(child.task.result(),"");evidence.append(taskName(child)).append(" [").append(child.task.state()).append("] ").append(Objects.toString(child.task.error(),"")).append('\n').append(value,0,Math.min(value.length(),limit)).append(value.length()>limit?" [fragment]":"").append('\n');}
                     String synthesis;try{if(!previous.isEmpty())throw new IllegalStateException("Recovered interrupted synthesis; preserving the visible prefix instead of regenerating it");String[] generated={null};var started=Instant.now();AgentScope.run(new AgentScope.Scope(root.taskId(),root.taskId(),0,Set.of(),true),()->{try{generated[0]=resultDelivery.synthesize(parent.owner,parent.task.conversationId(),evidence.toString(),visible);}finally{history.put(document(parent.owner,"agent-telemetry",root.taskId(),Map.of("taskId",root.taskId(),"startedAt",started,"finishedAt",Instant.now(),"phase","AGGREGATION","tokens",AgentScope.measured())));}});synthesis=Objects.requireNonNull(generated[0],"Empty synthesis");}catch(Exception failure){LOG.warn("Root synthesis failed; exact independent outcomes retained",failure);synthesis=streamed+"\nSynteza modelowa niedostępna lub przerwana. Zachowano wszystkie niezależne wyniki i ich statusy.";}
-                    StringBuilder complete=new StringBuilder(synthesis).append("\n\nWyniki agentów:\n");for(var child:children)complete.append("\n## ").append(taskName(child)).append(" — ").append(child.task.state()).append('\n').append(Objects.toString(child.task.result(),"Brak wyniku")).append('\n').append(Objects.toString(child.task.error(),"")).append('\n');
+                    StringBuilder complete=new StringBuilder(synthesis).append("\n\nWyniki agentów:\n");for(var child:children)complete.append("\n## ").append(taskName(child)).append(" — ").append(child.task.state().equals("COMPLETED")?"ukończone":"niedokończone").append('\n').append(Objects.toString(child.task.result(),"Nie udało się wykonać tego zadania. Sprawdź połączenie i uprawnienia wymaganej usługi.")).append('\n');
                     if(children.size()<root.expectedAgents())complete.append("\nNie zarejestrowano wszystkich zaplanowanych agentów przed przerwaniem rejestracji.");
                     result=complete.toString();
                     history.put(new CompanionDocumentStore.Document(parent.owner,"task-synthesis",id,result,Instant.now()));
@@ -437,10 +439,11 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
     }
     public synchronized Map<String,Object> metrics(String owner){
         var own=list(owner);var result=new LinkedHashMap<String,Object>();
-        long running=own.stream().filter(t->t.state().equals("RUNNING")||t.state().equals("RETRYING")||t.state().equals("CANCEL_REQUESTED")).count();
+        long running=own.stream().filter(t->!owned(owner,t.taskId()).coordinator).filter(t->t.state().equals("RUNNING")||t.state().equals("RETRYING")||t.state().equals("CANCEL_REQUESTED")).count();
+        result.put("logicalTaskCount",own.stream().filter(t->!owned(owner,t.taskId()).coordinator).count());result.put("activeWorkerCount",running);result.put("activeCoordinatorCount",own.stream().filter(t->owned(owner,t.taskId()).coordinator&&!TERMINAL.contains(t.state())).count());
         result.put("observedAt",Instant.now());result.put("scope","OWNER");result.put("activeTasks",running);result.put("activeCompanionTasks",running);
         result.put("queuedTasks",own.stream().filter(t->t.state().equals("QUEUED")).count());
-        if(activityTracker!=null)result.putAll(activityTracker.snapshot(owner));
+        if(activityTracker!=null)result.putAll(activityTracker.snapshot(owner));result.put("activeOperations",result.getOrDefault("activeToolExecutions",0L));
         long coding=((Number)result.getOrDefault("activeCodingTasks",0L)).longValue();
         result.put("activeTasks",running+coding);
         result.put("activeAgents",running+coding+((Number)result.getOrDefault("activeSynchronousAgents",0L)).longValue());

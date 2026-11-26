@@ -93,9 +93,9 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
         return new ToolDefinition(TOOL_NAME, getDescription(), List.of(
                 op("STATUS", "Whether this user's Gmail is connected and which address. Does not read mail.", ToolSafetyLevel.READ, false),
                 op("CONNECT", "Connect this user's Gmail: opens the Google consent page in the browser on the user's PC and "
-                        + "waits until they approve (up to 5 minutes). Only when the user asks to connect Gmail.", ToolSafetyLevel.WRITE, false),
+                        + "waits until they approve (up to 5 minutes). Only when the user asks to connect Gmail.", ToolSafetyLevel.WRITE, false).setup(),
                 op("DISCONNECT", "Remove this user's Gmail connection and revoke it at Google. Only on explicit request.",
-                        ToolSafetyLevel.WRITE, false),
+                        ToolSafetyLevel.WRITE, false).setup(),
                 op("UNREAD", "Unread mail in the inbox, newest first. Dates are already the user's local time; repeat them as given. "
                         + "addressedTo: me (personally), me+others, cc, group (list/system/general mail).", ToolSafetyLevel.READ, false,
                         arg("query", false, "Optional extra filter, e.g. from:anna"), bodies, limit, pageToken, maxChars),

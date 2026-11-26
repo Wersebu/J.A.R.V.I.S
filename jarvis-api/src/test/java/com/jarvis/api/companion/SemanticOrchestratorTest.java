@@ -3,6 +3,7 @@ package com.jarvis.api.companion;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jarvis.common.ai.*;
 import com.jarvis.common.companion.InMemoryCompanionStore;
+import com.jarvis.common.companion.AutonomousOrchestration;
 import com.jarvis.tools.runtime.*;
 import com.jarvis.tools.schema.*;
 import org.junit.jupiter.api.Test;
@@ -37,17 +38,32 @@ class SemanticOrchestratorTest {
     }
 
     @Test void unavailableScopeNeverBecomesAFalseSuccessfulRetrievalWorker(){
-        var engine=engine();when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(response(plan("[]","[]")));
+        var engine=engine();when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(response("{\"action\":\"DELEGATE\",\"answer\":\"\",\"families\":[\"fx\"]}"),response(plan("[]","[]")));
         assertThrows(IllegalStateException.class,()->engine.orchestrate("owner","conversation","request","Read current exchange rate",brain));
-        verify(provider,times(3)).toolChat(any(),anyList(),anyList(),any());
+        verify(provider,times(4)).toolChat(any(),anyList(),anyList(),any());
         verify(tasks,never()).submitOrchestration(anyString(),anyString(),anyString(),anyString(),anyList(),anySet());
-        assertEquals(3,store.documents("owner","orchestration-invalid","").size());
+        assertEquals(1,store.documents("owner","semantic-route-v2","").size());
+        assertTrue(store.documents("owner","semantic-plan-v2","").isEmpty());
     }
 
     @Test void cyclicOrUnknownDependenciesAreRejectedBeforeAdmission(){
-        var engine=engine();when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(response(plan("[\"fx__quote\"]","[\"a\"]")));
+        var engine=engine();when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(response("{\"action\":\"DELEGATE\",\"answer\":\"\",\"families\":[\"fx\"]}"),response(plan("[\"fx__quote\"]","[\"a\"]")));
         assertThrows(IllegalStateException.class,()->engine.orchestrate("owner","conversation","request","Dependent task",brain));
         verify(tasks,never()).submitOrchestration(anyString(),anyString(),anyString(),anyString(),anyList(),anySet());
         assertTrue(store.documents("other-owner","orchestration-invalid","").isEmpty());
     }
+    @Test void currentIntentIsSeparateFromReferencesAndSingleReadDoesNotCreateWorkers(){
+        var engine=engine();
+        when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(response("{\"action\":\"TOOLS\",\"answer\":\"\",\"families\":[\"FX\"]}"),response("{\"action\":\"TOOLS\",\"answer\":\"\",\"tools\":[\"fx__quote\"],\"agents\":[]}"));
+        var context=new AutonomousOrchestration.Context("Sprawdź kurs dolara",List.of(new AutonomousOrchestration.Reference("history","USER","old","Sprawdź Gmail")),List.of(),List.of(),List.of());
+        var outcome=engine.orchestrate("owner","conversation","request",context,brain);
+        assertEquals("TOOLS",outcome.action());assertEquals(List.of("fx__quote"),outcome.tools());
+        verify(tasks,never()).submitOrchestration(anyString(),anyString(),anyString(),anyString(),anyList(),anySet());
+        var calls=org.mockito.ArgumentCaptor.forClass(List.class);verify(provider,times(2)).toolChat(any(),calls.capture(),anyList(),any());
+        for(var messages:calls.getAllValues()){
+            String last=((ModelMessage)messages.getLast()).content();assertTrue(last.contains("CURRENT_REQUEST"));assertTrue(last.contains("Sprawdź kurs dolara"));try{var envelope=mapper.readTree(last);assertEquals("Sprawdź kurs dolara",envelope.path("CURRENT_REQUEST").path("message").asText());assertTrue(envelope.path("REFERENCE_DATA_ONLY").toString().contains("Gmail"));}catch(Exception e){fail(e);}
+        }
+        assertThrows(IllegalArgumentException.class,()->engine.orchestrate("owner","conversation","request","Different message",brain));
+    }
+
 }

@@ -26,7 +26,9 @@ public class DefaultToolManager implements ToolManager {
     private org.springframework.beans.factory.ObjectProvider<com.jarvis.common.companion.CompanionEventSink> companionEvents;
 
     private void agentEvent(String owner,String task,String type,ToolRequest request,Map<String,Object> details) {
-        if(task==null||companionEvents==null)return;
+        if(companionEvents==null)return;
+        if(owner==null)owner=com.jarvis.common.auth.CurrentUserContext.requiredUserId();
+        if(task==null)type=type.replace("agent.tool.","tool.execution.");
         var sink=companionEvents.getIfAvailable();if(sink==null)return;
         var payload=new LinkedHashMap<String,Object>(details);payload.put("conversationId",request.conversationId());payload.put("requestId",request.requestId());payload.put("tool",request.toolName());payload.put("operation",request.operation());
         sink.record(owner,type,task,payload);
@@ -89,7 +91,7 @@ public class DefaultToolManager implements ToolManager {
         if (request == null || request.toolName() == null || request.toolName().isBlank()) {
             throw new ToolException("Tool name is required");
         }
-        if(!com.jarvis.common.companion.AgentScope.permits(request.toolName(),request.operation()))throw new ToolException("Capability is outside this agent's assigned scope");
+        if(!com.jarvis.common.companion.ExecutionCapabilities.permits(request.toolName(),request.operation())||!com.jarvis.common.companion.AgentScope.permits(request.toolName(),request.operation()))throw new ToolException("Capability is outside this agent's assigned scope");
         String companionTask=com.jarvis.common.companion.TaskExecutionContext.current();
         String companionOwner=companionTask==null?null:com.jarvis.common.auth.CurrentUserContext.requireAuthenticatedUserId();
         if(companionTask!=null&&companionPlans!=null)companionPlans.requireActive(companionOwner,companionTask);

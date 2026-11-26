@@ -49,8 +49,10 @@ public class ContextBudgetService implements InferenceContextPolicy {
     }
     public Map<String,Object> ollamaOptions() {
         Plan p = current.get();
-        return p == null ? Map.of("num_ctx", properties.contextWindow(), "repeat_penalty", properties.repeatPenalty()) :
-            Map.of("num_ctx", p.physical(), "num_predict", p.output(), "repeat_penalty", properties.repeatPenalty());
+        if(p==null)return Map.of("num_ctx",properties.contextWindow(),"repeat_penalty",properties.repeatPenalty());
+        var options=new java.util.LinkedHashMap<String,Object>();options.put("num_ctx",p.physical());options.put("num_predict",p.output());options.put("repeat_penalty",properties.repeatPenalty());
+        if(p.profile().id().equals("orchestration"))options.put("temperature",0);
+        return Map.copyOf(options);
     }
     public int physicalContext(){return profiles==null?properties.contextWindow():profiles.physicalContext();}
     public Plan currentPlan() { return current.get(); }

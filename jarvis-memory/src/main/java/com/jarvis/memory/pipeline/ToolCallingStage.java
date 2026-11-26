@@ -42,6 +42,7 @@ import java.util.regex.Pattern;
 @Service
 @Order(92)
 public class ToolCallingStage implements PipelineStage {
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private com.jarvis.common.event.CognitiveEventBus cognitiveEventBus;
 
     private static final Logger LOGGER = LoggerFactory.getLogger(ToolCallingStage.class);
     private static final Pattern PRICE_PATTERN = Pattern.compile(
@@ -113,19 +114,22 @@ public class ToolCallingStage implements PipelineStage {
         if (!imageAttachmentIds.isEmpty()) {
             LOGGER.info("[STORE_AUDIT] requestId={} attachments={}", context.requestId(), imageAttachmentIds.size());
         }
-        ToolCallingResult result = toolCallingRuntime.execute(new ToolCallingRequest(
+        var nativeContext=toolContext(context,recoveredAction);
+        java.util.function.Supplier<ToolCallingResult> execute=()->toolCallingRuntime.execute(new ToolCallingRequest(
                 context.requestId(),
                 context.conversationId(),
                 context.request().message(),
                 toolGoal(context, recoveredAction),
                 toolReason(context, recoveredAction),
-                toolContext(context, recoveredAction),
+                nativeContext,
                 toolBasePrompt(context),
                 context.brain(),
                 context.effectiveKnowledgeMode(),
                 context.images(),
                 conversationContextSummary(context)
         ));
+        ToolCallingResult result;
+        if(Boolean.TRUE.equals(nativeContext.get("semanticOrchestration"))&&nativeContext.get("workflowTools") instanceof List<?> allowed)result=com.jarvis.common.companion.ExecutionCapabilities.call(allowed.stream().map(Object::toString).toList(),execute);else result=execute.get();
         var agentScope = com.jarvis.common.companion.AgentScope.current();
         if (agentScope != null && agentScope.tools().stream().anyMatch(t -> !t.startsWith("output__") && !t.startsWith("companion__"))
                 && result.results().stream().noneMatch(r -> r.success() && com.jarvis.common.companion.AgentScope.permits(r.tool(), r.operation())
@@ -1382,6 +1386,9 @@ public class ToolCallingStage implements PipelineStage {
      * @return plain-text conversation summary, blank when there is no prior history
      */
     private String conversationContextSummary(PipelineContext context) {
+        if(context.metadata().get("orchestrationReferences") instanceof com.jarvis.common.companion.AutonomousOrchestration.Context references){
+            try{return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(Map.of("referenceOnly",true,"history",references.history(),"memory",references.memory(),"previousAgentResults",references.agentResults()));}catch(Exception failure){throw new IllegalStateException("Cannot serialize bounded references",failure);}
+        }
         if (context.conversation().isEmpty()) {
             return "";
         }
@@ -1411,18 +1418,8 @@ public class ToolCallingStage implements PipelineStage {
     }
 
     private void publish(PipelineContext context, CognitiveEventType event, String status, String message, Map<String, Object> metadata) {
-        context.cognitiveEventSink().accept(new CognitiveEvent(
-                context.requestId(),
-                context.conversationId(),
-                Instant.now(),
-                event,
-                status,
-                message,
-                context.brain() == null ? null : context.brain().type(),
-                context.model(),
-                null,
-                metadata
-        ));
+        if(cognitiveEventBus!=null)cognitiveEventBus.publish(event,status,message,null,metadata);
+        else context.cognitiveEventSink().accept(new CognitiveEvent(context.requestId(),context.conversationId(),Instant.now(),event,status,message,context.brain()==null?null:context.brain().type(),context.model(),null,metadata));
     }
 
     private AIProvider selectProvider(PipelineContext context) {

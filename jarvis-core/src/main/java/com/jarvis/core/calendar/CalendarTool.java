@@ -119,8 +119,8 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
         return new ToolDefinition(TOOL_NAME, getDescription(), List.of(
                 op("STATUS", "Whether this user's Google Calendar is connected and which account.", ToolSafetyLevel.READ, false),
                 op("CONNECT", "Connect this user's Google Calendar: opens the Google consent page on the user's PC and waits "
-                        + "(up to 5 minutes). Only when the user asks to connect the calendar.", ToolSafetyLevel.WRITE, false),
-                op("DISCONNECT", "Remove this user's calendar connection. Only on explicit request.", ToolSafetyLevel.WRITE, false),
+                        + "(up to 5 minutes). Only when the user asks to connect the calendar.", ToolSafetyLevel.WRITE, false).setup(),
+                op("DISCONNECT", "Remove this user's calendar connection. Only on explicit request.", ToolSafetyLevel.WRITE, false).setup(),
                 op("CALENDARS", "The user's calendars (name, primary, read-only or writable).", ToolSafetyLevel.READ, false),
                 op("EVENTS", "Events in a time range, oldest first, with index numbers for MOVE, plus the open tasks due in that "
                         + "range (and overdue ones). Times are already the user's local time; repeat them as given. Default: today.",

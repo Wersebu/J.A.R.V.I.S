@@ -86,7 +86,7 @@ public class ModelExecutionStage implements PipelineStage {
         if (context.response() != null && !context.response().isBlank()) {
             return context;
         }
-        if(Boolean.TRUE.equals(context.metadata().get("semanticOrchestration"))&&"TOOLS".equals(context.metadata().get("orchestrationAction")))return context;
+        if(Boolean.TRUE.equals(context.metadata().get("semanticOrchestration"))&&java.util.Set.of("TOOLS","INTEGRATION_SETUP").contains(String.valueOf(context.metadata().get("orchestrationAction"))))return context;
         var scope=com.jarvis.common.companion.AgentScope.current();
         if(scope!=null&&scope.tools().stream().allMatch(t->t.startsWith("output__")||t.startsWith("companion__"))){
             var response=selectProvider(context).toolChat(context.brain(),List.of(com.jarvis.common.ai.ModelMessage.system(context.prompt()),com.jarvis.common.ai.ModelMessage.user(context.request().message())),List.of(),AIJobType.MAIN_MODEL);

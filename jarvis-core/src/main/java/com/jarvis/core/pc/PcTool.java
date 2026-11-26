@@ -214,7 +214,7 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                         arg("owner", false, "Playlist search only: who created the playlist"),
                         arg("pick", false, "random (default for liked/random) or first (default for search: best match)"),
                         arg("mode", false, "play (default) or queue = add the track after the current one"),
-                        arg("device", false, "Empty = this PC. Otherwise the device the user asked for, e.g. TV or speaker")),
+                        arg("device", false, "Empty = this PC. Otherwise the device the user asked for, e.g. TV or speaker")).requires("knowledge__find_workflow","knowledge__read_workflow","pc__spotify","pc__open"),
                 op("SPOTIFY_CONTROL", "What Spotify is playing right now, in ONE call, on whichever device plays it "
                                 + "(this PC or e.g. the TV): now = what song is this; like = save it to Liked Songs; next, previous, "
                                 + "pause, resume, volume, shuffle, repeat. Core checks that the player changed and returns the "
@@ -222,7 +222,7 @@ public class PcTool implements JarvisTool, ToolSchemaProvider {
                         ToolSafetyLevel.WRITE, false,
                         arg("action", true, "now | like | next | previous | pause | resume | volume | shuffle | repeat"),
                         intArg("value", "volume: 0-100"),
-                        arg("state", false, "shuffle: true/false; repeat: off/track/context")),
+                        arg("state", false, "shuffle: true/false; repeat: off/track/context")).requires("pc__spotify","pc__open"),
                 op("CHANGES", "List files changed by pc__write/edit/patch/delete in this conversation (newest first).",
                         ToolSafetyLevel.READ, false),
                 op("UNDO", "Undo the last file changes made in this conversation (restores previous content, removes created "
