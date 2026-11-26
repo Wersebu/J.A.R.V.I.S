@@ -52,6 +52,8 @@ class SemanticOrchestrationLiveTest {
     private final List<Map<String,Object>> executions=new CopyOnWriteArrayList<>();
     private final AtomicInteger active=new AtomicInteger(),maximum=new AtomicInteger(),redirects=new AtomicInteger();
     private final AtomicBoolean slow=new AtomicBoolean();
+    private boolean allAssertionsPassed;
+    private ToolOutputStore outputs;
     private static final String OWNER="semantic-live";
     private SQLiteCompanionDocumentStore store;
     private CompanionTasks tasks;
@@ -92,7 +94,7 @@ class SemanticOrchestrationLiveTest {
         var reader=new HttpWebPageReader(new WebSearchProperties(true,"http://127.0.0.1",5,5,5,2,2,1,10,1000,12000,Duration.ofSeconds(3),Duration.ofSeconds(5))){@Override protected boolean allowPrivateHosts(){return true;}};
         ToolManager manager=new ToolManager(){public List<JarvisTool> listTools(){return List.of();}public Optional<JarvisTool> findTool(String name){return Optional.of(new JarvisTool(){public String getName(){return name;}public String getDescription(){return "Integration fixture";}public ToolResult execute(ToolRequest r){return executeFixture(r,reader);}});}public ToolResult execute(ToolRequest request){return executeFixture(request,reader);}};
         loop=new NativeToolLoopService(List.of(provider),manager,q->ToolIntent.NO_TOOL,new ToolRuntimeProperties(true,8,8,2,60,"native"),bus,new ToolRuntimeDebugService(),mapper,schemas,new StoreAuditDatasetService(bus));
-        ReflectionTestUtils.setField(loop,"inferenceContextPolicy",budgets);var outputs=new ToolOutputStore();loop.setToolOutputStore(outputs);
+        ReflectionTestUtils.setField(loop,"inferenceContextPolicy",budgets);outputs=new ToolOutputStore();loop.setToolOutputStore(outputs);
         openEngine();outputs.configurePersistence(store);
         titles=new DefaultConversationTitleService(conversations,messages,List.of(provider),bus);var beans=new StaticListableBeanFactory();beans.addBean("tasks",tasks);ReflectionTestUtils.setField(titles,"journal",beans.getBeanProvider(CompanionEventSink.class));
     }
@@ -113,7 +115,7 @@ class SemanticOrchestrationLiveTest {
         if(result.results().stream().noneMatch(ToolResult::success))throw new IncompleteTaskException(result.results().stream().map(ToolResult::errorCode).filter(c->c!=null&&!c.isBlank()).findFirst().orElse("NO_EXECUTION_EVIDENCE"),null);if(!result.terminationInfo().completed())throw new IncompleteTaskException("INCOMPLETE_AGENT",result.finalAnswer());return new ChatResponse(result.finalAnswer());
     }public void stream(ChatRequest request,Consumer<CognitiveEvent> sink){throw new UnsupportedOperationException();}};}
     private void openEngine(){
-        store=new SQLiteCompanionDocumentStore(true,temp.resolve("tasks.db").toString());tasks=new CompanionTasks(worker(),3);tasks.configureHistory(store,mapper,new DynamicPlanService(store,mapper),30);
+        store=new SQLiteCompanionDocumentStore(true,temp.resolve("tasks.db").toString());if(outputs!=null)outputs.configurePersistence(store);tasks=new CompanionTasks(worker(),3);tasks.configureHistory(store,mapper,new DynamicPlanService(store,mapper),30);
         var delivery=new TaskResultDelivery(memory,conversations);var router=mock(com.jarvis.brain.BrainRouter.class);when(router.select(any(ChatRequest.class))).thenReturn(brain);delivery.configureSynthesis(List.of(provider),router);ReflectionTestUtils.setField(tasks,"resultDelivery",delivery);
         orchestrator=new SemanticOrchestrator(List.of(provider),schemas,registry,tasks,store,mapper,true);current.set(tasks);
     }
@@ -129,7 +131,7 @@ class SemanticOrchestrationLiveTest {
         for(var worker:workers)if(!worker.state().equals("CANCELLED"))assertTrue(executions.stream().anyMatch(e->e.get("taskId").equals(worker.taskId()))||tasks.info(OWNER,worker.taskId()).get("tools").toString().contains("fx__")==false&&tasks.info(OWNER,worker.taskId()).get("tools").toString().contains("weather__")==false&&tasks.info(OWNER,worker.taskId()).get("tools").toString().contains("mail__")==false,"Worker must execute a real capability: "+worker);
         return row;
     }
-    private void save()throws Exception{Path root=Path.of("").toAbsolutePath();while(!Files.isDirectory(root.resolve("SHARED")))root=root.getParent();Files.writeString(root.resolve("SHARED/SEMANTIC_ORCHESTRATION_LIVE_RESULTS.json"),mapper.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of("model","gpt-oss:20b","providerResultsMocked",false,"externalData","CONTROLLED_HTTP_FIXTURES_NOT_LIVE_MARKET_OR_MAIL","maximumConcurrentToolCalls",maximum.get(),"redirects",redirects.get(),"planningFailures",store==null?List.of():store.all("orchestration-invalid"),"cases",report)));}
+    private void save()throws Exception{Path root=Path.of("").toAbsolutePath();while(!Files.isDirectory(root.resolve("SHARED")))root=root.getParent();Files.writeString(root.resolve("SHARED/SEMANTIC_ORCHESTRATION_LIVE_RESULTS.json"),mapper.writerWithDefaultPrettyPrinter().writeValueAsString(Map.of("allAssertionsPassed",allAssertionsPassed,"restartScope","TASK_ENGINE_AND_SQLITE_REOPEN_NOT_JVM; see packaged test for actual JVM restart","model","gpt-oss:20b","providerResultsMocked",false,"externalData","CONTROLLED_HTTP_FIXTURES_NOT_LIVE_MARKET_OR_MAIL","maximumConcurrentToolCalls",maximum.get(),"redirects",redirects.get(),"planningFailures",store==null?List.of():store.all("orchestration-invalid"),"cases",report)));}
     @Test void actualSemanticAgentExecutionAndRecovery()throws Exception{
         setup();try{
             String[] requests={"Cześć","Sprawdź kurs dolara","Sprawdź kurs dolara i pogodę w Warszawie","Sprawdź kurs dolara, pogodę na jutro w Warszawie i maile pod kątem niewykonanych zadań"};
@@ -137,11 +139,11 @@ class SemanticOrchestrationLiveTest {
             long started=System.nanoTime();var dependent=start("dependent","Najpierw sprawdź kurs dolara. Następnie w osobnym etapie na podstawie otrzymanego kursu oblicz koszt 100 USD w PLN.",true);awaitCase("dependency","dependent",dependent,2,started);assertTrue(tasks.list(OWNER).stream().filter(t->"dependent".equals(t.conversationId())).anyMatch(t->!((List<?>)tasks.info(OWNER,t.taskId()).get("dependsOn")).isEmpty()));
             assertTrue(redirects.get()>0);report.add(Map.of("case","HTTP_301","passed",true,"actualRedirects",redirects.get()));
             var failedRoot=tasks.list(OWNER).stream().filter(t->"baseline-3".equals(t.conversationId())&&Boolean.TRUE.equals(tasks.info(OWNER,t.taskId()).get("coordinator"))).findFirst().orElseThrow();assertEquals("PARTIALLY_COMPLETED",failedRoot.state());report.add(Map.of("case","integration-unavailable","passed",true,"rootState",failedRoot.state()));
-            slow.set(true);started=System.nanoTime();var ongoing=start("during-title","Sprawdź kurs dolara i pogodę w Warszawie",false);CurrentUserContext.runAs(OWNER,()->{memory.addMessage("title-during-work",ConversationMessage.chat("title-during-work","title",MessageRole.USER,"Analiza serwera podczas pracy agentów",Instant.now()));titles.maybeGenerateTitleAsync("title-during-work",brain);});awaitCase("title-during-active-workers","during-title",ongoing,2,started);slow.set(false);
-            var record=new AtomicReference<String>();CurrentUserContext.runAs(OWNER,()->record.set(conversations.find("title-during-work").orElseThrow().titleSource()));assertEquals("GENERATED",record.get());
+            slow.set(true);started=System.nanoTime();var ongoing=start("during-title","Sprawdź kurs dolara i pogodę w Warszawie",false);long titleDeadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);while(tasks.list(OWNER).stream().noneMatch(t->"during-title".equals(t.conversationId())&&t.state().equals("RUNNING")&&!Boolean.TRUE.equals(tasks.info(OWNER,t.taskId()).get("coordinator")))&&System.nanoTime()<titleDeadline)Thread.sleep(10);assertTrue(tasks.list(OWNER).stream().anyMatch(t->"during-title".equals(t.conversationId())&&t.state().equals("RUNNING")&&!Boolean.TRUE.equals(tasks.info(OWNER,t.taskId()).get("coordinator"))));CurrentUserContext.runAs(OWNER,()->titles.maybeGenerateTitleAsync("during-title",brain));awaitCase("title-during-active-workers","during-title",ongoing,2,started);slow.set(false);
+            var record=new AtomicReference<String>();CurrentUserContext.runAs(OWNER,()->record.set(conversations.find("during-title").orElseThrow().titleSource()));assertEquals("GENERATED",record.get());
             started=System.nanoTime();var restart=start("restart","Sprawdź kurs dolara i pogodę w Warszawie",false);long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(5);while(tasks.list(OWNER).stream().noneMatch(t->"restart".equals(t.conversationId())&&t.state().equals("RUNNING")&&!Boolean.TRUE.equals(tasks.info(OWNER,t.taskId()).get("coordinator")))&&System.nanoTime()<end)Thread.sleep(10);
             tasks.close();store.close();openEngine();awaitCase("restart-during-agents","restart",restart,2,started);
-            assertTrue(tasks.list(OWNER).stream().filter(t->Boolean.TRUE.equals(tasks.info(OWNER,t.taskId()).get("coordinator"))).allMatch(t->Set.of("COMPLETED","FAILED","PARTIALLY_COMPLETED").contains(t.state())));report.add(Map.of("case","aggregation-terminal-statuses","passed",true));save();
+            assertTrue(tasks.list(OWNER).stream().filter(t->Boolean.TRUE.equals(tasks.info(OWNER,t.taskId()).get("coordinator"))).allMatch(t->Set.of("COMPLETED","FAILED","PARTIALLY_COMPLETED").contains(t.state())));report.add(Map.of("case","aggregation-terminal-statuses","passed",true));allAssertionsPassed=true;save();
         }finally{if(titles!=null)titles.close();if(tasks!=null)tasks.close();save();if(store!=null)store.close();if(http!=null)http.stop(0);}
     }
 }

@@ -44,6 +44,36 @@ class DefaultConversationTitleServiceTest {
     }
 
     @Test
+    void titleAdmissionIsNonBlockingAndItsPendingJobIsDurable() throws Exception {
+        conversations.createIfAbsent("async",Instant.now());messages.append("async",user("Pierwsza wiadomość bez odpowiedzi głównego agenta"));
+        var store=new com.jarvis.common.companion.InMemoryCompanionStore();
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"titleStore",store);
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"titleMapper",new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules());
+        var entered=new java.util.concurrent.CountDownLatch(1);var release=new java.util.concurrent.CountDownLatch(1);
+        provider.beforeReturn=()->{entered.countDown();try{release.await(3,java.util.concurrent.TimeUnit.SECONDS);}catch(InterruptedException e){Thread.currentThread().interrupt();}};
+        try {
+            com.jarvis.common.auth.CurrentUserContext.runAs("owner",()->service.maybeGenerateTitleAsync("async",BRAIN));
+            assertThat(entered.await(2,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(store.find("owner","title-job","async")).isPresent();
+            assertThat(conversations.find("async").orElseThrow().titleSource()).isEqualTo("DEFAULT");
+            release.countDown();long until=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(3);
+            while(store.find("owner","title-job","async").isPresent()&&System.nanoTime()<until)Thread.sleep(10);
+            assertThat(store.find("owner","title-job","async")).isEmpty();assertThat(conversations.find("async").orElseThrow().titleSource()).isEqualTo("GENERATED");
+        } finally {release.countDown();service.close();}
+    }
+
+    @Test
+    void recoversOwnerScopedPendingTitleAfterServiceRestart() throws Exception {
+        conversations.createIfAbsent("recover",Instant.now());messages.append("recover",user("Odtwórz nazwę po restarcie"));
+        var store=new com.jarvis.common.companion.InMemoryCompanionStore();var mapper=new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+        store.put(new com.jarvis.common.companion.CompanionDocumentStore.Document("owner","title-job","recover",mapper.writeValueAsString(Map.of("brain",BRAIN)),Instant.now()));
+        org.springframework.test.util.ReflectionTestUtils.setField(service,"titleStore",store);org.springframework.test.util.ReflectionTestUtils.setField(service,"titleMapper",mapper);
+        try {service.recoverTitles();long until=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(3);while(store.find("owner","title-job","recover").isPresent()&&System.nanoTime()<until)Thread.sleep(10);
+            assertThat(store.find("owner","title-job","recover")).isEmpty();assertThat(conversations.find("recover").orElseThrow().titleSource()).isEqualTo("GENERATED");
+        }finally{service.close();}
+    }
+
+    @Test
     void generatesTitleAfterFirstCompleteExchange() {
         conversations.createIfAbsent("c1", Instant.parse("2026-08-19T10:00:00Z"));
         messages.append("c1", user("Jak zrobic migracje SQLite dla rozmow?"));

@@ -33,6 +33,19 @@ public class DefaultConversationTitleService implements ConversationTitleService
     private final CognitiveEventBus eventBus;
     private final ExecutorService executor;
     private final java.util.Set<String> pending=java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private record TitleJob(Brain brain) {}
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.jarvis.common.companion.CompanionDocumentStore titleStore;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.fasterxml.jackson.databind.ObjectMapper titleMapper;
+    @org.springframework.context.event.EventListener(org.springframework.context.event.ContextRefreshedEvent.class)
+    public void recoverTitles(){
+        if(titleStore==null||titleMapper==null)return;
+        for(var job:titleStore.all("title-job"))try{
+            Brain brain=titleMapper.readValue(job.body(),TitleJob.class).brain();
+            CurrentUserContext.runAs(job.owner(),()->maybeGenerateTitleAsync(job.id(),brain));
+        }catch(RuntimeException|java.io.IOException failure){LOGGER.warn("Deferred title recovery for {}",job.id());}
+    }
     private final ThreadLocal<Map<String,Object>> titleUsage=new ThreadLocal<>();
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private org.springframework.beans.factory.ObjectProvider<com.jarvis.common.companion.CompanionEventSink> journal;
@@ -66,7 +79,13 @@ public class DefaultConversationTitleService implements ConversationTitleService
         String userId = CurrentUserContext.requiredUserId();
         String key=userId+":"+conversationId;
         if(!pending.add(key))return;
-        try { executor.submit(() -> {try{CurrentUserContext.runAs(userId, () -> maybeGenerateTitle(conversationId, brain));}finally{pending.remove(key);Thread.interrupted();}}); }
+        if(titleStore!=null&&titleMapper!=null)try{
+            titleStore.put(new com.jarvis.common.companion.CompanionDocumentStore.Document(userId,"title-job",conversationId,titleMapper.writeValueAsString(new TitleJob(brain)),java.time.Instant.now()));
+        }catch(java.io.IOException|RuntimeException failure){pending.remove(key);LOGGER.warn("Title admission could not be persisted",failure);return;}
+        try { executor.submit(() -> {try{CurrentUserContext.runAs(userId, () -> {
+            maybeGenerateTitle(conversationId, brain);
+            if(titleStore!=null&&conversationRepository.find(conversationId).map(c->!"DEFAULT".equalsIgnoreCase(c.titleSource())).orElse(true))titleStore.delete(userId,"title-job",conversationId);
+        });}finally{pending.remove(key);Thread.interrupted();}}); }
         catch(java.util.concurrent.RejectedExecutionException e){pending.remove(key);LOGGER.warn("Title admission queue is full; generation will be retried on a later turn");}
     }
 

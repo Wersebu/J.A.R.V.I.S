@@ -719,6 +719,20 @@ public class NativeToolLoopService {
                 request.requestId(), agentState.goalContract().originalGoal(), agentState.goalContract().completionCriteria().size());
 
         for (int step = 1; step <= maxCalls; step++) {
+            var executionScope=com.jarvis.common.companion.AgentScope.current();
+            if(executionScope!=null&&executionScope.replaySafe()&&results.stream().noneMatch(ToolResult::success)){
+                var external=definitions.stream().map(NativeToolDefinition::name).filter(n->!n.startsWith("output__")&&!n.startsWith("companion__")).toList();
+                boolean exhausted=!external.isEmpty()&&external.stream().allMatch(name->{
+                    var failures=steps.stream().map(ToolRuntimeStep::result).filter(java.util.Objects::nonNull).filter(r->!r.success()&&(r.tool()+"__"+r.operation()).equalsIgnoreCase(name)).toList();
+                    return failures.size()>=2||failures.stream().anyMatch(r->Set.of("INTEGRATION_UNAVAILABLE","AUTHENTICATION_REQUIRED","MISSING_CREDENTIALS").contains(r.errorCode()));
+                });
+                if(exhausted){
+                    var info=buildTerminationInfo(ToolLoopTerminationReason.MAX_FAILURES_REACHED,false,false,started,step-1,maxCalls,steps,results,"","Assigned sources exhausted their safe read retry budgets",remainingCriteriaDescriptions(agentState.goalContract()));
+                    logTerminationSummary(request,info);
+                    publish(request,CognitiveEventType.TOOL_LOOP_FINISHED,"MAX_FAILURES_REACHED","Assigned sources unavailable",null,step,terminationMetadata(Map.of(),info));
+                    return new ToolCallingResult(true,"",steps,results,info);
+                }
+            }
             for(String instruction:com.jarvis.common.companion.TaskInstructionContext.drain()) messages.add(ModelMessage.user("Additional authenticated user instruction for this task: " + instruction));
             if (maxCalls < properties.maxCallsAgent() && (hasUnfinishedPlan(request) || usedAgentTools(steps))) {
                 // A plan created mid-loop, or real work on the PC/project, turns this into an agent task.

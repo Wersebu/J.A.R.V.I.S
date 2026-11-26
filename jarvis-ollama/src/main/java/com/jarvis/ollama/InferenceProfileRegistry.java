@@ -16,7 +16,7 @@ public class InferenceProfileRegistry implements org.springframework.beans.facto
     public int physicalContext() { return integer("physical-context-window", 24576); }
     public int maxOfferedTools(){int value=integer("max-offered-tools",16);if(value<4||value>256)throw new IllegalArgumentException("max-offered-tools must be 4..256");return value;}
     @Override public void afterPropertiesSet(){
-        for(String id:java.util.List.of("main-conversation","conversation-title","acknowledgment","progress","planning","research","coding","memory-extraction","memory-decision","dreaming","tool-selection","tool-result-processing","warmup"))
+        for(String id:java.util.List.of("orchestration","agent-execution","main-conversation","conversation-title","acknowledgment","progress","planning","research","coding","memory-extraction","memory-decision","dreaming","tool-selection","tool-result-processing","warmup"))
             InferenceProfileContext.call(id,()->resolve(AIJobType.CHAT));
         maxOfferedTools();
     }
@@ -26,7 +26,7 @@ public class InferenceProfileRegistry implements org.springframework.beans.facto
         if (id == null) id = type == AIJobType.MEMORY_AGENT ? "memory-extraction" :
             InferencePriorityContext.effective(type) == AIJobType.BACKGROUND ? "research" : "main-conversation";
         int input = switch (id) { case "orchestration" -> 16384; case "conversation-title" -> 2048; case "memory-extraction", "memory-decision" -> 4096;
-            case "planning", "research", "dreaming", "tool-selection" -> 8192; case "coding" -> 16384; case "acknowledgment", "progress" -> 1024; default -> Integer.MAX_VALUE; };
+            case "agent-execution", "planning", "research", "dreaming", "tool-selection" -> 8192; case "coding" -> 16384; case "acknowledgment", "progress" -> 1024; default -> Integer.MAX_VALUE; };
         int output = switch (id) { case "warmup" -> 16; case "conversation-title" -> 128; case "acknowledgment", "progress" -> 96;
             case "memory-extraction", "memory-decision", "dreaming", "tool-selection" -> 768; case "planning" -> 1024; case "coding" -> 4096; default -> 2048; };
         boolean background = !id.equals("orchestration")&&!id.equals("main-conversation") && !id.startsWith("tool-");
@@ -41,7 +41,7 @@ public class InferenceProfileRegistry implements org.springframework.beans.facto
         input = integer(prefix + "input-tokens", input); output = integer(prefix + "output-tokens", output);
         String model = env.getProperty("jarvis.inference." + prefix + "model", "");
         ReasoningLevel reasoning = ReasoningLevel.valueOf(env.getProperty("jarvis.inference." + prefix + "reasoning",
-            id.equals("orchestration") || id.equals("conversation-title") || id.startsWith("memory") || id.equals("tool-selection") ? "LOW" : id.equals("coding")?"HIGH":"MEDIUM").toUpperCase(java.util.Locale.ROOT));
+            id.equals("agent-execution") || id.equals("orchestration") || id.equals("conversation-title") || id.startsWith("memory") || id.equals("tool-selection") ? "LOW" : id.equals("coding")?"HIGH":"MEDIUM").toUpperCase(java.util.Locale.ROOT));
         Selection selection = Selection.valueOf(env.getProperty("jarvis.inference." + prefix + "selection", "EXTRACTIVE").toUpperCase(java.util.Locale.ROOT));
         if (physicalContext() < 512 || input < 1 || output < 1 || priority < 0 || priority > 100 || timeout < 1)
             throw new IllegalArgumentException("Invalid inference profile: " + id);

@@ -88,7 +88,17 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         history.put(document(owner,"event",String.format(Locale.ROOT,"%020d",sequence),event));sequences.put(owner,sequence);
         var journal=events.computeIfAbsent(owner,k->new ArrayDeque<>());journal.add(event);while(journal.size()>512)journal.removeFirst();
     }
-    public synchronized void record(String owner,String type,String id,Object payload){publish(owner,type,id,payload);}
+    public synchronized void record(String owner,String type,String id,Object payload){
+        Entry entry=id==null?null:tasks.get(id);
+        if(entry!=null){
+            if(!entry.owner.equals(owner))throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+            var value=mapper.convertValue(payload,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});
+            value.put("conversationId",entry.task.conversationId());value.put("executionConversationId",entry.task.executionConversationId());
+            if(entry.scope!=null){value.put("rootTaskId",entry.scope.rootTaskId());value.put("parentTaskId",entry.scope.parentTaskId());}
+            payload=value;
+        }
+        publish(owner,type,id,payload);
+    }
     private boolean deliveryPending(Entry e){return e.task.conversationId()!=null&&history.find(e.owner,"task-delivery",e.coordinator?"task-group/"+groupId(e):"task-result/"+e.task.taskId()).isEmpty();}
     public synchronized DynamicPlan plan(String owner,String id){owned(owner,id);if(plans==null)throw new ResponseStatusException(HttpStatus.NOT_FOUND);return plans.find(owner,id).orElseThrow(()->new ResponseStatusException(HttpStatus.NOT_FOUND));}
     public synchronized List<DynamicPlan> planRevisions(String owner,String id){owned(owner,id);return plans==null?List.of():plans.revisions(owner,id);}
@@ -134,7 +144,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
                 runner=Thread.currentThread(); change(this,"RUNNING",null,null);
             }
             String[] result={null}; String failure=null;var attemptStarted=Instant.now();
-            try { AgentScope.run(scope,()->{try{CurrentUserContext.runAs(owner, () -> TaskExecutionContext.run(task.taskId(),(state,detail)->executionStatus(this,state,detail),submission==null?null:submission.languageReference(), () -> TaskInstructionContext.run(()->drainInstructions(owner,task.taskId()), () -> com.jarvis.common.ai.InferencePriorityContext.runBackground(() -> result[0]=com.jarvis.common.ai.InferenceProfileContext.call(task.role().equals("RESEARCH")?"research":"planning",()->executeConversation(this))))));}finally{synchronized(CompanionTasks.this){var telemetry=Map.of("taskId",task.taskId(),"startedAt",attemptStarted,"finishedAt",Instant.now(),"tokens",AgentScope.measured());history.putAll(List.of(document(owner,"agent-telemetry",task.taskId(),telemetry),document(owner,"agent-telemetry-history",task.taskId()+"/"+attemptStarted,telemetry)));}}}); }
+            try { AgentScope.run(scope,()->{try{CurrentUserContext.runAs(owner, () -> TaskExecutionContext.run(task.taskId(),(state,detail)->executionStatus(this,state,detail),submission==null?null:submission.languageReference(), () -> TaskInstructionContext.run(()->drainInstructions(owner,task.taskId()), () -> com.jarvis.common.ai.InferencePriorityContext.runBackground(() -> result[0]=com.jarvis.common.ai.InferenceProfileContext.call(scope!=null?"agent-execution":task.role().equals("RESEARCH")?"research":"planning",()->executeConversation(this))))));}finally{synchronized(CompanionTasks.this){var telemetry=Map.of("taskId",task.taskId(),"startedAt",attemptStarted,"finishedAt",Instant.now(),"tokens",AgentScope.measured());history.putAll(List.of(document(owner,"agent-telemetry",task.taskId(),telemetry),document(owner,"agent-telemetry-history",task.taskId()+"/"+attemptStarted,telemetry)));}}}); }
             catch(Exception ex) { failure=ex instanceof com.jarvis.common.companion.IncompleteTaskException ? ex.getMessage() : ex.getClass().getSimpleName();if(ex instanceof com.jarvis.common.companion.IncompleteTaskException incomplete)result[0]=incomplete.partialResult();LOG.warn("Background task {} failed",task.taskId(),ex); }
             finally {
                 synchronized(CompanionTasks.this) {
