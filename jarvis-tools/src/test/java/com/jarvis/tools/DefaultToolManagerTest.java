@@ -18,6 +18,18 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class DefaultToolManagerTest {
 
+    @Test void semanticCapabilitiesAreEnforcedAtExecutionAndRestoredAfterFailure(){
+        var manager=new DefaultToolManager(List.of(new MixedCaseTool()));
+        var request=new ToolRequest("storedataset","CREATE_DATASET","conv-1","req-1","reason","",Map.of());
+        com.jarvis.common.companion.ExecutionCapabilities.call(List.of("storedataset__create_dataset"),()->{
+            assertTrue(manager.execute(request).success());
+            assertThrows(ToolException.class,()->manager.execute(new ToolRequest("storedataset","DELETE","conv-1","req-1","reason","",Map.of())));
+            return null;
+        });
+        assertThrows(IllegalStateException.class,()->com.jarvis.common.companion.ExecutionCapabilities.call(List.of(),()->{throw new IllegalStateException("failure");}));
+        assertTrue(manager.execute(request).success());
+    }
+
     private static final class MixedCaseTool implements JarvisTool {
         @Override
         public String getName() {
