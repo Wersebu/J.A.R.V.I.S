@@ -1,0 +1,943 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jarvis.local/contracts/inference/1.9.0",
+  "title": "JARVIS Inference Management 1.9.0",
+  "$defs": {
+    "Parameters": {
+      "type": "object",
+      "properties": {
+        "contextSize": {
+          "type": "integer",
+          "minimum": 512,
+          "maximum": 32768
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384
+        },
+        "gpuLayers": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "gpuBudgetMiB": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16384
+        },
+        "parallelSlots": {
+          "const": 1
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1800
+        },
+        "cpuThreads": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "batchSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "microBatchSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 512
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "topP": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "topK": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "repeatPenalty": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "seed": {
+          "type": "integer"
+        },
+        "reasoningEffort": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "flashAttention": {
+          "enum": [
+            "on",
+            "off",
+            "auto"
+          ]
+        },
+        "cacheTypeK": {
+          "enum": [
+            "f16",
+            "q8_0",
+            "q4_0"
+          ]
+        },
+        "cacheTypeV": {
+          "enum": [
+            "f16",
+            "q8_0",
+            "q4_0"
+          ]
+        },
+        "mmproj": {
+          "type": "string"
+        },
+        "chatTemplate": {
+          "type": "string"
+        },
+        "jinja": {
+          "type": "boolean"
+        },
+        "memoryMapping": {
+          "type": "boolean"
+        },
+        "declaredCapabilities": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "VISION",
+              "TOOLS",
+              "STRUCTURED_OUTPUT",
+              "REASONING"
+            ]
+          },
+          "uniqueItems": true
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "Selection": {
+      "type": "object",
+      "properties": {
+        "configurationId": {
+          "type": "string"
+        },
+        "engine": {
+          "enum": [
+            "ollama",
+            "llamacpp"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "parameters": {
+          "$ref": "#/$defs/Parameters"
+        }
+      },
+      "required": [
+        "configurationId",
+        "engine",
+        "model",
+        "parameters"
+      ],
+      "additionalProperties": false
+    },
+    "SwitchRequest": {
+      "type": "object",
+      "properties": {
+        "engine": {
+          "enum": [
+            "ollama",
+            "llamacpp"
+          ]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parameters": {
+          "$ref": "#/$defs/Parameters"
+        }
+      },
+      "required": [
+        "engine",
+        "model"
+      ],
+      "additionalProperties": false
+    },
+    "SwitchResult": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "selection": {
+          "$ref": "#/$defs/Selection"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "selection",
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "ProcessRequest": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "enum": [
+            "start",
+            "restart",
+            "stop"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "ImportRequest": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-fA-F0-9]{64}$"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "additionalProperties": false
+    },
+    "ImportResult": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "status": {
+          "const": "AVAILABLE"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "copied": {
+          "const": false
+        }
+      },
+      "required": [
+        "model",
+        "status",
+        "sha256",
+        "copied"
+      ],
+      "additionalProperties": false
+    },
+    "DownloadRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "engine": {
+              "const": "llamacpp"
+            },
+            "repository": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[a-fA-F0-9]{40}$"
+            },
+            "file": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_.-]+\\.gguf$",
+              "not": {
+                "pattern": "\\.\\."
+              }
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-fA-F0-9]{64}$"
+            }
+          },
+          "required": [
+            "engine",
+            "repository",
+            "revision",
+            "file",
+            "sha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "engine": {
+              "const": "ollama"
+            },
+            "file": {
+              "type": "string"
+            },
+            "repository": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "revision": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sha256": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "engine",
+            "file"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "DownloadOperation": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "engine": {
+          "enum": [
+            "ollama",
+            "llamacpp"
+          ]
+        },
+        "model": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "QUEUED",
+            "DOWNLOADING",
+            "VERIFYING",
+            "COMPLETED",
+            "CANCELLED",
+            "ERROR"
+          ]
+        },
+        "downloadedBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "totalBytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "bytesPerSecond": {
+          "type": "number",
+          "minimum": 0
+        },
+        "percent": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "etaSeconds": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "revision",
+        "engine",
+        "model",
+        "status",
+        "downloadedBytes",
+        "totalBytes",
+        "bytesPerSecond",
+        "percent",
+        "etaSeconds",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "OperationEvent": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": [
+            "READY",
+            "SWITCHING",
+            "LOADING_MODEL",
+            "RECOVERING",
+            "STOPPED",
+            "ERROR"
+          ]
+        },
+        "selection": {
+          "$ref": "#/$defs/Selection"
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "revision",
+        "status",
+        "selection",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "InstallationOperation": {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "INSTALLING",
+            "COMPLETED",
+            "ERROR"
+          ]
+        },
+        "error": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "status",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "ResourceSample": {
+      "type": "object",
+      "properties": {
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "gpuFreeMiB": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ramAvailableBytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "scope": {
+          "const": "HOST_OBSERVATION"
+        },
+        "status": {
+          "enum": [
+            "AVAILABLE",
+            "UNAVAILABLE"
+          ]
+        }
+      },
+      "required": [
+        "observedAt",
+        "gpuFreeMiB",
+        "ramAvailableBytes",
+        "scope",
+        "status"
+      ],
+      "additionalProperties": true
+    },
+    "Usage": {
+      "type": "object",
+      "properties": {
+        "promptTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completionTokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "totalTokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "promptTokens",
+        "completionTokens",
+        "totalTokens"
+      ],
+      "additionalProperties": false
+    },
+    "Metrics": {
+      "type": "object",
+      "properties": {
+        "totalMs": {
+          "type": "number"
+        },
+        "timeToFirstTokenMs": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        },
+        "generationTokensPerSecond": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "totalMs",
+        "timeToFirstTokenMs",
+        "usage",
+        "generationTokensPerSecond"
+      ],
+      "additionalProperties": true
+    },
+    "EngineDescriptor": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "enum": [
+            "ollama",
+            "llamacpp"
+          ]
+        },
+        "installationStatus": {
+          "enum": [
+            "EXTERNAL",
+            "INSTALLED",
+            "NOT_INSTALLED"
+          ]
+        },
+        "processOwnership": {
+          "enum": [
+            "EXTERNAL",
+            "CORE_CHILD"
+          ]
+        },
+        "running": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "installationStatus",
+        "processOwnership"
+      ],
+      "additionalProperties": true
+    },
+    "ModelDescriptor": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "engine": {
+          "enum": [
+            "ollama",
+            "llamacpp"
+          ]
+        },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "enum": [
+            "AVAILABLE",
+            "INVALID"
+          ]
+        },
+        "error": {
+          "type": "string"
+        },
+        "declaredCapabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "verifiedCapabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "engine",
+        "sizeBytes",
+        "declaredCapabilities",
+        "verifiedCapabilities"
+      ],
+      "additionalProperties": true
+    },
+    "State": {
+      "type": "object",
+      "properties": {
+        "contractVersion": {
+          "const": "1.9.0"
+        },
+        "selection": {
+          "$ref": "#/$defs/Selection"
+        },
+        "status": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metrics"
+            },
+            {
+              "type": "object",
+              "maxProperties": 0
+            }
+          ]
+        },
+        "engines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EngineDescriptor"
+          }
+        },
+        "resources": {
+          "$ref": "#/$defs/ResourceSample"
+        },
+        "parameterSchema": {
+          "type": "object"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "operationId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contractVersion",
+        "selection",
+        "status",
+        "error",
+        "metrics",
+        "engines",
+        "resources",
+        "parameterSchema",
+        "revision",
+        "operationId"
+      ],
+      "additionalProperties": true
+    },
+    "Error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "Event": {
+      "type": "object",
+      "properties": {
+        "eventId": {
+          "type": "string"
+        },
+        "protocolVersion": {
+          "const": "1.9.0"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "type": {
+          "enum": [
+            "inference.operation.updated",
+            "inference.download.updated",
+            "inference.installation.updated"
+          ]
+        },
+        "taskId": {
+          "type": "null"
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "eventId",
+        "protocolVersion",
+        "timestamp",
+        "sequence",
+        "type",
+        "taskId",
+        "payload"
+      ],
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "inference.operation.updated"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/OperationEvent"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "inference.download.updated"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/DownloadOperation"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "inference.installation.updated"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "$ref": "#/$defs/InstallationOperation"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "InstallationState": {
+      "type": "object",
+      "required": [
+        "engine",
+        "installed",
+        "managedProcess",
+        "installer",
+        "requires",
+        "operation",
+        "remoteInstallSupported"
+      ],
+      "properties": {
+        "engine": {
+          "const": "llamacpp"
+        },
+        "installed": {
+          "type": "boolean"
+        },
+        "managedProcess": {
+          "type": "boolean"
+        },
+        "installer": {
+          "type": "string"
+        },
+        "requires": {
+          "type": "string"
+        },
+        "remoteInstallSupported": {
+          "type": "boolean"
+        },
+        "operation": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "const": "IDLE"
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            {
+              "$ref": "#/$defs/InstallationOperation"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "BenchmarkReport": {
+      "type": "object",
+      "required": [
+        "operationId",
+        "selection",
+        "mode",
+        "promptId",
+        "observedAt",
+        "usage",
+        "totalMs",
+        "timeToFirstTokenMs",
+        "generationTokensPerSecond",
+        "promptProcessingTokensPerSecond",
+        "resourcesBefore",
+        "resourcesAfter",
+        "toolCallingTest",
+        "structuredOutputTest",
+        "visionTest",
+        "parallelRequestsTest",
+        "qualityScore"
+      ],
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "selection": {
+          "$ref": "#/$defs/Selection"
+        },
+        "mode": {
+          "enum": [
+            "WARM_RESIDENT",
+            "COLD_MODEL_LOAD",
+            "RESIDENCY_UNVERIFIED"
+          ]
+        },
+        "promptId": {
+          "const": "sky-two-sentences-v1"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        },
+        "totalMs": {
+          "type": "number"
+        },
+        "timeToFirstTokenMs": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "generationTokensPerSecond": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "promptProcessingTokensPerSecond": {
+          "type": "null"
+        },
+        "resourcesBefore": {
+          "$ref": "#/$defs/ResourceSample"
+        },
+        "resourcesAfter": {
+          "$ref": "#/$defs/ResourceSample"
+        },
+        "toolCallingTest": {
+          "const": "NOT_RUN"
+        },
+        "structuredOutputTest": {
+          "const": "NOT_RUN"
+        },
+        "visionTest": {
+          "const": "NOT_RUN"
+        },
+        "parallelRequestsTest": {
+          "type": "string"
+        },
+        "qualityScore": {
+          "type": "null"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

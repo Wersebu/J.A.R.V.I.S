@@ -22,6 +22,9 @@ import org.springframework.web.bind.annotation.RestController;
 public class ModelController {
 
     private final ActiveModelService activeModelService;
+    private org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> inference;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void inference(org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> value){inference=value;}
 
     /**
      * Creates the model controller.
@@ -58,8 +61,14 @@ public class ModelController {
      * @return 200 with the new active model on success, 400 with a clear error otherwise
      */
     @PostMapping("/models/active")
-    public ResponseEntity<ActiveModelResponse> setActiveModel(@RequestBody ActiveModelRequest request) {
+    public ResponseEntity<ActiveModelResponse> setActiveModel(@RequestBody ActiveModelRequest request,jakarta.servlet.http.HttpServletRequest httpRequest) {
+        if(!(httpRequest.getAttribute("jarvis.user") instanceof com.jarvis.memory.auth.UserAccount user)||!user.active()||!"ADMIN".equals(user.role()))throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.FORBIDDEN,"INFERENCE_ADMIN_REQUIRED");
         String requestedModel = request == null ? null : request.model();
+        var control=inference==null?null:inference.getIfAvailable();
+        if(control!=null){
+            try{control.switchTo("ollama",requestedModel,java.util.Map.of());return ResponseEntity.ok(new ActiveModelResponse(true,control.selection().model(),""));}
+            catch(com.jarvis.common.ai.AIProviderException failure){return ResponseEntity.badRequest().body(new ActiveModelResponse(false,activeModelService.activeModel(),failure.getMessage()));}
+        }
         ModelSwitchResult result = activeModelService.switchTo(requestedModel);
         ActiveModelResponse body = new ActiveModelResponse(result.success(), result.activeModel(), result.error());
         return result.success() ? ResponseEntity.ok(body) : ResponseEntity.badRequest().body(body);

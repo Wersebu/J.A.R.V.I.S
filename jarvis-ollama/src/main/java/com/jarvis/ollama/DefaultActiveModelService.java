@@ -39,6 +39,8 @@ import java.util.stream.Collectors;
 @Service
 public class DefaultActiveModelService implements ActiveModelService, InitializingBean {
 
+    private org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> inference;
+    @org.springframework.beans.factory.annotation.Autowired public void inference(org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> value){inference=value;}
     private com.jarvis.common.ai.ModelGateway gateway;
     private ContextBudgetService budgets;
     private ModelMetadataResolver modelMetadata;
@@ -127,6 +129,15 @@ public class DefaultActiveModelService implements ActiveModelService, Initializi
 
     @Override
     public Set<ModelCapability> activeModelCapabilities() {
+        var control=inference==null?null:inference.getIfAvailable();
+        if(control!=null&&control.selection()!=null&&control.selection().engine().equals("llamacpp")){
+            var result=java.util.EnumSet.of(ModelCapability.TEXT);
+            var capabilities=(java.util.List<?>)control.selection().parameters().getOrDefault("declaredCapabilities",java.util.List.of());
+            if(capabilities.contains("VISION"))result.add(ModelCapability.VISION);
+            if(capabilities.contains("TOOLS"))result.add(ModelCapability.TOOLS);
+            if(capabilities.contains("REASONING"))result.add(ModelCapability.THINKING);
+            return java.util.Set.copyOf(result);
+        }
         String model = activeModel();
         Set<ModelCapability> reported;
         try {

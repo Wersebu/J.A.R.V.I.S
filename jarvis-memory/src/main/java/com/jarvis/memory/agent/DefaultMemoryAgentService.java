@@ -31,6 +31,11 @@ import java.util.UUID;
  */
 @Service
 public class DefaultMemoryAgentService implements MemoryAgentService {
+    private org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> inference;
+    @org.springframework.beans.factory.annotation.Autowired public void inference(org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> value){inference=value;}
+    private com.jarvis.common.ai.InferenceControl.Selection engineSelection(){var pinned=com.jarvis.common.ai.InferenceSelectionContext.current();if(pinned!=null)return pinned;var control=inference==null?null:inference.getIfAvailable();return control==null?null:control.selection();}
+    private com.jarvis.common.ai.Brain selectedBrain(com.jarvis.common.ai.Brain fallback){var s=engineSelection();return s==null?fallback:new com.jarvis.common.ai.Brain(fallback.type(),s.engine(),s.model(),fallback.description(),fallback.selectionReason(),fallback.routerLatencyMs(),fallback.reasoningLevel(),s.configurationId());}
+
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultMemoryAgentService.class);
     private static final String MODEL = "gpt-oss:20b";
@@ -99,7 +104,7 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
     private MemoryAgentDecision decide(MemoryJob job) {
         try {
             String prompt = prompt(job);
-            Brain brain = new Brain(BrainType.CLASSIFIER, "ollama", MODEL, "Background memory agent")
+            Brain brain = selectedBrain(new Brain(BrainType.CLASSIFIER, "ollama", MODEL, "Background memory agent"))
                     .withRoutingMetadata("Memory extraction", 0L, ReasoningLevel.LOW);
             String response = com.jarvis.common.ai.InferenceProfileContext.call("memory-decision",()->selectProvider().chat(brain, prompt, AIJobType.MEMORY_AGENT).response());
             return parseDecision(response);
@@ -116,7 +121,7 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
 
     private AIProvider selectProvider() {
         return aiProviders.stream()
-                .filter(provider -> provider.provider().equalsIgnoreCase("ollama"))
+                .filter(provider -> provider.provider().equalsIgnoreCase(engineSelection()==null?"ollama":engineSelection().engine()))
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("Ollama provider is not available for Memory Agent"));
     }

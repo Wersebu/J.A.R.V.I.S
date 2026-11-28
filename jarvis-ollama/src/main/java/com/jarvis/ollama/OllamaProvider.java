@@ -59,6 +59,15 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
 
+    private com.jarvis.common.ai.InferenceControl inferenceControl;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void inferenceControl(com.jarvis.common.ai.InferenceControl value){inferenceControl=value;}
+    private void validateConfiguration(Brain brain){
+        if(inferenceControl==null)return;
+        var selected=inferenceControl.selection();
+        if(!selected.engine().equals("ollama")||!brain.configurationId().isEmpty()&&!selected.configurationId().equals(brain.configurationId()))
+            throw new com.jarvis.common.ai.AIProviderException("STALE_CONFIGURATION: active engine/model changed; request was not reassigned");
+    }
     private static final Logger LOGGER = LoggerFactory.getLogger(OllamaProvider.class);
 
     private final HttpClient httpClient;
@@ -123,11 +132,13 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
      */
     @Override
     public ChatResponse chat(Brain brain, String prompt) {
+        validateConfiguration(brain);
         return chat(brain, prompt, AIJobType.CHAT);
     }
 
     @Override
     public ChatResponse chat(Brain brain, String prompt, AIJobType jobType) {
+        validateConfiguration(brain);
         StringBuilder responseBuilder = new StringBuilder();
         stream("", brain, prompt, jobType, event -> {
             if (event instanceof TokenEvent tokenEvent) {
@@ -148,16 +159,19 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
      */
     @Override
     public void stream(String conversationId, Brain brain, String prompt, ChatEventSink eventSink) {
+        validateConfiguration(brain);
         stream(conversationId, brain, prompt, AIJobType.CHAT, eventSink);
     }
 
     @Override
     public void stream(String conversationId, Brain brain, String prompt, AIJobType jobType, ChatEventSink eventSink) {
+        validateConfiguration(brain);
         stream(conversationId, brain, prompt, jobType, List.of(), eventSink);
     }
 
     @Override
     public void stream(String conversationId, Brain brain, String prompt, AIJobType jobType, List<ImageAttachment> images, ChatEventSink eventSink) {
+        validateConfiguration(brain);
         Instant startedAt = Instant.now();
         long startedNano = System.nanoTime();
         String requestId = diagnosticsRequestId();
@@ -182,6 +196,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
 
             Object think = resolveThink(brain);
             try (OllamaRequestCoordinator.Permit ignored = requestCoordinator.acquire(jobType, requestId)) {
+                validateConfiguration(brain);
                 long httpPreparationStarted = System.nanoTime();
                 String budgetedPrompt = contextBudgetService.fitPrompt(brain.model(), prompt, images==null?0:images.size());
                 String requestJson = hasImages
@@ -307,6 +322,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
             List<NativeToolDefinition> tools,
             AIJobType jobType
     ) {
+        validateConfiguration(brain);
         return executeNativeChat(brain,messages,tools,jobType,Map.of(),null);
     }
     @Override public boolean supportsStreamingChat(){return true;}
@@ -339,6 +355,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                     brain.model(), com.jarvis.common.ai.InferenceProfileContext.current(), nativeThink,
                     tools == null ? List.of() : tools.stream().map(NativeToolDefinition::name).toList(), contextBudgetService.ollamaOptions());
             try (OllamaRequestCoordinator.Permit ignored = requestCoordinator.acquire(jobType, requestId)) {
+                validateConfiguration(brain);
                 // stream=true (previously false): this is the only way to see the model's
                 // "thinking" live for a native-tool-loop turn instead of it being a total black box
                 // until the profile-bounded call finishes - a turn producing many

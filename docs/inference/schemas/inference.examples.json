@@ -1,0 +1,206 @@
+[
+  {
+    "schema": "Selection",
+    "value": {
+      "configurationId": "config-example",
+      "engine": "llamacpp",
+      "model": "example.gguf",
+      "parameters": {
+        "contextSize": 4096,
+        "maxOutputTokens": 1024,
+        "parallelSlots": 1,
+        "gpuLayers": 0
+      }
+    }
+  },
+  {
+    "schema": "SwitchRequest",
+    "value": {
+      "engine": "llamacpp",
+      "model": "example.gguf",
+      "parameters": {
+        "contextSize": 4096,
+        "maxOutputTokens": 1024,
+        "parallelSlots": 1,
+        "gpuLayers": 0
+      }
+    }
+  },
+  {
+    "schema": "SwitchResult",
+    "value": {
+      "operationId": "operation-example",
+      "selection": {
+        "configurationId": "config-example",
+        "engine": "llamacpp",
+        "model": "example.gguf",
+        "parameters": {
+          "contextSize": 4096,
+          "maxOutputTokens": 1024,
+          "parallelSlots": 1,
+          "gpuLayers": 0
+        }
+      },
+      "status": "READY"
+    }
+  },
+  {
+    "schema": "ProcessRequest",
+    "value": {
+      "action": "restart"
+    }
+  },
+  {
+    "schema": "DownloadRequest",
+    "value": {
+      "engine": "llamacpp",
+      "repository": "organization/repository",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "file": "example.gguf",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  {
+    "schema": "DownloadRequest",
+    "value": {
+      "engine": "ollama",
+      "file": "gpt-oss:20b"
+    }
+  },
+  {
+    "schema": "DownloadOperation",
+    "value": {
+      "operationId": "download-example",
+      "revision": 1,
+      "engine": "llamacpp",
+      "model": "example.gguf",
+      "status": "DOWNLOADING",
+      "downloadedBytes": 1000,
+      "totalBytes": 10000,
+      "bytesPerSecond": 1000,
+      "percent": 10.0,
+      "etaSeconds": 9.0,
+      "error": ""
+    }
+  },
+  {
+    "schema": "State",
+    "value": {
+      "contractVersion": "1.9.0",
+      "selection": {
+        "configurationId": "config-example",
+        "engine": "llamacpp",
+        "model": "example.gguf",
+        "parameters": {
+          "contextSize": 4096,
+          "maxOutputTokens": 1024,
+          "parallelSlots": 1,
+          "gpuLayers": 0
+        }
+      },
+      "status": "READY",
+      "error": "",
+      "metrics": {},
+      "engines": [
+        {
+          "id": "llamacpp",
+          "installationStatus": "INSTALLED",
+          "processOwnership": "CORE_CHILD",
+          "running": true
+        }
+      ],
+      "resources": {
+        "observedAt": "2026-11-27T22:00:00Z",
+        "gpuFreeMiB": null,
+        "ramAvailableBytes": null,
+        "scope": "HOST_OBSERVATION",
+        "status": "UNAVAILABLE"
+      },
+      "parameterSchema": {},
+      "revision": 1,
+      "operationId": "operation-example"
+    }
+  },
+  {
+    "schema": "ImportRequest",
+    "value": {
+      "path": "example.gguf",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  {
+    "schema": "Error",
+    "value": {
+      "code": "CAPABILITY_REQUIRED",
+      "message": "CAPABILITY_REQUIRED: TOOLS"
+    }
+  },
+  {
+    "schema": "Event",
+    "value": {
+      "eventId": "event-1",
+      "protocolVersion": "1.9.0",
+      "timestamp": "2026-11-27T22:00:00Z",
+      "sequence": 1,
+      "type": "inference.operation.updated",
+      "taskId": null,
+      "payload": {
+        "operationId": "operation-example",
+        "revision": 1,
+        "status": "LOADING_MODEL",
+        "selection": {
+          "configurationId": "config-example",
+          "engine": "llamacpp",
+          "model": "example.gguf",
+          "parameters": {
+            "contextSize": 4096,
+            "maxOutputTokens": 1024,
+            "parallelSlots": 1,
+            "gpuLayers": 0
+          }
+        },
+        "error": ""
+      }
+    }
+  },
+  {
+    "schema": "Event",
+    "value": {
+      "eventId": "event-2",
+      "protocolVersion": "1.9.0",
+      "timestamp": "2026-11-27T22:00:00Z",
+      "sequence": 2,
+      "type": "inference.download.updated",
+      "taskId": null,
+      "payload": {
+        "operationId": "download-example",
+        "revision": 1,
+        "engine": "llamacpp",
+        "model": "example.gguf",
+        "status": "DOWNLOADING",
+        "downloadedBytes": 1000,
+        "totalBytes": 10000,
+        "bytesPerSecond": 1000,
+        "percent": 10.0,
+        "etaSeconds": 9.0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "schema": "Event",
+    "value": {
+      "eventId": "event-3",
+      "protocolVersion": "1.9.0",
+      "timestamp": "2026-11-27T22:00:00Z",
+      "sequence": 3,
+      "type": "inference.installation.updated",
+      "taskId": null,
+      "payload": {
+        "operationId": "install-example",
+        "status": "INSTALLING",
+        "error": ""
+      }
+    }
+  }
+]

@@ -18,7 +18,7 @@ import java.util.concurrent.*;
 /** Durable task engine. All transitions and snapshots share one lock. */
 @Service
 public class CompanionTasks implements AutoCloseable,CompanionEventSink {
-    private static final String VERSION = "1.8.0";
+    private static final String VERSION = "1.9.0";
     public static String version() { return VERSION; }
     public record Request(String message, String role, Integer priority, Integer timeoutSeconds, Integer maxAttempts,
                           String name,List<String> dependsOn,String conversationId,String parentRequestId) {
@@ -123,8 +123,11 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
     private long order;
     private boolean closed;
     private static final Set<String> TERMINAL = Set.of("COMPLETED", "PARTIALLY_COMPLETED", "FAILED", "SKIPPED", "CANCELLED", "TIMED_OUT");
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.jarvis.common.ai.InferenceControl inferenceControl;
     private final class Entry implements Runnable, Comparable<Entry> {
         final String owner, message; final long position; final long deadline;
+        com.jarvis.common.ai.InferenceControl.Selection inferenceSelection;
         Submission submission;
         AgentScope.Scope scope;boolean coordinator;
         final ArrayDeque<String> instructions=new ArrayDeque<>(); boolean acceptingInstructions=true;
@@ -134,8 +137,9 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
             Instant now=Instant.now(); deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(r.timeoutSeconds()==null?120:r.timeoutSeconds());
             task=new Task(UUID.randomUUID().toString(), r.role()==null?"TASK":r.role(), "QUEUED",
                 r.priority()==null?50:r.priority(), null, now, now, null, null);
+            if(inferenceControl!=null){inferenceSelection=com.jarvis.common.ai.InferenceSelectionContext.current();if(inferenceSelection==null)inferenceSelection=inferenceControl.selection();history.put(document(owner,"task-inference",task.taskId(),inferenceSelection));}
         }
-        Entry(String owner,Task restored,Submission input){this.owner=owner;this.submission=input;this.message=input==null?"":input.request().message();this.position=++order;this.deadline=input==null?Long.MAX_VALUE:System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(java.time.Duration.between(Instant.now(),input.deadline()).toMillis());this.task=restored;}
+        Entry(String owner,Task restored,Submission input){this.owner=owner;this.submission=input;this.message=input==null?"":input.request().message();this.position=++order;this.deadline=input==null?Long.MAX_VALUE:System.nanoTime()+TimeUnit.MILLISECONDS.toNanos(java.time.Duration.between(Instant.now(),input.deadline()).toMillis());this.task=restored;this.inferenceSelection=history.find(owner,"task-inference",restored.taskId()).map(d->decode(d.body(),com.jarvis.common.ai.InferenceControl.Selection.class)).orElse(null);}
         public int compareTo(Entry other) { int n=Integer.compare(task.priority(),other.task.priority()); return n==0?Long.compare(position,other.position):n; }
         public void run() {
             synchronized(CompanionTasks.this) {
@@ -251,6 +255,9 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         try{return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest((key+"\n"+role+"\n"+message).getBytes(java.nio.charset.StandardCharsets.UTF_8)));}catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}
     }
     private String executeConversation(Entry entry){
+        return com.jarvis.common.ai.InferenceSelectionContext.call(entry.inferenceSelection,()->executePinnedConversation(entry));
+    }
+    private String executePinnedConversation(Entry entry){
         String message=entry.message;
         if(entry.submission!=null&&!entry.submission.request().dependsOn().isEmpty())synchronized(this){for(String id:entry.submission.request().dependsOn()){var dependency=owned(entry.owner,id);message+="\n\nDependency result (reference data): "+taskName(dependency)+"\n"+dependency.task.result();}}
         var initial=drainInstructions(entry.owner,entry.task.taskId());

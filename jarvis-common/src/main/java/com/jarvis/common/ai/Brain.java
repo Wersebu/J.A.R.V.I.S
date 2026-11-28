@@ -18,8 +18,13 @@ public record Brain(
         String description,
         String selectionReason,
         long routerLatencyMs,
-        ReasoningLevel reasoningLevel
+        ReasoningLevel reasoningLevel,
+        String configurationId
 ) {
+
+    public Brain(BrainType type,String provider,String model,String description,String selectionReason,long routerLatencyMs,ReasoningLevel reasoningLevel){
+        this(type,provider,model,description,selectionReason,routerLatencyMs,reasoningLevel,"");
+    }
 
     /**
      * Creates a configured brain without routing metadata.
@@ -53,6 +58,6 @@ public record Brain(
      * @return brain with selection metadata
      */
     public Brain withRoutingMetadata(String reason, long latencyMs, ReasoningLevel reasoningLevel) {
-        return new Brain(type, provider, model, description, reason, latencyMs, reasoningLevel);
+        return new Brain(type, provider, model, description, reason, latencyMs, reasoningLevel,configurationId);
     }
 }

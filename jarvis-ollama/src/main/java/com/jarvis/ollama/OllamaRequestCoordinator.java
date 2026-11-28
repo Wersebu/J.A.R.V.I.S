@@ -47,7 +47,19 @@ public class OllamaRequestCoordinator implements ModelGateway {
         this.chatPriority=priority;eventBus=bus;this.concurrency=concurrency;reservedInteractive=concurrency==1?0:reserved;
         this.maxWaiting=maxWaiting;minimumFreeHeapBytes=heap;queueTimeoutMillis=timeout;
     }
+    private com.jarvis.inference.EngineAccessGate engineGate;
+    @Autowired public void engineGate(com.jarvis.inference.EngineAccessGate value){engineGate=value;}
     public Permit acquire(AIJobType requested,String requestId) {
+        var residency=engineGate==null?null:engineGate.enter("ollama");
+        try {var permit=acquireLocal(requested,requestId);permit.residency=residency;return permit;}
+        catch(RuntimeException|Error e){if(residency!=null)residency.close();throw e;}
+    }
+    @Override public Permit acquireCpuAuxiliary(AIJobType jobType,String requestId){
+        var residency=engineGate==null?null:engineGate.enter("cpu-auxiliary");
+        try{var permit=acquireLocal(jobType,requestId);permit.residency=residency;return permit;}
+        catch(RuntimeException|Error e){if(residency!=null)residency.close();throw e;}
+    }
+    private Permit acquireLocal(AIJobType requested,String requestId) {
         var settings=InferenceSettingsContext.current();
         AIJobType type=settings!=null&&settings.background()?AIJobType.BACKGROUND:InferencePriorityContext.effective(requested);
         long start=System.nanoTime();Instant queuedAt=Instant.now();
@@ -127,9 +139,10 @@ public class OllamaRequestCoordinator implements ModelGateway {
         private final OllamaRequestCoordinator gate;private final Waiting waiter;private final Instant queuedAt,startedAt;
         private final long queueWaitMs;private final AIJobType blocker;private final int pending;
         private final AtomicBoolean closed=new AtomicBoolean();
+        private com.jarvis.inference.EngineAccessGate.Lease residency;
         Permit(OllamaRequestCoordinator gate,Waiting w,Instant queued,Instant started,long elapsed,AIJobType blocker,int pending){this.gate=gate;waiter=w;queuedAt=queued;startedAt=started;queueWaitMs=elapsed;this.blocker=blocker;this.pending=pending;}
         public AIJobType jobType(){return waiter.type();}public Instant queuedAt(){return queuedAt;}public Instant startedAt(){return startedAt;}
         public long queueWaitMs(){return queueWaitMs;}public AIJobType activeJobAtQueueTime(){return blocker;}public int pendingJobs(){return pending;}
-        public void close(){if(closed.compareAndSet(false,true))gate.release(waiter.id());}
+        public void close(){if(closed.compareAndSet(false,true)){try{gate.release(waiter.id());}finally{if(residency!=null)residency.close();}}}
     }
 }

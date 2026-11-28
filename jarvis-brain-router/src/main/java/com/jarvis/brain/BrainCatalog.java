@@ -13,6 +13,9 @@ public class BrainCatalog {
 
     private static final String OLLAMA_PROVIDER = "ollama";
 
+    private com.jarvis.common.ai.InferenceControl inference;
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void inference(com.jarvis.common.ai.InferenceControl value){inference=value;}
     private final BrainCatalogProperties properties;
     private final ActiveModelService activeModelService;
 
@@ -41,6 +44,11 @@ public class BrainCatalog {
         BrainDefinition definition = properties.brains().get(type);
         if (definition == null) {
             throw new BrainRoutingException("Brain is not configured: " + type);
+        }
+        if(inference!=null && OLLAMA_PROVIDER.equalsIgnoreCase(definition.provider())) {
+            var pinned=com.jarvis.common.ai.InferenceSelectionContext.current();
+            var selection=pinned==null?inference.selection():pinned;
+            return new Brain(type,selection.engine(),selection.model(),definition.description(),"",0L,com.jarvis.common.ai.ReasoningLevel.MEDIUM,selection.configurationId());
         }
         String model = OLLAMA_PROVIDER.equalsIgnoreCase(definition.provider())
                 ? activeModelService.activeModel()

@@ -28,6 +28,8 @@ public class OllamaEmbeddingProvider implements EmbeddingProvider {
     private com.jarvis.common.ai.ModelGateway modelGateway;
     @org.springframework.beans.factory.annotation.Autowired
     public void setModelGateway(com.jarvis.common.ai.ModelGateway gateway){this.modelGateway=gateway;}
+    private org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> inference;
+    @org.springframework.beans.factory.annotation.Autowired public void inference(org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> value){inference=value;}
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final OllamaProperties properties;
@@ -67,8 +69,10 @@ public class OllamaEmbeddingProvider implements EmbeddingProvider {
     public EmbeddingVector embed(String text) {
         long started = System.nanoTime();
         String endpoint = normalizeBaseUrl(properties.baseUrl()) + "/api/embeddings";
-        try (var lease=modelGateway==null?null:modelGateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"embedding")) {
-            OllamaEmbeddingRequest request = new OllamaEmbeddingRequest(model, text == null ? "" : text);
+        var control=inference==null?null:inference.getIfAvailable();
+        boolean cpu=control!=null&&!control.selection().engine().equals("ollama");
+        try (var lease=modelGateway==null?null:cpu?modelGateway.acquireCpuAuxiliary(com.jarvis.common.ai.AIJobType.BACKGROUND,"embedding-cpu"):modelGateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"embedding")) {
+            Object request=cpu?java.util.Map.of("model",model,"prompt",text==null?"":text,"options",java.util.Map.of("num_gpu",0),"keep_alive","0s"):new OllamaEmbeddingRequest(model,text==null?"":text);
             HttpRequest httpRequest = HttpRequest.newBuilder()
                     .uri(URI.create(endpoint))
                     .timeout(Duration.ofMinutes(2))

@@ -18,6 +18,11 @@ import java.util.UUID;
  */
 @Component
 public class AiMemoryReranker implements MemoryReranker {
+    private org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> inference;
+    @org.springframework.beans.factory.annotation.Autowired public void inference(org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> value){inference=value;}
+    private com.jarvis.common.ai.InferenceControl.Selection engineSelection(){var pinned=com.jarvis.common.ai.InferenceSelectionContext.current();if(pinned!=null)return pinned;var control=inference==null?null:inference.getIfAvailable();return control==null?null:control.selection();}
+    private com.jarvis.common.ai.Brain selectedBrain(com.jarvis.common.ai.Brain fallback){var s=engineSelection();return s==null?fallback:new com.jarvis.common.ai.Brain(fallback.type(),s.engine(),s.model(),fallback.description(),fallback.selectionReason(),fallback.routerLatencyMs(),fallback.reasoningLevel(),s.configurationId());}
+
 
     private static final Logger LOGGER = LoggerFactory.getLogger(AiMemoryReranker.class);
 
@@ -42,13 +47,13 @@ public class AiMemoryReranker implements MemoryReranker {
 
     private Optional<AIProvider> provider() {
         return aiProviders.stream()
-                .filter(candidate -> candidate.provider().equalsIgnoreCase("ollama"))
+                .filter(candidate -> candidate.provider().equalsIgnoreCase(engineSelection()==null?"ollama":engineSelection().engine()))
                 .findFirst();
     }
 
     private Optional<UUID> rerankWithProvider(AIProvider provider, String query, List<MemoryScore> candidates) {
         try {
-            Brain brain = new Brain(BrainType.CLASSIFIER, "ollama", "gpt-oss:20b", "Memory reranker")
+            Brain brain = selectedBrain(new Brain(BrainType.CLASSIFIER, "ollama", "gpt-oss:20b", "Memory reranker"))
                     .withRoutingMetadata("Memory reranking", 0L, ReasoningLevel.LOW);
             String response = provider.chat(brain, prompt(query, candidates), AIJobType.MEMORY_AGENT).response();
             String id = response == null ? "" : response.replaceAll("[^0-9a-fA-F-]", "").strip();

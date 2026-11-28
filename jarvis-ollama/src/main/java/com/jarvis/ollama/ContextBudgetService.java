@@ -11,6 +11,9 @@ import java.util.*;
 public class ContextBudgetService implements InferenceContextPolicy {
     public record Plan(InferenceProfileRegistry.Profile profile, String model, int physical, int modelMax,
                        int input, int output, int margin) {}
+    private org.springframework.beans.factory.ObjectProvider<InferenceControl> engines;
+    @Autowired public void engines(org.springframework.beans.factory.ObjectProvider<InferenceControl> value){engines=value;}
+    private int alternateBudget(){var control=engines==null?null:engines.getIfAvailable();if(control==null)throw new AIProviderException("INFERENCE_UNAVAILABLE");var p=control.selection().parameters();return ((Number)p.getOrDefault("contextSize",4096)).intValue()-((Number)p.getOrDefault("maxOutputTokens",1024)).intValue()-256;}
     private final AiContextProperties properties;
     private final InferenceProfileRegistry profiles;
     private final ModelMetadataResolver metadata;
@@ -43,7 +46,7 @@ public class ContextBudgetService implements InferenceContextPolicy {
         public Brain brain(Brain original) {
             Plan p = current.get();
             return p == null ? original : new Brain(original.type(), original.provider(), p.model(), original.description(),
-                original.selectionReason(), original.routerLatencyMs(), p.profile().reasoning());
+                original.selectionReason(), original.routerLatencyMs(), p.profile().reasoning(), original.configurationId());
         }
         public void close() { if (previous == null) current.remove(); else current.set(previous); if (settings != null) settings.close(); }
     }
@@ -57,9 +60,10 @@ public class ContextBudgetService implements InferenceContextPolicy {
     public int physicalContext(){return profiles==null?properties.contextWindow():profiles.physicalContext();}
     public Plan currentPlan() { return current.get(); }
     @Override public Selection prepare(Brain brain,AIJobType type,List<ModelMessage> messages,List<NativeToolDefinition> tools){
+        if(brain.provider().equals("llamacpp"))return new Selection(List.copyOf(messages),List.copyOf(tools),alternateBudget());
         try(var scope=open(brain,type)){var selected=selectTools(messages,tools);return new Selection(fitMessages(messages,selected),selected,current.get()==null?properties.maxInputTokens():current.get().input());}
     }
-    @Override public int inputBudget(Brain brain,AIJobType type){try(var scope=open(brain,type)){return current.get()==null?properties.maxInputTokens():current.get().input();}}
+    @Override public int inputBudget(Brain brain,AIJobType type){if(brain.provider().equals("llamacpp"))return alternateBudget();try(var scope=open(brain,type)){return current.get()==null?properties.maxInputTokens():current.get().input();}}
     public Boolean thinkingSupported(){var plan=current.get();return plan==null?null:metadata.resolve(plan.model()).capabilities().contains("thinking");}
     public List<NativeToolDefinition> selectTools(List<ModelMessage> messages,List<NativeToolDefinition> tools){
         if(current.get()==null||tools==null||tools.size()<=profiles.maxOfferedTools())return tools;

@@ -1,4 +1,6 @@
-# Companion API contract 1.6.0
+# Companion API contract 1.9.0
+
+> Aktualizacja 1.9.0 (2026-11-27): addytywny kontrakt multi-engine inference opisany w [../inference/API_CONTRACT.md](../inference/API_CONTRACT.md). Dotychczasowe endpointy i zdarzenia pozostają zgodne; historyczne przykłady poniżej zachowują wcześniejsze wersje.
 
 Updated 2026-11-26 (1.6.0; prior publication 1.5.0). Backend owns state. Additive to existing APIs; /ws/jarvis retains legacy payloads and adds feature-detected request multiplexing. Version changes are recorded here and in CONTRACT_VERSION.txt. Major = incompatible; minor = additive; patch = clarification. Clients ignore unknown fields/events.
 
