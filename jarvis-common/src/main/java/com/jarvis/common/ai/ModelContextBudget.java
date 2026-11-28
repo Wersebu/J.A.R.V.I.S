@@ -6,6 +6,7 @@ import java.util.*;
 public final class ModelContextBudget {
  private static final ObjectMapper JSON=new ObjectMapper();
  private ModelContextBudget(){}
+ public static String referenceExcerpt(String text,int limit){if(text.length()<=limit)return text;String marker="\n[... omitted reference ...]\n";int head=Math.max(0,(limit-marker.length())/2);int tail=Math.max(0,limit-marker.length()-head);return text.substring(0,head)+marker+text.substring(text.length()-tail);}
  public static int tokens(String text){return text==null?0:(text.getBytes(StandardCharsets.UTF_8).length+2)/3;}
  public static int serialized(Object value){try{return tokens(JSON.writeValueAsString(value));}catch(Exception e){throw new IllegalArgumentException("Cannot measure context",e);}}
  public static Map<String,Object> occupancy(List<ModelMessage> messages,Object tools,int inputBudget){

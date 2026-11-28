@@ -19,6 +19,14 @@ class LlamaCppInferenceEngineTest {
   var gate=new EngineAccessGate();try(var x=gate.exclusive()){gate.activate("llamacpp");}engine=new LlamaCppInferenceEngine(new ObjectMapper(),properties,manager,gate);brain=new Brain(BrainType.FAST,"llamacpp","m.gguf","","",0,ReasoningLevel.LOW,"config-1");
  }
  @AfterEach void close(){server.stop(0);}
+ @Test void aggregateUsesToolsWithoutRequiringStructuredOutput()throws Exception{
+  String arguments=new ObjectMapper().writeValueAsString(Map.of("answer","Verified result"));
+  var frame=Map.of("choices",List.of(Map.of("index",0,"delta",Map.of("tool_calls",List.of(Map.of("index",0,"id","answer-id","type","function","function",Map.of("name","conversation__answer","arguments",arguments)))),"finish_reason","tool_calls")));
+  response="data: "+new ObjectMapper().writeValueAsString(frame)+"\n\ndata: [DONE]\n\n";
+  doAnswer(i->{assertThat((Map<?,?>)i.getArgument(2)).isEmpty();return null;}).when(manager).validateCapabilities(anyList(),anyList(),anyMap());
+  var visible=new ArrayList<String>();var result=VisibleModelStream.generate(engine,brain,List.of(ModelMessage.user("Aggregate facts")),AIJobType.CHAT,visible::add,m->{},false);
+  assertThat(result.content()).isEqualTo("Verified result");assertThat(result.hasToolCalls()).isFalse();assertThat(visible).isEmpty();assertThat(request.get().has("response_format")).isFalse();assertThat(calls).hasValue(1);
+ }
  @Test void normalizesResponseAndSendsOnlyGenerationParameters(){var result=engine.toolChat(brain,List.of(ModelMessage.system("sys"),ModelMessage.user("user")),List.of(),AIJobType.CHAT);assertThat(result.content()).isEqualTo("hello");assertThat(request.get().has("gpuLayers")).isFalse();assertThat(request.get().path("temperature").asDouble()).isEqualTo(.2);assertThat(request.get().path("messages").size()).isEqualTo(2);assertThat(calls).hasValue(1);}
  @Test void preservesNativeToolHistoryAndSchema(){var tool=new ModelToolCall("call-id","search",Map.of("q","test"));engine.streamChat(brain,List.of(ModelMessage.assistant("",List.of(tool)),ModelMessage.tool("call-id","search","result")),List.of(new NativeToolDefinition("search","",Map.of("type","object"))),Map.of("type","object"),AIJobType.CHAT,e->{});assertThat(request.get().path("messages").get(1).path("tool_call_id").asText()).isEqualTo("call-id");assertThat(request.get().path("response_format").path("type").asText()).isEqualTo("json_schema");assertThat(request.get().path("messages").get(0).path("tool_calls").get(0).path("function").path("arguments").isTextual()).isTrue();}
  @Test void stalePinnedConfigurationNeverCallsBackend(){var stale=new Brain(BrainType.FAST,"llamacpp","m.gguf","","",0,ReasoningLevel.LOW,"old-config");assertThatThrownBy(()->engine.chat(stale,"x")).hasMessageContaining("STALE_CONFIGURATION");assertThat(calls).hasValue(0);}

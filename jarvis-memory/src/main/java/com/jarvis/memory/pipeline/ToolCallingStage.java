@@ -1327,6 +1327,7 @@ public class ToolCallingStage implements PipelineStage {
     }
 
     private String toolBasePrompt(PipelineContext context) {
+        if(context.metadata().get("nativeSystemPrompt") instanceof String system&&!system.isBlank())return system;
         StringBuilder builder = new StringBuilder();
         if (context.prompt() != null && !context.prompt().isBlank()) {
             builder.append(context.prompt());

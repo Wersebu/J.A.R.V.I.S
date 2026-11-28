@@ -79,7 +79,11 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         var control=engines==null?null:engines.getIfAvailable();
-        if(control!=null&&control.selection()!=null&&!control.selection().engine().equals("ollama")){warmupRegistry.markReady();return;}
+        var selected=control==null?null:control.selection();
+        if(selected!=null&&!selected.engine().equals("ollama")){warmupRegistry.markReady();return;}
+        com.jarvis.common.ai.InferenceSelectionContext.call(selected,()->{runPinned();return null;});
+    }
+    private void runPinned(){
         warmupRegistry.warming();
         boolean failed = false;
         // ActiveModelService's own InitializingBean.afterPropertiesSet() already resolved persisted
@@ -155,7 +159,8 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
 
     private WarmupResult warmup(String model,String keepAlive){
         return com.jarvis.common.ai.InferenceProfileContext.call("warmup",()->{
-            try(var profile=contextBudgetService.open(new com.jarvis.common.ai.Brain(com.jarvis.common.ai.BrainType.CLASSIFIER,"ollama",model,"Warmup"),com.jarvis.common.ai.AIJobType.BACKGROUND)){
+            var assigned=com.jarvis.common.ai.InferenceSelectionContext.current();
+            try(var profile=contextBudgetService.open(new com.jarvis.common.ai.Brain(com.jarvis.common.ai.BrainType.CLASSIFIER,"ollama",model,"Warmup","",0,com.jarvis.common.ai.ReasoningLevel.LOW,assigned==null?"":assigned.configurationId()),com.jarvis.common.ai.AIJobType.BACKGROUND)){
                 return warmupResolved(model,keepAlive);
             }
         });
@@ -173,6 +178,8 @@ public class OllamaStartupModelWarmup implements ApplicationRunner {
                 List.of()
         );
         try (var lease=modelGateway==null?null:modelGateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"startup-warmup")) {
+            var assigned=com.jarvis.common.ai.InferenceSelectionContext.current();var control=engines==null?null:engines.getIfAvailable();
+            if(assigned!=null&&control!=null&&!assigned.configurationId().equals(control.selection().configurationId()))throw new com.jarvis.common.ai.AIProviderException("STALE_CONFIGURATION: startup warmup selection changed");
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(endpoint))
                     .timeout(Duration.ofMinutes(10))

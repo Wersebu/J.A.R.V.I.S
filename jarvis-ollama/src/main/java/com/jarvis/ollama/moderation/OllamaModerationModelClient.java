@@ -32,6 +32,11 @@ import java.util.Map;
  */
 @Service
 public class OllamaModerationModelClient implements ModerationModelClient {
+    private org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> engines;
+    private org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.AIProvider> providers;
+    @org.springframework.beans.factory.annotation.Autowired
+    public void routing(org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> engines,org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.AIProvider> providers){this.engines=engines;this.providers=providers;}
+    private com.jarvis.common.ai.InferenceControl.Selection selection(){var pinned=com.jarvis.common.ai.InferenceSelectionContext.current();var control=engines==null?null:engines.getIfAvailable();return pinned!=null?pinned:control==null?null:control.selection();}
 
     private com.jarvis.common.ai.ModelGateway gateway;
     private com.jarvis.ollama.ContextBudgetService budgets;
@@ -53,10 +58,31 @@ public class OllamaModerationModelClient implements ModerationModelClient {
     }
 
     private int metadataLimit(String model){
-        try(var scope=budgets.open(new com.jarvis.common.ai.Brain(com.jarvis.common.ai.BrainType.CLASSIFIER,"ollama",model,"Moderation"),com.jarvis.common.ai.AIJobType.BACKGROUND)){return budgets.currentPlan().modelMax();}
+        var assigned=selection();
+        try(var scope=budgets.open(new com.jarvis.common.ai.Brain(com.jarvis.common.ai.BrainType.CLASSIFIER,"ollama",model,"Moderation","",0,com.jarvis.common.ai.ReasoningLevel.LOW,assigned==null?"":assigned.configurationId()),com.jarvis.common.ai.AIJobType.BACKGROUND)){return budgets.currentPlan().modelMax();}
     }
     @Override
     public ModerationModelResponse moderate(ModerationRequest request, String systemPrompt, String model, Duration timeout) {
+        var selected=selection();
+        return com.jarvis.common.ai.InferenceSelectionContext.call(selected,()->{
+            if(selected!=null&&!selected.engine().equals("ollama"))return moderateActive(request,systemPrompt,selected,timeout);
+            return moderateOllama(request,systemPrompt,selected==null?model:selected.model(),timeout);
+        });
+    }
+    private ModerationModelResponse moderateActive(ModerationRequest request,String systemPrompt,com.jarvis.common.ai.InferenceControl.Selection selected,Duration timeout){
+        if(timeout.isZero()||timeout.isNegative())throw new ModerationModelException("Moderation timeout");
+        long started=System.nanoTime();
+        try(var settings=com.jarvis.common.ai.InferenceSettingsContext.open(new com.jarvis.common.ai.InferenceSettingsContext.Settings("moderation",50,true,started+timeout.toNanos()));var deadline=new com.jarvis.ollama.InferenceDeadline()){
+            var provider=providers.orderedStream().filter(p->p.provider().equals(selected.engine())).findFirst().orElseThrow(()->new ModerationModelException("Active moderation provider unavailable"));
+            var brain=new com.jarvis.common.ai.Brain(com.jarvis.common.ai.BrainType.CLASSIFIER,selected.engine(),selected.model(),"Moderation","Active inference configuration",0,com.jarvis.common.ai.ReasoningLevel.LOW,selected.configurationId());
+            // Existing moderation parser validates the JSON business result and fails closed. No
+            // structured-output or executable-tool capability is assumed for an active model.
+            var result=provider.toolChat(brain,List.of(com.jarvis.common.ai.ModelMessage.system(systemPrompt),com.jarvis.common.ai.ModelMessage.user(userPayload(request))),List.of(),com.jarvis.common.ai.AIJobType.BACKGROUND);
+            if(result.hasToolCalls()||result.content().isBlank()||List.of("length","max_tokens").contains(result.finishReason())||result.content().getBytes(StandardCharsets.UTF_8).length>MAX_RESPONSE_BYTES)throw new ModerationModelException("Invalid or incomplete moderation response");
+            return new ModerationModelResponse(result.content(),java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-started),selected.model());
+        }catch(IOException|com.jarvis.common.ai.AIProviderException failure){throw new ModerationModelException("Active moderation inference failed",failure);}
+    }
+    private ModerationModelResponse moderateOllama(ModerationRequest request,String systemPrompt,String model,Duration timeout){
         try {
             String endpoint = normalizeBaseUrl(ollamaProperties.baseUrl()) + "/api/chat";
             Map<String, Object> options = Map.of(
@@ -87,6 +113,8 @@ public class OllamaModerationModelClient implements ModerationModelClient {
             long started = System.nanoTime();
             HttpResponse<byte[]> response;
             try(var lease=gateway==null?null:gateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"moderation")){
+                var assigned=com.jarvis.common.ai.InferenceSelectionContext.current();var control=engines==null?null:engines.getIfAvailable();
+                if(assigned!=null&&control!=null&&!assigned.configurationId().equals(control.selection().configurationId()))throw new ModerationModelException("STALE_CONFIGURATION: moderation selection changed");
                 response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofByteArray());
             }
             long latencyMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
@@ -132,6 +160,12 @@ public class OllamaModerationModelClient implements ModerationModelClient {
 
     @Override
     public ModerationModelAvailability availability(String model, Duration timeout) {
+        var selected=selection();
+        if(selected!=null&&!selected.engine().equals("ollama")){
+            var control=engines.getIfAvailable();boolean ready=control!=null&&"READY".equals(control.state().get("status"));
+            return new ModerationModelAvailability(ready,ready);
+        }
+        if(selected!=null)model=selected.model();
         if (model == null || model.isBlank()) {
             return new ModerationModelAvailability(false, false);
         }
@@ -146,8 +180,8 @@ public class OllamaModerationModelClient implements ModerationModelClient {
                 return new ModerationModelAvailability(false, false);
             }
             OllamaTagsResponse tags = objectMapper.readValue(response.body(), OllamaTagsResponse.class);
-            boolean installed = tags.models() != null
-                    && tags.models().stream().anyMatch(tag -> tag.name().equalsIgnoreCase(model.strip()));
+            String activeModel=model.strip();boolean installed = tags.models() != null
+                    && tags.models().stream().anyMatch(tag -> tag.name().equalsIgnoreCase(activeModel));
             return new ModerationModelAvailability(true, installed);
         } catch (IOException exception) {
             return new ModerationModelAvailability(false, false);

@@ -8,6 +8,8 @@ import com.jarvis.common.memory.CognitiveMemoryContext;
  * Composes prompts sent to AI providers.
  */
 public interface PromptBuilder {
+    /** Identity, settings and grounded data for native messages; current turn/history travel separately. */
+    default String buildRoutingPrompt(ChatRequest request,KnowledgeContext knowledge,CognitiveMemoryContext memory,PromptContext sources){return buildPrompt(request,knowledge,memory,sources);}
 
     /**
      * Builds a provider prompt from a user chat request.

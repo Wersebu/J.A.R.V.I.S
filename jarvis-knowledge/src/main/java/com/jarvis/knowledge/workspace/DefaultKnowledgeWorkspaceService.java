@@ -304,6 +304,7 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     @Override
     public List<KnowledgeDraft> drafts() {
         return pendingDrafts.values().stream()
+                .filter(draft->draft.owner().equals(com.jarvis.common.auth.CurrentUserContext.requiredUserId()))
                 .map(PendingDraft::draft)
                 .sorted(Comparator.comparing(KnowledgeDraft::createdAt).reversed())
                 .toList();
@@ -311,8 +312,8 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
 
     @Override
     public KnowledgeToolResult approveDraft(String draftId) {
-        PendingDraft draft = pendingDrafts.remove(draftId);
-        if (draft == null) {
+        PendingDraft draft = pendingDrafts.get(draftId);
+        if (draft == null || !draft.owner().equals(com.jarvis.common.auth.CurrentUserContext.requiredUserId()) || !pendingDrafts.remove(draftId,draft)) {
             return result("knowledge.approveDraft", false, false, "Draft not found", null, null,
                     Map.of("draftId", nullToEmpty(draftId), "approved", false));
         }
@@ -334,7 +335,8 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
 
     @Override
     public KnowledgeToolResult rejectDraft(String draftId) {
-        PendingDraft removed = pendingDrafts.remove(draftId);
+        PendingDraft removed = pendingDrafts.get(draftId);
+        if(removed!=null&&(!removed.owner().equals(com.jarvis.common.auth.CurrentUserContext.requiredUserId())||!pendingDrafts.remove(draftId,removed)))removed=null;
         if (removed != null) {
             cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_DRAFT_REJECTED, "REJECTED",
                     "Knowledge draft rejected", removed.nodeId(), eventData(removed.path(), Map.of(
@@ -541,7 +543,7 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
             Instant now = Instant.now();
             KnowledgeDraft draft = new KnowledgeDraft(draftId, tool, nullToEmpty(path), message, now,
                     data == null ? Map.of() : data);
-            pendingDrafts.put(draftId, new PendingDraft(draft, eventType, message, nodeId, path, data, write));
+            pendingDrafts.put(draftId, new PendingDraft(com.jarvis.common.auth.CurrentUserContext.requiredUserId(),draft, eventType, message, nodeId, path, data, write));
             Files.writeString(folder.resolve(draftId + ".draft"), String.join(System.lineSeparator(),
                     "tool=" + tool,
                     "path=" + nullToEmpty(path),
@@ -828,6 +830,7 @@ public class DefaultKnowledgeWorkspaceService implements KnowledgeWorkspaceServi
     }
 
     private record PendingDraft(
+            String owner,
             KnowledgeDraft draft,
             CognitiveEventType eventType,
             String message,

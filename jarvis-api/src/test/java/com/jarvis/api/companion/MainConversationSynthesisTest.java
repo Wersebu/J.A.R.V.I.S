@@ -13,6 +13,18 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 class MainConversationSynthesisTest {
+ @Test void failedSourceVenueIsRejectedBeforeAnyVisibleChunk(){
+  var memory=mock(ConversationMemoryService.class);when(memory.getMessages(anyString())).thenReturn(List.of());var delivery=new TaskResultDelivery(memory,mock(ConversationRepository.class));var router=mock(BrainRouter.class);var brain=new Brain(BrainType.FAST,"fake","m","");when(router.select(any(com.jarvis.common.dto.ChatRequest.class))).thenReturn(brain);
+  var provider=mock(AIProvider.class);when(provider.provider()).thenReturn("fake");when(provider.supportsStreamingChat()).thenReturn(true);String raw="{\"action\":\"DIRECT\",\"answer\":\"CSS na NASDAQ: brak danych\"}";
+  when(provider.streamChat(any(),anyList(),anyList(),anyMap(),any(),any())).thenAnswer(i->{java.util.function.Consumer<ModelStreamEvent> sink=i.getArgument(5);sink.accept(ModelStreamEvent.content(raw));return new ModelResponse(raw,"",List.of(),"stop",null);});delivery.configureSynthesis(List.of(provider),router);var visible=new StringBuilder();
+  assertThatThrownBy(()->delivery.synthesize("alice","conversation","{\"outcomes\":[{\"state\":\"FAILED\",\"name\":\"CSS NASDAQ\"}]}",visible::append)).hasMessageContaining("venue");assertThat(visible).isEmpty();
+ }
+ @Test void toolsOnlyLlamaAggregatesWithoutStructuredOutputAndPublishesOnce(){
+  var memory=mock(ConversationMemoryService.class);when(memory.getMessages(anyString())).thenReturn(List.of());var delivery=new TaskResultDelivery(memory,mock(ConversationRepository.class));var router=mock(BrainRouter.class);var brain=new Brain(BrainType.FAST,"llamacpp","m","");when(router.select(any(com.jarvis.common.dto.ChatRequest.class))).thenReturn(brain);
+  var control=mock(InferenceControl.class);when(control.selection()).thenReturn(new InferenceControl.Selection("c","llamacpp","m",Map.of("declaredCapabilities",List.of("TOOLS"))));org.springframework.test.util.ReflectionTestUtils.setField(delivery,"inference",control);
+  var provider=mock(AIProvider.class);when(provider.provider()).thenReturn("llamacpp");when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(new ModelResponse("","",List.of(new ModelToolCall("response","conversation__answer",Map.of("answer","Confirmed result"))),"tool_calls",null));delivery.configureSynthesis(List.of(provider),router);var chunks=new ArrayList<String>();
+  assertThat(delivery.synthesize("alice","conversation","{\"outcomes\":[{\"state\":\"COMPLETED\",\"result\":\"Confirmed result\"}]}",chunks::add)).isEqualTo("Confirmed result");assertThat(chunks).containsExactly("Confirmed result");verify(control,times(1)).selection();verify(provider,never()).streamChat(any(),anyList(),anyList(),anyMap(),any(),any());
+ }
  @Test void workerEvidenceReturnsToTheOriginalMainIdentityAndConversation()throws Exception{
   var mapper=new ObjectMapper();var store=new InMemoryCompanionStore();var originalBrain=new Brain(BrainType.REASONING,"fake","original-model","main","",0,ReasoningLevel.MEDIUM,"original-config");
   store.put(new CompanionDocumentStore.Document("alice","task-input","root",mapper.writeValueAsString(Map.of("request",Map.of("parentRequestId","original-request"))),Instant.now()));

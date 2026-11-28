@@ -11,7 +11,7 @@ Data: 2026-11-27. Zmiana addytywna względem dostarczonego Core 1.8.0. Kod Windo
 
 Brain zawiera opcjonalne `configurationId`. BrainCatalog odczytuje przypięty `InferenceSelectionContext` albo bieżący wybór. Task Engine zapisuje wybór w dokumentach `task-inference` i przywraca go po restarcie; kolejne rundy nie przechodzą potajemnie na inny model. Przestarzała konfiguracja kończy rundę błędem STALE_CONFIGURATION. Historia, pamięć, plany, wyniki i identyfikatory rozmów nie są migrowane ani czyszczone. Jawne przypisanie wewnętrzne: `InferenceSelectionContext.call(selection, action)`. Nie jest to mechanizm równoczesnego uruchamiania różnych modeli na GPU.
 
-CPU embeddingi pamięci przy llama.cpp nadal używają Ollamy z `options.num_gpu=0` i `keep_alive=0s`, we wspólnej dzierżawie CPU. Moderacja i rozgrzewanie Ollamy nie mogą załadować jej modelu GPU, kiedy aktywne jest llama.cpp. Odrębny, wyspecjalizowany pipeline TopkiMC pozostaje transportem Ollamy i wtedy zgłasza błąd nieaktywnego silnika. STT/TTS nie są zatrzymywane.
+CPU embeddingi pamięci przy llama.cpp nadal używają Ollamy z `options.num_gpu=0` i `keep_alive=0s`, we wspólnej dzierżawie CPU. Moderacja i rozgrzewanie Ollamy nie mogą załadować jej modelu GPU, kiedy aktywne jest llama.cpp. Pipeline TopkiMC respektuje aktywną konfigurację: przy Ollamie zachowuje dotychczasowy transport, przy llama.cpp używa aktywnego AIProvider, bez wykonywalnych narzędzi, z dotychczasową walidacją JSON wyniku i deadline. Pole ollamaReachable w istniejącym health DTO pozostaje nazwą historyczną sygnalizującą gotowość transportu moderacji; aktywny silnik odczytuje się z inference/state. STT/TTS nie są zatrzymywane.
 
 ## Uwierzytelnianie
 
@@ -105,3 +105,15 @@ Benchmark endpoint oznacza start jako WARM_RESIDENT, COLD_MODEL_LOAD lub RESIDEN
 ## Źródła i zgodność wersji
 
 Adapter i argv porównano z oficjalnym README przypiętego commita: https://github.com/ggml-org/llama.cpp/blob/074f1f3f730c1d17f34645d62c1859c74bedbdd8/tools/server/README.md . Nie oznacza to weryfikacji działającej binarki na produkcji. Skrypt zapisuje --version, --help, listę urządzeń, SHA binarki i installation.json; /health i /v1/models sprawdzane są przy każdym ładowaniu. API chat wymaga rzeczywistego testu po instalacji. Oficjalne build docs: https://github.com/ggml-org/llama.cpp/blob/074f1f3f730c1d17f34645d62c1859c74bedbdd8/docs/build.md . Instalacja CUDA: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/ .
+
+## Stability Update 2026-11-28
+
+`GET /api/v1/inference/state` wymaga aktywnego ADMIN. `parameterSchema.llamacpp` jest płaską mapą `parametr -> descriptor`, niezależną od aktywnego silnika; nie wymaga wrappera JSON Schema `properties`. Deskryptory enum mogą nie zawierać `type`. Błędy 401/403 należy odróżnić od pustego schematu. Dowody rzeczywistej serializacji i wskazówki dla Windows: ../../WINDOWS_REQUIREMENTS.md.
+
+Agregacja modelu z TOOLS bez STRUCTURED_OUTPUT używa wewnętrznej natywnej koperty `conversation__answer`. Nie jest to narzędzie wykonywalne ani nowy endpoint Windows. Argumenty są buforowane i walidowane; dopiero odpowiedź jest publikowana jako zwykła wiadomość. Częściowe wyniki są również buforowane przed sprawdzeniem niepotwierdzonych giełd — brak delt w tej fazie nie oznacza martwego koordynatora. Zdarzenia generation.started/finished oraz busy nadal odzwierciedlają stan rzeczywisty.
+
+Drafty Knowledge Workspace są przypisane do inicjującego użytkownika. Listowanie, approve i reject nie ujawniają i nie usuwają draftów innych kont; format odpowiedzi pozostaje bez zmian. Wspólna wiedza nie została zamieniona w nową architekturę wielodostępną.
+
+Kandydat profilu produkcyjnego ma `gpuBudgetMiB=0`, co celowo uniemożliwia aktywację GPU do czasu pomiaru. Wcześniejsze 14000 MiB było niezmierzoną propozycją, nie zatwierdzonym budżetem. Wprowadzić zmierzony budżet pełnego modelu/KV/projektora; manager nadal wymaga dodatkowo 2048 MiB rezerwy. Benchmark podany przez użytkownika nie zawiera pomiaru VRAM i nie zastępuje go.
+
+Dla zwykłego REST czatu wyjątek z kodem CONTEXT_BUDGET_EXCEEDED jest teraz HTTP 422, a nie 503 awarii providera. Kształt ErrorResponse pozostaje bez zmian; message zawiera kod i bezpieczną wskazówkę, nie prywatny prompt. Inne błędy providera nadal mają 503. Zmiana jest uzasadniona rzeczywistym przypadkiem, w którym dostępna Ollama została błędnie przedstawiona jako niedostępna podczas przepełnienia promptu routera.

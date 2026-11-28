@@ -20,9 +20,10 @@ public class AutonomousOrchestrationStage implements PipelineStage {
         // A complete social greeting carries no execution intent; retain the normal personality/memory answer path.
         if(context.request().message().strip().toLowerCase(java.util.Locale.ROOT).matches("(?:siemanko|siemka|siema|kim jesteś|kim jestes|jak się nazywasz|who are you|hej|czesc|cześć|witaj|hello|hi|hey|dzień dobry|dobry wieczór)[!., ]*"))return context.withMetadata("simpleGreeting",true);
         var orchestrator=orchestrators.getIfAvailable();if(orchestrator==null)return context;
-        var outcome=orchestrator.orchestrate(CurrentUserContext.requiredUserId(),context.conversationId(),context.requestId(),planningContext(context),context.brain());
+        var references=planningContext(context);
+        var outcome=orchestrator.orchestrate(CurrentUserContext.requiredUserId(),context.conversationId(),context.requestId(),references,context.brain());
         if(outcome.action().equals("LEGACY"))return context;
-        var next=context.withMetadata("orchestrationReferences",planningContext(context)).withMetadata("semanticOrchestration",true).withMetadata("orchestrationAction",outcome.action());
+        var next=context.withMetadata("orchestrationReferences",references).withMetadata("semanticOrchestration",true).withMetadata("orchestrationAction",outcome.action());
         if(outcome.action().equals("DIRECT")||outcome.action().equals("DELEGATE"))return next.withResponse(outcome.answer(),null);
         var toolContext=new java.util.LinkedHashMap<String,Object>();toolContext.put("semanticOrchestration",true);toolContext.put("executionMode",outcome.action());toolContext.put("workflowTools",outcome.tools());if(outcome.firstResponse()!=null)toolContext.put("firstModelResponse",outcome.firstResponse());
         return next.withMetadata("mainModelAction",MainModelActionType.TOOL_REQUEST.name()).withMetadata("toolGoal",context.request().message())
@@ -33,10 +34,10 @@ public class AutonomousOrchestrationStage implements PipelineStage {
         var recent=context.conversation();
         for(var message:recent.subList(Math.max(0,recent.size()-4),recent.size())){
             if(message.requestId().equals(context.requestId())||message.status()!=com.jarvis.common.memory.ConversationMessageStatus.FINAL)continue;
-            var reference=new AutonomousOrchestration.Reference("conversation",message.role().name(),message.requestId(),message.content().substring(0,Math.min(400,message.content().length())));
+            var reference=new AutonomousOrchestration.Reference("conversation",message.role().name(),message.requestId(),com.jarvis.common.ai.ModelContextBudget.referenceExcerpt(message.content(),400));
             if(message.requestId().startsWith("task-result/")||message.requestId().startsWith("task-group/"))results.add(reference);else history.add(reference);
         }
         String memory=context.memoryContext().context();var memories=memory.isBlank()?java.util.List.<AutonomousOrchestration.Reference>of():java.util.List.of(new AutonomousOrchestration.Reference("memory","REFERENCE","",memory.substring(0,Math.min(600,memory.length()))));
-        return new AutonomousOrchestration.Context(context.request().message(),history,memories,results,java.util.List.of(),context.prompt());
+        return new AutonomousOrchestration.Context(context.request().message(),history,memories,results,java.util.List.of(),String.valueOf(context.metadata().getOrDefault("nativeSystemPrompt",context.prompt())));
     }
 }

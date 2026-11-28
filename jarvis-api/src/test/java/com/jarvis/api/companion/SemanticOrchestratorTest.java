@@ -13,6 +13,22 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 class SemanticOrchestratorTest {
+    @Test void incompleteMultiOutputPlanCannotDropLiteralRequestedIdentifier()throws Exception{
+        var decision=new ObjectMapper().readTree("{\"action\":\"TOOLS\",\"deliverables\":[{\"subject\":\"weather\"},{\"subject\":\"USD\"}]}");
+        var failure=assertThrows(IllegalArgumentException.class,()->SemanticOrchestrator.validateRequestedIdentifiers("Pogoda, USD, bitcoin i CSS z sześciu miesięcy",decision));
+        assertTrue(failure.getMessage().contains("CSS"));
+        assertDoesNotThrow(()->SemanticOrchestrator.validateRequestedIdentifiers("Pogoda i USD",decision));
+        assertDoesNotThrow(()->SemanticOrchestrator.validateRequestedIdentifiers("Co to CSS?",new ObjectMapper().readTree("{\"action\":\"DIRECT\",\"deliverables\":[]}")));
+    }
+    @Test void omittedIdentifierRepairsBeforeAnyWorkerIsAdmitted()throws Exception{
+        var engine=engine();var incomplete=Map.of("action","TOOLS","answer","","families",List.of("fx"),"deliverables",List.of(Map.of("subject","USD","name","USD","goal","USD rate","families",List.of("fx"),"requiresResearch",true),Map.of("subject","weather","name","weather","goal","weather","families",List.of("fx"),"requiresResearch",false)));
+        var corrected=mapper.valueToTree(incomplete);((com.fasterxml.jackson.databind.node.ArrayNode)corrected.get("deliverables")).add(mapper.valueToTree(Map.of("subject","CSS","name","CSS","goal","CSS history","families",List.of("fx"),"requiresResearch",true)));
+        // Retry diagnostics are allowed, but no work may start from the incomplete decision.
+        when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(response(mapper.writeValueAsString(incomplete))).thenAnswer(call->{verify(tasks,never()).submitOrchestration(anyString(),anyString(),anyString(),anyString(),anyList(),anySet(),anyBoolean());return response(corrected.toString());});
+        when(tasks.submitOrchestration(anyString(),anyString(),anyString(),anyString(),anyList(),anySet(),eq(false))).thenReturn(new CompanionTasks.Task("root","CONVERSATION","RUNNING",50,null,java.time.Instant.now(),java.time.Instant.now(),null,null));
+        assertEquals("DELEGATE",engine.orchestrate("owner","conversation","coverage","Pogoda, USD i CSS",brain).action());
+        verify(provider,times(2)).toolChat(any(),anyList(),anyList(),any());
+    }
     private final ObjectMapper mapper=new ObjectMapper().findAndRegisterModules();
     private final AIProvider provider=mock(AIProvider.class);
     private final CompanionTasks tasks=mock(CompanionTasks.class);

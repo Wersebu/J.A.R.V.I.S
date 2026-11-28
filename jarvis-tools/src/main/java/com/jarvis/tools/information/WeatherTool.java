@@ -36,7 +36,23 @@ public class WeatherTool implements JarvisTool,ToolSchemaProvider {
    int max=mode.equals("hourly")?hours:days;var fields=values.fields();while(fields.hasNext()){var f=fields.next();if(f.getValue().isArray()){var array=(ArrayNode)f.getValue();while(array.size()>max)array.remove(array.size()-1);}}
   }
   var data=new LinkedHashMap<String,Object>();data.put("location",Map.of("name",place.path("name").asText(location),"country",place.path("country").asText(),"latitude",lat,"longitude",lon,"timezone",forecast.path("timezone").asText(zone),"resolvedFrom",location));data.put("mode",mode);data.put("values",values);data.put("units",forecast.path(mode+"_units"));data.put("source",source.toString());data.put("geocodingSource",geocoding.toString());data.put("retrievedAt",Instant.now().toString());data.put("dataKind","MODEL_WEATHER_NOT_STATION_OBSERVATION");
+  var code=values.path("weather_code");var descriptions=new LinkedHashMap<String,String>();
+  if(code.isArray())for(var item:code){if(item.isIntegralNumber())descriptions.put(item.asText(),weatherDescription(item.asInt()));}
+  else if(code.isIntegralNumber())descriptions.put(code.asText(),weatherDescription(code.asInt()));
+  if(!descriptions.isEmpty()){data.put("weatherCodeDescriptions",descriptions);data.put("weatherCodeSource","https://open-meteo.com/en/docs");}
   return new ToolResult(true,getName(),"GET",request.requestId(),request.conversationId(),false,List.of(),"Weather retrieved",data,"","",false,"");
  }catch(Exception e){return new ToolResult(false,getName(),request.operation(),request.requestId(),request.conversationId(),false,List.of(),"Weather unavailable",Map.of(),"WEATHER_UNAVAILABLE",e instanceof IllegalArgumentException?e.getMessage():"Weather service unavailable; do not invent conditions",false,"");}}
  private int integer(ToolRequest r,String key,int fallback,int max){Object value=r.arguments().getOrDefault(key,fallback);if(!(value instanceof Number n)||n.doubleValue()!=n.intValue()||n.intValue()<1||n.intValue()>max)throw new IllegalArgumentException("INVALID_"+key.toUpperCase(Locale.ROOT));return n.intValue();}
+ // Open-Meteo WMO interpretation table. Only observed codes enter model context.
+ private String weatherDescription(int code){return switch(code){
+  case 0->"Bezchmurnie";case 1->"Przeważnie bezchmurnie";case 2->"Częściowe zachmurzenie";case 3->"Całkowite zachmurzenie";
+  case 45->"Mgła";case 48->"Mgła osadzająca szadź";
+  case 51->"Lekka mżawka";case 53->"Umiarkowana mżawka";case 55->"Gęsta mżawka";case 56->"Lekka marznąca mżawka";case 57->"Gęsta marznąca mżawka";
+  case 61->"Lekki deszcz";case 63->"Umiarkowany deszcz";case 65->"Silny deszcz";case 66->"Lekki marznący deszcz";case 67->"Silny marznący deszcz";
+  case 71->"Lekki śnieg";case 73->"Umiarkowany śnieg";case 75->"Silny śnieg";case 77->"Śnieg ziarnisty";
+  case 80->"Słabe przelotne opady deszczu";case 81->"Umiarkowane przelotne opady deszczu";case 82->"Gwałtowne przelotne opady deszczu";
+  case 85->"Słabe przelotne opady śniegu";case 86->"Silne przelotne opady śniegu";
+  case 95->"Burza";case 96->"Burza z niewielkim gradem";case 97->"Silna burza";case 99->"Burza z silnym gradem";
+  default->"Nieznany kod pogodowy; nie wnioskuj o warunkach";
+ };}
 }

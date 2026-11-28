@@ -18,6 +18,7 @@ import java.util.Map;
  */
 public final class OllamaEmbeddingBackend implements EmbeddingBackend {
     private com.jarvis.common.ai.ModelGateway gateway;
+    private java.util.function.Supplier<com.jarvis.common.ai.InferenceControl.Selection> activeSelection;
 
     private final HttpJson http;
     private final String baseUrl;
@@ -39,6 +40,7 @@ public final class OllamaEmbeddingBackend implements EmbeddingBackend {
         this.forceCpu = forceCpu;
     }
     public OllamaEmbeddingBackend(String baseUrl,String model,boolean forceCpu,Duration timeout,com.jarvis.common.ai.ModelGateway gateway){this(baseUrl,model,forceCpu,timeout);this.gateway=java.util.Objects.requireNonNull(gateway,"Ollama embeddings require ModelGateway");}
+    public OllamaEmbeddingBackend(String baseUrl,String model,boolean forceCpu,Duration timeout,com.jarvis.common.ai.ModelGateway gateway,java.util.function.Supplier<com.jarvis.common.ai.InferenceControl.Selection> selection){this(baseUrl,model,forceCpu,timeout,gateway);this.activeSelection=selection;}
 
     @Override
     public String describe() {
@@ -56,7 +58,9 @@ public final class OllamaEmbeddingBackend implements EmbeddingBackend {
             body.put("options", Map.of("num_gpu", 0));
         }
         HttpJson.Response response;
-        try(var lease=gateway==null?null:gateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"vault-embedding")){
+        try(var lease=gateway==null?null:forceCpu?gateway.acquireCpuAuxiliary(com.jarvis.common.ai.AIJobType.BACKGROUND,"vault-embedding"):gateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"vault-embedding")){
+            var active=activeSelection==null?null:activeSelection.get();
+            if(!forceCpu&&active!=null&&!active.engine().equals("ollama"))throw new com.jarvis.common.ai.AIProviderException("ENGINE_INACTIVE: GPU Ollama embeddings require active Ollama; configure forceCpu or a separate embedding service");
             response = http.post(baseUrl + "/api/embed", body);
         }
         if (!response.ok()) {

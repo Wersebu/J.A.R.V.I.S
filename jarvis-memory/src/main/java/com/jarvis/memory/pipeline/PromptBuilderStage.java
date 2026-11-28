@@ -69,6 +69,8 @@ public class PromptBuilderStage implements PipelineStage {
                 context.memoryContext(),
                 promptContext
         );
+        String nativePrompt=promptBuilder.buildRoutingPrompt(context.request(),context.knowledgeContext(),context.memoryContext(),promptContext);
+        if(nativePrompt==null||nativePrompt.isBlank())nativePrompt=prompt;
         Object conversationImagesBlock = context.metadata().get("conversationImagesPromptBlock");
         if (conversationImagesBlock instanceof String block && !block.isBlank()) {
             // Appended here (not inside PromptBuilder itself) so every consumer of context.prompt()
@@ -76,6 +78,7 @@ public class PromptBuilderStage implements PipelineStage {
             // base prompt alike - sees the same conversation-image status/provenance text without
             // either of them needing to know this metadata key exists.
             prompt = prompt + "\n\n" + block;
+            nativePrompt=nativePrompt+"\n\n"+block;
         }
         long durationMs = Duration.between(startedAt, Instant.now()).toMillis();
         LOGGER.info("[JARVIS] Prompt built characters={} estimatedTokens={} conversationMessages={} documents={}",
@@ -87,6 +90,7 @@ public class PromptBuilderStage implements PipelineStage {
         ));
         return context.withPromptContext(promptContext)
                 .withPrompt(prompt)
+                .withMetadata("nativeSystemPrompt",nativePrompt)
                 .withMetadata("promptBuildTimeMs", durationMs)
                 .withMetadata("estimatedPromptTokens", prompt.length() / 4)
                 .withMetadata("responseMode", promptContext.responseMode().name())

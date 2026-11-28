@@ -8,7 +8,7 @@
     "reasoning": "on",
     "reasoningEffort": "low",
     "gpuLayers": 99,
-    "gpuBudgetMiB": 14000,
+    "gpuBudgetMiB": 0,
     "flashAttention": "on",
     "cacheTypeK": "q8_0",
     "cacheTypeV": "q8_0",

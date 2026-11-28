@@ -121,12 +121,18 @@ class DefaultTemporaryWorkspaceServiceTest {
 
     @Test
     void cleanupRemovesExpiredWorkspaceButTouchKeepsActiveWorkspace() throws Exception {
-        properties.setTtl(Duration.ofMillis(80));
+        properties.setTtl(Duration.ofHours(1));
         var expired = service.createWorkspace("expired");
         var active = service.createWorkspace("active");
         service.storeInput(active.workspaceId(), "active", List.of(textFile("active.txt", "hello")));
 
-        Thread.sleep(120);
+        // Prepare old persisted timestamps; wall-clock sleeps with an 80 ms TTL were flaky under load.
+        for(var workspace:List.of(expired,active)){
+            var metadataFile=properties.getRoot().resolve(workspace.workspaceId()).resolve(".workspace.properties");var values=new java.util.Properties();
+            try(var input=Files.newInputStream(metadataFile)){values.load(input);}
+            values.setProperty("lastAccessAt",java.time.Instant.now().minus(Duration.ofHours(2)).toString());
+            try(var output=Files.newOutputStream(metadataFile)){values.store(output,"Test expiration fixture");}
+        }
         service.readAttachment(new AttachmentReference(active.workspaceId(), service.metadata(active.workspaceId()).attachments().getFirst().attachmentId()));
 
         int removed = service.cleanupExpired();

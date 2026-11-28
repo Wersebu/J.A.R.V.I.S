@@ -20,8 +20,17 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.*;
 
 class OllamaModerationModelClientTest {
+    @Test void activeLlamaModerationNeverCallsOllama()throws Exception{
+        var captured=new AtomicReference<String>();startServer(captured);var client=client();
+        var control=mock(com.jarvis.common.ai.InferenceControl.class);var selected=new com.jarvis.common.ai.InferenceControl.Selection("cfg","llamacpp","active.gguf",java.util.Map.of());when(control.selection()).thenReturn(selected);when(control.state()).thenReturn(java.util.Map.of("status","READY"));
+        var active=mock(com.jarvis.common.ai.AIProvider.class);when(active.provider()).thenReturn("llamacpp");when(active.toolChat(any(),anyList(),anyList(),any())).thenAnswer(i->{assertThat(com.jarvis.common.ai.InferenceSelectionContext.current()).isEqualTo(selected);return new com.jarvis.common.ai.ModelResponse("{\"decision\":\"CLEAN\"}","",List.of(),"stop",null);});
+        org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> engines=mock(org.springframework.beans.factory.ObjectProvider.class);when(engines.getIfAvailable()).thenReturn(control);
+        org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.AIProvider> providers=mock(org.springframework.beans.factory.ObjectProvider.class);when(providers.orderedStream()).thenAnswer(i->java.util.stream.Stream.of(active));client.routing(engines,providers);
+        assertThat(client.availability("old-ollama-model",Duration.ofSeconds(2)).modelAvailable()).isTrue();var result=client.moderate(request(),"Trusted policy","old-ollama-model",Duration.ofSeconds(2));assertThat(result.modelVersion()).isEqualTo("active.gguf");assertThat(captured.get()).isNull();var brain=org.mockito.ArgumentCaptor.forClass(com.jarvis.common.ai.Brain.class);verify(active).toolChat(brain.capture(),anyList(),eq(List.of()),any());assertThat(brain.getValue().configurationId()).isEqualTo("cfg");
+    }
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private HttpServer server;

@@ -84,7 +84,8 @@ public class InferenceEngineManager implements InferenceControl {
     String name=file.getFileName().toString();if(name.matches(".*-\\d{5}-of-\\d{5}\\.gguf")&&!name.matches(".*-00001-of-\\d{5}\\.gguf"))continue;
     String id=properties.modelDirectory().toAbsolutePath().normalize().relativize(file.toAbsolutePath().normalize()).toString().replace('\\','/');
     String problem="";try{validateModel(id);}catch(Exception e){problem=e.getMessage();}
-    rows.add(Map.of("id",id,"engine","llamacpp","sizeBytes",Files.size(file),"status",problem.isEmpty()?"AVAILABLE":"INVALID","configurationRequired",!savedParameters.containsKey(modelKey("llamacpp",id)),"configurationStatus",savedParameters.containsKey(modelKey("llamacpp",id))?"SAVED":"REQUIRED","error",problem,"declaredCapabilities",List.of("TEXT","STREAMING"),"verifiedCapabilities",List.of()));
+    var declared=new LinkedHashSet<String>(List.of("TEXT","STREAMING"));var profile=savedParameters.get(modelKey("llamacpp",id));if(profile!=null&&profile.get("declaredCapabilities") instanceof List<?> values)for(var value:values)if(value instanceof String capability)declared.add(capability);
+    rows.add(Map.of("id",id,"engine","llamacpp","sizeBytes",Files.size(file),"status",problem.isEmpty()?"AVAILABLE":"INVALID","configurationRequired",!savedParameters.containsKey(modelKey("llamacpp",id)),"configurationStatus",savedParameters.containsKey(modelKey("llamacpp",id))?"SAVED":"REQUIRED","error",problem,"declaredCapabilities",List.copyOf(declared),"verifiedCapabilities",List.of()));
    }return rows;
   }catch(Exception e){throw new AIProviderException("MODEL_DISCOVERY_FAILED",e);}
  }

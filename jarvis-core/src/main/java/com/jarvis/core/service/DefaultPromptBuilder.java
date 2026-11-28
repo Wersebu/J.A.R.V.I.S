@@ -33,6 +33,10 @@ import java.util.Map;
  */
 @Service
 public class DefaultPromptBuilder implements PromptBuilder {
+    @Override public String buildRoutingPrompt(ChatRequest request,KnowledgeContext knowledge,CognitiveMemoryContext memory,PromptContext sources){
+        var context=sources==null?PromptContext.empty():sources;
+        return systemPrompt()+userGlobalPrompt()+folderSystemPrompt(request)+groundingPolicy(context)+sourceManifest(context)+knowledgeBlock(knowledge==null?KnowledgeContext.empty():knowledge,false)+attachmentBlock(request);
+    }
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultPromptBuilder.class);
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm:ss");
@@ -334,10 +338,13 @@ public class DefaultPromptBuilder implements PromptBuilder {
     }
 
     private String knowledgeBlock(KnowledgeContext knowledgeContext) {
+        return knowledgeBlock(knowledgeContext,true);
+    }
+    private String knowledgeBlock(KnowledgeContext knowledgeContext,boolean publishEvents) {
         if (knowledgeContext.sourceCount() == 0) {
             return "";
         }
-        cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_INJECTION_STARTED, "INJECTING", "Injecting knowledge into prompt", null, Map.of(
+        if(publishEvents)cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_INJECTION_STARTED, "INJECTING", "Injecting knowledge into prompt", null, Map.of(
                 "sources", knowledgeContext.sourceCount(),
                 "charactersInjected", knowledgeContext.totalCharacters(),
                 "estimatedTokens", knowledgeContext.estimatedTokens()
@@ -361,7 +368,7 @@ public class DefaultPromptBuilder implements PromptBuilder {
                 ========================================
 
                 """.formatted(knowledgeContext.context());
-        cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_INJECTION_FINISHED, "FINISHED", "Knowledge injection finished", null, Map.of(
+        if(publishEvents)cognitiveEventBus.publish(CognitiveEventType.KNOWLEDGE_INJECTION_FINISHED, "FINISHED", "Knowledge injection finished", null, Map.of(
                 "sources", knowledgeContext.sourceCount(),
                 "charactersInjected", knowledgeContext.totalCharacters(),
                 "estimatedTokens", knowledgeContext.estimatedTokens()

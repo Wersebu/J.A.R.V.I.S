@@ -29,6 +29,10 @@ public class ApiExceptionHandler {
     @ExceptionHandler(AIProviderException.class)
     public ResponseEntity<ErrorResponse> handleAiProviderException(AIProviderException exception) {
         LOGGER.error("[JARVIS] AI provider error: {}", exception.getMessage(), exception);
+        if(exception.getMessage()!=null&&exception.getMessage().startsWith("CONTEXT_BUDGET_EXCEEDED")){
+            return ResponseEntity.unprocessableEntity().body(new ErrorResponse(422,"Context Budget Exceeded",
+                    "CONTEXT_BUDGET_EXCEEDED: required input exceeds the available model context; use smaller input or source excerpts.",Instant.now()));
+        }
         ErrorResponse response = new ErrorResponse(
                 HttpStatus.SERVICE_UNAVAILABLE.value(),
                 "Service Unavailable",

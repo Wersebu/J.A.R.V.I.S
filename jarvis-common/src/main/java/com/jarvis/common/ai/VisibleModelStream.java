@@ -10,6 +10,10 @@ public final class VisibleModelStream {
         return generate(provider,brain,messages,job,sink,metrics->{});
     }
     public static ModelResponse generate(AIProvider provider,Brain brain,List<ModelMessage> messages,AIJobType job,Consumer<String> sink,Consumer<Map<String,Object>> metrics){
+        return generate(provider,brain,messages,job,sink,metrics,true);
+    }
+    public static ModelResponse generate(AIProvider provider,Brain brain,List<ModelMessage> messages,AIJobType job,Consumer<String> sink,Consumer<Map<String,Object>> metrics,boolean structuredOutput){
+        if(!structuredOutput)return nativeAnswer(provider,brain,messages,job,sink,metrics);
         if(!provider.supportsStreamingChat())return provider.toolChat(brain,messages,List.of(),job);
         var properties=new LinkedHashMap<String,Object>();properties.put("action",Map.of("type","string","enum",List.of("DIRECT","ANSWER")));properties.put("answer",Map.of("type","string"));
         var schema=Map.<String,Object>of("type","object","properties",properties,"required",List.of("action","answer"),"additionalProperties",false);
@@ -27,5 +31,18 @@ public final class VisibleModelStream {
             if(!decoder.action().equals("DIRECT"))sink.accept(decoder.answer());
             return new ModelResponse(decoder.answer(),"",response.toolCalls(),response.finishReason(),response.usage());
         }catch(java.io.IOException failure){throw new IllegalStateException("Incomplete structured answer",failure);}
+    }
+    /** Buffered response envelope for tool-capable models without JSON-schema capability. */
+    private static ModelResponse nativeAnswer(AIProvider provider,Brain brain,List<ModelMessage> messages,AIJobType job,Consumer<String> sink,Consumer<Map<String,Object>> metrics){
+        String name="conversation__answer";
+        var schema=Map.<String,Object>of("type","object","properties",Map.of("answer",Map.of("type","string")),"required",List.of("answer"),"additionalProperties",false);
+        var input=new ArrayList<>(messages);input.add(ModelMessage.system("Return the complete user-facing answer using conversation__answer. This is a response envelope, not an executable action. Do not return operational arguments or reasoning as answer."));
+        long began=System.nanoTime();var response=provider.toolChat(brain,input,List.of(new NativeToolDefinition(name,"Deliver the final answer only",schema)),job);
+        if(response.toolCalls().size()!=1||!response.toolCalls().getFirst().name().equals(name)||Set.of("length","max_tokens").contains(response.finishReason()))throw new AIProviderException("INVALID_FINAL_ANSWER: missing complete native response envelope");
+        Object value=response.toolCalls().getFirst().arguments().get("answer");
+        if(!(value instanceof String answer)||answer.isBlank())throw new AIProviderException("INVALID_FINAL_ANSWER: empty native response envelope");
+        metrics.accept(Map.of("timeToFirstTokenMs",-1,"timeToFirstVisibleAnswerTokenMs",-1,"timeToFirstSinkWriteMs",-1,"generationCompletedMs",(System.nanoTime()-began)/1_000_000,"answerChunks",0,"deliveryMode","BUFFERED_NATIVE_ENVELOPE"));
+        // Caller validates the deliverable before publication. Never stream tool argument deltas.
+        return new ModelResponse(answer,"",List.of(),response.finishReason(),response.usage());
     }
 }

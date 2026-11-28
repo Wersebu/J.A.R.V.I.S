@@ -6,6 +6,12 @@ import java.util.*;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 class InformationToolsTest {
+ @Test void observedWeatherCodesHaveDeterministicDescriptionsAndUnknownCodesAreNotGuessed()throws Exception{
+  var http=mock(InformationHttpClient.class);var json=new ObjectMapper();
+  when(http.get(any())).thenReturn(json.readTree("{\"results\":[{\"latitude\":52,\"longitude\":21,\"timezone\":\"Europe/Warsaw\"}]}"),json.readTree("{\"daily\":{\"weather_code\":[51,3,999]},\"daily_units\":{}}"));
+  var result=new WeatherTool(http).execute(new ToolRequest("weather","GET","c","r","","",Map.of("location","Warszawa","mode","daily","days",3)));
+  assertThat(result.success()).isTrue();var descriptions=json.valueToTree(result.data().get("weatherCodeDescriptions"));assertThat(descriptions.path("51").asText()).isEqualTo("Lekka mżawka");assertThat(descriptions.path("3").asText()).isEqualTo("Całkowite zachmurzenie");assertThat(descriptions.path("999").asText()).contains("Nieznany");assertThat(descriptions.size()).isEqualTo(3);
+ }
  @Test void weatherGeocodesAndReturnsCompactForecastWithSourceTimezoneAndUnits()throws Exception{
   var http=mock(InformationHttpClient.class);var json=new ObjectMapper();
   when(http.get(any())).thenReturn(json.readTree("{\"results\":[{\"name\":\"Warsaw\",\"country\":\"Poland\",\"latitude\":52.23,\"longitude\":21.01,\"timezone\":\"Europe/Warsaw\"}]}"),json.readTree("{\"timezone\":\"Europe/Warsaw\",\"daily\":{\"time\":[\"2026-11-29\"],\"temperature_2m_max\":[8],\"apparent_temperature_max\":[6],\"precipitation_sum\":[0.2],\"wind_speed_10m_max\":[12]},\"daily_units\":{\"temperature_2m_max\":\"C\"}}"));

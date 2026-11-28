@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.*;
 
 /**
  * Regression tests for the startup warmup bug: Core used to always eagerly warm a hardcoded
@@ -36,6 +37,16 @@ import static org.assertj.core.api.Assertions.assertThat;
  * of what (if anything) is configured for it in {@code jarvis.model-startup.models}.
  */
 class OllamaStartupModelWarmupTest {
+    @Test void changedSelectionDuringWarmupAdmissionNeverSendsToOllama()throws IOException{
+        startGenerateServer();var policies=new ModelStartupProperties();var registry=new ModelWarmupRegistry(policies);
+        var warmup=warmup(new FakeActiveModelService("existing"),policies,registry);
+        var old=new com.jarvis.common.ai.InferenceControl.Selection("old","ollama","existing",Map.of());
+        var next=new com.jarvis.common.ai.InferenceControl.Selection("new","llamacpp","m.gguf",Map.of());
+        var selection=new AtomicReference<>(old);var control=mock(com.jarvis.common.ai.InferenceControl.class);when(control.selection()).thenAnswer(i->selection.get());
+        org.springframework.beans.factory.ObjectProvider<com.jarvis.common.ai.InferenceControl> provider=mock(org.springframework.beans.factory.ObjectProvider.class);when(provider.getIfAvailable()).thenReturn(control);warmup.engines(provider);
+        warmup.setModelGateway(new com.jarvis.common.ai.ModelGateway(){public Lease acquire(com.jarvis.common.ai.AIJobType job,String id){assertThat(com.jarvis.common.ai.InferenceSelectionContext.current()).isEqualTo(old);selection.set(next);return ()->{};}public Map<String,Object> snapshot(){return Map.of();}});
+        warmup.run(new DefaultApplicationArguments());assertThat(generateCallCount).hasValue(0);assertThat(registry.modelStatuses().get("existing")).isEqualTo(ModelWarmupStatus.FAILED);
+    }
 
     private HttpServer server;
     private AtomicInteger generateCallCount;
