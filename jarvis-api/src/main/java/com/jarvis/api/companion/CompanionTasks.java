@@ -114,6 +114,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
     @org.springframework.beans.factory.annotation.Autowired(required=false)
     private TaskAnnouncements announcements;
     private final ThreadPoolExecutor workers;
+    private final int workerConcurrency;
     private final ScheduledExecutorService timer;
     private final Map<String, Entry> tasks = new LinkedHashMap<>();
     private final Map<String, ArrayDeque<Event>> events = new HashMap<>();
@@ -168,7 +169,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
     }
     public CompanionTasks(ChatService chat, @Value("${jarvis.companion.task-concurrency:2}") int concurrency) {
         if(concurrency<1 || concurrency>16) throw new IllegalArgumentException("task-concurrency must be 1..16");
-        this.chat=chat;
+        this.chat=chat;workerConcurrency=concurrency;
         workers=new ThreadPoolExecutor(concurrency,concurrency,0,TimeUnit.SECONDS,new PriorityBlockingQueue<>(),r->{Thread t=new Thread(r,"companion-task");t.setDaemon(true);return t;});
         workers.prestartAllCoreThreads();
         var deadlines=new ScheduledThreadPoolExecutor(1,r->{Thread t=new Thread(r,"companion-timeout");t.setDaemon(true);return t;});
@@ -183,7 +184,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         if(agents.isEmpty()||agents.size()>32||tasks.values().stream().filter(e->!TERMINAL.contains(e.task.state())).count()+agents.size()+1>128)throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,"Orchestration admission capacity exceeded");
         var request=new Request(message,"CONVERSATION",50,3600,1,"Koordynacja",List.of(),conversation,requestId);var entry=new Entry(owner,request);var t=entry.task;
         entry.task=new Task(t.taskId(),t.role(),"RUNNING",50,null,t.createdAt(),t.updatedAt(),null,null,conversation,t.executionConversationId());entry.coordinator=true;
-        entry.submission=new Submission(request,"Koordynacja: "+agents.stream().map(AutonomousOrchestration.Agent::name).collect(java.util.stream.Collectors.joining(", ")).substring(0,Math.min(100,agents.stream().map(AutonomousOrchestration.Agent::name).collect(java.util.stream.Collectors.joining(", ")).length())),key,Instant.now().plusSeconds(3600),resultDelivery==null?null:resultDelivery.languageReference(owner,conversation));
+        entry.submission=new Submission(request,"Koordynacja: "+agents.stream().map(AutonomousOrchestration.Agent::name).collect(java.util.stream.Collectors.joining(", ")).substring(0,Math.min(100,agents.stream().map(AutonomousOrchestration.Agent::name).collect(java.util.stream.Collectors.joining(", ")).length())),key,Instant.now().plusSeconds(3600),message);
         var root=new Root(t.taskId(),key,agents.size(),Map.of(),false);roots.put(t.taskId(),root);
         history.putAll(List.of(document(owner,"task",t.taskId(),entry.task),document(owner,"task-input",t.taskId(),entry.submission),document(owner,"orchestration-root",t.taskId(),root),new CompanionDocumentStore.Document(owner,"orchestration-request",key,t.taskId(),Instant.now())));
         history.put(document(owner,"task-identity",t.taskId(),Map.of("requestId",requestId,"idempotencyKey",key)));tasks.put(t.taskId(),entry);if(plans!=null)plans.register(owner,t.taskId(),"RUNNING");emit(entry,"task.created");
@@ -239,7 +240,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         Task original=e.task;e.task=new Task(original.taskId(),original.role(),request.dependsOn().isEmpty()?original.state():"WAITING",original.priority(),null,original.createdAt(),original.updatedAt(),null,null,sourceConversation,"companion-"+original.taskId());
         String group=groupOverride!=null?groupOverride:key==null?original.taskId():submissionKey(key,sourceConversation,"GROUP");
         e.scope=scope;
-        e.submission=new Submission(request,request.name()!=null?request.name():request.message().strip().replaceAll("\\s+"," ").substring(0,Math.min(120,request.message().strip().replaceAll("\\s+"," ").length())),group,original.createdAt().plusSeconds(request.timeoutSeconds()==null?120:request.timeoutSeconds()),resultDelivery==null?null:resultDelivery.languageReference(owner,sourceConversation));
+        e.submission=new Submission(request,request.name()!=null?request.name():request.message().strip().replaceAll("\\s+"," ").substring(0,Math.min(120,request.message().strip().replaceAll("\\s+"," ").length())),group,original.createdAt().plusSeconds(request.timeoutSeconds()==null?120:request.timeoutSeconds()),scope!=null&&tasks.containsKey(scope.rootTaskId())?tasks.get(scope.rootTaskId()).submission.languageReference():resultDelivery==null?request.message():resultDelivery.languageReference(owner,sourceConversation));
         persistSubmission(owner,e.task,dedup,e.submission,scope);
         history.put(document(owner,"task-identity",e.task.taskId(),Map.of("requestId",Objects.toString(request.parentRequestId(),e.task.taskId()),"idempotencyKey",Objects.toString(dedup,e.task.taskId()))));
         tasks.put(e.task.taskId(),e);if(plans!=null)plans.register(owner,e.task.taskId(),e.task.state());emit(e,"task.created");
@@ -282,7 +283,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
     public synchronized List<Task> list(String owner) { return tasks.values().stream().filter(e->e.owner.equals(owner)).map(e->e.task).sorted(Comparator.comparing(Task::createdAt).reversed()).toList(); }
     private Entry owned(String owner,String id) { Entry e=tasks.get(id); if(e==null || !e.owner.equals(owner)) throw new ResponseStatusException(HttpStatus.NOT_FOUND); return e; }
     public synchronized Task get(String owner,String id) { return owned(owner,id).task; }
-    public synchronized Map<String,Object> wire(String owner,Task task){owned(owner,task.taskId());var value=mapper.convertValue(task,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});value.putAll(info(owner,task.taskId()));if(owned(owner,task.taskId()).coordinator)value.put("role","CONVERSATION");value.put("lifecycleState",task.state());value.put("agentState",switch(task.state()){case "WAITING","QUEUED"->"PENDING";case "PARTIALLY_COMPLETED","TIMED_OUT"->"FAILED";case "CANCEL_REQUESTED"->"RUNNING";default->task.state();});value.put("state",switch(task.state()){case "WAITING"->"QUEUED";case "RETRYING"->"RUNNING";case "PARTIALLY_COMPLETED"->"FAILED";case "SKIPPED"->"CANCELLED";default->task.state();});return value;}
+    public synchronized Map<String,Object> wire(String owner,Task task){owned(owner,task.taskId());var value=mapper.convertValue(task,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});value.putAll(info(owner,task.taskId()));if(owned(owner,task.taskId()).coordinator)value.put("role","CONVERSATION");value.put("lifecycleState",task.state());value.put("agentState",switch(task.state()){case "WAITING","QUEUED"->"PENDING";case "PARTIALLY_COMPLETED","TIMED_OUT"->"FAILED";case "CANCEL_REQUESTED","WAITING_FOR_AUTHORIZATION"->"RUNNING";default->task.state();});value.put("state",switch(task.state()){case "WAITING"->"QUEUED";case "RETRYING","WAITING_FOR_AUTHORIZATION"->"RUNNING";case "PARTIALLY_COMPLETED"->"FAILED";case "SKIPPED"->"CANCELLED";default->task.state();});return value;}
     public synchronized Map<String,Object> info(String owner,String id){var e=owned(owner,id);var result=new LinkedHashMap<String,Object>();result.put("taskId",id);result.put("name",taskName(e));result.put("groupId",groupId(e));result.put("dependsOn",e.submission==null?List.of():e.submission.request().dependsOn());result.put("resultRef","/api/v1/companion/tasks/"+id+"/result");result.put("coordinator",e.coordinator);result.put("executionRole",e.coordinator?"COORDINATOR":"WORKER");result.put("countsAsWorker",!e.coordinator);result.put("agentId",e.coordinator?null:id);result.put("requestId",e.submission==null? id:Objects.toString(e.submission.request().parentRequestId(),id));result.put("idempotencyKey",history.find(owner,"task-identity",id).map(d->readMap(d.body()).get("idempotencyKey")).orElse(id));if(e.coordinator){result.put("rootTaskId",id);result.put("parentTaskId",null);}if(e.scope!=null){result.put("rootTaskId",e.scope.rootTaskId());result.put("parentTaskId",e.scope.parentTaskId());result.put("tools",e.scope.tools());}history.find(owner,"agent-telemetry",id).ifPresent(d->result.put("telemetry",readMap(d.body())));result.put("attempts",history.documents(owner,"agent-telemetry-history",id+"/").stream().map(d->readMap(d.body())).toList());return result;}
     private Map<String,Object> readMap(String json){try{return mapper.readValue(json,new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});}catch(Exception e){throw new IllegalStateException(e);}}
     public synchronized Task cancel(String owner,String id) {
@@ -301,14 +302,20 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         if(e.runner==null) { workers.remove(e); change(e,"TIMED_OUT",null,null); }
         else { if(!e.task.state().equals("CANCEL_REQUESTED")) change(e,"CANCEL_REQUESTED",null,null); e.runner.interrupt(); }
     }
-    private synchronized void executionStatus(Entry e,String state,String detail){if(Set.of("RUNNING","RETRYING").contains(e.task.state())&&Set.of("RUNNING","RETRYING").contains(state)&&!e.task.state().equals(state))change(e,state,null,detail);}
+    private synchronized void executionStatus(Entry e,String state,String detail){if(Set.of("RUNNING","RETRYING","WAITING_FOR_AUTHORIZATION").contains(e.task.state())&&Set.of("RUNNING","RETRYING","WAITING_FOR_AUTHORIZATION").contains(state)&&!e.task.state().equals(state))change(e,state,null,detail);}
     private void change(Entry e,String state,String result,String error) {
         if(TERMINAL.contains(e.task.state()))return;
         Task t=e.task; Task next=new Task(t.taskId(),t.role(),state,t.priority(),null,t.createdAt(),Instant.now(),result,error,t.conversationId(),t.executionConversationId());
         persist(e.owner,next);e.task=next;
+        // Compensate blocking consent inside the existing pool, so even a one-worker queue can
+        // continue independent tasks. Never resubmit or duplicate the suspended Entry.
+        int desired=Math.min(128,workerConcurrency+(int)tasks.values().stream().filter(entry->entry.task.state().equals("WAITING_FOR_AUTHORIZATION")).count());
+        if(desired>workers.getCorePoolSize()){workers.setMaximumPoolSize(desired);workers.setCorePoolSize(desired);workers.prestartAllCoreThreads();}
+        else if(desired<workers.getCorePoolSize()){workers.setCorePoolSize(desired);workers.setMaximumPoolSize(desired);}
         if(plans!=null)plans.taskState(e.owner,next.taskId(),state,false);
         updateParentPlan(e,state,error);
         emit(e,"task."+switch(state){case "RUNNING"->"started";case "CANCEL_REQUESTED"->"cancel_requested";default->state.toLowerCase(Locale.ROOT);});
+        if(TERMINAL.contains(state)&&e.coordinator&&e.submission!=null)history.delete(e.owner,"main-conversation-context",e.task.conversationId()+"/"+e.submission.request().parentRequestId());
         if(TERMINAL.contains(state)&&!closed)continuations.execute(this::processCompletions);
     }
     private void updateParentPlan(Entry e,String state,String error){
@@ -378,8 +385,8 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
                 try{
                 String id="task-result/"+e.task.taskId();
                 if(history.find(e.owner,"task-delivery",id).isEmpty()){
-                    String heading=e.task.state().equals("COMPLETED")?"Wynik zadania: ":"Zadanie zakończone bez pełnego wyniku: ";
-                    String text=heading+taskName(e)+"\n\n"+(e.task.result()==null?"":e.task.result())+(e.task.error()==null?"":"\n\nInformacja o błędzie: "+e.task.error());
+                    String text=history.find(e.owner,"task-synthesis",id).map(CompanionDocumentStore.Document::body).orElse(null);
+                    if(text==null){try{String[] generated={null};com.jarvis.common.companion.TaskExecutionContext.run(e.task.taskId(),()->generated[0]=resultDelivery.synthesize(e.owner,e.task.conversationId(),"Task outcome ["+e.task.state()+"]: "+Objects.toString(e.task.result(),"")+"; error="+Objects.toString(e.task.error(),"")));text=Objects.requireNonNull(generated[0]);if(text.isBlank())throw new IllegalStateException("Empty main-agent response");}catch(Exception failure){text="Nie udało się przygotować odpowiedzi głównego J.A.R.V.I.S. Wynik i status zadania są zapisane w jego szczegółach.";}history.put(new CompanionDocumentStore.Document(e.owner,"task-synthesis",id,text,Instant.now()));}
                     deliver(e,id,"RESULT",text);
                 }
                 List<Entry> group;
@@ -395,9 +402,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
                             catch(Exception failure){LOG.warn("Main-model synthesis unavailable; delivering all exact results",failure);synthesis="Synteza modelowa jest niedostępna. Poniżej zachowano wszystkie wyniki i informacje o błędach.";}
                             history.put(new CompanionDocumentStore.Document(e.owner,"task-synthesis",finalId,synthesis,Instant.now()));
                         }
-                        StringBuilder text=new StringBuilder("Zakończono wszystkie powiązane zadania. ").append(synthesis).append("\n\nKomplet wyników:\n");
-                        for(var child:group)text.append("\n## ").append(taskName(child)).append("\n").append(child.task.result()==null?"Brak pełnego wyniku.":child.task.result()).append(child.task.error()==null?"":"\nBłąd: "+child.task.error()).append('\n');
-                        deliver(e,finalId,"AGGREGATE",text.toString());
+                        deliver(e,finalId,"AGGREGATE",synthesis);
                     }
                 }
                 }catch(Exception failure){LOG.error("Delivery deferred for task {}; other results remain eligible",e.task.taskId(),failure);}
@@ -428,13 +433,14 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
                     var previous=history.find(parent.owner,"task-stream",id).map(d->readMap(d.body())).orElse(Map.of());
                     var streamed=new StringBuilder(Objects.toString(previous.get("text"),""));var fragments=new java.util.concurrent.atomic.AtomicInteger(((Number)previous.getOrDefault("chunks",0)).intValue());var generationStarted=System.nanoTime();
                     java.util.function.Consumer<String> visible=chunk->{if(chunk==null||chunk.isEmpty())return;streamed.append(chunk);history.put(document(parent.owner,"task-stream",id,Map.of("text",streamed.toString(),"chunks",fragments.get()+1)));var payload=new LinkedHashMap<String,Object>();payload.put("messageId",TaskResultDelivery.messageId(parent.owner,parent.task.conversationId(),id).toString());payload.put("conversationId",parent.task.conversationId());payload.put("requestId",id);payload.put("taskId",root.taskId());payload.put("text",chunk);payload.put("index",fragments.incrementAndGet());payload.put("elapsedMs",(System.nanoTime()-generationStarted)/1_000_000);payload.put("persisted",false);record(parent.owner,"assistant.message.delta",root.taskId(),payload);};
-                    StringBuilder evidence=new StringBuilder();int limit=Math.max(100,12000/Math.max(1,children.size()));for(var child:children){String value=Objects.toString(child.task.result(),"");evidence.append(taskName(child)).append(" [").append(child.task.state()).append("] ").append(Objects.toString(child.task.error(),"")).append('\n').append(value,0,Math.min(value.length(),limit)).append(value.length()>limit?" [fragment]":"").append('\n');}
-                    String synthesis;try{if(!previous.isEmpty())throw new IllegalStateException("Recovered interrupted synthesis; preserving the visible prefix instead of regenerating it");String[] generated={null};var started=Instant.now();AgentScope.run(new AgentScope.Scope(root.taskId(),root.taskId(),0,Set.of(),true),()->{try{generated[0]=resultDelivery.synthesize(parent.owner,parent.task.conversationId(),evidence.toString(),visible);}finally{history.put(document(parent.owner,"agent-telemetry",root.taskId(),Map.of("taskId",root.taskId(),"startedAt",started,"finishedAt",Instant.now(),"phase","AGGREGATION","tokens",AgentScope.measured())));}});synthesis=Objects.requireNonNull(generated[0],"Empty synthesis");}catch(Exception failure){LOG.warn("Root synthesis failed; exact independent outcomes retained",failure);synthesis=streamed+"\nSynteza modelowa niedostępna lub przerwana. Zachowano wszystkie niezależne wyniki i ich statusy.";}
-                    StringBuilder complete=new StringBuilder(synthesis).append("\n\nWyniki agentów:\n");for(var child:children)complete.append("\n## ").append(taskName(child)).append(" — ").append(child.task.state().equals("COMPLETED")?"ukończone":"niedokończone").append('\n').append(Objects.toString(child.task.result(),"Nie udało się wykonać tego zadania. Sprawdź połączenie i uprawnienia wymaganej usługi.")).append('\n');
-                    if(children.size()<root.expectedAgents())complete.append("\nNie zarejestrowano wszystkich zaplanowanych agentów przed przerwaniem rejestracji.");
-                    result=complete.toString();
+                    var evidence=new StringBuilder();var outcomes=new ArrayList<Map<String,Object>>();int limit=Math.max(100,12000/Math.max(1,children.size()));
+                    for(var child:children){var item=new LinkedHashMap<String,Object>();String value=Objects.toString(child.task.result(),"");item.put("taskId",child.task.taskId());item.put("name",taskName(child));item.put("state",child.task.state());item.put("result",value.substring(0,Math.min(value.length(),limit)));item.put("truncated",value.length()>limit);item.put("error",child.task.error());item.put("resultRef","/api/v1/companion/tasks/"+child.task.taskId()+"/result");item.put("evidence",history.documents(child.owner,"evidence",child.task.taskId()+"/").stream().map(d->readMap(d.body())).toList());outcomes.add(item);}
+                    evidence.append(mapper.writeValueAsString(Map.of("originalRequest",parent.submission.request().message(),"outcomes",outcomes,"allExpectedAgentsRegistered",children.size()>=root.expectedAgents())));
+                    record(parent.owner,"assistant.message.generation.started",root.taskId(),Map.of("conversationId",parent.task.conversationId(),"requestId",id,"messageId",TaskResultDelivery.messageId(parent.owner,parent.task.conversationId(),id).toString(),"role","MAIN_CONVERSATION"));
+                    String synthesis;try{if(!previous.isEmpty())throw new IllegalStateException("Recovered interrupted synthesis; preserving the visible prefix instead of regenerating it");String[] generated={null};var started=Instant.now();AgentScope.run(new AgentScope.Scope(root.taskId(),root.taskId(),0,Set.of(),true),()->{try{generated[0]=resultDelivery.synthesize(parent.owner,parent.task.conversationId(),evidence.toString(),visible);}finally{history.put(document(parent.owner,"agent-telemetry",root.taskId(),Map.of("taskId",root.taskId(),"startedAt",started,"finishedAt",Instant.now(),"phase","AGGREGATION","tokens",AgentScope.measured())));}});synthesis=Objects.requireNonNull(generated[0],"Empty synthesis");if(synthesis.isBlank())throw new IllegalStateException("Empty main-agent response");}catch(Exception failure){LOG.warn("Root synthesis failed; exact independent outcomes retained",failure);synthesis=streamed+"\nNie udało się przygotować pełnej odpowiedzi głównego J.A.R.V.I.S. Wyniki wykonanych zadań i informacje o błędach są zachowane w ich szczegółach.";}
+                    result=synthesis;
                     history.put(new CompanionDocumentStore.Document(parent.owner,"task-synthesis",id,result,Instant.now()));
-                    if(!streamed.isEmpty()){
+                    {
                         if(!result.startsWith(streamed.toString()))throw new IllegalStateException("Aggregate stream differs from final result");
                         visible.accept(result.substring(streamed.length()));
                         record(parent.owner,"assistant.message.generation.finished",root.taskId(),Map.of("messageId",TaskResultDelivery.messageId(parent.owner,parent.task.conversationId(),id).toString(),"conversationId",parent.task.conversationId(),"requestId",id,"generationCompletedMs",(System.nanoTime()-generationStarted)/1_000_000,"answerChunks",fragments.get(),"characters",result.length()));

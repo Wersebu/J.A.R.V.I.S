@@ -146,31 +146,18 @@ public class TasksClient {
                 HttpResponse<String> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
                 int status = response.statusCode();
                 if (status == 401 && attempt == 0) {
-                    token = oauth.accessToken(user, GoogleService.CALENDAR, true);
+                    token = oauth.rejectedAccessToken(user, GoogleService.CALENDAR, token);
                     continue;
                 }
                 if (status >= 200 && status < 300) {
                     return response.body().isBlank() ? JSON.createObjectNode() : JSON.readTree(response.body());
                 }
-                String reason = "";
-                try { reason = JSON.readTree(response.body()).path("error").path("message").asText(""); } catch (Exception ignored) { }
-                String lower = reason.toLowerCase(Locale.ROOT);
-                if (status == 403 && lower.contains("insufficient")) {
-                    throw new GoogleException(TASKS_NEED_RECONNECT);
-                }
-                if (status == 403 && (lower.contains("has not been used") || lower.contains("disabled"))) {
-                    throw new GoogleException("Google Tasks API is not enabled in the Google Cloud project. The administrator enables it at "
-                            + "https://console.cloud.google.com/apis/library/tasks.googleapis.com");
-                }
-                if (status == 401) throw new GoogleException("Google permission expired or revoked. Connect the calendar again.");
-                if (status == 404) throw new GoogleException("Task or task list not found (404). Use an index from the last task list.");
-                throw new GoogleException("Google Tasks rejected the request (HTTP " + status + (reason.isBlank() ? "" : ": " + reason)
-                        + "). Tell the user the exact error and do not invent a cause.");
+                throw com.jarvis.core.google.GoogleApiErrors.failure(status,response.body());
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                throw new GoogleException("Google Tasks request interrupted.");
+                throw new GoogleException("CANCELLED","Przerwano żądanie Google Tasks.");
             } catch (java.io.IOException exception) {
-                throw new GoogleException("Google Tasks connection failed. Check the server's internet connection.");
+                throw new GoogleException("TEMPORARILY_UNAVAILABLE","Google Tasks jest chwilowo niedostępne.");
             }
         }
         throw new GoogleException("Google authorization failed. Connect the calendar again.");

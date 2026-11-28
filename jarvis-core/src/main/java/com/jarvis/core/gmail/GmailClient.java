@@ -454,7 +454,7 @@ public class GmailClient implements GmailDraftService {
     private JsonNode get(String user, String path) {
         long blockedUntil = rateLimitedUntil.getOrDefault(user, 0L);
         if (System.currentTimeMillis() < blockedUntil) {
-            throw new GoogleException("Gmail rate limit: retry in " + ((blockedUntil - System.currentTimeMillis()) / 1000 + 1) + " seconds.");
+            throw new GoogleException("TEMPORARILY_UNAVAILABLE","Gmail rate limit: retry in " + ((blockedUntil - System.currentTimeMillis()) / 1000 + 1) + " seconds.");
         }
         String token = oauth.accessToken(user, GoogleService.GMAIL, false);
         for (int attempt = 0; attempt < 2; attempt++) {
@@ -463,7 +463,7 @@ public class GmailClient implements GmailDraftService {
                         .header("Authorization", "Bearer " + token).GET().build(), HttpResponse.BodyHandlers.ofString());
                 int status = response.statusCode();
                 if (status == 401 && attempt == 0) {
-                    token = oauth.accessToken(user, GoogleService.GMAIL, true);
+                    token = oauth.rejectedAccessToken(user, GoogleService.GMAIL, token);
                     continue;
                 }
                 if (status == 429) {
@@ -475,19 +475,15 @@ public class GmailClient implements GmailDraftService {
                     }
                     seconds = Math.max(1, Math.min(seconds, 3600));
                     rateLimitedUntil.put(user, System.currentTimeMillis() + seconds * 1000);
-                    throw new GoogleException("Gmail rate limit. Retry after " + seconds + " seconds; do not loop.");
+                    throw new GoogleException("TEMPORARILY_UNAVAILABLE","Gmail rate limit. Retry after " + seconds + " seconds; do not loop.");
                 }
-                if (status == 401) throw new GoogleException("Gmail permission expired or revoked. Connect Gmail again.");
-                if (status == 403) throw new GoogleException("Gmail denied this request (403). The Gmail API must be enabled in the Google Cloud "
-                        + "project of the OAuth client and the requested permission granted; then connect again.");
-                if (status == 404) throw new GoogleException("Gmail message or thread not found (404). Use an id or index from search results.");
-                if (status < 200 || status >= 300) throw new GoogleException("Gmail API rejected the request (HTTP " + status + ").");
+                if(status<200||status>=300)throw com.jarvis.core.google.GoogleApiErrors.failure(status,response.body());
                 return response.body().isBlank() ? JSON.createObjectNode() : JSON.readTree(response.body());
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                throw new GoogleException("Gmail request interrupted.");
+                throw new GoogleException("CANCELLED","Przerwano żądanie Gmail.");
             } catch (java.io.IOException exception) {
-                throw new GoogleException("Gmail connection failed. Check the server's internet connection.");
+                throw new GoogleException("TEMPORARILY_UNAVAILABLE","Nie można teraz połączyć się z Gmail.");
             }
         }
         throw new GoogleException("Gmail authorization failed. Connect Gmail again.");
@@ -613,7 +609,7 @@ public class GmailClient implements GmailDraftService {
     private JsonNode write(String user, String path, String method, Map<String, Object> body) {
         long blockedUntil = rateLimitedUntil.getOrDefault(user, 0L);
         if (System.currentTimeMillis() < blockedUntil) {
-            throw new GoogleException("Gmail rate limit: retry in " + ((blockedUntil - System.currentTimeMillis()) / 1000 + 1) + " seconds.");
+            throw new GoogleException("TEMPORARILY_UNAVAILABLE","Gmail rate limit: retry in " + ((blockedUntil - System.currentTimeMillis()) / 1000 + 1) + " seconds.");
         }
         String token = oauth.accessToken(user, GoogleService.GMAIL, false);
         for (int attempt = 0; attempt < 2; attempt++) {
@@ -629,7 +625,7 @@ public class GmailClient implements GmailDraftService {
                 HttpResponse<String> response = http.send(request.build(), HttpResponse.BodyHandlers.ofString());
                 int status = response.statusCode();
                 if (status == 401 && attempt == 0) {
-                    token = oauth.accessToken(user, GoogleService.GMAIL, true);
+                    token = oauth.rejectedAccessToken(user, GoogleService.GMAIL, token);
                     continue;
                 }
                 if (status == 429) {
@@ -638,18 +634,15 @@ public class GmailClient implements GmailDraftService {
                     catch (NumberFormatException exception) { seconds = 30; }
                     seconds = Math.max(1, Math.min(seconds, 3600));
                     rateLimitedUntil.put(user, System.currentTimeMillis() + seconds * 1000);
-                    throw new GoogleException("Gmail rate limit. Retry after " + seconds + " seconds; do not loop.");
+                    throw new GoogleException("TEMPORARILY_UNAVAILABLE","Gmail rate limit. Retry after " + seconds + " seconds; do not loop.");
                 }
-                if (status == 401) throw new GoogleException("Gmail permission expired or revoked. Connect Gmail again.");
-                if (status == 403) throw new GoogleException("Gmail denied this request (403). Grant Gmail compose permission by connecting Gmail again.");
-                if (status == 404) throw new GoogleException("Gmail draft not found (404).");
-                if (status < 200 || status >= 300) throw new GoogleException("Gmail API rejected the request (HTTP " + status + ").");
+                if(status<200||status>=300)throw com.jarvis.core.google.GoogleApiErrors.failure(status,response.body());
                 return response.body().isBlank() ? JSON.createObjectNode() : JSON.readTree(response.body());
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                throw new GoogleException("Gmail request interrupted.");
+                throw new GoogleException("CANCELLED","Przerwano żądanie Gmail.");
             } catch (java.io.IOException exception) {
-                throw new GoogleException("Gmail connection failed. Check the server's internet connection.");
+                throw new GoogleException("TEMPORARILY_UNAVAILABLE","Nie można teraz połączyć się z Gmail.");
             }
         }
         throw new GoogleException("Gmail authorization failed. Connect Gmail again.");

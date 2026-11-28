@@ -186,27 +186,16 @@ public class CalendarClient {
                 HttpResponse<String> response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString());
                 int status = response.statusCode();
                 if (status == 401 && attempt == 0) {
-                    token = oauth.accessToken(user, GoogleService.CALENDAR, true);
+                    token = oauth.rejectedAccessToken(user, GoogleService.CALENDAR, token);
                     continue;
                 }
-                if (status == 401) throw new GoogleException("Google Calendar permission expired or revoked. Connect the calendar again.");
-                if (status == 403) throw new GoogleException("Google Calendar denied this request (403): the Google Calendar API must be "
-                        + "enabled in the Google Cloud project, or this calendar is read-only for the user.");
-                if (status == 404) throw new GoogleException("Calendar or event not found (404). Use an index from the last list.");
-                if (status == 429) throw new GoogleException("Google Calendar rate limit. Try again in a minute; do not loop.");
-                if (status < 200 || status >= 300) {
-                    // Google's own reason ("Bad Request", "Invalid time range"...) keeps the model from guessing a cause.
-                    String reason = "";
-                    try { reason = JSON.readTree(response.body()).path("error").path("message").asText(""); } catch (Exception ignored) { }
-                    throw new GoogleException("Google Calendar rejected the request (HTTP " + status + (reason.isBlank() ? "" : ": " + reason)
-                            + "). This is not a login problem; tell the user the exact error and do not invent a cause.");
-                }
+                if(status<200||status>=300)throw com.jarvis.core.google.GoogleApiErrors.failure(status,response.body());
                 return response.body().isBlank() ? JSON.createObjectNode() : JSON.readTree(response.body());
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                throw new GoogleException("Google Calendar request interrupted.");
+                throw new GoogleException("CANCELLED","Przerwano żądanie kalendarza.");
             } catch (java.io.IOException exception) {
-                throw new GoogleException("Google Calendar connection failed. Check the server's internet connection.");
+                throw new GoogleException("TEMPORARILY_UNAVAILABLE","Kalendarz Google jest chwilowo niedostępny.");
             }
         }
         throw new GoogleException("Google Calendar authorization failed. Connect the calendar again.");

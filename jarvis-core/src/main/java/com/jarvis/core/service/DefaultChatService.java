@@ -53,7 +53,7 @@ public class DefaultChatService implements ChatService {
             var interactive = com.jarvis.common.run.InteractiveRequestContext.current();
             if (interactive != null) interactive.onRunning().run();
             PipelineContext context = pipelineContextFactory.create(request);
-            var completed=pipelineExecutor.execute(context);
+            var completed=com.jarvis.common.trace.PrivateInferenceContext.call(()->pipelineExecutor.execute(context));
             requireDelivered(completed);
             return responseMapper.toChatResponse(completed);
         } finally {
@@ -86,7 +86,7 @@ public class DefaultChatService implements ChatService {
             var interactive = com.jarvis.common.run.InteractiveRequestContext.current();
             if (interactive != null) interactive.onRunning().run();
             PipelineContext context = pipelineContextFactory.create(request, eventSink);
-            requireDelivered(pipelineExecutor.execute(context));
+            requireDelivered(com.jarvis.common.trace.PrivateInferenceContext.call(()->pipelineExecutor.execute(context)));
         } finally {
             try { pipelineContextFactory.finish(); }
             finally { if (com.jarvis.common.run.InteractiveRequestContext.current() == null) turn.close(); }

@@ -339,4 +339,9 @@ class DefaultConversationTitleServiceTest {
                     Instant.now(), event, status, message, null, null, nodeId, metadata));
         }
     }
+
+    @Test void simpleConversationTitleDoesNotTriggerAnAdditionalModelGeneration(){
+        conversations.createIfAbsent("simple-no-model",Instant.now());messages.append("simple-no-model",user("Jak działa grawitacja?"));
+        try{service.maybeSetTitleWithoutInference("simple-no-model");assertThat(provider.calls).isZero();assertThat(conversations.find("simple-no-model").orElseThrow().titleSource()).isEqualTo("GENERATED");assertThat(conversations.find("simple-no-model").orElseThrow().title()).contains("grawitacja");}finally{service.close();}
+    }
 }

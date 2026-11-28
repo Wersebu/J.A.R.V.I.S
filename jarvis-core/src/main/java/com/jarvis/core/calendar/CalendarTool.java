@@ -196,15 +196,16 @@ public class CalendarTool implements JarvisTool, ToolSchemaProvider {
             return new ToolResult(true, TOOL_NAME, operation, request.requestId(), request.conversationId(), changed, List.of(),
                     message(operation, data), data, "", "", false, "");
         } catch (GoogleException exception) {
-            return failure(request, operation, "CALENDAR_FAILED", exception.getMessage());
+            return failure(request, operation, exception.code(), exception.getMessage());
         } catch (RuntimeException exception) {
-            LOGGER.warn("[CALENDAR] operation={} failed: {}", operation, exception.toString());
-            return failure(request, operation, "CALENDAR_FAILED", "Calendar request failed: " + exception.getMessage());
+            LOGGER.warn("[CALENDAR] operation={} failed: {}", operation, exception.getClass().getSimpleName());
+            return failure(request, operation, "CALENDAR_FAILED", "Nie udało się wykonać operacji kalendarza.");
         }
     }
 
     private Map<String, Object> connect(String user) {
-        device.connectGoogle(user, GoogleService.CALENDAR);
+        try{oauth.requireScopes(user,GoogleService.CALENDAR,GoogleService.CALENDAR.requiredScopes("READ"));}
+        catch(GoogleException failure){if(!failure.authorizationRequired())throw failure;device.connectGoogle(user, GoogleService.CALENDAR);}
         String email = client.primaryEmail(user);
         oauth.rememberEmail(user, GoogleService.CALENDAR, email);
         return Map.of("connected", true, "email", email, "changed", true);

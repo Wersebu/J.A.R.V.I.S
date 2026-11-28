@@ -67,6 +67,19 @@ public class DefaultConversationTitleService implements ConversationTitleService
         },new java.util.concurrent.ThreadPoolExecutor.AbortPolicy());
     }
 
+    @Override public void maybeSetTitleWithoutInference(String conversationId){
+        try{
+            var record=conversationRepository.find(conversationId).orElse(null);if(record==null||!"DEFAULT".equalsIgnoreCase(record.titleSource()))return;
+            var firstUser=first(messageRepository.getAllMessages(conversationId),MessageRole.USER);if(firstUser==null||firstUser.content().isBlank())return;
+            String title=fallbackTitle(firstUser.content());if(!conversationRepository.updateGeneratedTitleIfDefault(conversationId,title))return;
+            if(titleStore!=null)titleStore.delete(CurrentUserContext.requiredUserId(),"title-job",conversationId);
+            var metadata=Map.<String,Object>of("conversationId",conversationId,"title",title,"titleSource","GENERATED");
+            recordTitle("conversation.title.updated",metadata);
+            eventBus.publish(CognitiveEventType.CONVERSATION_TITLE_UPDATED,"UPDATED","Zaktualizowano nazwę rozmowy",null,metadata);
+            eventBus.publish(CognitiveEventType.CONVERSATION_UPDATED,"UPDATED","Zaktualizowano informacje o rozmowie",null,metadata);
+        }catch(RuntimeException failure){LOGGER.warn("Conversation title metadata update failed (code={})",failure.getClass().getSimpleName());}
+    }
+
     @Override
     public void maybeGenerateTitleAsync(String conversationId, Brain brain) {
         if (conversationId == null || conversationId.isBlank() || brain == null) {

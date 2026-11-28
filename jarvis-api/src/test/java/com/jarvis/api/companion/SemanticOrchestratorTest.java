@@ -59,11 +59,23 @@ class SemanticOrchestratorTest {
         var outcome=engine.orchestrate("owner","conversation","request",context,brain);
         assertEquals("TOOLS",outcome.action());assertEquals(List.of("fx__quote"),outcome.tools());
         verify(tasks,never()).submitOrchestration(anyString(),anyString(),anyString(),anyString(),anyList(),anySet());
-        var calls=org.mockito.ArgumentCaptor.forClass(List.class);verify(provider,times(2)).toolChat(any(),calls.capture(),anyList(),any());
+        var calls=org.mockito.ArgumentCaptor.forClass(List.class);verify(provider,times(1)).toolChat(any(),calls.capture(),anyList(),any());
         for(var messages:calls.getAllValues()){
             String last=((ModelMessage)messages.getLast()).content();assertTrue(last.contains("CURRENT_REQUEST"));assertTrue(last.contains("Sprawdź kurs dolara"));try{var envelope=mapper.readTree(last);assertEquals("Sprawdź kurs dolara",envelope.path("CURRENT_REQUEST").path("message").asText());assertTrue(envelope.path("REFERENCE_DATA_ONLY").toString().contains("Gmail"));}catch(Exception e){fail(e);}
         }
         assertThrows(IllegalArgumentException.class,()->engine.orchestrate("owner","conversation","request","Different message",brain));
     }
 
+
+    @Test void mainIdentityAndKnowledgeArePresentInTheSingleDirectGeneration(){
+        var engine=engine();when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(response("{\"action\":\"DIRECT\",\"answer\":\"Dzień dobry.\",\"families\":[]}"));
+        var context=new AutonomousOrchestration.Context("Cześć",List.of(),List.of(),List.of(),List.of(),"IDENTITY_FROM_MARKDOWN USER_PROMPT FOLDER_PROMPT KNOWLEDGE_FILES HISTORY");
+        assertEquals("DIRECT",engine.orchestrate("owner","conversation","identity",context,brain).action());
+        var messages=org.mockito.ArgumentCaptor.forClass(List.class);verify(provider,times(1)).toolChat(any(),messages.capture(),anyList(),any());assertTrue(((ModelMessage)messages.getValue().getFirst()).content().contains("IDENTITY_FROM_MARKDOWN USER_PROMPT FOLDER_PROMPT KNOWLEDGE_FILES HISTORY"));
+        verify(tasks,never()).submitOrchestration(any(),any(),any(),any(),anyList(),anySet());
+    }
+    @Test void nativeFirstTurnIsReusedInsteadOfAddingRoutingAndPlanningGenerations(){
+        var engine=engine();var first=new ModelResponse("","",List.of(new ModelToolCall("call-1","fx__quote",Map.of("pair","USDPLN"))),"tool_calls",new ModelUsage(20,3,23));when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(first);
+        var outcome=engine.orchestrate("owner","conversation","native","Sprawdź kurs USD",brain);assertEquals("TOOLS",outcome.action());assertEquals(first,outcome.firstResponse());assertTrue(outcome.tools().contains("fx__quote"));verify(provider,times(1)).toolChat(any(),anyList(),anyList(),any());verify(tasks,never()).submitOrchestration(any(),any(),any(),any(),anyList(),anySet());
+    }
 }

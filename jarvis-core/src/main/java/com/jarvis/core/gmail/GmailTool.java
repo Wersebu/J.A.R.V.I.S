@@ -151,10 +151,10 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
                     List.of(), message(operation, data), data, "", "", operation.equals("CREATE_DRAFT"),
                     operation.equals("CREATE_DRAFT") ? String.valueOf(data.getOrDefault("draftId", "")) : "");
         } catch (GoogleException exception) {
-            return failure(request, operation, "GMAIL_FAILED", exception.getMessage());
+            return failure(request, operation, exception.code(), exception.getMessage());
         } catch (RuntimeException exception) {
-            LOGGER.warn("[GMAIL] operation={} failed: {}", operation, exception.toString());
-            return failure(request, operation, "GMAIL_FAILED", "Gmail request failed: " + exception.getMessage());
+            LOGGER.warn("[GMAIL] operation={} failed: {}", operation, exception.getClass().getSimpleName());
+            return failure(request, operation, "GMAIL_FAILED", "Nie udało się wykonać operacji Gmail.");
         }
     }
 
@@ -166,7 +166,8 @@ public class GmailTool implements JarvisTool, ToolSchemaProvider {
 
     /** Google consent on the user's PC; Core exchanges the code and keeps the token. */
     private Map<String, Object> connect(String user) {
-        devices.connectGoogle(user, GoogleService.GMAIL);
+        try{oauth.requireScopes(user,GoogleService.GMAIL,GoogleService.GMAIL.requiredScopes("READ"));}
+        catch(GoogleException failure){if(!failure.authorizationRequired())throw failure;devices.connectGoogle(user, GoogleService.GMAIL);}
         String email = client.myEmail(user);
         return Map.of("connected", true, "email", email, "access", "read and draft; send requires UI approval");
     }

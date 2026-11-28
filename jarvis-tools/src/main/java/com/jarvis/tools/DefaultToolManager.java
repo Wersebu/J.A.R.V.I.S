@@ -34,6 +34,26 @@ public class DefaultToolManager implements ToolManager {
         sink.record(owner,type,task,payload);
     }
 
+    @Autowired(required=false) private List<com.jarvis.tools.integration.IntegrationAuthorizationPolicy> authorizationPolicies=List.of();
+    @Autowired(required=false) private com.jarvis.tools.integration.IntegrationRegistry integrations;
+    private ToolResult authorizedExecution(JarvisTool tool,ToolRequest request){
+        var policy=authorizationPolicies.stream().filter(p->p.supports(request)).findFirst().orElse(null);
+        try{
+            if(policy!=null)policy.prepare(request);
+            var result=tool.execute(request);
+            if(policy!=null&&!result.success()&&policy.recoverRead(request,result))result=tool.execute(request);
+            if(integrations!=null&&com.jarvis.common.auth.CurrentUserContext.currentUserId().isPresent()){String owner=com.jarvis.common.auth.CurrentUserContext.requireAuthenticatedUserId();if(result.success())integrations.clear(owner,request.toolName());integrations.observe(owner,result);}
+            var metadata=new LinkedHashMap<String,Object>(result.data());
+            metadata.put("executionState",result.success()?"COMPLETED":"FAILED");
+            String kind=Set.of("STATUS","CONNECT","DISCONNECT").contains(request.operation().toUpperCase(Locale.ROOT))?"INTEGRATION_STATUS":"DATA";
+            if(result.success()&&metadata.get("messages") instanceof List<?> items&&items.isEmpty())kind="EMPTY_RESULT";
+            metadata.put("resultKind",kind);
+            return new ToolResult(result.success(),result.tool(),result.operation(),result.requestId(),result.conversationId(),result.changed(),result.targetNodeIds(),result.message(),metadata,result.errorCode(),result.errorMessage(),result.requiresApproval(),result.draftId());
+        }catch(com.jarvis.tools.integration.IntegrationAccessException failure){
+            return new ToolResult(false,request.toolName(),request.operation(),request.requestId(),request.conversationId(),false,List.of(),failure.getMessage(),failure.details(),failure.code(),failure.getMessage(),false,"");
+        }
+    }
+
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultToolManager.class);
 
     private final Map<String, JarvisTool> staticTools;
@@ -104,7 +124,7 @@ public class DefaultToolManager implements ToolManager {
         long started=System.nanoTime();
         agentEvent(companionOwner,companionTask,"agent.tool.started",request,Map.of());
         try(var activity=activityTracker==null?null:activityTracker.start("TOOL",request.requestId(),request.toolName()+"__"+request.operation())) {
-            result = tool.execute(request);
+            result = authorizedExecution(tool,request);
         } catch(RuntimeException failure) {
             agentEvent(companionOwner,companionTask,"agent.tool.failed",request,Map.of("durationMs",(System.nanoTime()-started)/1_000_000,"errorCode",failure.getClass().getSimpleName()));
             throw failure;

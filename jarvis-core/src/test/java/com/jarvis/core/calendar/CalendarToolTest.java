@@ -363,10 +363,10 @@ class CalendarToolTest {
         ToolResult events = call("owner", "EVENTS");
         assertThat(events.success()).isTrue();
         assertThat((List<?>) events.data().get("events")).hasSize(3);
-        assertThat(events.message()).contains("Tasks could not be read", "connects the calendar again");
+        assertThat(events.message()).contains("Tasks could not be read");assertThat(String.valueOf(events.data().get("tasksNote"))).contains("uprawnie");
         ToolResult tasks = call("owner", "TASKS");
         assertThat(tasks.success()).isFalse();
-        assertThat(tasks.message()).contains("ticks the Tasks permission");
+        assertThat(tasks.errorCode()).isEqualTo("MISSING_SCOPE");
     }
 
     /** A plan accepted in conversation c1: two Biedronki near Nowa Wola and one Żabka. */

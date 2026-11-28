@@ -112,7 +112,7 @@ public final class AiTraceLogger {
      * @param arguments tool call arguments (a {@code Map}, or any Jackson-serializable value)
      */
     public static void logModelToolCall(String requestId, int turn, int index, String tool, Object arguments) {
-        if (!AiTraceSettings.logToolCalls()) {
+        if (PrivateInferenceContext.active() || !AiTraceSettings.logToolCalls()) {
             return;
         }
         LOGGER.info(formatModelToolCall(requestId, turn, index, tool, arguments));
@@ -161,7 +161,7 @@ public final class AiTraceLogger {
             String requestId, String conversationId, String tool, String operation,
             String source, String mcpServer, Object arguments
     ) {
-        if (!AiTraceSettings.logToolCalls()) {
+        if (PrivateInferenceContext.active() || !AiTraceSettings.logToolCalls()) {
             return;
         }
         LOGGER.info(formatToolExecutionBegin(requestId, conversationId, tool, operation, source, mcpServer, arguments));
@@ -217,7 +217,7 @@ public final class AiTraceLogger {
     public static void logMcpCallBegin(
             String requestId, String server, String modelFacingToolName, String realMcpToolName, Object arguments
     ) {
-        if (!AiTraceSettings.logToolCalls()) {
+        if (PrivateInferenceContext.active() || !AiTraceSettings.logToolCalls()) {
             return;
         }
         LOGGER.info(formatMcpCallBegin(requestId, server, modelFacingToolName, realMcpToolName, arguments));
@@ -268,7 +268,7 @@ public final class AiTraceLogger {
             String requestId, String tool, boolean success, boolean changed,
             String errorCode, String errorMessage, Object data
     ) {
-        if (!AiTraceSettings.logToolResults()) {
+        if (PrivateInferenceContext.active() || !AiTraceSettings.logToolResults()) {
             return;
         }
         LOGGER.info(formatToolResult(requestId, tool, success, changed, errorCode, errorMessage, data));

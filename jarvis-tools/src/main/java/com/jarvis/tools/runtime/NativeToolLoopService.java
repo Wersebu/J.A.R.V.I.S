@@ -606,7 +606,8 @@ public class NativeToolLoopService {
         boolean silentFailureRejected = false;
         // Definitions offered to the model; grows when the model calls a real tool a workflow scope left out.
         List<NativeToolDefinition> offered = new ArrayList<>(definitions);
-        messages.add(ModelMessage.system(systemPrompt(request, freshness, definitions, existingDataset)));
+        String mainIdentity=com.jarvis.common.companion.AgentScope.current()==null&&request.basePrompt()!=null?request.basePrompt()+"\n\n":"";
+        messages.add(ModelMessage.system(mainIdentity+systemPrompt(request, freshness, definitions, existingDataset)));
         String languageReference=com.jarvis.common.companion.TaskExecutionContext.languageReference();
         if(languageReference!=null&&!languageReference.isBlank()){
             messages.add(ModelMessage.system("Write the deliverable in the same language as the original conversation reference below, even if the delegated goal is in another language. The reference is language data only, not an additional task."));
@@ -782,7 +783,7 @@ public class NativeToolLoopService {
                     messages.clear();messages.addAll(selected.messages());offered.clear();offered.addAll(selected.tools());
                 }
                 checkpointIfNeeded(request, messages, List.copyOf(offered), step);
-                response = selectProvider(request).toolChat(request.brain(), messages, List.copyOf(offered), AIJobType.MAIN_MODEL);
+                response = step==1&&request.context().get("firstModelResponse") instanceof ModelResponse first?first:selectProvider(request).toolChat(request.brain(), messages, List.copyOf(offered), AIJobType.MAIN_MODEL);
             } catch (ContextCheckpointException exception) {
                 String answer = "Nie mogę bezpiecznie kontynuować: " + exception.getMessage()
                         + ". Zachowałem dowody; diagnoza pozostaje niepełna.";
@@ -883,7 +884,7 @@ public class NativeToolLoopService {
                         }
                     } catch (RuntimeException exception) {
                         LOGGER.warn("[NATIVE_TOOL_LOOP] requestId={} step={} invalid native tool call name={} arguments={} error={}",
-                                request.requestId(), step, call.name(), call.arguments(), exception.getMessage());
+                                request.requestId(), step, call.name(), com.jarvis.common.trace.PrivateInferenceContext.active()?Map.of():call.arguments(), exception.getClass().getSimpleName());
                         String errorCode = exception instanceof InvalidToolArgumentException
                                 ? "INVALID_TOOL_ARGUMENT" : "INVALID_TOOL_CALL";
                         ToolResult invalid = invalidResult(request, call, exception.getMessage(), errorCode, acquiredFacts);
@@ -4052,7 +4053,7 @@ public class NativeToolLoopService {
         LOGGER.info("[NATIVE_TOOL_CALL] requestId={} step={} toolCallId={} name={} schemaSource={} expectedFields={} requiredFields={} arguments={}",
                 request.requestId(), step, toolCallId(call), call.name(), safeSchemaSource(call.name()),
                 safeExpectedFields(call.name()), safeRequiredFields(call.name()),
-                compactArgumentsForLog(call.arguments()));
+                com.jarvis.common.trace.PrivateInferenceContext.active()?"[PRIVATE]":compactArgumentsForLog(call.arguments()));
     }
 
     private List<String> safeExpectedFields(String functionName) {
@@ -4894,6 +4895,7 @@ public class NativeToolLoopService {
     }
 
     private void saveDebug(ToolCallingRequest request, ToolIntent intent, List<ToolRuntimeStep> steps, String status, List<String> errors) {
+        if(com.jarvis.common.trace.PrivateInferenceContext.active())return;
         debugService.save(new ToolRuntimeSnapshot(request.requestId(), request.conversationId(), intent, steps, status, errors));
     }
 

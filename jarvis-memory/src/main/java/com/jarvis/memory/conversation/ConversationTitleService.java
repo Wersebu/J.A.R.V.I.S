@@ -14,4 +14,6 @@ public interface ConversationTitleService {
      * @param brain model/provider used for the completed request
      */
     void maybeGenerateTitleAsync(String conversationId, Brain brain);
+    /** Cheap metadata update for a simple conversation; must not start another model generation. */
+    default void maybeSetTitleWithoutInference(String conversationId) {}
 }

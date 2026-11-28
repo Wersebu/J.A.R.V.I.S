@@ -44,21 +44,28 @@ public class UserDevice {
      * 127.0.0.1. Core keeps the PKCE verifier and exchanges the code itself, so no token ever reaches the PC.
      */
     public void connectGoogle(String userId, GoogleService service) {
-        GoogleOAuth.Authorization authorization = oauth.begin(service);
+        connectGoogle(userId,service,service.requiredScopes("READ"));
+    }
+    public void connectGoogle(String userId,GoogleService service,java.util.Set<String> required){
+        GoogleOAuth.Authorization authorization = oauth.begin(userId,service,required);
         requireDevice("Connecting " + service.label());
         Map<String, Object> loopback = new LinkedHashMap<>();
         loopback.put("authUrl", authorization.url());
         loopback.put("port", oauth.callbackPort());
         loopback.put("state", authorization.state());
         loopback.put("timeoutSeconds", 300);
-        Map<String, Object> answer = devices.codingRequest("pc_oauth_loopback", loopback, CONSENT_WAIT);
+        Map<String,Object> answer;
+        try{answer=devices.codingRequest("pc_oauth_loopback",loopback,CONSENT_WAIT);}
+        catch(RuntimeException failure){throw new GoogleException(Thread.currentThread().isInterrupted()?"CANCELLED":"AUTHORIZATION_FAILED","Nie udało się zakończyć autoryzacji na urządzeniu użytkownika.");}
         String error = String.valueOf(answer == null ? "" : answer.getOrDefault("error", "")).strip();
         String code = String.valueOf(answer == null ? "" : answer.getOrDefault("code", "")).strip();
         if (!error.isEmpty() || code.isEmpty()) {
-            throw new GoogleException("Google consent was not completed (" + (error.isEmpty() ? "no answer" : error)
-                    + "). Nothing was connected; the user can ask again.");
+            throw new GoogleException(error.equals("timeout")?"AUTHORIZATION_TIMEOUT":"AUTHORIZATION_CANCELLED",error.equals("timeout")?"Upłynął czas oczekiwania na autoryzację Google. Pozostałe wyniki zostały zachowane.":"Autoryzacja Google została anulowana lub nie została ukończona. Pozostałe części polecenia mogą być kontynuowane.");
         }
+        if(answer.containsKey("state")&&!java.security.MessageDigest.isEqual(authorization.state().getBytes(java.nio.charset.StandardCharsets.UTF_8),String.valueOf(answer.get("state")).getBytes(java.nio.charset.StandardCharsets.UTF_8)))throw new GoogleException("AUTHORIZATION_FAILED","Odpowiedź autoryzacji nie pasuje do tej operacji.");
+        if(Thread.currentThread().isInterrupted())throw new GoogleException("CANCELLED","Przerwano oczekiwanie na autoryzację.");
         oauth.complete(userId, authorization, code);
+        oauth.requireScopes(userId,service,required);
     }
 
     /**

@@ -81,7 +81,8 @@ public class ResponseValidationStage implements PipelineStage {
                 com.jarvis.common.auth.CurrentUserContext.requiredUserId(),responseContext.conversationId(),responseContext.requestId(),responseContext.response(),Instant.now());
         memoryService.addMessage(responseContext.conversationId(), assistantMessage);
         cognitiveEventBus.answerCommitted(assistantMessage);
-        conversationTitleService.maybeGenerateTitleAsync(responseContext.conversationId(), responseContext.brain());
+        if(Boolean.TRUE.equals(responseContext.metadata().get("semanticOrchestration"))&&!"DELEGATE".equals(responseContext.metadata().get("orchestrationAction")))conversationTitleService.maybeSetTitleWithoutInference(responseContext.conversationId());
+        else conversationTitleService.maybeGenerateTitleAsync(responseContext.conversationId(), responseContext.brain());
         cognitiveEventBus.publish(CognitiveEventType.CONVERSATION_ASSISTANT_RESPONSE_PERSISTED,
                 "PERSISTED", "Assistant response persisted", null, Map.of(
                         "conversationId", responseContext.conversationId(),

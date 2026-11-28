@@ -7,7 +7,7 @@ import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Service;
 import java.util.Map;
 
-@Service @Order(52)
+@Service @Order(82)
 public class AutonomousOrchestrationStage implements PipelineStage {
     private final ObjectProvider<AutonomousOrchestration> orchestrators;
     private final ConversationTitleService titles;
@@ -15,7 +15,6 @@ public class AutonomousOrchestrationStage implements PipelineStage {
     public String name(){return "AutonomousOrchestrationStage";}
     public PipelineContext execute(PipelineContext context){
         if(TaskExecutionContext.current()!=null)return context;
-        titles.maybeGenerateTitleAsync(context.conversationId(),context.brain());
         // Attachment/workspace execution retains its existing context-bearing pipeline.
         if(!context.request().attachments().isEmpty()||!context.images().isEmpty()||!context.request().activeCodingWorkspaceId().isBlank()||!context.request().workingDirectory().isBlank())return context;
         var orchestrator=orchestrators.getIfAvailable();if(orchestrator==null)return context;
@@ -23,8 +22,9 @@ public class AutonomousOrchestrationStage implements PipelineStage {
         if(outcome.action().equals("LEGACY"))return context;
         var next=context.withMetadata("orchestrationReferences",planningContext(context)).withMetadata("semanticOrchestration",true).withMetadata("orchestrationAction",outcome.action());
         if(outcome.action().equals("DIRECT")||outcome.action().equals("DELEGATE"))return next.withResponse(outcome.answer(),null);
+        var toolContext=new java.util.LinkedHashMap<String,Object>();toolContext.put("semanticOrchestration",true);toolContext.put("executionMode",outcome.action());toolContext.put("workflowTools",outcome.tools());if(outcome.firstResponse()!=null)toolContext.put("firstModelResponse",outcome.firstResponse());
         return next.withMetadata("mainModelAction",MainModelActionType.TOOL_REQUEST.name()).withMetadata("toolGoal",context.request().message())
-            .withMetadata("toolReason","Semantic model orchestration").withMetadata("toolContext",Map.of("semanticOrchestration",true,"executionMode",outcome.action(),"workflowTools",outcome.tools()));
+            .withMetadata("toolReason","Semantic model orchestration").withMetadata("toolContext",toolContext);
     }
     private AutonomousOrchestration.Context planningContext(PipelineContext context){
         var history=new java.util.ArrayList<AutonomousOrchestration.Reference>();var results=new java.util.ArrayList<AutonomousOrchestration.Reference>();
@@ -35,6 +35,6 @@ public class AutonomousOrchestrationStage implements PipelineStage {
             if(message.requestId().startsWith("task-result/")||message.requestId().startsWith("task-group/"))results.add(reference);else history.add(reference);
         }
         String memory=context.memoryContext().context();var memories=memory.isBlank()?java.util.List.<AutonomousOrchestration.Reference>of():java.util.List.of(new AutonomousOrchestration.Reference("memory","REFERENCE","",memory.substring(0,Math.min(600,memory.length()))));
-        return new AutonomousOrchestration.Context(context.request().message(),history,memories,results,java.util.List.of());
+        return new AutonomousOrchestration.Context(context.request().message(),history,memories,results,java.util.List.of(),context.prompt());
     }
 }

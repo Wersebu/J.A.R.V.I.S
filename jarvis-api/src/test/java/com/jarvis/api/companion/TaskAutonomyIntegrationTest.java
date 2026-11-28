@@ -39,6 +39,10 @@ class TaskAutonomyIntegrationTest {
         memory=new SQLiteConversationMemoryService(new SQLiteWorkingMemoryStore(factory,properties),conversations,messages,
             new SQLiteConversationImageRegistry(factory,new ConversationImageProperties(true,null,0,0,null)));
         delivery=new TaskResultDelivery(memory,conversations);
+        // Main-agent generation is controlled independently from worker execution in this fixture.
+        var main=mock(com.jarvis.common.ai.AIProvider.class);when(main.provider()).thenReturn("test-main");
+        when(main.toolChat(any(),anyList(),anyList(),any())).thenAnswer(i->{List<com.jarvis.common.ai.ModelMessage> input=i.getArgument(1);return new com.jarvis.common.ai.ModelResponse("Główny J.A.R.V.I.S.: "+input.getLast().content(),"",List.of(),"stop",new com.jarvis.common.ai.ModelUsage(10,10,20));});
+        var router=mock(com.jarvis.brain.BrainRouter.class);when(router.select(any(ChatRequest.class))).thenReturn(new com.jarvis.common.ai.Brain(com.jarvis.common.ai.BrainType.FAST,"test-main","test-main","Main conversation"));delivery.configureSynthesis(List.of(main),router);
         CurrentUserContext.runAs("alice",()->conversations.createIfAbsent("source",Instant.now()));
     }
     private CompanionTasks engine(ChatService chat,CompanionDocumentStore store){
