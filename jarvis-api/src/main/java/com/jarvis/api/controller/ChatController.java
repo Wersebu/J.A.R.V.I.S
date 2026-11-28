@@ -20,6 +20,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.Optional;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -96,13 +97,12 @@ public class ChatController {
      */
     @GetMapping(path = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@RequestParam String token) {
-        SseStreamSession session = new SseStreamSession(new SseEmitter(SSE_TIMEOUT_MS));
         Optional<PendingChatStreamStore.PendingChatRequest> pending = pendingChatStreamStore.consume(token);
         if (pending.isEmpty()) {
-            session.completeWithError(new ResponseStatusException(HttpStatus.NOT_FOUND, "Unknown or expired stream token"));
-            return session.emitter();
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Unknown or expired stream token");
         }
 
+        SseStreamSession session = new SseStreamSession(new SseEmitter(SSE_TIMEOUT_MS));
         java.util.concurrent.ScheduledFuture<?> heartbeat = SSE_HEARTBEAT.scheduleWithFixedDelay(
                 session::heartbeat, SSE_HEARTBEAT_SECONDS, SSE_HEARTBEAT_SECONDS, java.util.concurrent.TimeUnit.SECONDS);
         CompletableFuture.runAsync(() -> {
@@ -146,6 +146,7 @@ public class ChatController {
 
         private final SseEmitter emitter;
         private final AtomicBoolean open = new AtomicBoolean(true);
+        private volatile CognitiveEvent lastEvent;
 
         private SseStreamSession(SseEmitter emitter) {
             this.emitter = emitter;
@@ -164,6 +165,7 @@ public class ChatController {
             }
             try {
                 synchronized (this) {
+                    lastEvent=event;
                     emitter.send(SseEmitter.event()
                             .name(event.event().name())
                             .data(event));
@@ -197,7 +199,11 @@ public class ChatController {
 
         private void completeWithError(RuntimeException exception) {
             if (open.compareAndSet(true, false)) {
-                emitter.completeWithError(exception);
+                synchronized(this){
+                    try { emitter.send(SseEmitter.event().name("ERROR").data(new CognitiveEvent(lastEvent==null?"":lastEvent.requestId(),lastEvent==null?"":lastEvent.conversationId(),java.time.Instant.now(),com.jarvis.common.event.CognitiveEventType.ERROR,"FAILED","Request failed",lastEvent==null?null:lastEvent.brain(),lastEvent==null?"":lastEvent.model(),null,Map.of("code","INFERENCE_FAILED")))); }
+                    catch(IOException | IllegalStateException ignored) { }
+                    finally { emitter.complete(); }
+                }
             }
         }
     }

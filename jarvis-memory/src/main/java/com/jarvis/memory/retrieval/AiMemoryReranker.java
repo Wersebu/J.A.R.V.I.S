@@ -42,7 +42,7 @@ public class AiMemoryReranker implements MemoryReranker {
         if (candidates.size() < 2) {
             return Optional.empty();
         }
-        return provider().flatMap(provider -> rerankWithProvider(provider, query, candidates));
+        return com.jarvis.common.ai.InferenceSelectionContext.call(engineSelection(),()->provider().flatMap(provider -> rerankWithProvider(provider, query, candidates)));
     }
 
     private Optional<AIProvider> provider() {

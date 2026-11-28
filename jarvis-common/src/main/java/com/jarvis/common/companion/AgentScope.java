@@ -5,7 +5,7 @@ import com.jarvis.common.ai.RequestTokenUsage;
 
 /** Bounded execution capabilities, not a second agent runtime. */
 public final class AgentScope {
-    public record Scope(String rootTaskId,String parentTaskId,int depth,Set<String> tools,boolean replaySafe) {public Scope{tools=Set.copyOf(tools);}}
+    public record Scope(String rootTaskId,String parentTaskId,int depth,Set<String> tools,boolean replaySafe) {public Scope{var selected=new java.util.HashSet<>(tools);if(!selected.isEmpty()){selected.add("output__read");selected.add("output__grep");}tools=Set.copyOf(selected);}}
     private static final ThreadLocal<Scope> CURRENT=new ThreadLocal<>();
     private static final ThreadLocal<RequestTokenUsage> USAGE=new ThreadLocal<>();
     private static final ThreadLocal<Map<String,Object>> MEASURED=new ThreadLocal<>();

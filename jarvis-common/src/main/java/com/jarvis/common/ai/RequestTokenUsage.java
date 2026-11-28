@@ -23,8 +23,12 @@ public final class RequestTokenUsage {
         snapshot.put("calls", calls);
         snapshot.put("inputComplete", inputComplete);
         snapshot.put("outputComplete", outputComplete);
-        if (inputComplete) snapshot.put("totalInputTokens", input);
-        if (outputComplete) snapshot.put("totalOutputTokens", output);
+        snapshot.put("contextOccupancyIsCumulative",false);
+        snapshot.put("totalInputTokensMeaning","CUMULATIVE_ACROSS_MODEL_CALLS");
+        if(in instanceof Number n&&n.longValue()>=0){snapshot.put("inputTokensThisCall",n.longValue());snapshot.put("actualContextOccupancyTokens",n.longValue());}
+        if(out instanceof Number n&&n.longValue()>=0)snapshot.put("generatedOutputTokensThisCall",n.longValue());
+        if (inputComplete) {snapshot.put("totalInputTokens", input);snapshot.put("cumulativeInputTokens",input);}
+        if (outputComplete) {snapshot.put("totalOutputTokens", output);snapshot.put("cumulativeOutputTokens",output);}
         return snapshot;
     }
 }

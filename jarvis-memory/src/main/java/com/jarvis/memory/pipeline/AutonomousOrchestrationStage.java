@@ -17,6 +17,8 @@ public class AutonomousOrchestrationStage implements PipelineStage {
         if(TaskExecutionContext.current()!=null)return context;
         // Attachment/workspace execution retains its existing context-bearing pipeline.
         if(!context.request().attachments().isEmpty()||!context.images().isEmpty()||!context.request().activeCodingWorkspaceId().isBlank()||!context.request().workingDirectory().isBlank())return context;
+        // A complete social greeting carries no execution intent; retain the normal personality/memory answer path.
+        if(context.request().message().strip().toLowerCase(java.util.Locale.ROOT).matches("(?:siemka|siema|hej|czesc|cześć|witaj|hello|hi|hey|dzień dobry|dobry wieczór)[!., ]*"))return context.withMetadata("simpleGreeting",true);
         var orchestrator=orchestrators.getIfAvailable();if(orchestrator==null)return context;
         var outcome=orchestrator.orchestrate(CurrentUserContext.requiredUserId(),context.conversationId(),context.requestId(),planningContext(context),context.brain());
         if(outcome.action().equals("LEGACY"))return context;

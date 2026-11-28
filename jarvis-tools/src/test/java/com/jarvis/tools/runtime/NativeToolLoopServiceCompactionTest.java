@@ -60,7 +60,7 @@ class NativeToolLoopServiceCompactionTest {
     }
 
     @Test
-    void vaultKnowledgeResultsReachTheModelCompleteWhileLegacyResultsKeepTheirLimit() throws Exception {
+    void knowledgeResultsRemainCompleteWhenTheyFitTheDynamicBudget() throws Exception {
         NativeToolLoopService service = new NativeToolLoopService(
                 List.of(), new NoopToolManager(), query -> ToolIntent.NO_TOOL,
                 new ToolRuntimeProperties(true, 2, 8, 2, 30, "native"),
@@ -80,7 +80,7 @@ class NativeToolLoopServiceCompactionTest {
         String legacyJson = (String) compact.invoke(service, legacy);
 
         assertThat(vaultJson).contains("OSTATNI KROK").doesNotContain("_shortened");
-        assertThat(legacyJson).doesNotContain("OSTATNI KROK");
+        assertThat(legacyJson).contains("OSTATNI KROK");
     }
 
     @Test

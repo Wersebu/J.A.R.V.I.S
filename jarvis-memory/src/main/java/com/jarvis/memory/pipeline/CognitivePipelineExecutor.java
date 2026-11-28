@@ -51,7 +51,16 @@ public class CognitivePipelineExecutor {
      * @param initialContext initial context
      * @return final pipeline context
      */
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.jarvis.common.ai.InferenceControl inferenceControl;
+
     public PipelineContext execute(PipelineContext initialContext) {
+        var pinned=com.jarvis.common.ai.InferenceSelectionContext.current();
+        var selection=pinned!=null?pinned:inferenceControl==null?null:inferenceControl.selection();
+        return com.jarvis.common.ai.InferenceSelectionContext.call(selection,()->executePinned(initialContext));
+    }
+
+    private PipelineContext executePinned(PipelineContext initialContext) {
         Instant pipelineStartedAt = Instant.now();
         long pipelineStartedNano = System.nanoTime();
         PipelineContext context = initialContext;

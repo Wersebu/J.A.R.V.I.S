@@ -22,30 +22,57 @@ public class InferenceEngineManager implements InferenceControl {
  private final ObjectProvider<CompanionEventSink> events;
  private final HttpClient http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
  private volatile Selection selected;
+ private final Map<String,Map<String,Object>> savedParameters=new java.util.concurrent.ConcurrentHashMap<>();
+ private String modelKey(String engine,String model){return engine+":"+model;}
+ private Path profilesFile(){return properties.configurationFile().resolveSibling(properties.configurationFile().getFileName()+".models.json");}
+ private void restoreProfiles() throws Exception {
+  if(Files.exists(profilesFile()))savedParameters.putAll(mapper.readValue(profilesFile().toFile(),new com.fasterxml.jackson.core.type.TypeReference<Map<String,Map<String,Object>>>(){}));
+ }
+ private void saveProfile(Selection next) throws Exception {
+  var updated=new LinkedHashMap<>(savedParameters);updated.put(modelKey(next.engine(),next.model()),next.parameters());
+  Path path=profilesFile().toAbsolutePath();Files.createDirectories(path.getParent());Path temp=Files.createTempFile(path.getParent(),"profiles-",".tmp");
+  try{Files.write(temp,mapper.writeValueAsBytes(updated));Files.move(temp,path,StandardCopyOption.ATOMIC_MOVE,StandardCopyOption.REPLACE_EXISTING);savedParameters.clear();savedParameters.putAll(updated);}finally{Files.deleteIfExists(temp);}
+ }
+
  private volatile String status="READY",error="",lastOperationId="";
  private final java.util.concurrent.atomic.AtomicLong revision=new java.util.concurrent.atomic.AtomicLong();
  private volatile Map<String,Object> lastMetrics=Map.of();
  private volatile int unhealthySamples;
+ private volatile int observedContextPerSlot;
+ @Override public int contextPerRequest(Selection snapshot){int configured=InferenceControl.super.contextPerRequest(snapshot);var active=selected;return active!=null&&active.configurationId().equals(snapshot.configurationId())&&observedContextPerSlot>0?Math.min(configured,observedContextPerSlot):configured;}
+ private void observeLimits(Map<String,Object> parameters){
+  observedContextPerSlot=0;
+  try{var props=json(properties.baseUrl()+"/props",null);int slots=props.path("total_slots").asInt(0);int context=props.path("default_generation_settings").path("n_ctx").asInt(0);
+   if(slots>0&&slots!=((Number)parameters.getOrDefault("parallelSlots",1)).intValue())throw new AIProviderException("RUNTIME_SLOT_MISMATCH");
+   if(context>0)observedContextPerSlot=context;
+  }catch(AIProviderException failure){if(failure.getMessage().equals("RUNTIME_SLOT_MISMATCH"))throw failure;}
+ }
+
  @org.springframework.scheduling.annotation.Scheduled(fixedDelay=5000)
  public void monitor(){var s=selected;if(s==null||!s.engine().equals("llamacpp")||!status.equals("READY"))return;if(process.alive()&&process.healthy()){unhealthySamples=0;return;}if(++unhealthySamples>=3){status="ERROR";error=process.alive()?"ENGINE_UNHEALTHY: explicit restart required":"ENGINE_PROCESS_EXITED: inspect logs; explicit restart required";}}
 
  public InferenceEngineManager(InferenceProperties properties,ObjectMapper mapper,ActiveModelService ollama,OllamaProperties ollamaProperties,EngineAccessGate gate,LlamaServerProcess process,ObjectProvider<CompanionEventSink> events){this.properties=properties;this.mapper=mapper;this.ollama=ollama;this.ollamaProperties=ollamaProperties;this.gate=gate;this.process=process;this.events=events;}
  @PostConstruct public void restore(){
   selected=new Selection("legacy-ollama","ollama",ollama.activeModel(),Map.of());
+  try{restoreProfiles();}catch(Exception e){status="ERROR";error="MODEL_PROFILES_RESTORE_FAILED: "+e.getMessage();}
   if(Files.exists(properties.configurationFile()))try{
    Selection stored=mapper.readValue(properties.configurationFile().toFile(),Selection.class);
    if(stored.engine().equals("ollama")){
     if(!stored.parameters().isEmpty())throw new AIProviderException("UNSUPPORTED_PARAMETERS");
     selected=new Selection(stored.configurationId(),"ollama",ollama.activeModel(),Map.of());
-   }else{switchTo(stored.engine(),stored.model(),stored.parameters());selected=stored;persist(stored,false);}
+   }else{selected=stored;switchTo(stored.engine(),stored.model(),stored.parameters());selected=stored;persist(stored,false);}
   }catch(Exception e){status="ERROR";error="CONFIGURATION_RESTORE_FAILED: "+e.getMessage();}
  }
  public synchronized Selection selection(){Selection s=selected;if(s==null)return null;if(s.engine().equals("ollama")&&!s.model().equals(ollama.activeModel())){s=new Selection(UUID.randomUUID().toString(),"ollama",ollama.activeModel(),Map.of());selected=s;}return s;}
  public Map<String,Object> state(){
   Selection s=selection();String runtime=status;
   if(s.engine().equals("llamacpp")&&status.equals("READY")&&!process.alive())runtime="ERROR";
-  return Map.of("contractVersion","1.9.0","selection",s,"status",runtime,"error",error,"metrics",lastMetrics,
-   "engines",List.of(Map.of("id","ollama","installationStatus","EXTERNAL","processOwnership","EXTERNAL"),Map.of("id","llamacpp","installationStatus",process.installed()?"INSTALLED":"NOT_INSTALLED","processOwnership","CORE_CHILD","running",process.alive())),"resources",resources(),"parameterSchema",parameterSchema(),"revision",revision.get(),"operationId",lastOperationId);
+  var result=new LinkedHashMap<String,Object>();
+  result.put("contractVersion","1.9.0");result.put("selection",s);result.put("status",runtime);result.put("error",error);result.put("metrics",lastMetrics);
+  result.put("engines",List.of(Map.of("id","ollama","installationStatus","EXTERNAL","processOwnership","EXTERNAL"),Map.of("id","llamacpp","installationStatus",process.installed()?"INSTALLED":"NOT_INSTALLED","processOwnership","CORE_CHILD","running",process.alive())));
+  result.put("resources",resources());result.put("parameterSchema",parameterSchema());result.put("revision",revision.get());result.put("operationId",lastOperationId);
+  if(s.engine().equals("llamacpp"))result.put("runtimeLimits",Map.of("contextTokensPerSlot",contextPerRequest(s),"parallelSlots",s.parameters().getOrDefault("parallelSlots",1),"configuredTotalContextTokens",s.parameters().getOrDefault("contextSize",4096),"source",observedContextPerSlot>0?"BACKEND_PROPS":"CONFIGURED_FALLBACK"));
+  return Collections.unmodifiableMap(result);
  }
  public List<Map<String,Object>> models(String engine){
   if(engine.equals("ollama"))return ollama.catalog().models().stream().map(m->Map.<String,Object>of("id",m.name(),"engine","ollama","sizeBytes",m.sizeBytes(),"declaredCapabilities",m.capabilities(),"verifiedCapabilities",List.of())).toList();
@@ -57,7 +84,7 @@ public class InferenceEngineManager implements InferenceControl {
     String name=file.getFileName().toString();if(name.matches(".*-\\d{5}-of-\\d{5}\\.gguf")&&!name.matches(".*-00001-of-\\d{5}\\.gguf"))continue;
     String id=properties.modelDirectory().toAbsolutePath().normalize().relativize(file.toAbsolutePath().normalize()).toString().replace('\\','/');
     String problem="";try{validateModel(id);}catch(Exception e){problem=e.getMessage();}
-    rows.add(Map.of("id",id,"engine","llamacpp","sizeBytes",Files.size(file),"status",problem.isEmpty()?"AVAILABLE":"INVALID","error",problem,"declaredCapabilities",List.of("TEXT","STREAMING"),"verifiedCapabilities",List.of()));
+    rows.add(Map.of("id",id,"engine","llamacpp","sizeBytes",Files.size(file),"status",problem.isEmpty()?"AVAILABLE":"INVALID","configurationRequired",!savedParameters.containsKey(modelKey("llamacpp",id)),"configurationStatus",savedParameters.containsKey(modelKey("llamacpp",id))?"SAVED":"REQUIRED","error",problem,"declaredCapabilities",List.of("TEXT","STREAMING"),"verifiedCapabilities",List.of()));
    }return rows;
   }catch(Exception e){throw new AIProviderException("MODEL_DISCOVERY_FAILED",e);}
  }
@@ -79,15 +106,16 @@ public class InferenceEngineManager implements InferenceControl {
   Map<String,Object> p=new LinkedHashMap<>(input==null?Map.of():input);
   if(engine.equals("ollama")){if(!p.isEmpty())throw new AIProviderException("UNSUPPORTED_PARAMETERS: configure Ollama through existing profile settings");return p;}
   if(!engine.equals("llamacpp"))throw new AIProviderException("UNKNOWN_ENGINE");
-  Set<String> allowed=Set.of("contextSize","maxOutputTokens","temperature","topP","topK","repeatPenalty","seed","reasoningEffort","timeoutSeconds","gpuLayers","gpuBudgetMiB","cpuThreads","batchSize","microBatchSize","flashAttention","cacheTypeK","cacheTypeV","parallelSlots","chatTemplate","jinja","mmproj","memoryMapping","declaredCapabilities");
+  Set<String> allowed=Set.of("contextSize","maxOutputTokens","temperature","topP","topK","repeatPenalty","seed","reasoning","reasoningEffort","timeoutSeconds","gpuLayers","gpuBudgetMiB","cpuThreads","batchSize","microBatchSize","flashAttention","cacheTypeK","cacheTypeV","parallelSlots","chatTemplate","jinja","mmproj","memoryMapping","declaredCapabilities");
   if(!allowed.containsAll(p.keySet()))throw new AIProviderException("UNSUPPORTED_PARAMETERS");
   bounded(p,"contextSize",512,32768,4096);bounded(p,"maxOutputTokens",1,16384,1024);bounded(p,"timeoutSeconds",1,1800,120);
-  bounded(p,"gpuLayers",0,200,0);bounded(p,"gpuBudgetMiB",0,16384,0);bounded(p,"cpuThreads",1,64,8);bounded(p,"batchSize",1,4096,512);bounded(p,"microBatchSize",1,512,128);bounded(p,"parallelSlots",1,1,1);
-  if(((Number)p.get("maxOutputTokens")).intValue()>=((Number)p.get("contextSize")).intValue())throw new AIProviderException("INVALID_OUTPUT_CONTEXT_BUDGET");
+  bounded(p,"gpuLayers",0,200,0);bounded(p,"gpuBudgetMiB",0,16384,0);bounded(p,"cpuThreads",1,64,8);bounded(p,"batchSize",1,4096,512);bounded(p,"microBatchSize",1,512,128);bounded(p,"parallelSlots",1,16,1);
+  if(((Number)p.get("maxOutputTokens")).intValue()>=((Number)p.get("contextSize")).intValue()/((Number)p.get("parallelSlots")).intValue())throw new AIProviderException("INVALID_OUTPUT_CONTEXT_BUDGET");
   if(((Number)p.get("microBatchSize")).intValue()>((Number)p.get("batchSize")).intValue())throw new AIProviderException("INVALID_BATCH_SIZE");
   for(String key:List.of("temperature","topP","repeatPenalty"))if(p.containsKey(key)){if(!(p.get(key) instanceof Number n)||!Double.isFinite(n.doubleValue())||n.doubleValue()<0||n.doubleValue()>(key.equals("topP")?1:2))throw new AIProviderException("INVALID_PARAMETER: "+key);}
   if(p.containsKey("topK"))bounded(p,"topK",0,1000,40);
   if(p.containsKey("seed")&&(!(p.get("seed") instanceof Number n)||n.doubleValue()!=n.longValue()))throw new AIProviderException("INVALID_SEED");
+  if(p.containsKey("reasoning")&&!Set.of("on","off","auto").contains(p.get("reasoning")))throw new AIProviderException("INVALID_REASONING");
   if(p.containsKey("reasoningEffort")&&!Set.of("low","medium","high").contains(p.get("reasoningEffort")))throw new AIProviderException("INVALID_REASONING_EFFORT");
   for(String k:List.of("jinja","memoryMapping"))if(p.containsKey(k)&&!(p.get(k) instanceof Boolean))throw new AIProviderException("INVALID_PARAMETER: "+k);
   for(String k:List.of("cacheTypeK","cacheTypeV"))if(p.containsKey(k)&&!Set.of("f16","q8_0","q4_0").contains(p.get(k)))throw new AIProviderException("INVALID_CACHE_TYPE");
@@ -99,10 +127,21 @@ public class InferenceEngineManager implements InferenceControl {
   return Map.copyOf(p);
  }
  private void bounded(Map<String,Object> p,String key,int min,int max,int fallback){Object v=p.getOrDefault(key,fallback);if(!(v instanceof Number n)||!Double.isFinite(n.doubleValue())||n.doubleValue()!=n.intValue()||n.intValue()<min||n.intValue()>max)throw new AIProviderException("INVALID_PARAMETER: "+key);p.put(key,((Number)v).intValue());}
+ private final Object switchLock=new Object();
  public Map<String,Object> switchTo(String engine,String model,Map<String,Object> input){
+  synchronized(switchLock){return switchInternal(engine,model,input);}
+ }
+ private Map<String,Object> switchInternal(String engine,String model,Map<String,Object> input){
   if(engine==null||!Set.of("ollama","llamacpp").contains(engine))throw new AIProviderException("UNKNOWN_ENGINE");
   if(model==null||model.isBlank())throw new AIProviderException("MODEL_REQUIRED");
-  Map<String,Object> p=validate(engine,input);if(engine.equals("llamacpp")){if(!properties.managedProcess())throw new AIProviderException("PROCESS_MANAGEMENT_DISABLED");if(!process.installed())throw new AIProviderException("NOT_INSTALLED");}Path modelPath=engine.equals("llamacpp")?validateModel(model):null;
+  Map<String,Object> supplied=input;
+  if(engine.equals("llamacpp")){
+   var saved=savedParameters.get(modelKey(engine,model));
+   if(saved==null&&selected!=null&&selected.engine().equals(engine)&&selected.model().equals(model))saved=selected.parameters();
+   if((input==null||input.isEmpty())&&(saved==null||saved.isEmpty()))throw new AIProviderException("MODEL_CONFIGURATION_REQUIRED: configure parameters before activation");
+   supplied=(input==null||input.isEmpty())?saved:input;
+  }
+  Map<String,Object> p=validate(engine,supplied);if(engine.equals("llamacpp")){if(!properties.managedProcess())throw new AIProviderException("PROCESS_MANAGEMENT_DISABLED");if(!process.installed())throw new AIProviderException("NOT_INSTALLED");}Path modelPath=engine.equals("llamacpp")?validateModel(model):null;
   if(engine.equals("ollama")&&ollama.catalog().models().stream().noneMatch(m->m.name().equals(model)))throw new AIProviderException("MODEL_NOT_INSTALLED");
   String operation=UUID.randomUUID().toString();String owner=CurrentUserContext.currentUserId().orElse(null);
   try(var exclusive=gate.exclusive()){
@@ -110,16 +149,16 @@ public class InferenceEngineManager implements InferenceControl {
    try{
     if(previous.engine().equals("llamacpp"))process.stop();
     if(engine.equals("llamacpp")){
-     unloadOllama();checkResources(p);status="LOADING_MODEL";publish(owner,operation);
-     process.start(modelPath,model,p);process.awaitReady(Duration.ofSeconds(180));verifyModels(model);
-    }else {unloadOllama();warmOllama(model);}
+     if(previous.engine().equals("ollama"))unloadOllama();checkResources(p);status="LOADING_MODEL";publish(owner,operation);
+     process.start(modelPath,model,p);process.awaitReady(Duration.ofSeconds(180));verifyModels(model);observeLimits(p);
+    }else {observedContextPerSlot=0;unloadOllama();warmOllama(model);}
     Selection next=new Selection(UUID.randomUUID().toString(),engine,model,p);
     persist(next);
     if(engine.equals("ollama")){var result=ollama.switchTo(model);if(!result.success())throw new AIProviderException("OLLAMA_SELECTION_FAILED: "+result.error());}
-    selected=next;gate.activate(engine);status="READY";error="";publish(owner,operation);
+    saveProfile(next);selected=next;gate.activate(engine);status="READY";error="";publish(owner,operation);
    }catch(Exception failure){
     status="RECOVERING";error=failure.getMessage();publish(owner,operation);
-    try{process.stop();if(previous.engine().equals("llamacpp")){unloadOllama();process.start(validateModel(previous.model()),previous.model(),previous.parameters());process.awaitReady(Duration.ofSeconds(180));}else{warmOllama(previous.model());ollama.switchTo(previous.model());}persist(previous,false);selected=previous;gate.activate(previous.engine());status="READY";}
+    try{process.stop();if(previous.engine().equals("llamacpp")){process.start(validateModel(previous.model()),previous.model(),previous.parameters());process.awaitReady(Duration.ofSeconds(180));observeLimits(previous.parameters());}else{observedContextPerSlot=0;warmOllama(previous.model());ollama.switchTo(previous.model());}persist(previous,false);selected=previous;gate.activate(previous.engine());status="READY";}
     catch(Exception recovery){status="ERROR";error+="; ROLLBACK_FAILED: "+recovery.getMessage();gate.activate("unavailable");}
     publish(owner,operation);throw new AIProviderException("ENGINE_SWITCH_FAILED: "+error,failure);
    }
@@ -146,7 +185,7 @@ public class InferenceEngineManager implements InferenceControl {
   Map<String,Object> schema=new LinkedHashMap<>();
   schema.put("contextSize",Map.of("type","integer","minimum",512,"maximum",32768,"default",4096,"requiresReload",true));
   schema.put("maxOutputTokens",Map.of("type","integer","minimum",1,"maximum",16384,"default",1024));
-  schema.put("parallelSlots",Map.of("type","integer","minimum",1,"maximum",1,"default",1,"reason","UNQUALIFIED_RUNTIME_CAPACITY"));
+  schema.put("parallelSlots",Map.of("type","integer","minimum",1,"maximum",16,"default",1,"requiresReload",true));
   schema.put("gpuLayers",Map.of("type","integer","minimum",0,"maximum",200,"default",0));
   schema.put("gpuBudgetMiB",Map.of("type","integer","minimum",0,"maximum",16384,"default",0));
   schema.put("timeoutSeconds",Map.of("type","integer","minimum",1,"maximum",1800,"default",120));
@@ -154,6 +193,7 @@ public class InferenceEngineManager implements InferenceControl {
   schema.put("batchSize",Map.of("type","integer","minimum",1,"maximum",4096,"default",512));
   schema.put("microBatchSize",Map.of("type","integer","minimum",1,"maximum",512,"default",128));
   schema.put("temperature",Map.of("type","number","minimum",0,"maximum",2));schema.put("topP",Map.of("type","number","minimum",0,"maximum",1));schema.put("repeatPenalty",Map.of("type","number","minimum",0,"maximum",2));schema.put("topK",Map.of("type","integer","minimum",0,"maximum",1000));schema.put("seed",Map.of("type","integer"));
+  schema.put("reasoning",Map.of("enum",List.of("on","off","auto"),"requiresReload",true));
   schema.put("reasoningEffort",Map.of("enum",List.of("low","medium","high"),"requiresCapability","REASONING"));schema.put("flashAttention",Map.of("enum",List.of("on","off","auto")));
   for(String key:List.of("cacheTypeK","cacheTypeV"))schema.put(key,Map.of("enum",List.of("f16","q8_0","q4_0")));
   for(String key:List.of("jinja","memoryMapping"))schema.put(key,Map.of("type","boolean"));

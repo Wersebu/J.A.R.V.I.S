@@ -539,7 +539,7 @@ public class ToolCallingStage implements PipelineStage {
             // blank finalAnswer used to turn into a second TOOL_REQUEST the loop could no longer act
             // on (see FINAL_SYNTHESIS_REQUESTED_MORE_TOOLS). Report the real, structured reason
             // directly instead of ever attempting that tool-less synthesis call for this case.
-            return publishBufferedFallback(context, buildTerminationReport(result.terminationInfo()), "tool-loop-terminated");
+            return publishBufferedFallback(context, Boolean.TRUE.equals(context.metadata().get("semanticOrchestration"))&&com.jarvis.common.companion.TaskExecutionContext.current()==null?"Nie udało się potwierdzić wszystkich informacji. Dostępne dane są niepełne; spróbuj zawęzić pytanie.":buildTerminationReport(result.terminationInfo()), "tool-loop-terminated");
         }
         if (marketplaceResearch(result)) {
             // Pure marketplace research with no listings and no other model answer available -

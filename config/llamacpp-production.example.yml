@@ -1,0 +1,9 @@
+# Example only. Activate with the existing administrator inference API after setting parameters.
+jarvis:
+  inference:
+    engines:
+      executable: /opt/jarvis/engines/llamacpp/current/bin/llama-server
+      model-directory: /mnt/dysk8tb/llamacpp-models
+      port: 8082
+      managed-process: true
+      configuration-file: config/inference-engine.json

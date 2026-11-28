@@ -75,6 +75,9 @@ public class DefaultMemoryAgentService implements MemoryAgentService {
 
     @Override
     public void analyze(MemoryJob job) {
+        com.jarvis.common.ai.InferenceSelectionContext.call(engineSelection(),()->{analyzePinned(job);return null;});
+    }
+    private void analyzePinned(MemoryJob job) {
         Instant startedAt = Instant.now();
         publish(job, CognitiveEventType.MEMORY_AGENT_STARTED, "STARTED",
                 "Memory Agent analyzing conversation", "memory:agent", Map.of(

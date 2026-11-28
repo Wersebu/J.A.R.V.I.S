@@ -14,6 +14,8 @@ import java.util.*;
 @Service
 public class SemanticOrchestrator implements AutonomousOrchestration {
     @org.springframework.beans.factory.annotation.Autowired(required=false) private com.jarvis.tools.integration.IntegrationRegistry integrations;
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private InferenceControl inference;
+    private boolean structuredDecision(Brain brain){if(!brain.provider().equals("llamacpp")||inference==null)return true;var pinned=InferenceSelectionContext.current();var selection=pinned==null?inference.selection():pinned;return ((List<?>)selection.parameters().getOrDefault("declaredCapabilities",List.of())).contains("STRUCTURED_OUTPUT");}
     private final List<AIProvider> providers;private final NativeToolSchemaMapper schemas;private final ToolRegistry registry;
     private final CompanionTasks tasks;private final CompanionDocumentStore store;private final ObjectMapper mapper;private final boolean enabled;
     @org.springframework.beans.factory.annotation.Autowired(required=false) private com.jarvis.common.event.CognitiveEventBus answerEvents;
@@ -32,7 +34,7 @@ public class SemanticOrchestrator implements AutonomousOrchestration {
                 DIRECT: social conversation, simple arithmetic, stable conceptual answers, or clarification of a genuinely ambiguous request. NOT a request to check live/private data. Do not claim lack of access without checking the available integration. Stream the actual answer. No workers or tools.
                 TOOLS: a quick bounded operation, including a single read/lookup or direct PC, browser, volume or Spotify control. Never create a background agent merely to read data or control an app.
                 INTEGRATION_SETUP: the CURRENT user asks to authorize/connect/configure a service. Select its family; do not read private data instead. The existing authorization tool will request the user's interaction. Connection/authentication is ALWAYS foreground INTEGRATION_SETUP, never DELEGATE, even when consent takes time.
-                DELEGATE: multiple independent deliverables, substantial research or genuinely long background work. Do not delegate routine control/setup. Choose minimal relevant tool families. DIRECT has no families; other modes must choose existing families. Return ONLY operational fields currentIntent, action, answer and families. Answer is empty except DIRECT. Reply in the language of CURRENT_REQUEST. The catalog is available now: use it to check private/live data rather than claiming you have no access or asking for generic permission. Never expose reference data or planning labels in the answer.
+                DELEGATE: explicitly requested independent background deliverables, substantial research or genuinely long background work. Do not delegate routine control/setup. A combined weather, exchange-rate and recent-mail lookup is still TOOLS in the main conversation, with all needed families, not DELEGATE. Prefer weather and exchange dedicated APIs over scraped pages; preserve effective dates and rate type. Choose minimal relevant tool families. DIRECT has no families; other modes must choose existing families. Return ONLY operational fields currentIntent, action, answer and families. Answer is empty except DIRECT. Reply in the language of CURRENT_REQUEST. The catalog is available now: use it to check private/live data rather than claiming you have no access or asking for generic permission. Never expose reference data or planning labels in the answer.
                 """);
             messages.set(0,ModelMessage.system(messages.getFirst().content()+"\nAVAILABLE TOOL FAMILIES (authoritative runtime capabilities; connection state is checked by tools):\n"+catalog));
             route=decide(owner,conversation,requestId,provider,brain,messages,routeSchema(),true,decision->{
@@ -69,6 +71,7 @@ public class SemanticOrchestrator implements AutonomousOrchestration {
         var root=tasks.submitOrchestration(owner,conversation,requestId,current,agents,readOnly);
         return new Outcome("DELEGATE","Przyjęto zadania w tle: "+agents.stream().map(Agent::name).collect(java.util.stream.Collectors.joining(", "))+". Przekażę jeden zbiorczy wynik.",root.taskId(),List.of());
     }
+    private List<NativeToolDefinition> decisionDefinitions(){return mainDefinitions().stream().filter(d->d.name().startsWith("weather__")||d.name().startsWith("exchange__")).toList();}
     private List<NativeToolDefinition> mainDefinitions(){return schemas.definitions(ToolIntent.NO_TOOL).stream().filter(d->java.util.Set.of("companion","agent","taskplan","plan","output").stream().noneMatch(family->d.name().startsWith(family+"__"))).toList();}
     private List<String> closure(List<String> requested){
         var definitions=new HashMap<String,ToolOperationDefinition>();for(var family:registry.definitions())for(var op:family.operations())definitions.put(family.name().toLowerCase(Locale.ROOT)+"__"+op.name().toLowerCase(Locale.ROOT),op);
@@ -86,9 +89,9 @@ public class SemanticOrchestrator implements AutonomousOrchestration {
         for(int attempt=0;attempt<3;attempt++)try{
             boolean nativeRepair=attempt>0;
             ModelResponse response=InferenceProfileContext.call(visible?"main-conversation":"orchestration",()->{
-                if(!provider.supportsStreamingChat()||nativeRepair){var offered=new ArrayList<NativeToolDefinition>();if(visible&&!nativeRepair)offered.addAll(mainDefinitions());offered.add(new NativeToolDefinition("orchestration__decide","Return the operational decision",schema));return provider.toolChat(brain,messages,offered,AIJobType.MAIN_MODEL);}
+                if(!provider.supportsStreamingChat()||nativeRepair||!structuredDecision(brain)){var offered=new ArrayList<NativeToolDefinition>();if(visible&&!nativeRepair)offered.addAll(decisionDefinitions());offered.add(new NativeToolDefinition("orchestration__decide","Return the operational decision",schema));return provider.toolChat(brain,messages,offered,AIJobType.MAIN_MODEL);}
                 var decoder=new JsonAnswerStream(text->{if(visible&&answerEvents!=null)answerEvents.publish(com.jarvis.common.event.CognitiveEventType.ANSWER_TOKEN,"TOKEN",text,null,Map.of("text",text,"source","semantic-direct"));});
-                return provider.streamChat(brain,messages,visible?mainDefinitions():List.of(),schema,AIJobType.MAIN_MODEL,event->{if(event.type()==ModelStreamEvent.Type.CONTENT)decoder.accept(event.text());});
+                return provider.streamChat(brain,messages,visible?decisionDefinitions():List.of(),schema,AIJobType.MAIN_MODEL,event->{if(event.type()==ModelStreamEvent.Type.CONTENT)decoder.accept(event.text());});
             });
             if(Set.of("length","max_tokens").contains(response.finishReason()))throw new IllegalArgumentException("Incomplete semantic decision");
             if(visible&&response.hasToolCalls()&&response.toolCalls().stream().noneMatch(call->call.name().equals("orchestration__decide"))){
@@ -99,7 +102,7 @@ public class SemanticOrchestrator implements AutonomousOrchestration {
             }
             JsonNode value=response.hasToolCalls()?mapper.valueToTree(response.toolCalls().getFirst().arguments()):read(response.content());validate.accept(value);
             tasks.record(owner,"orchestration.decided",null,Map.of("conversationId",conversation,"requestId",requestId,"action",value.path("action").asText(),"agents",value.path("agents").size(),"inputTokens",response.usage().promptTokens(),"outputTokens",response.usage().completionTokens(),"stage",visible?"ROUTE":"SCOPED_PLAN"));return value;
-        }catch(RuntimeException failure){if(answerEvents!=null&&!answerEvents.streamedAnswer().isEmpty())throw failure;last=failure;tasks.record(owner,"orchestration.retrying",null,Map.of("conversationId",conversation,"requestId",requestId,"attempt",attempt+1,"stage",visible?"ROUTE":"SCOPED_PLAN"));messages.add(ModelMessage.system("Invalid decision: "+failure.getMessage()+". Correct the operational fields without changing CURRENT_REQUEST or copying references."));}
+        }catch(RuntimeException failure){if(failure.getMessage()!=null&&(failure.getMessage().startsWith("STALE_CONFIGURATION")||failure.getMessage().contains("CONTEXT_BUDGET_EXCEEDED")))throw failure;if(answerEvents!=null&&!answerEvents.streamedAnswer().isEmpty())throw failure;last=failure;tasks.record(owner,"orchestration.retrying",null,Map.of("conversationId",conversation,"requestId",requestId,"attempt",attempt+1,"stage",visible?"ROUTE":"SCOPED_PLAN"));messages.add(ModelMessage.system("Invalid decision: "+failure.getMessage()+". Correct the operational fields without changing CURRENT_REQUEST or copying references."));}
         throw new IllegalStateException("Semantic decision exhausted bounded attempts",last);
     }
     private JsonNode load(String owner,String kind,String key,String current){return store.find(owner,kind,key).map(document->{var value=read(document.body());if(!value.path("currentMessage").asText().equals(current))throw new IllegalArgumentException("Request identity reused for another message");return value.path("decision");}).orElse(null);}

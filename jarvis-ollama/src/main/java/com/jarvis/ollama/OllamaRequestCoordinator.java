@@ -47,10 +47,15 @@ public class OllamaRequestCoordinator implements ModelGateway {
         this.chatPriority=priority;eventBus=bus;this.concurrency=concurrency;reservedInteractive=concurrency==1?0:reserved;
         this.maxWaiting=maxWaiting;minimumFreeHeapBytes=heap;queueTimeoutMillis=timeout;
     }
+    private org.springframework.beans.factory.ObjectProvider<InferenceControl> engines;
+    @Autowired public void engines(org.springframework.beans.factory.ObjectProvider<InferenceControl> value){engines=value;}
+    private InferenceControl.Selection selection(){var pinned=InferenceSelectionContext.current();var control=engines==null?null:engines.getIfAvailable();return pinned!=null?pinned:control==null?null:control.selection();}
+    private int capacity(){var s=selection();return s!=null&&s.engine().equals("llamacpp")?((Number)s.parameters().getOrDefault("parallelSlots",1)).intValue():concurrency;}
+    private int requestContextTokens(){var s=selection();if(s==null||!s.engine().equals("llamacpp"))return contextTokens;var control=engines==null?null:engines.getIfAvailable();return control==null?contextTokens:control.contextPerRequest(s);}
     private com.jarvis.inference.EngineAccessGate engineGate;
     @Autowired public void engineGate(com.jarvis.inference.EngineAccessGate value){engineGate=value;}
     public Permit acquire(AIJobType requested,String requestId) {
-        var residency=engineGate==null?null:engineGate.enter("ollama");
+        var residency=engineGate==null?null:engineGate.enter(selection()==null?"ollama":selection().engine());
         try {var permit=acquireLocal(requested,requestId);permit.residency=residency;return permit;}
         catch(RuntimeException|Error e){if(residency!=null)residency.close();throw e;}
     }
@@ -115,8 +120,8 @@ public class OllamaRequestCoordinator implements ModelGateway {
     }
     private long score(Waiting w){return w.priority()-TimeUnit.NANOSECONDS.toSeconds(System.nanoTime()-w.nano())/2;}
     private boolean eligible(Waiting w){
-        if(active.size()>=concurrency||contextTokenBudget>0&&(long)(active.size()+1)*contextTokens>contextTokenBudget)return false;
-        if(!interactive(w.type())&&active.values().stream().filter(a->!interactive(a.type())).count()>=concurrency-reservedInteractive)return false;
+        if(active.size()>=capacity()||contextTokenBudget>0&&(long)(active.size()+1)*requestContextTokens()>contextTokenBudget)return false;
+        if(!interactive(w.type())&&active.values().stream().filter(a->!interactive(a.type())).count()>=capacity()-Math.min(reservedInteractive,capacity()-1))return false;
         // Limit bursts of background prompt submissions, without holding a slot while waiting or waiting for prior generation to finish.
         if(!interactive(w.type())&&lastBackgroundAdmission!=0&&System.nanoTime()-lastBackgroundAdmission<backgroundSpacingNanos)return false;
         Runtime r=Runtime.getRuntime();return r.maxMemory()-(r.totalMemory()-r.freeMemory())>=minimumFreeHeapBytes;
@@ -125,14 +130,14 @@ public class OllamaRequestCoordinator implements ModelGateway {
     private void trace(Waiting w,String phase,long elapsed){try{eventBus.publish(CognitiveEventType.EXECUTION_TRACE,phase,"Model Gateway admission",null,
         Map.of("stage","OLLAMA_QUEUE_WAIT","phase",phase,"queueWaitMs",elapsed,"durationMs",elapsed,"jobType",w.type().name(),"inferenceId",w.id().toString(),"profileId",w.profile()));}catch(RuntimeException ignored){}}
     private synchronized void release(UUID id){active.remove(id);admitted.remove(id);notifyAll();}
-    public synchronized Map<String,Object> snapshot(){return Map.of("configuredConcurrency",concurrency,"activeInferenceRequests",active.size(),"waitingRequests",queue.size(),"reservedInteractive",reservedInteractive,"backgroundSubmitSpacingMs",TimeUnit.NANOSECONDS.toMillis(backgroundSpacingNanos));}
+    public synchronized Map<String,Object> snapshot(){return Map.of("configuredConcurrency",capacity(),"activeInferenceRequests",active.size(),"waitingRequests",queue.size(),"reservedInteractive",reservedInteractive,"backgroundSubmitSpacingMs",TimeUnit.NANOSECONDS.toMillis(backgroundSpacingNanos));}
     @Override public synchronized Map<String,Object> snapshot(String owner){
         var requests=new ArrayList<Map<String,Object>>();
         for(var w:active.values())if(w.owner().equals(owner))requests.add(detail(w,"ADMITTED"));
         for(var w:queue)if(w.owner().equals(owner))requests.add(detail(w,"WAITING_GATEWAY"));
         return Map.of("inferenceActive",active.values().stream().filter(w->w.owner().equals(owner)).count(),
             "inferenceQueued",queue.stream().filter(w->w.owner().equals(owner)).count(),"gatewaySlotsInUse",active.size(),
-            "gatewaySlotsConfigured",concurrency,"reservedInteractive",reservedInteractive,"requests",requests,"capacityScope","PROCESS","backgroundSubmitSpacingMs",TimeUnit.NANOSECONDS.toMillis(backgroundSpacingNanos));
+            "gatewaySlotsConfigured",capacity(),"reservedInteractive",reservedInteractive,"requests",requests,"capacityScope","PROCESS","backgroundSubmitSpacingMs",TimeUnit.NANOSECONDS.toMillis(backgroundSpacingNanos));
     }
     private Map<String,Object> detail(Waiting w,String phase){var m=new LinkedHashMap<String,Object>();m.put("inferenceId",w.id().toString());m.put("requestId",w.requestId());m.put("taskId",w.taskId());m.put("profileId",w.profile());m.put("phase",phase);long start=admitted.getOrDefault(w.id(),System.nanoTime());m.put("queueWaitMs",TimeUnit.NANOSECONDS.toMillis(start-w.nano()));m.put("elapsedMs",TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-start));if(w.settings()!=null){m.put("model",w.settings().model());m.put("physicalContext",w.settings().physicalContext());m.put("inputBudget",w.settings().inputBudget());}return m;}
     public static final class Permit implements ModelGateway.Lease {

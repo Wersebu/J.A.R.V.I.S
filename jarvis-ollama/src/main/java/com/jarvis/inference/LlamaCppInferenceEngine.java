@@ -18,11 +18,18 @@ public class LlamaCppInferenceEngine implements AIProvider {
  private final ObjectMapper mapper;private final InferenceProperties properties;
  private final InferenceEngineManager manager;private final EngineAccessGate gate;
  private final HttpClient http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
- private final Semaphore slots=new Semaphore(1,true);
+ @org.springframework.beans.factory.annotation.Autowired(required=false) private CognitiveEventBus events;
+ private com.jarvis.common.ai.InferenceContextPolicy budgets;
+ @org.springframework.beans.factory.annotation.Autowired public void budgets(com.jarvis.common.ai.InferenceContextPolicy value){budgets=value;}
+ private com.jarvis.common.ai.ModelGateway gateway;
+ @org.springframework.beans.factory.annotation.Autowired public void gateway(com.jarvis.common.ai.ModelGateway value){gateway=value;}
+ private final Semaphore fallbackSlots=new Semaphore(1,true);
  public LlamaCppInferenceEngine(ObjectMapper mapper,InferenceProperties properties,InferenceEngineManager manager,EngineAccessGate gate){this.mapper=mapper;this.properties=properties;this.manager=manager;this.gate=gate;}
  public String provider(){return "llamacpp";}
  public boolean supportsStreamingChat(){return true;}
- public ChatResponse chat(Brain brain,String prompt){return new ChatResponse(toolChat(brain,List.of(ModelMessage.user(prompt)),List.of(),AIJobType.CHAT).content());}
+ public ChatResponse chat(Brain brain,String prompt){return chat(brain,prompt,AIJobType.CHAT);}
+ public ChatResponse chat(Brain brain,String prompt,AIJobType job){return new ChatResponse(toolChat(brain,List.of(ModelMessage.user(prompt)),List.of(),job).content());}
+ public void stream(String conversation,Brain brain,String prompt,AIJobType job,ChatEventSink sink){stream(conversation,brain,prompt,job,List.of(),sink);}
  public void stream(String conversation,Brain brain,String prompt,ChatEventSink sink){stream(conversation,brain,prompt,AIJobType.CHAT,List.of(),sink);}
  public void stream(String conversation,Brain brain,String prompt,AIJobType job,List<ImageAttachment> images,ChatEventSink sink){
   long start=System.nanoTime();var result=streamChat(brain,List.of(ModelMessage.user(prompt,images)),List.of(),Map.of(),job,e->{
@@ -36,15 +43,24 @@ public class LlamaCppInferenceEngine implements AIProvider {
   try(var residency=gate.enter(provider())){
    var selected=manager.selection();if(!selected.model().equals(brain.model())||!brain.configurationId().isEmpty()&&!selected.configurationId().equals(brain.configurationId()))throw new AIProviderException("STALE_CONFIGURATION: model changed; task was not reassigned");
    manager.validateCapabilities(messages,tools,schema);
-   if(!slots.tryAcquire(30,TimeUnit.SECONDS))throw new AIProviderException("ENGINE_BUSY");
-   try(var deadline=new InferenceDeadline()){
+   if(budgets!=null){var prepared=budgets.prepare(brain,job,messages,tools);messages=prepared.messages();tools=prepared.tools();}
+   if(gateway==null&&!fallbackSlots.tryAcquire(30,TimeUnit.SECONDS))throw new AIProviderException("ENGINE_BUSY");
+   try(var admission=gateway==null?null:gateway.acquire(job,"llamacpp");var deadline=new InferenceDeadline()){
     var p=selected.parameters();Map<String,Object> body=new LinkedHashMap<>();body.put("model",brain.model());body.put("stream",true);body.put("stream_options",Map.of("include_usage",true));
     body.put("messages",messages.stream().map(this::message).toList());
     if(!tools.isEmpty())body.put("tools",tools.stream().map(t->Map.of("type","function","function",Map.of("name",t.name(),"description",t.description(),"parameters",t.parameters()))).toList());
     if(!schema.isEmpty())body.put("response_format",Map.of("type","json_schema","json_schema",Map.of("name","response","strict",true,"schema",schema)));
     Map<String,String> mapping=Map.of("maxOutputTokens","max_tokens","temperature","temperature","topP","top_p","topK","top_k","repeatPenalty","repeat_penalty","seed","seed","reasoningEffort","reasoning_effort");
     mapping.forEach((k,v)->{if(p.containsKey(k))body.put(v,p.get(k));});
+    int perSlot=manager.contextPerRequest(selected);if(perSlot<1)perSlot=((Number)p.getOrDefault("contextSize",4096)).intValue()/((Number)p.getOrDefault("parallelSlots",1)).intValue();
+    long imageReserve=messages.stream().mapToLong(m->2048L*m.images().size()).sum();
+    // Count text and schemas separately from base64 image transport. Reserve output includes reasoning tokens.
+    long promptBytes=0;for(var m:messages)promptBytes+=m.content().getBytes(java.nio.charset.StandardCharsets.UTF_8).length+mapper.writeValueAsBytes(m.toolCalls()).length+128;
+    promptBytes+=mapper.writeValueAsBytes(tools).length+mapper.writeValueAsBytes(schema).length;
+    long estimated=com.jarvis.common.ai.ModelContextBudget.total(messages,tools)+com.jarvis.common.ai.ModelContextBudget.serialized(schema)+256;
+    if(estimated+((Number)p.getOrDefault("maxOutputTokens",1024)).intValue()>perSlot)throw new AIProviderException("CONTEXT_BUDGET_EXCEEDED: mandatory request exceeds per-slot context");
     Duration timeout=Duration.ofSeconds(((Number)p.getOrDefault("timeoutSeconds",120)).longValue());
+    if(events!=null)events.publish(CognitiveEventType.EXECUTION_TRACE,"CONTEXT_OCCUPANCY","Model context budget",null,com.jarvis.common.ai.ModelContextBudget.occupancy(messages,tools,perSlot-((Number)p.getOrDefault("maxOutputTokens",1024)).intValue()-256));
     var request=HttpRequest.newBuilder(URI.create(properties.baseUrl()+"/v1/chat/completions")).timeout(timeout).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body))).build();
     long started=System.nanoTime();long[] first={0};
     var response=http.send(request,HttpResponse.BodyHandlers.ofInputStream());
@@ -56,11 +72,13 @@ public class LlamaCppInferenceEngine implements AIProvider {
       try{
        if(response.statusCode()!=200)throw new AIProviderException("BACKEND_HTTP_"+response.statusCode());
        var result=new OpenAiStreamDecoder(mapper).decode(new BufferedReader(new InputStreamReader(input,java.nio.charset.StandardCharsets.UTF_8)),e->{if(e.type()==ModelStreamEvent.Type.FIRST_TOKEN)first[0]=System.nanoTime();sink.accept(e);});
-       manager.metrics(started,first[0],result.usage());return result;
+       manager.metrics(started,first[0],result.usage());
+       if(events!=null){var usage=new LinkedHashMap<String,Object>();usage.put("provider",provider());usage.put("model",brain.model());usage.put("measured",result.usage().promptTokens()>0);if(result.usage().promptTokens()>0){usage.put("inputTokens",result.usage().promptTokens());usage.put("outputTokens",result.usage().completionTokens());}events.publish(CognitiveEventType.TOKEN_USAGE,"MEASURED","Model token usage",null,usage);}
+       return result;
       }finally{alarm.cancel(false);timer.shutdownNow();}
      }
     }
-   }finally{slots.release();}
+   }finally{if(gateway==null)fallbackSlots.release();}
   }catch(InterruptedException e){Thread.currentThread().interrupt();throw new AIProviderException("CANCELLED",e);}
    catch(IOException e){throw new AIProviderException("INFERENCE_TRANSPORT_FAILED",e);}
  }

@@ -31,6 +31,7 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 @RequestMapping(path = "/api/v1/debug/model", produces = MediaType.APPLICATION_JSON_VALUE)
 public class DebugModelBenchmarkController {
 
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private com.jarvis.common.ai.InferenceControl inference;
     private final List<AIProvider> aiProviders;
     private final InferenceDiagnosticsService diagnosticsService;
     private final SystemPromptService systemPromptService;
@@ -83,7 +84,10 @@ public class DebugModelBenchmarkController {
             }
             Brain brain = new Brain(BrainType.FAST, "ollama", model, "Debug raw model benchmark")
                     .withRoutingMetadata("Debug raw model benchmark", 0L, reasoningLevel);
-            ChatResponse response = selectProvider().chat(brain, prompt, AIJobType.DEBUG);
+            if(inference!=null){var selection=com.jarvis.common.ai.InferenceSelectionContext.current();if(selection==null)selection=inference.selection();brain=new Brain(brain.type(),selection.engine(),selection.model(),brain.description(),brain.selectionReason(),brain.routerLatencyMs(),brain.reasoningLevel(),selection.configurationId());model=brain.model();}
+            Brain selectedBrain=brain;
+            AIProvider selected=aiProviders.stream().filter(p->p.provider().equalsIgnoreCase(selectedBrain.provider())).findFirst().orElseThrow(()->new AIProviderException("ENGINE_UNAVAILABLE"));
+            ChatResponse response = selected.chat(brain, prompt, AIJobType.DEBUG);
             return new ModelBenchmarkResponse(model, reasoningLevel, response.response(), diagnostics);
         } finally {
             InferenceDiagnosticsContext.clear();

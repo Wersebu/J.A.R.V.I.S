@@ -202,5 +202,23 @@
         "error": ""
       }
     }
+  },
+  {
+    "schema": "SwitchRequest",
+    "value": {
+      "engine": "llamacpp",
+      "model": "example.gguf",
+      "parameters": {
+        "contextSize": 24576,
+        "parallelSlots": 3,
+        "gpuLayers": 0,
+        "reasoning": "on",
+        "reasoningEffort": "low",
+        "declaredCapabilities": [
+          "TOOLS",
+          "REASONING"
+        ]
+      }
+    }
   }
 ]

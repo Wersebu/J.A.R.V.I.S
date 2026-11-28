@@ -40,6 +40,7 @@ public class HttpWebPageReader implements WebPageReader {
     private static final Pattern EMBEDDED_URL_PATTERN = Pattern.compile(
             "(?is)https?:\\\\?/\\\\?/[^\"'\\s<>]{8,2000}");
 
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private com.jarvis.tools.runtime.ToolOutputStore outputs;
     private final WebSearchProperties properties;
 
     private final ObjectMapper objectMapper;
@@ -106,12 +107,13 @@ public class HttpWebPageReader implements WebPageReader {
             String contentType = response.getFirstHeader("content-type")==null?"":response.getFirstHeader("content-type").getValue();
             String title = decode(extractTitle(body));
             String text = normalizeText(enrichWithStructuredData(body));
+            String archive=outputs==null?"":outputs.put("Source: "+uri+"\n"+text);
             int max = properties.pageMaxLength();
             boolean truncated = text.length() > max;
             String returned = truncated ? text.substring(0, max).strip() : text;
             List<WebPageContent.WebPageLink> links = extractLinks(body, uri);
             return new WebPageContent(uri.toString(), title, returned, returned.length(), truncated, durationMs,
-                    response.getCode(), contentType, links);
+                    response.getCode(), contentType, links,archive);
             } finally { deadline.cancel(false); }
             }
             throw new WebSearchException("Redirect limit exceeded");
@@ -182,6 +184,7 @@ public class HttpWebPageReader implements WebPageReader {
 
     private String normalizeText(String html) {
         String text = html
+                .replaceAll("(?is)<(nav|footer|header|aside)\\b[^>]*>.*?</\\1>", " ")
                 .replaceAll("(?is)<script\\b[^>]*>.*?</script>", " ")
                 .replaceAll("(?is)<style\\b[^>]*>.*?</style>", " ")
                 .replaceAll("(?is)<noscript\\b[^>]*>.*?</noscript>", " ")
@@ -189,11 +192,11 @@ public class HttpWebPageReader implements WebPageReader {
                 .replaceAll("(?is)<br\\s*/?>", "\n")
                 .replaceAll("(?is)</(p|div|section|article|li|tr|h[1-6])>", "\n")
                 .replaceAll("(?is)<[^>]+>", " ");
-        return decode(text)
+        return String.join("\n", new java.util.LinkedHashSet<>(java.util.Arrays.asList(decode(text)
                 .replaceAll("[\\t\\x0B\\f\\r]+", " ")
                 .replaceAll(" *\\n+ *", "\n")
                 .replaceAll(" {2,}", " ")
-                .strip();
+                .strip().split("\\n"))));
     }
 
     private List<WebPageContent.WebPageLink> extractLinks(String html, URI baseUri) {

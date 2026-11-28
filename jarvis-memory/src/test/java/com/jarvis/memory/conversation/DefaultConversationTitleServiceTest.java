@@ -43,6 +43,20 @@ class DefaultConversationTitleServiceTest {
         service = new DefaultConversationTitleService(conversations, messages, List.of(provider), eventBus);
     }
 
+    @Test void usesActiveLlamaAndDefersStaleTitleWithoutCallingOllama(){
+        var active=org.mockito.Mockito.mock(AIProvider.class);org.mockito.Mockito.when(active.provider()).thenReturn("llamacpp");
+        var inactive=org.mockito.Mockito.mock(AIProvider.class);org.mockito.Mockito.when(inactive.provider()).thenReturn("ollama");
+        org.mockito.Mockito.when(active.toolChat(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyList(),org.mockito.ArgumentMatchers.anyList(),org.mockito.ArgumentMatchers.any())).thenReturn(new com.jarvis.common.ai.ModelResponse("Active engine title","",List.of(),"stop",new com.jarvis.common.ai.ModelUsage(10,5,15)));
+        var control=org.mockito.Mockito.mock(com.jarvis.common.ai.InferenceControl.class);org.mockito.Mockito.when(control.selection()).thenReturn(new com.jarvis.common.ai.InferenceControl.Selection("active-config","llamacpp","vision.gguf",Map.of()));
+        var titles=new DefaultConversationTitleService(conversations,messages,List.of(inactive,active),eventBus);org.springframework.test.util.ReflectionTestUtils.setField(titles,"inference",control);
+        conversations.createIfAbsent("engine",Instant.now());messages.append("engine",user("Weather in Warsaw"));
+        titles.maybeGenerateTitle("engine",new Brain(BrainType.FAST,"llamacpp","vision.gguf","","",0,com.jarvis.common.ai.ReasoningLevel.LOW,"old-config"));
+        org.mockito.Mockito.verify(active,org.mockito.Mockito.never()).toolChat(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyList(),org.mockito.ArgumentMatchers.anyList(),org.mockito.ArgumentMatchers.any());
+        titles.maybeGenerateTitle("engine",new Brain(BrainType.FAST,"llamacpp","vision.gguf","","",0,com.jarvis.common.ai.ReasoningLevel.LOW,"active-config"));
+        assertThat(conversations.find("engine").orElseThrow().title()).isEqualTo("Active engine title");
+        org.mockito.Mockito.verify(inactive,org.mockito.Mockito.never()).toolChat(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.anyList(),org.mockito.ArgumentMatchers.anyList(),org.mockito.ArgumentMatchers.any());titles.close();
+    }
+
     @Test
     void titleAdmissionIsNonBlockingAndItsPendingJobIsDurable() throws Exception {
         conversations.createIfAbsent("async",Instant.now());messages.append("async",user("Pierwsza wiadomość bez odpowiedzi głównego agenta"));

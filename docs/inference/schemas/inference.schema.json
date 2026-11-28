@@ -27,7 +27,9 @@
           "maximum": 16384
         },
         "parallelSlots": {
-          "const": 1
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
         },
         "timeoutSeconds": {
           "type": "integer",
@@ -123,6 +125,13 @@
             ]
           },
           "uniqueItems": true
+        },
+        "reasoning": {
+          "enum": [
+            "on",
+            "off",
+            "auto"
+          ]
         }
       },
       "required": [],
@@ -622,6 +631,15 @@
           "items": {
             "type": "string"
           }
+        },
+        "configurationRequired": {
+          "type": "boolean"
+        },
+        "configurationStatus": {
+          "enum": [
+            "SAVED",
+            "REQUIRED"
+          ]
         }
       },
       "required": [
@@ -677,6 +695,31 @@
         },
         "operationId": {
           "type": "string"
+        },
+        "runtimeLimits": {
+          "type": "object",
+          "properties": {
+            "contextTokensPerSlot": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "parallelSlots": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16
+            },
+            "configuredTotalContextTokens": {
+              "type": "integer",
+              "minimum": 512
+            },
+            "source": {
+              "enum": [
+                "BACKEND_PROPS",
+                "CONFIGURED_FALLBACK"
+              ]
+            }
+          },
+          "additionalProperties": true
         }
       },
       "required": [

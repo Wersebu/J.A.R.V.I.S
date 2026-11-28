@@ -45,7 +45,7 @@ public class BrainCatalog {
         if (definition == null) {
             throw new BrainRoutingException("Brain is not configured: " + type);
         }
-        if(inference!=null && OLLAMA_PROVIDER.equalsIgnoreCase(definition.provider())) {
+        if((inference!=null || com.jarvis.common.ai.InferenceSelectionContext.current()!=null) && java.util.Set.of("ollama","llamacpp").contains(definition.provider().toLowerCase(java.util.Locale.ROOT))) {
             var pinned=com.jarvis.common.ai.InferenceSelectionContext.current();
             var selection=pinned==null?inference.selection():pinned;
             return new Brain(type,selection.engine(),selection.model(),definition.description(),"",0L,com.jarvis.common.ai.ReasoningLevel.MEDIUM,selection.configurationId());

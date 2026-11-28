@@ -99,6 +99,9 @@ public class DefaultCodingService implements CodingService, InitializingBean {
     private String openCodeBaseUrl;
     @Value("${jarvis.coding.opencode.model:gpt-oss:20b}")
     private String openCodeModel;
+    @Autowired(required=false) private com.jarvis.common.ai.InferenceControl inference;
+    @Autowired(required=false) private com.jarvis.common.ai.ModelGateway inferenceGateway;
+    private com.jarvis.common.ai.InferenceControl.Selection inferenceSelection(){var pinned=com.jarvis.common.ai.InferenceSelectionContext.current();return pinned!=null?pinned:inference==null?null:inference.selection();}
     @Value("${jarvis.coding.opencode.task-timeout:6h}")
     private Duration openCodeTaskTimeout;
 
@@ -865,6 +868,7 @@ public class DefaultCodingService implements CodingService, InitializingBean {
         if (executionRegistry.hasActiveWorkspace(ownerUserId, state.id)) {
             throw new IllegalStateException("A coding task is already running for this workspace. Send the message as a follow-up after the current step finishes.");
         }
+        var assignedInference=inferenceSelection();
         String id = UUID.randomUUID().toString();
         Instant now = Instant.now();
         String conversationId = blank(requestContext.conversationId()) ? request.conversationId() : requestContext.conversationId();
@@ -873,7 +877,7 @@ public class DefaultCodingService implements CodingService, InitializingBean {
                 id,
                 state.workspace.id(),
                 conversationId,
-                request.model(),
+                assignedInference==null?request.model():assignedInference.model(),
                 request.prompt(),
                 CodingTaskStatus.QUEUED,
                 initialPlan(),
@@ -905,7 +909,7 @@ public class DefaultCodingService implements CodingService, InitializingBean {
                     CurrentUserContext.runAs(ownerUserId, () -> {
                         try(var activity=activityTracker==null?null:activityTracker.start("CODING_TASK","coding-task-"+id,"coding-task",id)){
                             com.jarvis.common.ai.InferencePriorityContext.runBackground(() ->
-                                com.jarvis.common.ai.InferenceProfileContext.call("coding",()->{runTaskLoop(id,state.id);return null;}));
+                                com.jarvis.common.ai.InferenceProfileContext.call("coding",()->com.jarvis.common.ai.InferenceSelectionContext.call(assignedInference,()->{runTaskLoop(id,state.id);return null;})));
                         }
                     });
                 }
@@ -1134,6 +1138,13 @@ public class DefaultCodingService implements CodingService, InitializingBean {
                 .anyMatch(previous -> task.openCodeSessionId().equals(previous.openCodeSessionId()));
     }
 
+    private CodingTask runCoordinatedOpenCodeTask(CodingTask task,WorkspaceState state){
+        var assigned=inferenceSelection();
+        try(var lease=assigned==null||inferenceGateway==null?null:inferenceGateway.acquire(com.jarvis.common.ai.AIJobType.BACKGROUND,"coding-"+task.id())){
+            if(assigned!=null&&inference!=null&&!assigned.configurationId().equals(inference.selection().configurationId()))throw new com.jarvis.common.ai.AIProviderException("STALE_CONFIGURATION: coding task was not reassigned");
+            return runOpenCodeTaskLoop(task,state);
+        }
+    }
     private CodingTask runOpenCodeTaskLoop(CodingTask task, WorkspaceState state) {
         Map<String, String> changedFiles = new LinkedHashMap<>();
         StringBuilder buildResult = new StringBuilder();
@@ -1240,8 +1251,8 @@ public class DefaultCodingService implements CodingService, InitializingBean {
         WorkspaceState state = requireWorkspace(workspaceId);
         try {
             ToolCallingRuntime runtime = toolCallingRuntime.get();
-            CodingTask finished = openCodeEnabled && state.host == CodingService.WorkspaceHost.WINDOWS
-                    ? runOpenCodeTaskLoop(task, state)
+            CodingTask finished = openCodeEnabled && state.host == CodingService.WorkspaceHost.WINDOWS && (inferenceSelection()==null||inferenceSelection().engine().equals("ollama"))
+                    ? runCoordinatedOpenCodeTask(task, state)
                     : runtime == null ? runLegacyTaskLoop(task, state) : runNativeModelTaskLoop(task, state, runtime);
             if (taskRepository.findById(taskId).map(existing -> existing.status() == CodingTaskStatus.CANCELLED).orElse(false)) {
                 return;
@@ -1585,6 +1596,7 @@ public class DefaultCodingService implements CodingService, InitializingBean {
     }
 
     private String configuredOpenCodeModel() {
+        var selected=inferenceSelection();if(selected!=null)return selected.model();
         return blank(openCodeModel) ? "gpt-oss:20b" : openCodeModel;
     }
 
@@ -1639,6 +1651,7 @@ public class DefaultCodingService implements CodingService, InitializingBean {
                     workspace.host().name()
             ));
         }
+        var assigned=inferenceSelection();if(assigned!=null)return new Brain(BrainType.CODING,assigned.engine(),assigned.model(),"Coding Agent","Active inference selection",0L,ReasoningLevel.MEDIUM,assigned.configurationId());
         String model = blank(task.model()) ? "coding" : task.model();
         return new Brain(BrainType.CODING, model, model, "Coding Agent", "Coding task fallback brain", 0L, ReasoningLevel.MEDIUM);
     }

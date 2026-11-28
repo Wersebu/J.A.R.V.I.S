@@ -29,6 +29,7 @@ public class DefaultConversationTitleService implements ConversationTitleService
 
     private final ConversationRepository conversationRepository;
     private final ConversationMessageRepository messageRepository;
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private com.jarvis.common.ai.InferenceControl inference;
     private final List<AIProvider> aiProviders;
     private final CognitiveEventBus eventBus;
     private final ExecutorService executor;
@@ -103,6 +104,11 @@ public class DefaultConversationTitleService implements ConversationTitleService
     }
 
     void maybeGenerateTitle(String conversationId, Brain brain) {
+        var selected=inference==null?null:inference.selection();
+        if(selected!=null&&(!selected.engine().equals(brain.provider())||!selected.model().equals(brain.model())||!brain.configurationId().isBlank()&&!selected.configurationId().equals(brain.configurationId()))){LOGGER.info("[CONVERSATION_TITLE] deferred stale configuration conversationId={}",conversationId);return;}
+        com.jarvis.common.ai.InferenceSelectionContext.call(selected,()->{maybeGenerateTitlePinned(conversationId,brain);return null;});
+    }
+    private void maybeGenerateTitlePinned(String conversationId, Brain brain) {
         try {
             ConversationRecord record = conversationRepository.find(conversationId).orElse(null);
             if (record == null || !"DEFAULT".equalsIgnoreCase(record.titleSource())) {
@@ -158,6 +164,7 @@ public class DefaultConversationTitleService implements ConversationTitleService
             }
             LOGGER.warn("[CONVERSATION_TITLE] invalid model title, using fallback");
         } catch (RuntimeException exception) {
+            if(exception.getMessage()!=null&&exception.getMessage().startsWith("STALE_CONFIGURATION"))throw exception;
             LOGGER.warn("[CONVERSATION_TITLE] model call failed, using fallback: {}", exception.getMessage());
         }
         return fallbackTitle(user);

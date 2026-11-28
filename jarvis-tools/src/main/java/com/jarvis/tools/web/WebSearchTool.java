@@ -290,6 +290,7 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
                     "url", content.url(),
                     "title", content.title(),
                     "content", content.text(),
+                    "outputId", content.outputId(),
                     "characters", content.characters(),
                     "truncated", content.truncated(),
                     "durationMs", content.durationMs(),

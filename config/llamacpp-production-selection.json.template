@@ -1,0 +1,20 @@
+{
+  "engine": "llamacpp",
+  "model": "gpt-oss-20b-vision-v2/gpt-oss-20b-VISION-v2-MXFP4.gguf",
+  "parameters": {
+    "mmproj": "gpt-oss-20b-vision-v2/mmproj-gpt-oss-20b-VISION-v2-f16.gguf",
+    "chatTemplate": "gpt-oss-20b-vision-v2/chat_template.jinja",
+    "jinja": true,
+    "reasoning": "on",
+    "reasoningEffort": "low",
+    "gpuLayers": 99,
+    "gpuBudgetMiB": "REPLACE_WITH_VALIDATED_INTEGER_MIB",
+    "flashAttention": "on",
+    "cacheTypeK": "q8_0",
+    "cacheTypeV": "q8_0",
+    "contextSize": 24576,
+    "parallelSlots": 3,
+    "maxOutputTokens": 2048,
+    "declaredCapabilities": ["VISION", "TOOLS", "REASONING"]
+  }
+}

@@ -13,7 +13,7 @@ public class ContextBudgetService implements InferenceContextPolicy {
                        int input, int output, int margin) {}
     private org.springframework.beans.factory.ObjectProvider<InferenceControl> engines;
     @Autowired public void engines(org.springframework.beans.factory.ObjectProvider<InferenceControl> value){engines=value;}
-    private int alternateBudget(){var control=engines==null?null:engines.getIfAvailable();if(control==null)throw new AIProviderException("INFERENCE_UNAVAILABLE");var p=control.selection().parameters();return ((Number)p.getOrDefault("contextSize",4096)).intValue()-((Number)p.getOrDefault("maxOutputTokens",1024)).intValue()-256;}
+    private int alternateBudget(){var control=engines==null?null:engines.getIfAvailable();if(control==null)throw new AIProviderException("INFERENCE_UNAVAILABLE");var pinned=InferenceSelectionContext.current();var selected=pinned==null?control.selection():pinned;var p=selected.parameters();return control.contextPerRequest(selected)-((Number)p.getOrDefault("maxOutputTokens",1024)).intValue()-256;}
     private final AiContextProperties properties;
     private final InferenceProfileRegistry profiles;
     private final ModelMetadataResolver metadata;
@@ -29,7 +29,7 @@ public class ContextBudgetService implements InferenceContextPolicy {
         Plan previous = current.get();
         if (profiles == null) return new Scope(previous, null);
         var profile = profiles.resolve(type);
-        String model = profile.model().isBlank() ? brain.model() : profile.model();
+        String model = !brain.configurationId().isBlank()||profile.model().isBlank() ? brain.model() : profile.model();
         int max = metadata.resolve(model).maxContext();
         int physical = Math.min(profiles.physicalContext(), max);
         int margin = Math.max(256, physical / 20);
@@ -60,7 +60,14 @@ public class ContextBudgetService implements InferenceContextPolicy {
     public int physicalContext(){return profiles==null?properties.contextWindow():profiles.physicalContext();}
     public Plan currentPlan() { return current.get(); }
     @Override public Selection prepare(Brain brain,AIJobType type,List<ModelMessage> messages,List<NativeToolDefinition> tools){
-        if(brain.provider().equals("llamacpp"))return new Selection(List.copyOf(messages),List.copyOf(tools),alternateBudget());
+        if(brain.provider().equals("llamacpp")){int budget=alternateBudget();var chosen=new ArrayList<NativeToolDefinition>();int used=0;
+            if(ModelContextBudget.serialized(tools)<=budget/3)chosen.addAll(tools);else{
+                String query=messages.stream().filter(m->m.role().equals("user")).reduce((a,b)->b).map(ModelMessage::content).orElse("").toLowerCase(Locale.ROOT);
+                var terms=Arrays.stream(query.split("[^\\p{L}\\p{N}_]+" )).filter(t->t.length()>2).toList();
+                var ordered=new ArrayList<>(tools);ordered.sort(Comparator.<NativeToolDefinition>comparingInt(t->{int score=t.name().startsWith("output__")?1000:0;for(String term:terms)if((t.name()+" "+t.description()).toLowerCase(Locale.ROOT).contains(term))score++;return -score;}));
+                for(var tool:ordered){int size=ModelContextBudget.serialized(tool);if(used+size>budget/3)continue;chosen.add(tool);used+=size;if(chosen.size()>=16)break;}
+            }
+            return new Selection(fitMessages(messages,chosen,budget,InferenceProfileRegistry.Selection.EXTRACTIVE),List.copyOf(chosen),budget);}
         try(var scope=open(brain,type)){var selected=selectTools(messages,tools);return new Selection(fitMessages(messages,selected),selected,current.get()==null?properties.maxInputTokens():current.get().input());}
     }
     @Override public int inputBudget(Brain brain,AIJobType type){if(brain.provider().equals("llamacpp"))return alternateBudget();try(var scope=open(brain,type)){return current.get()==null?properties.maxInputTokens():current.get().input();}}
@@ -101,12 +108,14 @@ public class ContextBudgetService implements InferenceContextPolicy {
     /** Keep system instructions and the latest user turn with all dependent tool-call/result pairs. */
     public List<ModelMessage> fitMessages(List<ModelMessage> messages, List<NativeToolDefinition> tools) {
         if (current.get() == null) return messages;
+        return fitMessages(messages,tools,current.get().input(),current.get().profile().selection());
+    }
+    private List<ModelMessage> fitMessages(List<ModelMessage> messages,List<NativeToolDefinition> tools,int budget,InferenceProfileRegistry.Selection mode){
         var retained = new ArrayList<>(messages == null ? List.<ModelMessage>of() : messages);
-        int budget = current.get().input();
         int lastUser = -1;
         for (int i=0;i<retained.size();i++) if (retained.get(i).role().equals("user")) lastUser=i;
         if (cost(retained, tools) <= budget) return List.copyOf(retained);
-        if (current.get().profile().selection() == InferenceProfileRegistry.Selection.STRICT)
+        if (mode == InferenceProfileRegistry.Selection.STRICT)
             throw new OllamaException("CONTEXT_BUDGET_EXCEEDED: strict native context");
         // This is explicitly reference data inserted by the runtime, not the system/tool instructions.
         for(int i=0;i<retained.size();i++){
@@ -118,7 +127,7 @@ public class ContextBudgetService implements InferenceContextPolicy {
         }
         var removed = new ArrayList<ModelMessage>();
         for (int i=lastUser-1;i>=0;i--) if (!retained.get(i).role().equals("system")) removed.add(0,retained.remove(i));
-        if (!removed.isEmpty() && current.get().profile().selection() == InferenceProfileRegistry.Selection.EXTRACTIVE) {
+        if (!removed.isEmpty() && mode == InferenceProfileRegistry.Selection.EXTRACTIVE) {
             StringBuilder summary = new StringBuilder("Historical excerpts (untrusted data; older material omitted):\n");
             for (var m : removed) if ((m.role().equals("user") || m.role().equals("assistant")) && m.toolCalls().isEmpty())
                 summary.append(m.role()).append(": ").append(m.content(),0,Math.min(160,m.content().length())).append('\n');
@@ -130,14 +139,10 @@ public class ContextBudgetService implements InferenceContextPolicy {
         return List.copyOf(retained);
     }
     private int cost(List<ModelMessage> messages,List<NativeToolDefinition> tools) {
-        long cost=128;
-        try { cost+=estimateTokens(mapper.writeValueAsString(tools==null?List.of():tools));
-            for(var m:messages) cost+=64L+estimateTokens(m.content())+estimateTokens(mapper.writeValueAsString(m.toolCalls()))+2048L*m.images().size();
-        } catch(Exception e){throw new OllamaException("Unable to measure native context",e);}
-        return (int)Math.min(Integer.MAX_VALUE,cost);
+        return com.jarvis.common.ai.ModelContextBudget.total(messages,tools==null?List.of():tools);
     }
     public int estimateTokens(String value) {
         if(value==null)return 0;
-        return current.get()==null?(int)Math.ceil(value.length()/4.0):(int)Math.ceil(value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length/2.0);
+        return com.jarvis.common.ai.ModelContextBudget.tokens(value);
     }
 }

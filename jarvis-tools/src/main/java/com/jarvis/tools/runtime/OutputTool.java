@@ -51,6 +51,8 @@ public class OutputTool implements JarvisTool, ToolSchemaProvider {
         return new ToolDefinition(getName(), getDescription(), List.of(
                 new ToolOperationDefinition("READ", "Read lines of a stored output (numbered), e.g. the middle of a long build log.",
                         List.of(new ToolArgumentDefinition("outputId", "string", true, "outputId from a shortened result"),
+                                new ToolArgumentDefinition("offsetChars","integer",false,"Zero-based exact character offset; use for single-line JSON or long lines"),
+                                new ToolArgumentDefinition("maxChars","integer",false,"Character page size, 1..6000; default 3000"),
                                 new ToolArgumentDefinition("startLine", "integer", false, "First line (1-based)"),
                                 new ToolArgumentDefinition("limit", "integer", false, "Max lines (default 300)")),
                         false, ToolSafetyLevel.READ),
@@ -67,14 +69,17 @@ public class OutputTool implements JarvisTool, ToolSchemaProvider {
         String id = String.valueOf(request.arguments().getOrDefault("outputId", ""));
         String text = store.get(id).orElse(null);
         if (text == null) {
-            return failure(request, operation, "Unknown or expired outputId '" + id + "'. Re-run the original tool call.");
+            return failure(request, operation, "Unknown or expired outputId '" + id + "'. Report missing evidence; never repeat a completed side effect.");
         }
         String[] lines = text.split("\\r?\\n", -1);
         StringBuilder out = new StringBuilder();
         Map<String, Object> data = new LinkedHashMap<>();
         data.put("outputId", id);
         data.put("totalLines", lines.length);
-        if ("GREP".equals(operation)) {
+        if("READ".equals(operation)&&request.arguments().containsKey("offsetChars")){
+            int offset=Math.max(0,Math.min(text.length(),integer(request.arguments().get("offsetChars"),0))),size=Math.max(1,Math.min(6000,integer(request.arguments().get("maxChars"),3000)));
+            int end=Math.min(text.length(),offset+size);data.put("offsetChars",offset);data.put("nextOffsetChars",end);data.put("totalChars",text.length());data.put("partial",end<text.length());out.append(text,offset,end);
+        } else if ("GREP".equals(operation)) {
             String raw = String.valueOf(request.arguments().getOrDefault("pattern", ""));
             Pattern pattern;
             try {
@@ -99,7 +104,9 @@ public class OutputTool implements JarvisTool, ToolSchemaProvider {
             }
             data.put("startLine", start);
             data.put("endLine", end);
+            data.put("longLinesUse","output__read with offsetChars and maxChars");
         }
+        if(out.length()>6000){data.put("partial",true);data.put("note","Output page capped; request a narrower range");out.setLength(6000);}
         data.put("content", out.toString());
         return new ToolResult(true, getName(), operation, request.requestId(), request.conversationId(), false, List.of(),
                 "Stored output " + id, data, "", "", false, "");

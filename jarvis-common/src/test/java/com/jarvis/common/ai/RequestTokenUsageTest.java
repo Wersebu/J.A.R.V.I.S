@@ -8,7 +8,7 @@ class RequestTokenUsageTest {
   var first=usage.record(Map.of("inputTokens",120L,"outputTokens",18L));
   assertThat(first).containsEntry("totalInputTokens",120L).containsEntry("calls",1L);
   var next=usage.record(Map.of("inputTokens",200L,"outputTokens",0L));
-  assertThat(next).containsEntry("totalInputTokens",320L).containsEntry("totalOutputTokens",18L);
+  assertThat(next).containsEntry("totalInputTokens",320L).containsEntry("totalOutputTokens",18L).containsEntry("inputTokensThisCall",200L).containsEntry("actualContextOccupancyTokens",200L).containsEntry("cumulativeInputTokens",320L).containsEntry("contextOccupancyIsCumulative",false);
   var missing=usage.record(Map.of("inputTokens",100L));
   assertThat(missing).doesNotContainKey("totalOutputTokens").containsEntry("totalInputTokens",420L);
   assertThat(usage.record(Map.of("outputTokens",2L))).doesNotContainKeys("totalInputTokens","totalOutputTokens");

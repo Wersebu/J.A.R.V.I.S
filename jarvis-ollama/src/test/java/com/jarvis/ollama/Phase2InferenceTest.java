@@ -73,8 +73,8 @@ class Phase2InferenceTest {
         try(var scope=service.open(brain,AIJobType.CHAT)){
             var input=List.of(ModelMessage.system("System"),ModelMessage.user("old".repeat(24000)),ModelMessage.assistant("historical",List.of()),ModelMessage.user("latest"));
             var compact=service.fitMessages(input,List.of());assertTrue(compact.size()<input.size()+1);assertTrue(compact.contains(input.getLast()));assertEquals("System",compact.getFirst().content());
-            assertThrows(OllamaException.class,()->service.fitMessages(List.of(ModelMessage.system("must keep"),ModelMessage.user("x".repeat(50000))),List.of()));
-            assertThrows(OllamaException.class,()->service.fitMessages(List.of(ModelMessage.user("latest")),List.of(new NativeToolDefinition("large","x".repeat(50000),Map.of()))));
+            assertThrows(OllamaException.class,()->service.fitMessages(List.of(ModelMessage.system("must keep"),ModelMessage.user("x".repeat(service.currentPlan().input()*4))),List.of()));
+            assertThrows(OllamaException.class,()->service.fitMessages(List.of(ModelMessage.user("latest")),List.of(new NativeToolDefinition("large","x".repeat(service.currentPlan().input()*4),Map.of()))));
         }
     }
     @Test void realProviderSendsFourHttpRequestsIncludingInteractiveReservation() throws Exception {

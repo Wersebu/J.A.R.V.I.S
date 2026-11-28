@@ -56,7 +56,7 @@ public final class ContextBudget {
             stringLimit = Math.max(MIN_STRING_CHARS, stringLimit / 2);
             listLimit = Math.max(5, listLimit / 2);
         }
-        return shortened.substring(0, Math.min(shortened.length(), maxChars)) + "...[cut" + pointer + "]";
+        return write(objectMapper,Map.of("_shortened",Map.of("outputId",outputId,"originalChars",json.length(),"partial",true),"note","Read a specific range with output__read"));
     }
 
     /**
@@ -105,15 +105,7 @@ public final class ContextBudget {
      * This is a conservative character estimate, not a tokenizer measurement.
      */
     public static int estimatedInputTokens(List<ModelMessage> messages, Object tools, ObjectMapper mapper) {
-        try {
-            return (int) Math.ceil((mapper.writeValueAsString(messages.stream().map(m -> Map.of(
-                    "role", m.role(), "content", m.content(), "toolCalls", m.toolCalls(),
-                    "toolCallId", m.toolCallId(), "toolName", m.toolName())).toList()).length()
-                    + messages.stream().mapToInt(m -> m.images().size() * 6144).sum()
-                    + mapper.writeValueAsString(tools).length()) / 3.0);
-        } catch (JsonProcessingException e) {
-            throw new IllegalArgumentException("Cannot measure model context", e);
-        }
+        return com.jarvis.common.ai.ModelContextBudget.total(messages,tools);
     }
 
     /** Replace old assistant/tool exchanges only after a checkpoint has been obtained.

@@ -33,9 +33,10 @@ public class LlamaServerProcess {
  }
  List<String> command(Path model,String alias,Map<String,Object> p){
   var args=new ArrayList<>(List.of(properties.executable().toString(),"--host","127.0.0.1","--port",String.valueOf(properties.port()),"--no-context-shift","--reasoning-format","auto","--model",model.toString(),"--alias",alias,"--ctx-size",p.getOrDefault("contextSize",4096).toString(),"--parallel",p.getOrDefault("parallelSlots",1).toString(),"--n-gpu-layers",p.getOrDefault("gpuLayers",0).toString()));
+  args.add(Boolean.FALSE.equals(p.get("jinja"))?"--no-jinja":"--jinja");
   Map<String,String> flags=Map.of("cpuThreads","--threads","batchSize","--batch-size","microBatchSize","--ubatch-size","cacheTypeK","--cache-type-k","cacheTypeV","--cache-type-v","flashAttention","--flash-attn","mmproj","--mmproj","chatTemplate","--chat-template-file");
   flags.forEach((k,v)->{if(p.containsKey(k)){args.add(v);args.add(p.get(k).toString());}});
-  args.add(Boolean.FALSE.equals(p.get("jinja"))?"--no-jinja":"--jinja");
+  for(String key:List.of("reasoning","reasoningEffort"))if(p.containsKey(key)){args.add(key.equals("reasoning")?"--reasoning":"--reasoning-effort");args.add(p.get(key).toString());}
   if(((Number)p.getOrDefault("gpuLayers",0)).intValue()==0){args.add("--device");args.add("none");args.add("--no-mmproj-offload");}
   if(Boolean.FALSE.equals(p.get("memoryMapping")))args.add("--no-mmap");
   return List.copyOf(args);

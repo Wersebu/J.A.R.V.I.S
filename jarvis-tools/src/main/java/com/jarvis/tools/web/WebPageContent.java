@@ -24,8 +24,11 @@ public record WebPageContent(
         long durationMs,
         int statusCode,
         String contentType,
-        List<WebPageLink> links
+        List<WebPageLink> links,
+        String outputId
 ) {
+
+    public WebPageContent(String url,String title,String text,int characters,boolean truncated,long durationMs,int statusCode,String contentType,List<WebPageLink> links){this(url,title,text,characters,truncated,durationMs,statusCode,contentType,links,"");}
 
     /**
      * Link extracted from a fetched web page.
