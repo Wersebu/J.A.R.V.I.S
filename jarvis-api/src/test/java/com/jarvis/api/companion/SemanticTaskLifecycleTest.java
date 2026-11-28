@@ -19,6 +19,16 @@ class SemanticTaskLifecycleTest {
     private final ObjectMapper mapper=new ObjectMapper().findAndRegisterModules();
     private CompanionTasks engine(ChatService chat,CompanionDocumentStore store){var tasks=new CompanionTasks(chat,3);tasks.configureHistory(store,mapper,new DynamicPlanService(store,mapper),30);var delivery=mock(TaskResultDelivery.class);when(delivery.deliver(anyString(),anyString(),anyString(),anyString(),any())).thenReturn(TaskResultDelivery.Status.DELIVERED);when(delivery.synthesize(anyString(),anyString(),anyString())).thenReturn("Zebrano niezależne wyniki.");when(delivery.synthesize(anyString(),anyString(),anyString(),any())).thenReturn("Zebrano niezależne wyniki.");ReflectionTestUtils.setField(tasks,"resultDelivery",delivery);return tasks;}
     private void await(CompanionTasks tasks,String root)throws Exception{long end=System.nanoTime()+TimeUnit.SECONDS.toNanos(6);while(Set.of("RUNNING","WAITING","QUEUED").contains(tasks.get("alice",root).state())&&System.nanoTime()<end)Thread.sleep(10);assertFalse(Set.of("RUNNING","WAITING","QUEUED").contains(tasks.get("alice",root).state()),tasks.get("alice",root).toString());}
+    @Test void independentLookupWorkersCannotSpawnUnplannedHelpers()throws Exception{
+        var chat=mock(ChatService.class);
+        when(chat.chat(any())).thenAnswer(i->{assertFalse(AgentScope.current().tools().contains("companion__submit"));return new ChatResponse("Confirmed lookup result");});
+        try(var tasks=engine(chat,new InMemoryCompanionStore())){
+            var root=tasks.submitOrchestration("alice","source","bounded","Independent lookup",List.of(new AutonomousOrchestration.Agent("a","Lookup","Read",List.of("web__search_web"),List.of())),Set.of("web__search_web"),false);
+            await(tasks,root.taskId());
+            assertEquals("COMPLETED",tasks.get("alice",root.taskId()).state());
+            assertEquals(2,tasks.list("alice").size());
+        }
+    }
     @Test void oneFailedWorkerDoesNotStopSiblingAndRootEndsPartialWithLegacyTerminalState()throws Exception{
         var chat=mock(ChatService.class);when(chat.chat(any())).thenAnswer(i->{if(((com.jarvis.common.dto.ChatRequest)i.getArgument(0)).message().equals("offline"))throw new IllegalStateException("Integration unavailable");assertNotNull(AgentScope.current());return new ChatResponse("Zapisany pełny wynik");});
         try(var store=new SQLiteCompanionDocumentStore(true,temp.resolve("history.db").toString());var tasks=engine(chat,store)){
@@ -43,7 +53,7 @@ class SemanticTaskLifecycleTest {
             store.put(new CompanionDocumentStore.Document("alice","task-stream",id,mapper.writeValueAsString(Map.of("text","Zachowany fragment","chunks",2)),java.time.Instant.now()));
             assertEquals(1,((List<?>)tasks.state("alice").get("streams")).size());assertTrue(((List<?>)tasks.state("bob").get("streams")).isEmpty());
             var delivery=mock(TaskResultDelivery.class);when(delivery.deliver(anyString(),anyString(),anyString(),anyString(),any())).thenReturn(TaskResultDelivery.Status.DELIVERED);ReflectionTestUtils.setField(tasks,"resultDelivery",delivery);
-            release.countDown();await(tasks,root.taskId());assertTrue(tasks.get("alice",root.taskId()).result().startsWith("Zachowany fragment"));assertFalse(tasks.get("alice",root.taskId()).result().contains("Wynik agenta"));assertTrue(tasks.list("alice").stream().anyMatch(t->"Wynik agenta".equals(t.result())));verify(delivery,never()).synthesize(anyString(),anyString(),anyString(),any());
+            release.countDown();await(tasks,root.taskId());assertTrue(tasks.get("alice",root.taskId()).result().startsWith("Zachowany fragment"));assertTrue(tasks.get("alice",root.taskId()).result().contains("Wynik agenta"));assertEquals("PARTIALLY_COMPLETED",tasks.get("alice",root.taskId()).state());assertTrue(tasks.list("alice").stream().anyMatch(t->"Wynik agenta".equals(t.result())));verify(delivery,never()).synthesize(anyString(),anyString(),anyString(),any());
         }finally{release.countDown();}
     }
 

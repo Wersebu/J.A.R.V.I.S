@@ -39,7 +39,7 @@ public class MainModelIntegratedToolTrigger implements ToolTriggerStrategy {
 
     @Override
     public String buildMainModelPrompt(PipelineContext context) {
-        if(Boolean.TRUE.equals(context.metadata().get("simpleGreeting")))return context.prompt()+"\nThis is a social greeting. Reply naturally using your identity and relevant memory. Return only JSON: {\"type\":\"FINAL_ANSWER\",\"answer\":\"your greeting\"}. Do not claim external actions.";
+        if(Boolean.TRUE.equals(context.metadata().get("simpleGreeting")))return context.prompt()+"\nThis is a short social or identity question. Answer the actual user question naturally using your identity and relevant memory. Return only JSON: {\"type\":\"FINAL_ANSWER\",\"answer\":\"your greeting\"}. Do not claim external actions.";
         ToolIntent detectedIntent = toolIntentDetector.detect(context.request().message());
         InformationFreshness freshness = freshnessEvaluator.evaluate(context.request().message(), "", "");
         return context.prompt()

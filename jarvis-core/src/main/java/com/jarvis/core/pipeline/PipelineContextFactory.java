@@ -24,6 +24,8 @@ import java.util.function.Consumer;
 @Service
 public class PipelineContextFactory {
 
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private com.jarvis.common.companion.ActivityTracker activities;
+    private final ThreadLocal<com.jarvis.common.companion.ActivityTracker.Scope> active=new ThreadLocal<>();
     private final CognitiveEventBus cognitiveEventBus;
     private final InferenceDiagnosticsService diagnosticsService;
     private final ConversationTraceRecorder traceRecorder;
@@ -65,6 +67,7 @@ public class PipelineContextFactory {
         var interactive = com.jarvis.common.run.InteractiveRequestContext.current();
         UUID requestUuid = interactive == null ? UUID.randomUUID() : UUID.fromString(interactive.requestId());
         String requestId = requestUuid.toString();
+        if(activities!=null&&com.jarvis.common.companion.TaskExecutionContext.current()==null)active.set(activities.start("INTERACTIVE",requestId,"conversation",null));
         Instant serverReceivedAt = Instant.now();
         InferenceDiagnostics diagnostics = diagnosticsService.create(requestUuid, conversationId);
         diagnostics.setClientRequestTimestamp(request.clientRequestTimestamp());
@@ -107,6 +110,7 @@ public class PipelineContextFactory {
      * Finishes the current request context.
      */
     public void finish() {
+        var activity=active.get();active.remove();if(activity!=null)activity.close();
         try { traceRecorder.finish(); }
         finally { try { cognitiveEventBus.finishRequest(); } finally { InferenceDiagnosticsContext.clear(); } }
     }

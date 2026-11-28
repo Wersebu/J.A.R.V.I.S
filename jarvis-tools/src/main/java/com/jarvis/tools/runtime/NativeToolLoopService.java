@@ -765,6 +765,11 @@ public class NativeToolLoopService {
                         request.requestId(), step, maxCalls);
             }
             ModelResponse response;
+            var agentScope=com.jarvis.common.companion.AgentScope.current();
+            if(agentScope!=null&&agentScope.tools().stream().allMatch(n->n.startsWith("web__")||n.startsWith("browser__")||n.startsWith("output__")||n.startsWith("companion__"))&&results.stream().anyMatch(r->Boolean.TRUE.equals(r.data().get("sourceUnavailable")))&&results.stream().noneMatch(r->r.success()&&!Set.of("output","companion").contains(r.tool()))){
+                String answer="Nie udało się zweryfikować danych: skonfigurowane źródło informacji jest niedostępne. Wymagane jest przywrócenie połączenia z wyszukiwarką lub przeglądarką, zgodnie ze szczegółami błędu źródła. Nie potwierdzam ceny ani historii notowań.";
+                var info=buildTerminationInfo(ToolLoopTerminationReason.MAX_FAILURES_REACHED,false,false,started,step-1,maxCalls,steps,results,answer,"Restore the unavailable information source",List.of("Source unavailable"));return new ToolCallingResult(true,answer,steps,results,info);
+            }
             if (readProgress.shouldStop()) {
                 return stopRepeatedReads(request, messages, steps, results, started, step, maxCalls);
             }
@@ -1315,6 +1320,13 @@ public class NativeToolLoopService {
                 return new ToolCallingResult(true, partial, steps, results, info);
             }
             String content = response.content().strip();
+            if(com.jarvis.common.ai.FinalAnswerGuard.toolArguments(content,List.copyOf(offered),request.userMessage())){
+                errors.add("TOOL_ARGUMENTS_AS_CONTENT");
+                messages.add(ModelMessage.assistant("[Invalid operational payload withheld from the user]",List.of()));
+                messages.add(ModelMessage.system("Your previous output was bare tool arguments, not a final answer. Invoke the selected tool using its native tool call channel, or answer from verified evidence. Never print operational arguments as the answer."));
+                if(step<maxCalls)continue;
+                return contextLimitedAnswer(request,messages,steps,results,started,step,maxCalls);
+            }
             boolean receipt=results.stream().anyMatch(r->r.success()&&(r.tool().equalsIgnoreCase("companion")&&r.data().get("taskId")!=null||r.tool().equalsIgnoreCase("agent")&&r.operation().equalsIgnoreCase("RUN")));
             if(com.jarvis.common.companion.DelegationClaims.started(content)&&!receipt)
                 content="Nie ma potwierdzenia uruchomienia agenta. Zadanie nie zostało utworzone przez backend.";

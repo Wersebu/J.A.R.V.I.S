@@ -62,7 +62,7 @@ public class LlamaCppInferenceEngine implements AIProvider {
     Duration timeout=Duration.ofSeconds(((Number)p.getOrDefault("timeoutSeconds",120)).longValue());
     if(events!=null)events.publish(CognitiveEventType.EXECUTION_TRACE,"CONTEXT_OCCUPANCY","Model context budget",null,com.jarvis.common.ai.ModelContextBudget.occupancy(messages,tools,perSlot-((Number)p.getOrDefault("maxOutputTokens",1024)).intValue()-256));
     var request=HttpRequest.newBuilder(URI.create(properties.baseUrl()+"/v1/chat/completions")).timeout(timeout).header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body))).build();
-    long started=System.nanoTime();long[] first={0};
+    long started=System.nanoTime();long[] first={0},reasoningChunks={0};
     var response=http.send(request,HttpResponse.BodyHandlers.ofInputStream());
     try(var input=response.body()){
      InferenceDeadline.attach(input);
@@ -71,7 +71,8 @@ public class LlamaCppInferenceEngine implements AIProvider {
       var alarm=timer.schedule(()->{try{input.close();}catch(IOException ignored){}},timeout.toMillis(),TimeUnit.MILLISECONDS);
       try{
        if(response.statusCode()!=200)throw new AIProviderException("BACKEND_HTTP_"+response.statusCode());
-       var result=new OpenAiStreamDecoder(mapper).decode(new BufferedReader(new InputStreamReader(input,java.nio.charset.StandardCharsets.UTF_8)),e->{if(e.type()==ModelStreamEvent.Type.FIRST_TOKEN)first[0]=System.nanoTime();sink.accept(e);});
+       var result=new OpenAiStreamDecoder(mapper).decode(new BufferedReader(new InputStreamReader(input,java.nio.charset.StandardCharsets.UTF_8)),e->{if(e.type()==ModelStreamEvent.Type.FIRST_TOKEN)first[0]=System.nanoTime();if(e.type()==ModelStreamEvent.Type.REASONING){if(reasoningChunks[0]++==0&&events!=null)events.publish(CognitiveEventType.THINKING_STARTED,"STARTED","Provider reasoning started",null,Map.of("channel","REASONING","provider",provider()));}sink.accept(e);});
+       if(reasoningChunks[0]>0&&events!=null)events.publish(CognitiveEventType.THINKING_FINISHED,"FINISHED","Provider reasoning finished",null,Map.of("channel","REASONING","chunks",reasoningChunks[0],"provider",provider()));
        manager.metrics(started,first[0],result.usage());
        if(events!=null){var usage=new LinkedHashMap<String,Object>();usage.put("provider",provider());usage.put("model",brain.model());usage.put("measured",result.usage().promptTokens()>0);if(result.usage().promptTokens()>0){usage.put("inputTokens",result.usage().promptTokens());usage.put("outputTokens",result.usage().completionTokens());}events.publish(CognitiveEventType.TOKEN_USAGE,"MEASURED","Model token usage",null,usage);}
        return result;

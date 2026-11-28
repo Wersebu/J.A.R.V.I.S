@@ -179,6 +179,9 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
     }
     public synchronized Task submit(String owner, Request request) { return submit(owner,request,request==null?null:request.conversationId(),request==null?null:request.parentRequestId()); }
     public synchronized Task submitOrchestration(String owner,String conversation,String requestId,String message,List<AutonomousOrchestration.Agent> agents,Set<String> readOnly){
+        return submitOrchestration(owner,conversation,requestId,message,agents,readOnly,true);
+    }
+    public synchronized Task submitOrchestration(String owner,String conversation,String requestId,String message,List<AutonomousOrchestration.Agent> agents,Set<String> readOnly,boolean allowHelpers){
         String key=submissionKey(requestId,conversation,"ROOT");
         var previous=history.find(owner,"orchestration-request",key);if(previous.isPresent())return owned(owner,previous.get().body()).task;
         if(agents.isEmpty()||agents.size()>32||tasks.values().stream().filter(e->!TERMINAL.contains(e.task.state())).count()+agents.size()+1>128)throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS,"Orchestration admission capacity exceeded");
@@ -193,7 +196,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         try{
             for(int i=0;i<agents.size();i++){
                 var agent=agents.get(i);var dependencies=agent.dependsOn().stream().map(k->{var id=ids.get(k);if(id==null)throw new IllegalArgumentException("Dependency must reference an earlier agent");return id;}).toList();
-                var tools=new HashSet<>(agent.tools());tools.add("output__read");tools.add("output__grep");tools.add("companion__submit");
+                var tools=new HashSet<>(agent.tools());tools.add("output__read");tools.add("output__grep");if(allowHelpers)tools.add("companion__submit");
                 var scope=new AgentScope.Scope(t.taskId(),t.taskId(),1,tools,readOnly.containsAll(agent.tools()));
                 var child=submitInternal(owner,new Request(agent.goal(),"TASK",50,600,1,agent.name(),dependencies,conversation,requestId),conversation,requestId+"/"+agent.key(),scope,key);
                 ids.put(agent.key(),child.taskId());if(plan!=null)steps.put(child.taskId(),plan.steps().get(i).stepId());
@@ -422,12 +425,25 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         }
         return true;
     }
+    /** Deterministic degradation: retain validated successful deliverables when synthesis fails. */
+    private String partialEvidence(List<Entry> children){
+        var text=new StringBuilder("\nNie udało się przygotować pełnej odpowiedzi. Dostępne potwierdzone wyniki:\n");
+        boolean any=false;
+        for(var child:children){
+            String value=Objects.toString(child.task.result(),"").strip();
+            if(!child.task.state().equals("COMPLETED")||value.isBlank()||value.startsWith("{")||value.startsWith("["))continue;
+            text.append("\n").append(value.substring(0,Math.min(value.length(),1600))).append("\n");any=true;
+        }
+        if(!any)text.append("Nie uzyskano danych wystarczających do odpowiedzi.\n");
+        text.append("Pozostałe części wymagają dostępnego źródła lub ponownego sprawdzenia. Pełne wyniki są zachowane w szczegółach zadań.");
+        return text.toString();
+    }
     private void processOrchestrations(){
         List<Root> current;synchronized(this){current=List.copyOf(roots.values());}
         for(var root:current){
             try{
                 Entry parent;List<Entry> children;synchronized(this){parent=tasks.get(root.taskId());if(parent==null||TERMINAL.contains(parent.task.state()))continue;children=tasks.values().stream().filter(e->e.scope!=null&&e.scope.rootTaskId().equals(root.taskId())).toList();}
-                if(children.stream().anyMatch(e->!TERMINAL.contains(e.task.state())))continue;
+                if(!root.sealed()||children.stream().anyMatch(e->!TERMINAL.contains(e.task.state())))continue;
                 String id="task-group/"+root.groupId();String result=history.find(parent.owner,"task-synthesis",id).map(CompanionDocumentStore.Document::body).orElse(null);
                 if(result==null){
                     var previous=history.find(parent.owner,"task-stream",id).map(d->readMap(d.body())).orElse(Map.of());
@@ -436,8 +452,8 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
                     var evidence=new StringBuilder();var outcomes=new ArrayList<Map<String,Object>>();int limit=Math.max(100,12000/Math.max(1,children.size()));
                     for(var child:children){var item=new LinkedHashMap<String,Object>();String value=Objects.toString(child.task.result(),"");item.put("taskId",child.task.taskId());item.put("name",taskName(child));item.put("state",child.task.state());item.put("result",value.substring(0,Math.min(value.length(),limit)));item.put("truncated",value.length()>limit);item.put("error",child.task.error());item.put("resultRef","/api/v1/companion/tasks/"+child.task.taskId()+"/result");item.put("evidence",history.documents(child.owner,"evidence",child.task.taskId()+"/").stream().map(d->readMap(d.body())).toList());outcomes.add(item);}
                     evidence.append(mapper.writeValueAsString(Map.of("originalRequest",parent.submission.request().message(),"outcomes",outcomes,"allExpectedAgentsRegistered",children.size()>=root.expectedAgents())));
-                    record(parent.owner,"assistant.message.generation.started",root.taskId(),Map.of("conversationId",parent.task.conversationId(),"requestId",id,"messageId",TaskResultDelivery.messageId(parent.owner,parent.task.conversationId(),id).toString(),"role","MAIN_CONVERSATION"));
-                    String synthesis;try{if(!previous.isEmpty())throw new IllegalStateException("Recovered interrupted synthesis; preserving the visible prefix instead of regenerating it");String[] generated={null};var started=Instant.now();AgentScope.run(new AgentScope.Scope(root.taskId(),root.taskId(),0,Set.of(),true),()->{try{generated[0]=resultDelivery.synthesize(parent.owner,parent.task.conversationId(),evidence.toString(),visible);}finally{history.put(document(parent.owner,"agent-telemetry",root.taskId(),Map.of("taskId",root.taskId(),"startedAt",started,"finishedAt",Instant.now(),"phase","AGGREGATION","tokens",AgentScope.measured())));}});synthesis=Objects.requireNonNull(generated[0],"Empty synthesis");if(synthesis.isBlank())throw new IllegalStateException("Empty main-agent response");}catch(Exception failure){LOG.warn("Root synthesis failed; exact independent outcomes retained",failure);synthesis=streamed+"\nNie udało się przygotować pełnej odpowiedzi głównego J.A.R.V.I.S. Wyniki wykonanych zadań i informacje o błędach są zachowane w ich szczegółach.";}
+                    record(parent.owner,"assistant.message.generation.started",root.taskId(),Map.of("conversationId",parent.task.conversationId(),"requestId",id,"taskId",root.taskId(),"agentId",root.taskId(),"messageId",TaskResultDelivery.messageId(parent.owner,parent.task.conversationId(),id).toString(),"role","MAIN_CONVERSATION"));
+                    String synthesis;try{if(!previous.isEmpty())throw new IllegalStateException("Recovered interrupted synthesis; preserving the visible prefix instead of regenerating it");String[] generated={null};var started=Instant.now();AgentScope.run(new AgentScope.Scope(root.taskId(),root.taskId(),0,Set.of(),true),()->{try{generated[0]=resultDelivery.synthesize(parent.owner,parent.task.conversationId(),evidence.toString(),visible);}finally{history.put(document(parent.owner,"agent-telemetry",root.taskId(),Map.of("taskId",root.taskId(),"startedAt",started,"finishedAt",Instant.now(),"phase","AGGREGATION","tokens",AgentScope.measured())));}});synthesis=Objects.requireNonNull(generated[0],"Empty synthesis");if(synthesis.isBlank())throw new IllegalStateException("Empty main-agent response");}catch(Exception failure){history.put(document(parent.owner,"task-synthesis-status",id,Map.of("state","PARTIAL","reason","AGGREGATION_FAILED")));LOG.warn("Root synthesis failed; exact independent outcomes retained",failure);synthesis=streamed+partialEvidence(children);}
                     result=synthesis;
                     history.put(new CompanionDocumentStore.Document(parent.owner,"task-synthesis",id,result,Instant.now()));
                     {
@@ -446,7 +462,7 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
                         record(parent.owner,"assistant.message.generation.finished",root.taskId(),Map.of("messageId",TaskResultDelivery.messageId(parent.owner,parent.task.conversationId(),id).toString(),"conversationId",parent.task.conversationId(),"requestId",id,"generationCompletedMs",(System.nanoTime()-generationStarted)/1_000_000,"answerChunks",fragments.get(),"characters",result.length()));
                     }
                 }
-                if(deliver(parent,id,"AGGREGATE",result))synchronized(this){boolean complete=children.size()>=root.expectedAgents()&&!children.isEmpty()&&children.stream().allMatch(c->c.task.state().equals("COMPLETED"));if(complete&&plans!=null)complete=plans.verifiedComplete(parent.owner,parent.task.taskId());boolean partial=children.stream().anyMatch(c->c.task.result()!=null&&!c.task.result().isBlank());change(parent,complete?"COMPLETED":partial?"PARTIALLY_COMPLETED":"FAILED",result,complete?null:"Co najmniej jeden agent nie spełnił celu");}
+                if(deliver(parent,id,"AGGREGATE",result))synchronized(this){boolean complete=history.find(parent.owner,"task-synthesis-status",id).isEmpty()&&children.size()>=root.expectedAgents()&&!children.isEmpty()&&children.stream().allMatch(c->c.task.state().equals("COMPLETED"));if(complete&&plans!=null)complete=plans.verifiedComplete(parent.owner,parent.task.taskId());boolean partial=children.stream().anyMatch(c->c.task.result()!=null&&!c.task.result().isBlank());change(parent,complete?"COMPLETED":partial?"PARTIALLY_COMPLETED":"FAILED",result,complete?null:"Co najmniej jeden agent nie spełnił celu");}
             }catch(Exception failure){LOG.error("Root aggregation deferred; durable state retained",failure);}
         }
     }
@@ -458,8 +474,12 @@ public class CompanionTasks implements AutoCloseable,CompanionEventSink {
         result.put("queuedTasks",own.stream().filter(t->t.state().equals("QUEUED")).count());
         if(activityTracker!=null)result.putAll(activityTracker.snapshot(owner));result.put("activeOperations",result.getOrDefault("activeToolExecutions",0L));
         long coding=((Number)result.getOrDefault("activeCodingTasks",0L)).longValue();
-        result.put("activeTasks",running+coding);
-        result.put("activeAgents",running+coding+((Number)result.getOrDefault("activeSynchronousAgents",0L)).longValue());
+        long coordinators=own.stream().filter(t->owned(owner,t.taskId()).coordinator&&!TERMINAL.contains(t.state())).count();
+        long interactive=((Number)result.getOrDefault("activeInteractiveRequests",0L)).longValue();
+        result.put("activeOperations",((Number)result.getOrDefault("activeToolExecutions",0L)).longValue()+coordinators+interactive);
+        result.put("busy",running+coding+coordinators+interactive>0);result.put("executionState",running+coding+coordinators+interactive>0?"WORKING":"IDLE");
+        result.put("activeTasks",running+coding+coordinators+interactive);
+        result.put("activeAgents",running+coding+coordinators+((Number)result.getOrDefault("activeSynchronousAgents",0L)).longValue());
         if(gateway!=null)result.putAll(gateway.snapshot(owner));
         if(resourceTelemetry!=null)result.put("resources",resourceTelemetry.snapshot());
         return result;

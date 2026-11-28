@@ -65,8 +65,10 @@ public class ResponseValidationStage implements PipelineStage {
         return "ResponseValidationStage";
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private com.jarvis.tools.runtime.NativeToolSchemaMapper answerSchemas;
     @Override
     public PipelineContext execute(PipelineContext context) {
+        if(context.response()!=null&&com.jarvis.common.ai.FinalAnswerGuard.toolArguments(context.response(),answerSchemas==null?List.of():answerSchemas.definitions(com.jarvis.tools.runtime.ToolIntent.NO_TOOL),context.request().message()))throw new AIProviderException("INVALID_FINAL_ANSWER: tool payload cannot be persisted as an assistant answer");
         if (context.response() == null) {
             throw new IllegalStateException("Model response is null");
         }

@@ -25,7 +25,7 @@ import static org.mockito.Mockito.*;
 class AssistantResponseDeliveryTest {
     private final Brain brain=new Brain(BrainType.FAST,"fake","model","");
     private PipelineContext context(String request){
-        return PipelineContext.initial("conversation",request,new ChatRequest("conversation","siemanko"),null,null)
+        return PipelineContext.initial("conversation",request,new ChatRequest("conversation","Wyjaśnij krótko pojęcie algorytmu"),null,null)
             .withExecution(new ExecutionPlan(TaskType.CONVERSATION,1,1,false,0,0,BrainType.FAST,"model",ReasoningLevel.LOW,"test"),brain);
     }
     @Test void directOutcomeBypassingModelStageIsPersistedThenPublishedExactlyOnce(){
@@ -74,7 +74,7 @@ class AssistantResponseDeliveryTest {
         }
     }
 
-    @Test void semanticDirectStreamsFromTheOriginalGenerationBeforePersistence(){
+    @Test void semanticRoutingWithholdsUnvalidatedContentUntilDurablePublication(){
         var frames=new ArrayList<CognitiveEvent>();var saved=new ArrayList<ConversationMessage>();var bus=new DefaultCognitiveEventBus(mock(ExecutionTracer.class));var provider=mock(AIProvider.class);
         when(provider.provider()).thenReturn("fake");when(provider.supportsStreamingChat()).thenReturn(true);
         when(provider.streamChat(any(),anyList(),anyList(),anyMap(),any(),any())).thenAnswer(invocation->{
@@ -82,7 +82,7 @@ class AssistantResponseDeliveryTest {
             sink.accept(new ModelStreamEvent(ModelStreamEvent.Type.TOOL_ARGUMENTS_DELTA,"private technical data","tool","op"));
             assertTrue(frames.stream().noneMatch(e->e.event()==CognitiveEventType.ANSWER_TOKEN));
             sink.accept(ModelStreamEvent.content("{\"action\":\"DIRECT\",\"answer\":\"Pierwszy "));
-            assertEquals("Pierwszy ",bus.streamedAnswer());assertTrue(saved.isEmpty());
+            assertEquals("",bus.streamedAnswer());assertTrue(saved.isEmpty());
             sink.accept(ModelStreamEvent.content("drugi\",\"tools\":[],\"agents\":[]}"));
             return new ModelResponse("{\"action\":\"DIRECT\",\"answer\":\"Pierwszy drugi\",\"tools\":[],\"agents\":[]}","",List.of(),"stop",new ModelUsage(10,8,18));
         });
@@ -93,7 +93,7 @@ class AssistantResponseDeliveryTest {
         var memory=mock(ConversationMemoryService.class);doAnswer(i->{saved.add(i.getArgument(1));return null;}).when(memory).addMessage(anyString(),any());
         var executor=new CognitivePipelineExecutor(List.of(new AutonomousOrchestrationStage(factory.getBeanProvider(AutonomousOrchestration.class),titles),validation(bus,memory,titles)),bus,mock(PipelineDebugService.class));String id=UUID.randomUUID().toString();
         CurrentUserContext.runAs("owner",()->{bus.startRequest(id,"conversation",frames::add);try{executor.execute(context(id));}finally{bus.finishRequest();}});
-        assertEquals(List.of("Pierwszy ","drugi"),frames.stream().filter(e->e.event()==CognitiveEventType.ANSWER_TOKEN).map(CognitiveEvent::message).toList());assertEquals("Pierwszy drugi",saved.getFirst().content());
+        assertEquals(List.of("Pierwszy drugi"),frames.stream().filter(e->e.event()==CognitiveEventType.ANSWER_TOKEN).map(CognitiveEvent::message).toList());assertEquals("Pierwszy drugi",saved.getFirst().content());
         verify(provider,times(1)).streamChat(any(),anyList(),anyList(),anyMap(),any(),any());verify(provider,never()).toolChat(any(),anyList(),anyList(),any());
     }
     @Test void privateReasoningIsNotForwardedToTheClient(){

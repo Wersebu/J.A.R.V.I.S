@@ -44,7 +44,7 @@ class InformationContextPipelineTest extends MultiEngineCognitivePipelineTest {
    List<ModelToolCall> firstCalls=calls(caseId,0);String family=caseId==2?"exchange":caseId==3?"gmail":caseId>=5?"web":"weather";
    List<String> families=caseId==4?List.of("weather","exchange","gmail"):List.of(family);
    doAnswer(i->{modelCalls.incrementAndGet();List<ModelMessage> messages=i.getArgument(1);List<NativeToolDefinition> offered=i.getArgument(2);maxContext.accumulateAndGet(ModelContextBudget.total(messages,offered),Math::max);
-    if(caseId<3)return new ModelResponse("","",firstCalls,"tool_calls",new ModelUsage(100,20,120));
+
     return new ModelResponse(json.writeValueAsString(Map.of("action","TOOLS","answer","","families",families)),"",List.of(),"stop",new ModelUsage(100,20,120));
    }).when(active).streamChat(any(),anyList(),anyList(),anyMap(),any(),any());
    doAnswer(i->{List<NativeToolDefinition> offered=i.getArgument(2);if(offered.stream().anyMatch(t->t.name().equals("conversation__title")))return new ModelResponse("Information lookup","",List.of(),"stop",new ModelUsage(10,5,15));

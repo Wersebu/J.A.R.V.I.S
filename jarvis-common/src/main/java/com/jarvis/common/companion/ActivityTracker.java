@@ -20,7 +20,7 @@ public class ActivityTracker {
         var selected=active.values().stream().filter(a->a.owner().equals(owner)).toList();
         var details=new ArrayList<Map<String,Object>>();
         for(var a:selected){var m=new LinkedHashMap<String,Object>();m.put("kind",a.kind());m.put("requestId",a.requestId());m.put("taskId",a.taskId());m.put("operation",a.operation());m.put("startedAt",a.started());details.add(m);}
-        return Map.of("activeToolExecutions",selected.stream().filter(a->a.kind().equals("TOOL")).count(),
+        return Map.of("activeInteractiveRequests",selected.stream().filter(a->a.kind().equals("INTERACTIVE")).count(),"activeToolExecutions",selected.stream().filter(a->a.kind().equals("TOOL")).count(),
             "activeSynchronousAgents",selected.stream().filter(a->a.kind().equals("AGENT")).count(),"activeCodingTasks",selected.stream().filter(a->a.kind().equals("CODING_TASK")).count(),"activities",details);
     }
     public interface Scope extends AutoCloseable{@Override void close();}

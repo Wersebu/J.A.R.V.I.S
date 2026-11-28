@@ -6,6 +6,7 @@ import com.jarvis.common.ai.Brain;
 import com.jarvis.common.ai.BrainType;
 import com.jarvis.common.ai.ModelMessage;
 import com.jarvis.common.ai.ModelResponse;
+import com.jarvis.common.ai.ModelToolCall;
 import com.jarvis.common.ai.NativeToolDefinition;
 import com.jarvis.common.ai.ReasoningLevel;
 import com.jarvis.common.event.CognitiveEvent;
@@ -52,6 +53,14 @@ class OllamaProviderNativeToolChatStreamingTest {
         if (server != null) {
             server.stop(0);
         }
+    }
+
+    @Test void toolFramesAccumulateWithoutReplacingPreviousCalls()throws IOException{
+        startServer("{\"message\":{\"tool_calls\":[{\"function\":{\"index\":0,\"name\":\"weather__get\",\"arguments\":{\"location\":\"Warsaw\"}}}]},\"done\":false}\n"
+            +"{\"message\":{\"tool_calls\":[{\"function\":{\"index\":1,\"name\":\"web__search_web\",\"arguments\":{\"query\":\"BTC\"}}}]},\"done\":false}\n"
+            +"{\"done\":true,\"done_reason\":\"stop\"}\n");
+        var provider=newProvider(new RecordingCognitiveEventBus());var result=provider.toolChat(new Brain(BrainType.FAST,"ollama","gemma4:12b",""),List.of(ModelMessage.user("weather and BTC")),List.of(),AIJobType.MAIN_MODEL);
+        assertThat(result.toolCalls()).extracting(ModelToolCall::name).containsExactly("weather__get","web__search_web");assertThat(result.content()).isEmpty();
     }
 
     @Test

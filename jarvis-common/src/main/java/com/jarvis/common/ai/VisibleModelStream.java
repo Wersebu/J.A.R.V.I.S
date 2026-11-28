@@ -11,7 +11,7 @@ public final class VisibleModelStream {
     }
     public static ModelResponse generate(AIProvider provider,Brain brain,List<ModelMessage> messages,AIJobType job,Consumer<String> sink,Consumer<Map<String,Object>> metrics){
         if(!provider.supportsStreamingChat())return provider.toolChat(brain,messages,List.of(),job);
-        var properties=new LinkedHashMap<String,Object>();properties.put("action",Map.of("type","string","enum",List.of("DIRECT")));properties.put("answer",Map.of("type","string"));
+        var properties=new LinkedHashMap<String,Object>();properties.put("action",Map.of("type","string","enum",List.of("DIRECT","ANSWER")));properties.put("answer",Map.of("type","string"));
         var schema=Map.<String,Object>of("type","object","properties",properties,"required",List.of("action","answer"),"additionalProperties",false);
         var input=new ArrayList<>(messages);input.add(ModelMessage.system("Return ONLY JSON matching the schema. Write action DIRECT FIRST, then the complete user-visible answer in answer. No private reasoning, technical arguments or wrappers inside answer."));
         long began=System.nanoTime();long[] first={-1,-1,-1};int[] chunks={0};
@@ -20,7 +20,11 @@ public final class VisibleModelStream {
         metrics.accept(Map.of("timeToFirstTokenMs",first[0],"timeToFirstVisibleAnswerTokenMs",first[1],"timeToFirstSinkWriteMs",first[2],"generationCompletedMs",(System.nanoTime()-began)/1_000_000,"answerChunks",chunks[0]));
         try{
             var parsed=new com.fasterxml.jackson.databind.ObjectMapper().readTree(response.content());
-            if(!parsed.path("action").asText().equals("DIRECT")||!parsed.path("answer").isTextual()||!parsed.path("answer").asText().equals(decoder.answer()))throw new IllegalStateException("Structured visible answer mismatch");
+            String action=parsed.path("action").asText().toUpperCase(Locale.ROOT);
+            if(!Set.of("DIRECT","ANSWER").contains(action)||!parsed.path("answer").isTextual()||!parsed.path("answer").asText().equals(decoder.answer()))throw new IllegalStateException("Structured visible answer mismatch: action="+action+", parsedAnswerChars="+parsed.path("answer").asText().length()+", decodedAnswerChars="+decoder.answer().length());
+            // Legacy main prompts use ANSWER. The lexer withheld that branch; publish once only
+            // after the complete envelope validates, rather than simulating token streaming.
+            if(!decoder.action().equals("DIRECT"))sink.accept(decoder.answer());
             return new ModelResponse(decoder.answer(),"",response.toolCalls(),response.finishReason(),response.usage());
         }catch(java.io.IOException failure){throw new IllegalStateException("Incomplete structured answer",failure);}
     }

@@ -29,6 +29,14 @@ class SemanticOrchestratorTest {
     private ModelResponse response(String json){return new ModelResponse(json,"",List.of(),"stop",new ModelUsage(10,5,15));}
     private String plan(String tools,String dependencies){return "{\"action\":\"DELEGATE\",\"answer\":\"\",\"tools\":[],\"agents\":[{\"kind\":\"RETRIEVAL\",\"key\":\"a\",\"name\":\"Kurs dolara\",\"goal\":\"Read USD-PLN\",\"tools\":"+tools+",\"dependsOn\":"+dependencies+"}]}";}
 
+    @Test void independentResearchDeliverablesCreateTasksEvenWhenModelLabelsTheEnvelopeTools(){
+        var engine=engine();var units=new ArrayList<Map<String,Object>>();for(int i=0;i<4;i++)units.add(Map.of("name","Output "+i,"goal","Independent deliverable "+i,"families",List.of("fx"),"requiresResearch",i==3,"subject","entity-"+i));
+        units.add(Map.of("name","Historical detail","goal","Historical series for entity 3","families",List.of("fx"),"requiresResearch",true,"subject","entity-3"));
+        try{when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(response(mapper.writeValueAsString(Map.of("action","TOOLS","answer","","families",List.of("fx"),"deliverables",units))));}catch(Exception e){throw new RuntimeException(e);}
+        when(tasks.submitOrchestration(anyString(),anyString(),anyString(),anyString(),anyList(),anySet(),eq(false))).thenReturn(new CompanionTasks.Task("root","CONVERSATION","RUNNING",50,null,java.time.Instant.now(),java.time.Instant.now(),null,null));
+        assertEquals("DELEGATE",engine.orchestrate("owner","conversation","four","Four independent information outputs",brain).action());var agents=org.mockito.ArgumentCaptor.forClass(List.class);verify(tasks).submitOrchestration(anyString(),anyString(),anyString(),anyString(),agents.capture(),anySet(),eq(false));assertEquals(4,agents.getValue().size());assertTrue(((com.jarvis.common.companion.AutonomousOrchestration.Agent)agents.getValue().get(3)).goal().contains("Historical series"));
+    }
+
     @Test void greetingUsesModelDirectDecisionWithoutCreatingWorkers(){
         var engine=engine();when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(response("{\"action\":\"DIRECT\",\"answer\":\"Cześć!\",\"tools\":[],\"agents\":[]}"));
         assertEquals("DIRECT",engine.orchestrate("owner","conversation","request","Cześć",brain).action());
@@ -74,8 +82,9 @@ class SemanticOrchestratorTest {
         var messages=org.mockito.ArgumentCaptor.forClass(List.class);verify(provider,times(1)).toolChat(any(),messages.capture(),anyList(),any());assertTrue(((ModelMessage)messages.getValue().getFirst()).content().contains("IDENTITY_FROM_MARKDOWN USER_PROMPT FOLDER_PROMPT KNOWLEDGE_FILES HISTORY"));
         verify(tasks,never()).submitOrchestration(any(),any(),any(),any(),anyList(),anySet());
     }
-    @Test void nativeFirstTurnIsReusedInsteadOfAddingRoutingAndPlanningGenerations(){
-        var engine=engine();var first=new ModelResponse("","",List.of(new ModelToolCall("call-1","fx__quote",Map.of("pair","USDPLN"))),"tool_calls",new ModelUsage(20,3,23));when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(first);
-        var outcome=engine.orchestrate("owner","conversation","native","Sprawdź kurs USD",brain);assertEquals("TOOLS",outcome.action());assertEquals(first,outcome.firstResponse());assertTrue(outcome.tools().contains("fx__quote"));verify(provider,times(1)).toolChat(any(),anyList(),anyList(),any());verify(tasks,never()).submitOrchestration(any(),any(),any(),any(),anyList(),anySet());
+    @Test void completeRoutingIsChosenBeforeAnyExecutableTool(){
+        var engine=engine();when(provider.toolChat(any(),anyList(),anyList(),any())).thenReturn(response("{\"action\":\"TOOLS\",\"answer\":\"\",\"families\":[\"fx\"]}"));
+        var outcome=engine.orchestrate("owner","conversation","native","Sprawdź kurs USD",brain);assertEquals("TOOLS",outcome.action());assertNull(outcome.firstResponse());assertTrue(outcome.tools().contains("fx__quote"));
+        var offered=org.mockito.ArgumentCaptor.forClass(List.class);verify(provider).toolChat(any(),anyList(),offered.capture(),any());assertEquals(1,offered.getValue().size());assertEquals("orchestration__decide",((NativeToolDefinition)offered.getValue().getFirst()).name());
     }
 }

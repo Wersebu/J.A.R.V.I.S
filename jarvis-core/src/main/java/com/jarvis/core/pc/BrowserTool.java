@@ -155,7 +155,7 @@ public class BrowserTool implements JarvisTool, ToolSchemaProvider {
 
     private ToolResult failure(ToolRequest request, String operation, String code, String message) {
         return new ToolResult(false, TOOL_NAME, operation, request.requestId(), request.conversationId(), false,
-                List.of(), message, Map.of("error", message), code, message, false, "");
+                List.of(), message, Map.of("error", message,"sourceUnavailable",message.contains("no Windows Bridge")||message.contains("not connected")), code, message, false, "");
     }
 
     private static ToolOperationDefinition op(String name, String description, ToolSafetyLevel safety, boolean write,

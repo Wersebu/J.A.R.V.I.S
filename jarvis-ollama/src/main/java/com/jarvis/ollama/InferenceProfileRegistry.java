@@ -41,7 +41,7 @@ public class InferenceProfileRegistry implements org.springframework.beans.facto
         input = integer(prefix + "input-tokens", input); output = integer(prefix + "output-tokens", output);
         String model = env.getProperty("jarvis.inference." + prefix + "model", "");
         ReasoningLevel reasoning = ReasoningLevel.valueOf(env.getProperty("jarvis.inference." + prefix + "reasoning",
-            id.equals("agent-execution") || id.equals("orchestration") || id.equals("conversation-title") || id.startsWith("memory") || id.equals("tool-selection") ? "LOW" : id.equals("coding")?"HIGH":"MEDIUM").toUpperCase(java.util.Locale.ROOT));
+            id.equals("main-conversation") || id.equals("agent-execution") || id.equals("orchestration") || id.equals("conversation-title") || id.startsWith("memory") || id.startsWith("tool-") ? "LOW" : id.equals("coding")?"HIGH":"MEDIUM").toUpperCase(java.util.Locale.ROOT));
         Selection selection = Selection.valueOf(env.getProperty("jarvis.inference." + prefix + "selection", "EXTRACTIVE").toUpperCase(java.util.Locale.ROOT));
         if (physicalContext() < 512 || input < 1 || output < 1 || priority < 0 || priority > 100 || timeout < 1)
             throw new IllegalArgumentException("Invalid inference profile: " + id);

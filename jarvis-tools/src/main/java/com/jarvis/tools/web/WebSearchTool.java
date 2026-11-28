@@ -250,6 +250,8 @@ public class WebSearchTool implements JarvisTool, ToolSchemaProvider {
         long durationMs = (System.nanoTime() - started) / 1_000_000L;
         String errorCode = exception.statusCode() > 0 ? "HTTP_" + exception.statusCode() : "WEB_SEARCH_FAILED";
         Map<String, Object> data = Map.of(
+                "sourceUnavailable", safe(exception.getMessage()).contains("ConnectException")||safe(exception.getMessage()).contains("UnknownHostException"),
+                "requiredAction", "Verify the configured SearXNG service at "+properties.baseUrl(),
                 "query", query,
                 "maxResults", effectiveMaxResults,
                 "profile", profile,

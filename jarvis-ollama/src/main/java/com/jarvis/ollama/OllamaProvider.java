@@ -465,7 +465,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
     private ModelResponse readNativeToolChatStream(InputStream inputStream, Brain brain, AIJobType jobType, long startedNano,java.util.function.Consumer<com.jarvis.common.ai.ModelStreamEvent> sink) throws IOException {
         StringBuilder thinkingBuilder = new StringBuilder();
         StringBuilder contentBuilder = new StringBuilder();
-        List<OllamaToolCall> toolCalls = List.of();
+        var toolCalls = new java.util.LinkedHashMap<String,OllamaToolCall>();
         String doneReason = "";
         Integer promptEvalCount = null;
         Integer evalCount = null;
@@ -500,6 +500,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                                             "model", brain.model(), "reasoningLevel", brain.reasoningLevel().name()));
                             LOGGER.info("[JARVIS][requestId={}][OLLAMA] FIRST_THINKING_CHUNK elapsedMs={}", diagnosticsRequestId(), elapsedMs);
                         }
+                        if(sink!=null)sink.accept(new com.jarvis.common.ai.ModelStreamEvent(com.jarvis.common.ai.ModelStreamEvent.Type.REASONING,thinking,"",""));
                         thinkingBuilder.append(thinking);
                         thinkingChunks++;
                         publishCognitive(jobType, CognitiveEventType.THINKING_TOKEN, "THINKING", thinking, "model:" + brain.model(), Map.of(
@@ -533,8 +534,19 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
                         if(sink!=null)sink.accept(com.jarvis.common.ai.ModelStreamEvent.content(content));
                     }
                     if (message.toolCalls() != null && !message.toolCalls().isEmpty()) {
-                        toolCalls = message.toolCalls();
-                        if(sink!=null)for(var call:toolCalls)if(call.function()!=null)sink.accept(new com.jarvis.common.ai.ModelStreamEvent(com.jarvis.common.ai.ModelStreamEvent.Type.TOOL_CALL_COMPLETE,objectMapper.writeValueAsString(call.function().arguments()),call.id(),call.function().name()));
+                        for(int index=0;index<message.toolCalls().size();index++){
+                            var call=message.toolCalls().get(index);if(call.function()==null)throw new OllamaException("INVALID_TOOL_CALL");
+                            String key=call.id()!=null&&!call.id().isBlank()?"id:"+call.id():call.function().index()!=null?"index:"+call.function().index():"name:"+call.function().name()+":position:"+index;
+                            var prior=toolCalls.get(key);
+                            if(prior!=null&&!prior.equals(call)){
+                                if(!prior.function().name().equals(call.function().name()))throw new OllamaException("CONFLICTING_TOOL_NAME");
+                                var args=new java.util.LinkedHashMap<String,Object>(prior.function().arguments());
+                                for(var entry:call.function().arguments().entrySet()){if(args.containsKey(entry.getKey())&&!java.util.Objects.equals(args.get(entry.getKey()),entry.getValue()))throw new OllamaException("AMBIGUOUS_TOOL_STREAM: conflicting arguments");args.put(entry.getKey(),entry.getValue());}
+                                call=new OllamaToolCall(call.id(),call.type(),new OllamaToolFunction(call.function().name(),args,call.function().index()));
+                            }
+                            toolCalls.put(key,call);
+                        }
+                        if(sink!=null)for(var call:message.toolCalls())if(call.function()!=null)sink.accept(new com.jarvis.common.ai.ModelStreamEvent(com.jarvis.common.ai.ModelStreamEvent.Type.TOOL_CALL_COMPLETE,objectMapper.writeValueAsString(call.function().arguments()),call.id(),call.function().name()));
                     }
                 }
                 if (Boolean.TRUE.equals(response.done())) {
@@ -557,7 +569,7 @@ public class OllamaProvider implements AIProvider, VisionDescriptionProvider {
             publishCognitive(jobType, CognitiveEventType.THINKING_FINISHED, "FINISHED", "Thinking finished", "model:" + brain.model(), Map.of(
                     "durationMs", nanosToMillis(System.nanoTime() - startedNano), "chunks", thinkingChunks, "characters", thinkingBuilder.length()));
         }
-        List<ModelToolCall> modelToolCalls = toolCalls.stream()
+        List<ModelToolCall> modelToolCalls = toolCalls.values().stream()
                 .filter(call -> call.function() != null)
                 .map(call -> new ModelToolCall(call.id(), call.function().name(),
                         com.jarvis.common.ai.ByteTokenText.repairArguments(call.function().arguments())))

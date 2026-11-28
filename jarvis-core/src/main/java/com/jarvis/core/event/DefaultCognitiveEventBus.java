@@ -22,6 +22,7 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultCognitiveEventBus.class);
     private static final ThreadLocal<RequestScope> REQUEST_SCOPE = new ThreadLocal<>();
+    @org.springframework.beans.factory.annotation.Autowired(required=false) private org.springframework.beans.factory.ObjectProvider<com.jarvis.common.companion.CompanionEventSink> agentEvents;
     private final ExecutionTracer executionTracer;
     private static final java.util.Set<CognitiveEventType> ANSWER_EVENTS=java.util.Set.of(CognitiveEventType.ANSWER_STREAM_STARTED,CognitiveEventType.ANSWER_STARTED,CognitiveEventType.ANSWER_TOKEN,CognitiveEventType.TOKEN,CognitiveEventType.ANSWER_FINISHED,CognitiveEventType.STREAMING_STARTED,CognitiveEventType.STREAMING_FINISHED);
     private static final ThreadLocal<Publication> PUBLICATION=new ThreadLocal<>();
@@ -125,6 +126,12 @@ public class DefaultCognitiveEventBus implements CognitiveEventBus {
         RequestScope scope = REQUEST_SCOPE.get();
         if (scope == null) {
             return;
+        }
+        var task=com.jarvis.common.companion.TaskExecutionContext.current();
+        if(task!=null){var correlated=new java.util.LinkedHashMap<String,Object>(metadata);correlated.put("taskId",task);correlated.put("agentId",task);correlated.put("requestId",scope.requestId());correlated.put("conversationId",scope.conversationId());metadata=correlated;
+            if(agentEvents!=null&&java.util.Set.of(CognitiveEventType.THINKING_STARTED,CognitiveEventType.THINKING_FINISHED,CognitiveEventType.TOKEN_USAGE,CognitiveEventType.MODEL_REQUEST_STARTED).contains(event)){
+                var journal=agentEvents.getIfAvailable();if(journal!=null)journal.record(com.jarvis.common.auth.CurrentUserContext.requiredUserId(),event==CognitiveEventType.TOKEN_USAGE?"agent.inference.usage":event==CognitiveEventType.MODEL_REQUEST_STARTED?"agent.inference.started":event==CognitiveEventType.THINKING_STARTED?"agent.reasoning.started":"agent.reasoning.finished",task,metadata);
+            }
         }
         var publication=PUBLICATION.get();
         if(event==CognitiveEventType.THINKING_TOKEN)return; // Private reasoning is never a user-visible channel.
